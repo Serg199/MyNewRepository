@@ -1,0 +1,521 @@
+OBJECT Codeunit 26581 AccSchedExtensionManagement
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      AccSchedLine@1470015 : Record 85;
+      ColumnLayout@1210001 : Record 334;
+      AccSchedExtension@1470014 : Record 26584;
+      GLSetup@1470013 : Record 98;
+      ReportPeriod@1470012 : Record 2000000007;
+      AccSchedManagement@1210000 : Codeunit 8;
+      Text001@1470001 : TextConst 'ENU=BD;RUS=BD';
+      Text002@1470000 : TextConst 'ENU=ED;RUS=ED';
+      Text003@1470008 : TextConst 'ENU="Invalid value for Date Filter = %1.";RUS="Недопустимое значение для фильтра по дате = %1."';
+      StartDate@1470010 : Date;
+      EndDate@1470009 : Date;
+
+    PROCEDURE CalcCustomFunc@1470000(VAR NewAccSchedLine@1470001 : Record 85;NewColumnLayout@1210000 : Record 334;NewStartDate@1470002 : Date;NewEndDate@1470003 : Date) Value : Decimal;
+    BEGIN
+      AccSchedLine.COPY(NewAccSchedLine);
+      ColumnLayout := NewColumnLayout;
+      StartDate := NewStartDate;
+      EndDate := NewEndDate;
+      Value := 0;
+      GLSetup.GET;
+      AccSchedManagement.SetDateParameters(StartDate,EndDate);
+      WITH AccSchedExtension DO
+        IF GET(NewAccSchedLine.Totaling) THEN
+          CASE "Source Table" OF
+            "Source Table"::"VAT Entry":
+              Value := GetVATEntryValue;
+            "Source Table"::"Value Entry":
+              Value := GetValueEntry;
+            "Source Table"::"Customer Entry":
+              Value := GetCustEntryValue;
+            "Source Table"::"Vendor Entry":
+              Value := GetVendEntryValue;
+          END;
+    END;
+
+    PROCEDURE SetAccSchedLine@1470001(VAR NewAccSchedLine@1470000 : Record 85);
+    BEGIN
+      AccSchedLine.COPY(NewAccSchedLine);
+    END;
+
+    PROCEDURE SetReportPeriod@1470002(VAR NewReportPeriod@1470000 : Record 2000000007);
+    BEGIN
+      ReportPeriod.COPY(NewReportPeriod);
+    END;
+
+    PROCEDURE CalcDateFormula@1470010(DateFormula@1470000 : Text[250]) : Date;
+    BEGIN
+      // ED or BD formulas proccessing
+      // ED or BD have to be in the begining of the formula
+
+      IF DateFormula = '' THEN
+        EXIT(0D);
+
+      CASE COPYSTR(DateFormula,1,2) OF
+        Text001:
+          EXIT(CALCDATE(COPYSTR(DateFormula,3),StartDate));
+        Text002:
+          EXIT(CALCDATE(COPYSTR(DateFormula,3),EndDate));
+      END;
+
+      ERROR(Text003,DateFormula);
+    END;
+
+    PROCEDURE GetDateFilter@1470011(DateFilter@1470000 : Text[250]) : Text[250];
+    VAR
+      Position@1470004 : Integer;
+      LeftFormula@1470002 : Text[250];
+      RightFormula@1470001 : Text[250];
+    BEGIN
+      IF DateFilter = '' THEN
+        EXIT(DateFilter);
+
+      Position := STRPOS(DateFilter,'..');
+      IF Position > 0 THEN BEGIN
+        LeftFormula := COPYSTR(DateFilter,1,Position - 1);
+        RightFormula := COPYSTR(DateFilter,Position + 2);
+        EXIT(FORMAT(CalcDateFormula(LeftFormula)) + '..' + FORMAT(CalcDateFormula(RightFormula)));
+      END;
+
+      CASE DateFilter OF
+        Text001:
+          EXIT(FORMAT(StartDate));
+        Text002:
+          EXIT(FORMAT(EndDate));
+        ELSE
+          ERROR(Text003,DateFilter);
+      END;
+
+      EXIT(DateFilter);
+    END;
+
+    PROCEDURE SetCustLedgEntryFilters@1470019(VAR CustLedgerEntry@1470000 : Record 21);
+    BEGIN
+      WITH AccSchedExtension DO BEGIN
+        IF "Posting Date Filter" <> '' THEN
+          CustLedgerEntry.SETFILTER("Posting Date",
+            GetDateFilter("Posting Date Filter"))
+        ELSE
+          CustLedgerEntry.SETFILTER("Posting Date",AccSchedManagement.GetPostingDateFilter(AccSchedLine,ColumnLayout));
+        CustLedgerEntry.COPYFILTER("Posting Date",CustLedgerEntry."Date Filter");
+
+        IF NetChangeFilter(CustLedgerEntry.GETFILTER("Posting Date")) THEN
+          CustLedgerEntry.SETRANGE("Posting Date",0D);
+
+        CustLedgerEntry.SETFILTER("Due Date",GetDueDateFilter);
+        IF "Document Type Filter" <> '' THEN
+          CustLedgerEntry.SETFILTER("Document Type","Document Type Filter");
+        IF "Posting Group Filter" <> '' THEN
+          CustLedgerEntry.SETFILTER("Customer Posting Group","Posting Group Filter");
+        CASE "Prepayment Filter" OF
+          "Prepayment Filter"::Yes:
+            CustLedgerEntry.SETRANGE(Prepayment,TRUE);
+          "Prepayment Filter"::No:
+            CustLedgerEntry.SETRANGE(Prepayment,FALSE);
+        END;
+        CASE "Amount Sign" OF
+          "Amount Sign"::Positive:
+            CustLedgerEntry.SETRANGE(Positive,TRUE);
+          "Amount Sign"::Negative:
+            CustLedgerEntry.SETRANGE(Positive,FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetDtldCustLedgEntryFilters@1210008(VAR DtldCustLedgerEntry@1470000 : Record 379);
+    BEGIN
+      WITH AccSchedExtension DO BEGIN
+        IF "Posting Date Filter" <> '' THEN
+          DtldCustLedgerEntry.SETFILTER("Initial Entry Posting Date",
+            GetDateFilter("Posting Date Filter"))
+        ELSE
+          DtldCustLedgerEntry.SETFILTER(
+            "Initial Entry Posting Date",
+            AccSchedManagement.GetPostingDateFilter(AccSchedLine,ColumnLayout));
+        DtldCustLedgerEntry.COPYFILTER("Initial Entry Posting Date",DtldCustLedgerEntry."Posting Date");
+
+        IF NetChangeFilter(DtldCustLedgerEntry.GETFILTER("Initial Entry Posting Date")) THEN
+          DtldCustLedgerEntry.SETRANGE("Initial Entry Posting Date",0D);
+
+        DtldCustLedgerEntry.SETFILTER("Initial Entry Due Date",GetDueDateFilter);
+        DtldCustLedgerEntry.SETRANGE("Prepmt. Diff. in TA",FALSE);
+        IF "Document Type Filter" <> '' THEN
+          DtldCustLedgerEntry.SETFILTER("Document Type","Document Type Filter");
+        IF "Posting Group Filter" <> '' THEN
+          DtldCustLedgerEntry.SETFILTER("Customer Posting Group","Posting Group Filter");
+        CASE "Prepayment Filter" OF
+          "Prepayment Filter"::Yes:
+            DtldCustLedgerEntry.SETRANGE(Prepayment,TRUE);
+          "Prepayment Filter"::No:
+            DtldCustLedgerEntry.SETRANGE(Prepayment,FALSE);
+        END;
+        CASE "Amount Sign" OF
+          "Amount Sign"::Positive:
+            DtldCustLedgerEntry.SETRANGE("Initial Entry Positive",TRUE);
+          "Amount Sign"::Negative:
+            DtldCustLedgerEntry.SETRANGE("Initial Entry Positive",FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetVendLedgEntryFilters@1470006(VAR VendLedgerEntry@1470000 : Record 25);
+    BEGIN
+      WITH AccSchedExtension DO BEGIN
+        IF "Posting Date Filter" <> '' THEN
+          VendLedgerEntry.SETFILTER("Posting Date",
+            GetDateFilter("Posting Date Filter"))
+        ELSE
+          VendLedgerEntry.SETFILTER("Posting Date",AccSchedManagement.GetPostingDateFilter(AccSchedLine,ColumnLayout));
+        VendLedgerEntry.COPYFILTER("Posting Date",VendLedgerEntry."Date Filter");
+
+        IF NetChangeFilter(VendLedgerEntry.GETFILTER("Posting Date")) THEN
+          VendLedgerEntry.SETRANGE("Posting Date",0D);
+
+        VendLedgerEntry.SETFILTER("Due Date",GetDueDateFilter);
+        IF "Document Type Filter" <> '' THEN
+          VendLedgerEntry.SETFILTER("Document Type","Document Type Filter");
+        IF "Posting Group Filter" <> '' THEN
+          VendLedgerEntry.SETFILTER("Vendor Posting Group","Posting Group Filter");
+        CASE "Prepayment Filter" OF
+          "Prepayment Filter"::Yes:
+            VendLedgerEntry.SETRANGE(Prepayment,TRUE);
+          "Prepayment Filter"::No:
+            VendLedgerEntry.SETRANGE(Prepayment,FALSE);
+        END;
+        CASE "Amount Sign" OF
+          "Amount Sign"::Positive:
+            VendLedgerEntry.SETRANGE(Positive,TRUE);
+          "Amount Sign"::Negative:
+            VendLedgerEntry.SETRANGE(Positive,FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetDtldVendLedgEntryFilters@1210002(VAR DtldVendLedgerEntry@1470000 : Record 380);
+    BEGIN
+      WITH AccSchedExtension DO BEGIN
+        IF "Posting Date Filter" <> '' THEN
+          DtldVendLedgerEntry.SETFILTER("Initial Entry Posting Date",
+            GetDateFilter("Posting Date Filter"))
+        ELSE
+          DtldVendLedgerEntry.SETFILTER(
+            "Initial Entry Posting Date",
+            AccSchedManagement.GetPostingDateFilter(AccSchedLine,ColumnLayout));
+        DtldVendLedgerEntry.COPYFILTER("Initial Entry Posting Date",DtldVendLedgerEntry."Posting Date");
+
+        IF NetChangeFilter(DtldVendLedgerEntry.GETFILTER("Initial Entry Posting Date")) THEN
+          DtldVendLedgerEntry.SETRANGE("Initial Entry Posting Date",0D);
+
+        DtldVendLedgerEntry.SETFILTER("Initial Entry Due Date",GetDueDateFilter);
+        DtldVendLedgerEntry.SETRANGE("Prepmt. Diff. in TA",FALSE);
+        IF "Document Type Filter" <> '' THEN
+          DtldVendLedgerEntry.SETFILTER("Document Type","Document Type Filter");
+        IF "Posting Group Filter" <> '' THEN
+          DtldVendLedgerEntry.SETFILTER("Vendor Posting Group","Posting Group Filter");
+        CASE "Prepayment Filter" OF
+          "Prepayment Filter"::Yes:
+            DtldVendLedgerEntry.SETRANGE(Prepayment,TRUE);
+          "Prepayment Filter"::No:
+            DtldVendLedgerEntry.SETRANGE(Prepayment,FALSE);
+        END;
+        CASE "Amount Sign" OF
+          "Amount Sign"::Positive:
+            DtldVendLedgerEntry.SETRANGE("Initial Entry Positive",TRUE);
+          "Amount Sign"::Negative:
+            DtldVendLedgerEntry.SETRANGE("Initial Entry Positive",FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetVATLedgEntryFilters@1470014(VAR VATEntry@1470000 : Record 254);
+    BEGIN
+      WITH AccSchedExtension DO BEGIN
+        CASE "VAT Entry Type" OF
+          "VAT Entry Type"::Purchase:
+            VATEntry.SETRANGE(Type,VATEntry.Type::Purchase);
+          "VAT Entry Type"::Sale:
+            VATEntry.SETRANGE(Type,VATEntry.Type::Sale);
+        END;
+        CASE "Prepayment Filter" OF
+          "Prepayment Filter"::Yes:
+            VATEntry.SETRANGE(Prepayment,TRUE);
+          "Prepayment Filter"::No:
+            VATEntry.SETRANGE(Prepayment,FALSE);
+        END;
+        VATEntry.SETFILTER("Posting Date",AccSchedManagement.GetPostingDateFilter(AccSchedLine,ColumnLayout));
+        VATEntry.SETFILTER("VAT Bus. Posting Group","VAT Bus. Post. Group Filter");
+        VATEntry.SETFILTER("VAT Prod. Posting Group","VAT Prod. Post. Group Filter");
+        VATEntry.SETFILTER("Gen. Bus. Posting Group","Gen. Bus. Post. Group Filter");
+        VATEntry.SETFILTER("Gen. Prod. Posting Group","Gen. Prod. Post. Group Filter");
+        IF "Object Type Filter" <> "Object Type Filter"::" " THEN
+          VATEntry.SETRANGE("Object Type","Object Type Filter" - 1);
+        VATEntry.SETFILTER("Object No.","Object No. Filter");
+        IF "VAT Allocation Type Filter" <> "VAT Allocation Type Filter"::" " THEN
+          VATEntry.SETRANGE("VAT Allocation Type","VAT Allocation Type Filter" - 1);
+      END;
+    END;
+
+    PROCEDURE SetValueLedgEntryFilters@1470015(VAR ValueEntry@1470000 : Record 5802);
+    BEGIN
+      WITH AccSchedExtension DO BEGIN
+        ValueEntry.SETFILTER("Location Code","Location Filter");
+        ValueEntry.SETFILTER("Item Charge No.","Item Charge No. Filter");
+        ValueEntry.SETFILTER("Posting Date",AccSchedManagement.GetPostingDateFilter(AccSchedLine,ColumnLayout));
+        ValueEntry.SETFILTER("Inventory Posting Group",AccSchedExtension."Inventory Posting Group Filter");
+        IF "Value Entry Type Filter" <> "Value Entry Type Filter"::" " THEN
+          ValueEntry.SETRANGE("Entry Type","Value Entry Type Filter" - 1);
+        CASE "Amount Sign" OF
+          "Amount Sign"::Positive:
+            ValueEntry.SETRANGE(Positive,TRUE);
+          "Amount Sign"::Negative:
+            ValueEntry.SETRANGE(Positive,FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE GetVATEntryValue@1470004() Result : Decimal;
+    VAR
+      VATEntry@1470001 : Record 254;
+    BEGIN
+      VATEntry.RESET;
+      VATEntry.SETCURRENTKEY(
+        Type,
+        "Posting Date",
+        "VAT Bus. Posting Group",
+        "VAT Prod. Posting Group",
+        "Gen. Bus. Posting Group",
+        "Gen. Prod. Posting Group",
+        "Object Type",
+        "Object No.",
+        "VAT Allocation Type",
+        Prepayment);
+
+      SetVATLedgEntryFilters(VATEntry);
+      VATEntry.CALCSUMS(
+        Base,
+        Amount,
+        "Unrealized Amount",
+        "Unrealized Base",
+        "Remaining Unrealized Amount",
+        "Remaining Unrealized Base");
+
+      WITH AccSchedExtension DO BEGIN
+        CASE "VAT Type" OF
+          "VAT Type"::Realized:
+            CASE "VAT Amount Type" OF
+              "VAT Amount Type"::Base:
+                Result := VATEntry.Base;
+              "VAT Amount Type"::Amount:
+                Result := VATEntry.Amount;
+              "VAT Amount Type"::Total:
+                Result := VATEntry.Base + VATEntry.Amount;
+            END;
+          "VAT Type"::Unrealized:
+            CASE "VAT Amount Type" OF
+              "VAT Amount Type"::Base:
+                Result := VATEntry."Unrealized Base";
+              "VAT Amount Type"::Amount:
+                Result := VATEntry."Unrealized Amount";
+              "VAT Amount Type"::Total:
+                Result := VATEntry."Unrealized Base" + VATEntry."Unrealized Amount";
+            END;
+          "VAT Type"::"Remaining Unrealized":
+            CASE "VAT Amount Type" OF
+              "VAT Amount Type"::Base:
+                Result := VATEntry."Remaining Unrealized Base";
+              "VAT Amount Type"::Amount:
+                Result := VATEntry."Remaining Unrealized Amount";
+              "VAT Amount Type"::Total:
+                Result := VATEntry."Remaining Unrealized Base" + VATEntry."Remaining Unrealized Amount";
+            END;
+        END;
+
+        IF "Reverse Sign" THEN
+          Result := -1 * Result;
+      END;
+    END;
+
+    PROCEDURE GetValueEntry@1470005() Result : Decimal;
+    VAR
+      ValueEntry@1470001 : Record 5802;
+    BEGIN
+      ValueEntry.RESET;
+      ValueEntry.SETCURRENTKEY("Posting Date","Location Code","Entry Type","Inventory Posting Group","Item Charge No.",Positive);
+      SetValueLedgEntryFilters(ValueEntry);
+      ValueEntry.CALCSUMS(
+        "Cost Posted to G/L",
+        "Sales Amount (Expected)",
+        "Sales Amount (Actual)",
+        "Cost Amount (Expected)",
+        "Cost Amount (Actual)",
+        "Cost Amount (Non-Invtbl.)",
+        "Purchase Amount (Actual)",
+        "Purchase Amount (Expected)");
+
+      WITH AccSchedExtension DO BEGIN
+        CASE "Value Entry Amount Type" OF
+          "Value Entry Amount Type"::"Cost Posted to G/L":
+            Result := ValueEntry."Cost Posted to G/L";
+          "Value Entry Amount Type"::"Sales Amount (Expected)":
+            Result := ValueEntry."Sales Amount (Expected)";
+          "Value Entry Amount Type"::"Sales Amount (Actual)":
+            Result := ValueEntry."Sales Amount (Actual)";
+          "Value Entry Amount Type"::"Cost Amount (Expected)":
+            Result := ValueEntry."Cost Amount (Expected)";
+          "Value Entry Amount Type"::"Cost Amount (Actual)":
+            Result := ValueEntry."Cost Amount (Actual)";
+          "Value Entry Amount Type"::"Cost Amount (Non-Invtbl.)":
+            Result := ValueEntry."Cost Amount (Non-Invtbl.)";
+          "Value Entry Amount Type"::"Purchase Amount (Actual)":
+            Result := ValueEntry."Purchase Amount (Actual)";
+          "Value Entry Amount Type"::"Purchase Amount (Expected)":
+            Result := ValueEntry."Purchase Amount (Expected)";
+        END;
+
+        IF "Reverse Sign" THEN
+          Result := -1 * Result;
+      END;
+    END;
+
+    PROCEDURE GetCustEntryValue@1470012() Amount : Decimal;
+    VAR
+      DetailedCustLedgEntry@1210000 : Record 379;
+    BEGIN
+      DetailedCustLedgEntry.SETCURRENTKEY(
+        "Posting Date","Initial Entry Posting Date","Document Type",
+        "Initial Entry Due Date","Customer Posting Group",Prepayment,"Initial Entry Positive");
+      SetDtldCustLedgEntryFilters(DetailedCustLedgEntry);
+      DetailedCustLedgEntry.CALCSUMS("Amount (LCY)");
+      Amount := DetailedCustLedgEntry."Amount (LCY)";
+
+      IF AccSchedExtension."Reverse Sign" THEN
+        Amount := -Amount;
+    END;
+
+    PROCEDURE GetVendEntryValue@1470013() Amount : Decimal;
+    VAR
+      DetailedVendorLedgEntry@1210000 : Record 380;
+    BEGIN
+      DetailedVendorLedgEntry.SETCURRENTKEY(
+        "Posting Date","Initial Entry Posting Date","Document Type",
+        "Initial Entry Due Date","Vendor Posting Group",Prepayment,"Initial Entry Positive");
+      SetDtldVendLedgEntryFilters(DetailedVendorLedgEntry);
+      DetailedVendorLedgEntry.CALCSUMS("Amount (LCY)");
+      Amount := DetailedVendorLedgEntry."Amount (LCY)";
+
+      IF AccSchedExtension."Reverse Sign" THEN
+        Amount := -Amount;
+    END;
+
+    PROCEDURE DrillDownAmount@1470003(VAR NewAccSchedLine@1210001 : Record 85;VAR NewColumnLayout@1210000 : Record 334;ExtensionCode@1470000 : Code[20];NewStartDate@1470005 : Date;NewEndDate@1470006 : Date);
+    VAR
+      CustLedgerEntry@1470002 : Record 21;
+      VendLedgerEntry@1470003 : Record 25;
+      VATEntry@1470001 : Record 254;
+      ValueEntry@1470004 : Record 5802;
+    BEGIN
+      AccSchedLine.COPY(NewAccSchedLine);
+      ColumnLayout := NewColumnLayout;
+      AccSchedExtension.GET(ExtensionCode);
+      StartDate := NewStartDate;
+      EndDate := NewEndDate;
+      GLSetup.GET;
+      AccSchedManagement.SetDateParameters(StartDate,EndDate);
+      CASE AccSchedExtension."Source Table" OF
+        AccSchedExtension."Source Table"::"VAT Entry":
+          BEGIN
+            SetVATLedgEntryFilters(VATEntry);
+            PAGE.RUN(0,VATEntry);
+          END;
+        AccSchedExtension."Source Table"::"Customer Entry":
+          BEGIN
+            SetCustLedgEntryFilters(CustLedgerEntry);
+            PAGE.RUN(0,CustLedgerEntry);
+          END;
+        AccSchedExtension."Source Table"::"Vendor Entry":
+          BEGIN
+            SetVendLedgEntryFilters(VendLedgerEntry);
+            PAGE.RUN(0,VendLedgerEntry);
+          END;
+        AccSchedExtension."Source Table"::"Value Entry":
+          BEGIN
+            SetValueLedgEntryFilters(ValueEntry);
+            PAGE.RUN(0,ValueEntry);
+          END;
+      END;
+    END;
+
+    PROCEDURE GetDueDateFilter@1210000() : Text[100];
+    VAR
+      DateFormula@1210000 : DateFormula;
+      Period@1210001 : Text[30];
+      ShortTermDate@1210002 : Date;
+      ClosDate@1210003 : Boolean;
+    BEGIN
+      GLSetup.TESTFIELD("Short-Term Due Period");
+      CASE ColumnLayout."Column Type" OF
+        ColumnLayout."Column Type"::"Beginning Balance":
+          BEGIN
+            ClosDate := TRUE;
+            EVALUATE(DateFormula,'<-1D>');
+            Period := Text001 + FORMAT(DateFormula);
+          END;
+        ColumnLayout."Column Type"::"Balance at Date":
+          Period := Text002;
+        ELSE
+          EXIT('');
+      END;
+      WITH AccSchedExtension DO
+        CASE "Liability Type" OF
+          "Liability Type"::" ":
+            EXIT(GetDateFilter("Due Date Filter"));
+          "Liability Type"::"Short Term":
+            BEGIN
+              ShortTermDate := CalcDateFormula(Period + FORMAT(GLSetup."Short-Term Due Period"));
+              IF ClosDate THEN
+                ShortTermDate := CLOSINGDATE(ShortTermDate);
+              EXIT('..' + FORMAT(ShortTermDate));
+            END;
+          "Liability Type"::"Long Term":
+            BEGIN
+              EVALUATE(DateFormula,'<+1D>');
+              EXIT(FORMAT(CalcDateFormula(Period + FORMAT(GLSetup."Short-Term Due Period") + FORMAT(DateFormula))) + '..');
+            END;
+        END;
+    END;
+
+    PROCEDURE CheckDateFilter@1210001(DueDateFilter@1210000 : Code[20]);
+    BEGIN
+      GLSetup.GET;
+      StartDate := TODAY;
+      EndDate := TODAY;
+      GetDateFilter(DueDateFilter);
+    END;
+
+    PROCEDURE NetChangeFilter@1210003(DateFilter@1210000 : Text[30]) : Boolean;
+    BEGIN
+      EXIT(DateFilter[1] IN ['1','2','3','4','5','6','7','8','9','0']);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,1554 @@
+OBJECT Report 50020 Compression&Consolidation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:02;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=rimd,
+                TableData 45=rimd,
+                TableData 87=rimd,
+                TableData 355=imd;
+    CaptionML=[ENU=Compression And Consolidation;
+               RUS=Компрессия и Консолидация];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   //NC PIF001.3 > DP
+                   IsUpdateAnalysisView :=FALSE;
+                   //NC PIF001.3 < DP
+                 END;
+
+    OnPreReport=BEGIN
+                  //NC TEST > PCH
+                  Log.WriteLogFile('Консолидация ' + FORMAT(ToSourceEntry-FromSourceEntry),TRUE,FALSE,1);
+                  //NC TEST < PCH
+                  //NC PIF001 > DP
+                  {
+                  DimSelectionBuf.CompareDimText(3,REPORT::"Date Compress General Ledger",'',RetainDimText,Text010);
+                  }
+                  //NC PIF001 < DP
+                  ConsSetup.GET;
+                  ConsSetup.TESTFIELD("Gen. Jnl. Template");
+                  //ConsSetup.TESTFIELD("Source Code");
+                  ConsSource.LOCKTABLE;
+                  ConsSetup.LOCKTABLE;
+                  Currency.LOCKTABLE;
+                  Currency.SETCURRENTKEY("Source Currency Code");
+
+                  TempSelectedDim.DELETEALL;
+                  SelectedDim.GetSelectedDim(
+                    '',7,CODEUNIT::"Consolidation Management",'',TempSelectedDim);
+
+                  TempDimComp.RESET;
+                  TempDimComp.DELETEALL;
+                  IF TempSelectedDim.FINDSET(FALSE,FALSE) THEN
+                    REPEAT
+                      TempDimComp.INIT;
+                      TempDimComp.Code := TempSelectedDim."Dimension Code";
+                      TempDimComp.INSERT;
+                    UNTIL TempSelectedDim.NEXT = 0;
+                END;
+
+    OnPostReport=BEGIN
+                   //NC PIF001 > DP
+                   MESSAGE(Text55015);
+                   //IF NOT CONFIRM('Консолидация пройдена. Ок?',FALSE) THEN
+                   //  CurrReport.QUIT;
+                   //NC PIF001 < DP
+
+                   //NC PIF001.3 > DP
+                   AnalysisViewFilter :='';
+                   IF IsUpdateAnalysisView THEN BEGIN
+                     IF AnalysisViewFilter <> '' THEN
+                     AnalysisView1.SETFILTER(Code,AnalysisViewFilter);
+                     AnalysisView1.SETRANGE(Blocked,FALSE);
+                     IF AnalysisView1.FINDSET THEN
+                       REPEAT
+                         UpdateAnalysisView.Update(AnalysisView1,2,TRUE);
+                         COMMIT;
+                       UNTIL AnalysisView1.NEXT=0;
+                   END;
+                   //NC PIF001.3 < DP
+
+                   //NC TEST > PCH
+                   Log.WriteLogFile('Консолидация ' + FORMAT(ToSourceEntry-FromSourceEntry),FALSE,TRUE,1);
+                   //NC TEST < PCH
+                 END;
+
+  }
+  DATASET
+  {
+    { 6628;    ;DataItem;GLEntryBuffer1      ;
+               DataItemTable=Table50018;
+               DataItemTableView=SORTING(G/L Account No.,Posting Date);
+               OnPreDataItem=VAR
+                               GLSetup@1210000 : Record 98;
+                             BEGIN
+                               //NC PIF001 MP Обрабатываются операции в буферной таблицы, процесс консолидации которых был прерван
+
+                               IF GLEntryBuffer1.COUNT = 0 THEN
+                                 CurrReport.BREAK;
+
+                               GLEntryBuff2.RESET;
+                               GLEntryBuff2.FINDFIRST;
+                               ConsRegister.RESET;
+                               ConsSource.GET(GLEntryBuff2."Export Cons. Source Code");
+                               ConsRegister.SETRANGE(ConsRegister."Cons. Source Code",GLEntryBuff2."Export Cons. Source Code");
+                               ConsRegister.FINDLAST;
+
+                               IF ConsSource."Only Global Dimensions" THEN
+                                 CurrReport.BREAK;
+
+                               Window.OPEN(
+                                 Text004 +
+                                 Text005 +
+                                 Text006 +
+                                 Text007 +
+                                 Text008 +
+                                 Text55013 +
+                                 Text55014);
+
+
+                               SourceCodeSetup.GET;
+                               SourceCodeSetup.TESTFIELD("Compress G/L");
+
+                               SelectedDim.GetSelectedDim(
+                                 '',7,CODEUNIT::"Consolidation Management",'',TempSelectedDim);
+                               TempDimComp.RESET;
+                               TempDimComp.DELETEALL;
+                               IF TempSelectedDim.FINDSET(FALSE,FALSE) THEN
+                                 REPEAT
+                                   TempDimComp.INIT;
+                                   TempDimComp.Code := TempSelectedDim."Dimension Code";
+                                   TempDimComp.INSERT;
+                                 UNTIL TempSelectedDim.NEXT = 0;
+                               GLSetup.GET;
+                               Retain[5] :=
+                                 TempSelectedDim.GET(
+                                   '',7,CODEUNIT::"Consolidation Management",'',GLSetup."Global Dimension 1 Code");
+                               PerGlobalDim1 := Retain[5];
+                               Retain[6] :=
+                                 TempSelectedDim.GET(
+                                   '',7,CODEUNIT::"Consolidation Management",'',GLSetup."Global Dimension 2 Code");
+                               PerGlobalDim2 := Retain[6];
+                               NewGLEntry.LOCKTABLE;
+                               GLReg.LOCKTABLE;
+                               DateComprReg.LOCKTABLE;
+
+                               GLEntry2.RESET;
+                               IF GLEntry2.FIND('+') THEN;
+                               LastEntryNo := GLEntry2."Entry No.";
+                               NextTransactionNo := GLEntry2."Transaction No." + 1;
+                               InitRegisters;
+                               TotalGLBufferEntry := GLEntryBuff2.COUNT;
+                               Window.UPDATE(5,TotalGLBufferEntry);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  GLEntryBuff2 := GLEntryBuffer1;
+                                  WITH GLEntryBuff2 DO BEGIN
+                                    SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+                                    COPYFILTERS("G/L Entry Buffer");
+                                    SETFILTER("Posting Date",DateComprMgt.GetDateFilter("Posting Date",EntrdDateComprReg,TRUE));
+                                    REPEAT
+                                      SETRANGE("G/L Account No.","G/L Account No.");
+                                      IF PerGlobalDim1 THEN
+                                        SETRANGE("Global Dimension 1 Code","Global Dimension 1 Code");
+                                      IF PerGlobalDim2 THEN
+                                        SETRANGE("Global Dimension 2 Code","Global Dimension 2 Code");
+                                      IF Amount <> 0 THEN BEGIN
+                                        IF Amount > 0 THEN
+                                          SETFILTER(Amount,'>0')
+                                        ELSE
+                                          SETFILTER(Amount,'<0');
+                                      END ELSE BEGIN
+                                        SETRANGE(Amount,0);
+                                        IF "Additional-Currency Amount" >= 0 THEN
+                                          SETFILTER("Additional-Currency Amount",'>=0')
+                                        ELSE
+                                          SETFILTER("Additional-Currency Amount",'<0');
+                                      END;
+
+                                      InitNewEntry(NewGLEntry);
+
+                                      DimBufMgt.CollectDimEntryNo(
+                                        TempSelectedDim,DATABASE::"G/L Entry Buffer","Entry No.",
+                                        0,FALSE,DimEntryNo);
+
+                                      ComprDimEntryNo := DimEntryNo;
+                                      SummarizeEntry(NewGLEntry,GLEntryBuff2);
+                                      WHILE NEXT <> 0 DO BEGIN
+                                        DimBufMgt.CollectDimEntryNo(
+                                          TempSelectedDim,DATABASE::"G/L Entry Buffer","Entry No.",
+                                          ComprDimEntryNo,TRUE,DimEntryNo);
+                                        IF DimEntryNo = ComprDimEntryNo THEN
+                                          SummarizeEntry(NewGLEntry,GLEntryBuff2);
+                                      END;
+
+                                      InsertNewEntry(NewGLEntry,ComprDimEntryNo);
+
+                                      ComprCollectedEntries;
+
+                                      COPYFILTERS("G/L Entry Buffer");
+                                      SETFILTER("Posting Date",DateComprMgt.GetDateFilter("Posting Date",EntrdDateComprReg,TRUE));
+                                    UNTIL NOT FIND('-');
+                                  END;
+
+                                  IF DateComprReg."No. Records Deleted" >= NoOfDeleted + 10 THEN BEGIN
+                                    NoOfDeleted := DateComprReg."No. Records Deleted";
+                                    InsertRegisters(GLReg,DateComprReg);
+                                  END;
+
+                                  COMMIT;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF DateComprReg."No. Records Deleted" > NoOfDeleted THEN
+                                  InsertRegisters(GLReg,DateComprReg);
+                                InsertConsRegister(0);
+                                COMMIT;
+                              END;
+                               }
+
+    { 6710;    ;DataItem;                    ;
+               DataItemTable=Table15;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               "G/L Account".CHANGECOMPANY(ConsSource."Company Name");
+                               "G/L Account".SETRANGE("Account Type","G/L Account"."Account Type"::Posting);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  GLAcc@1000000000 : Record 15;
+                                BEGIN
+                                  IF NOT GLAcc.GET("No.") THEN BEGIN
+                                    GLAcc.INIT;
+                                    GLAcc."No." := "No.";
+                                    GLAcc.VALIDATE(Name,Name);
+                                    GLAcc."Account Type" := "Account Type";
+                                    GLAcc."Income/Balance" := "Income/Balance";
+                                    GLAcc."Direct Posting" := "Direct Posting";
+                                    GLAcc."Reconciliation Account" := "Reconciliation Account";
+                                    GLAcc.INSERT(TRUE);
+                                  END;
+                                END;
+                                 }
+
+    { 7344;    ;DataItem;SourceGLEntry       ;
+               DataItemTable=Table17;
+               DataItemTableView=SORTING(Entry No.);
+               OnPreDataItem=BEGIN
+                               ConsSource.GET(ConsSourceCode);
+                               ConsSource.TESTFIELD("Gen. Journal Batch");
+                               ConsSource.TESTFIELD(Blocked,FALSE);
+                               ConsSource.TESTFIELD("Business Unit Code");
+
+                               IF NOT ConsSource.Compression THEN
+                                 CurrReport.BREAK;
+                               IF ConsSource."Only Global Dimensions" THEN
+                                 CurrReport.BREAK;
+                               SourceGLEntry.CHANGECOMPANY(ConsSource."Company Name");
+                               SourceLastGLEntry := FindLastGLEntry(ConsSource."Company Name",ToSourceEntry);
+                               SourceGLEntry.SETFILTER("Entry No.",'%1..%2',ConsSource."Last G/L Entry No." + 1,SourceLastGLEntry);
+                               //SourceGLEntry.SETRANGE("Entry No.",0,492);
+                               IF SourceGLEntry.COUNT = 0 THEN BEGIN
+                                 MESSAGE(Text55010,ConsSource."Company Name");
+                                 CurrReport.QUIT;
+                               END;
+
+                               InitConsRegister(ConsSource,ConsSource."Last G/L Entry No." + 1);
+
+                               Table355.CHANGECOMPANY(ConsSource."Company Name");
+
+                               CLEAR(TempSelectedDimExc);
+                               SelectedDim.GetSelectedDim(
+                                 '',8,CODEUNIT::"Consolidation Management",'',TempSelectedDimExc);
+
+                               DimExceptionFilter := '';
+                               IF TempSelectedDimExc.FINDSET(FALSE,FALSE) THEN BEGIN
+                                 REPEAT
+                                   DimExceptionFilter := DimExceptionFilter + TempSelectedDimExc."Dimension Code" + '|';
+                                 UNTIL TempSelectedDimExc.NEXT = 0;
+                                 DimExceptionFilter := DELSTR(DimExceptionFilter,STRLEN(DimExceptionFilter),1);
+                               END;
+
+                               CheckGLEntry.CHANGECOMPANY(ConsSource."Company Name");
+                               IF CheckGLEntry.FINDLAST THEN;
+                               //  SourceLastGLEntry := CheckGLEntry."Entry No.";
+                               CheckGLEntry.SETCURRENTKEY("Transaction No.");
+                               CheckLedgEntryDim.CHANGECOMPANY(ConsSource."Company Name");
+                               LastTrNo := 0;
+                               CurrentGLEntry.RESET;
+                               IF CurrentGLEntry.FINDLAST THEN BEGIN
+                                 ConsLastEntryNo := CurrentGLEntry."Entry No.";
+                                 ConsLastTransNo := CurrentGLEntry."Transaction No.";
+                               END;
+
+                               TotalEntries := SourceGLEntry.COUNT;
+                               NoOfGLEntries := 0;
+                               NoOfCompEntries := 0;
+
+                               InitGLRegister;
+                               GLRegExists := FALSE;
+
+                               Window.OPEN(
+                                 Text55004 +
+                                 Text55007 +
+                                 Text55008 +
+                                 Text55009);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  GLEntryBuffer@1210000 : Record 50018;
+                                  UpdateTransNo@1210001 : Boolean;
+                                BEGIN
+                                  UpdateTransNo := FALSE;
+                                  IF LastTrNo <> SourceGLEntry."Transaction No." THEN BEGIN
+                                    IncInCompr := IncludeInCompress(SourceGLEntry);
+                                    UpdateTransNo := TRUE;
+                                  END;
+                                  IF IncInCompr THEN BEGIN
+                                    GLEntryBuffer.INIT;
+                                    GLEntryBuffer.TRANSFERFIELDS(SourceGLEntry);
+                                    IF ConsSource."Concolidate Add.-Curr. Amount" THEN BEGIN
+                                      GLEntryBuffer.Amount := SourceGLEntry."Additional-Currency Amount";
+                                      GLEntryBuffer."Debit Amount" := SourceGLEntry."Add.-Currency Debit Amount";
+                                      GLEntryBuffer."Credit Amount" := SourceGLEntry."Add.-Currency Credit Amount";
+                                      GLEntryBuffer."Additional-Currency Amount" := SourceGLEntry.Amount;
+                                      GLEntryBuffer."Add.-Currency Debit Amount" := SourceGLEntry."Debit Amount";
+                                      GLEntryBuffer."Add.-Currency Credit Amount" := SourceGLEntry."Credit Amount";
+                                    END;
+                                    GLEntryBuffer."Export Cons. Source Code" := ConsSource.Code;
+                                    GLEntryBuffer."Export Register No." := ConsRegister."No.";
+                                    GLEntryBuffer.INSERT;
+                                    NoOfCompEntries += 1;
+                                    Window.UPDATE(2,NoOfCompEntries);
+                                  END ELSE BEGIN
+                                    CopyGLEntryToGLEntry(SourceGLEntry,UpdateTransNo);
+                                    NoOfGLEntries += 1;
+                                    Window.UPDATE(1,NoOfGLEntries);
+                                  END;
+                                  Window.UPDATE(3,ROUND((NoOfGLEntries + NoOfCompEntries) / TotalEntries * 10000,1));
+                                  LastTrNo := SourceGLEntry."Transaction No.";
+                                END;
+
+               OnPostDataItem=BEGIN
+                                //NC PIF001 > DP
+                                IF NOT ConsSource.Compression THEN
+                                  CurrReport.BREAK;
+                                IF ConsSource."Only Global Dimensions" THEN
+                                  CurrReport.BREAK;
+                                InsertGLRegister;
+                                InsertConsRegister(SourceLastGLEntry);
+                                Window.CLOSE;
+                                ConsSource."Last G/L Entry No." := SourceLastGLEntry;
+                                ConsSource."Last Consolidation Date" := TODAY;
+                                ConsSource."Last Consolidation Time" := TIME;
+                                ConsSource.MODIFY;
+                                COMMIT; //!!!!
+                                //NC PIF001 < DP
+                              END;
+                               }
+
+    { 9972;1   ;DataItem;                    ;
+               DataItemTable=Table355;
+               DataItemTableView=SORTING(Field1,Field2,Field3);
+               OnPreDataItem=BEGIN
+                               Table355.SETRANGE("Table ID",17);
+                               Table355.SETRANGE("Entry No.",SourceGLEntry."Entry No.");
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LedgEntryDimGLBuff@1210000 : Record 355;
+                                  DimValue3@1210001 : Record 349;
+                                  DimValue4@1210002 : Record 349;
+                                BEGIN
+                                  IF NOT IncInCompr THEN BEGIN
+                                    IF NOT DimValue3.GET("Dimension Code","Dimension Value Code") THEN BEGIN
+                                      DimValue4.CHANGECOMPANY(ConsSource."Company Name");
+                                      DimValue4.GET("Dimension Code","Dimension Value Code");
+                                      DimValue3."Dimension Code" := DimValue4."Dimension Code";
+                                      DimValue3.Code := DimValue4.Code;
+                                      DimValue3.Name := DimValue4.Name;
+                                      DimValue3."Dimension Value Type" := DimValue4."Dimension Value Type";
+                                      DimValue3.Totaling := DimValue4.Totaling;
+                                      DimValue3.Blocked :=  DimValue4.Blocked;
+                                      DimValue3."Consolidation Code" := DimValue4."Consolidation Code";
+                                      DimValue3.Indentation :=  DimValue4.Indentation;
+                                      DimValue3."Global Dimension No." := DimValue4."Global Dimension No.";
+                                      DimValue3."Name 2" := DimValue4."Name 2";
+                                      DimValue3."Company Name" := DimValue4."Company Name";
+                                      DimValue3."Int Contragent Dim Value" :=  DimValue4."Int Contragent Dim Value";
+                                      DimValue3.INSERT(TRUE);
+                                    END;
+                                    LedgEntryDimGLBuff.INIT;
+                                    LedgEntryDimGLBuff.TRANSFERFIELDS(Table355);
+                                    LedgEntryDimGLBuff."Entry No." := ConsLastEntryNo;
+                                    LedgEntryDimGLBuff.INSERT;
+                                  END;
+
+                                  IF IncInCompr AND TempDimComp.GET("Dimension Code") THEN BEGIN
+                                    IF NOT DimValue3.GET("Dimension Code","Dimension Value Code") THEN BEGIN
+                                      DimValue4.CHANGECOMPANY(ConsSource."Company Name");
+                                      DimValue4.GET("Dimension Code","Dimension Value Code");
+                                      DimValue3."Dimension Code" := DimValue4."Dimension Code";
+                                      DimValue3.Code := DimValue4.Code;
+                                      DimValue3.Name := DimValue4.Name;
+                                      DimValue3."Dimension Value Type" := DimValue4."Dimension Value Type";
+                                      DimValue3.Totaling := DimValue4.Totaling;
+                                      DimValue3.Blocked :=  DimValue4.Blocked;
+                                      DimValue3."Consolidation Code" := DimValue4."Consolidation Code";
+                                      DimValue3.Indentation :=  DimValue4.Indentation;
+                                      DimValue3."Global Dimension No." := DimValue4."Global Dimension No.";
+                                      DimValue3."Name 2" := DimValue4."Name 2";
+                                      DimValue3."Company Name" := DimValue4."Company Name";
+                                      DimValue3."Int Contragent Dim Value" :=  DimValue4."Int Contragent Dim Value";
+                                      DimValue3.INSERT(TRUE);
+                                    END;
+                                    LedgEntryDimGLBuff.INIT;
+                                    LedgEntryDimGLBuff.TRANSFERFIELDS(Table355);
+                                    LedgEntryDimGLBuff."Table ID" := 50018;
+                                    LedgEntryDimGLBuff.INSERT;
+                                  END;
+                                END;
+                                 }
+
+    { 3910;    ;DataItem;                    ;
+               DataItemTable=Table50018;
+               DataItemTableView=SORTING(G/L Account No.,Posting Date);
+               OnPreDataItem=VAR
+                               GLSetup@1000 : Record 98;
+                             BEGIN
+                               IF NOT ConsSource.Compression THEN
+                                 CurrReport.BREAK;
+                               IF ConsSource."Only Global Dimensions" THEN
+                                 CurrReport.BREAK;
+
+                               //NC PIF001 > DP
+                               {
+                               IF NOT
+                                  CONFIRM(
+                                    Text000 +
+                                    Text001 +
+                                    Text002,FALSE)
+                               THEN
+                                 CurrReport.BREAK;
+
+                               IF EntrdDateComprReg."Ending Date" = 0D THEN
+                                 ERROR(STRSUBSTNO(Text003,EntrdDateComprReg.FIELDCAPTION("Ending Date")));
+
+                               IF AnalysisView.FIND('-') THEN BEGIN
+                                 AnalysisView.CheckDimensionsAreRetained(3,REPORT::"Date Compress General Ledger",FALSE);
+                                 AnalysisView.CheckViewsAreUpdated;
+                                 COMMIT;
+                               END;
+                               }
+                               //NC PIF001 < DP
+
+                               Window.OPEN(
+                                 Text004 +
+                                 Text005 +
+                                 Text006 +
+                                 Text007 +
+                                 Text008 +
+                                 Text55013 +
+                                 Text55014);
+
+
+                               SourceCodeSetup.GET;
+                               SourceCodeSetup.TESTFIELD("Compress G/L");
+
+                               TempSelectedDim.DELETEALL;
+                               SelectedDim.GetSelectedDim(
+                                 '',7,CODEUNIT::"Consolidation Management",'',TempSelectedDim);
+
+                               TempDimComp.RESET;
+                               TempDimComp.DELETEALL;
+                               IF TempSelectedDim.FINDSET(FALSE,FALSE) THEN
+                                 REPEAT
+                                   TempDimComp.INIT;
+                                   TempDimComp.Code := TempSelectedDim."Dimension Code";
+                                   TempDimComp.INSERT;
+                                 UNTIL TempSelectedDim.NEXT = 0;
+
+                               GLSetup.GET;
+                               Retain[5] :=
+                                 TempSelectedDim.GET(
+                                   '',7,CODEUNIT::"Consolidation Management",'',GLSetup."Global Dimension 1 Code");
+                               PerGlobalDim1 := Retain[5];
+                               Retain[6] :=
+                                 TempSelectedDim.GET(
+                                   '',7,CODEUNIT::"Consolidation Management",'',GLSetup."Global Dimension 2 Code");
+                               PerGlobalDim2 := Retain[6];
+                               NewGLEntry.LOCKTABLE;
+                               GLReg.LOCKTABLE;
+                               DateComprReg.LOCKTABLE;
+
+                               GLEntry2.RESET;
+                               IF GLEntry2.FIND('+') THEN;
+                               LastEntryNo := GLEntry2."Entry No.";
+                               NextTransactionNo := GLEntry2."Transaction No." + 1;
+                               //SETRANGE("Entry No.",0,15355);//LastEntryNo);
+                               //NC PIF001 > DP
+                               {
+                               SETRANGE("Posting Date",EntrdDateComprReg."Starting Date",EntrdDateComprReg."Ending Date");
+                               }
+                               //NC PIF001 < DP
+                               InitRegisters;
+                               GLEntryBuff2.RESET;
+                               TotalGLBufferEntry := GLEntryBuff2.COUNT;
+                               Window.UPDATE(5,TotalGLBufferEntry);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  GLEntryBuff2 := "G/L Entry Buffer";
+                                  WITH GLEntryBuff2 DO BEGIN
+                                    SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+                                    COPYFILTERS("G/L Entry Buffer");
+                                    SETFILTER("Posting Date",DateComprMgt.GetDateFilter("Posting Date",EntrdDateComprReg,TRUE));
+                                    REPEAT
+                                      SETRANGE("G/L Account No.","G/L Account No.");
+                                      //NC PIF001 > DP
+                                      {
+                                      SETRANGE("Gen. Posting Type","Gen. Posting Type");
+                                      SETRANGE("Gen. Bus. Posting Group","Gen. Bus. Posting Group");
+                                      SETRANGE("Gen. Prod. Posting Group","Gen. Prod. Posting Group");
+                                      IF RetainNo(FIELDNO("Document Type")) THEN
+                                        SETRANGE("Document Type","Document Type");
+                                      IF RetainNo(FIELDNO("Document No.")) THEN
+                                        SETRANGE("Document No.","Document No.");
+                                      IF RetainNo(FIELDNO("Job No.")) THEN
+                                        SETRANGE("Job No.","Job No.");
+                                      IF RetainNo(FIELDNO("Business Unit Code")) THEN
+                                        SETRANGE("Business Unit Code","Business Unit Code");
+                                      }
+                                      //NC PIF001 < DP
+                                      IF PerGlobalDim1 THEN
+                                        SETRANGE("Global Dimension 1 Code","Global Dimension 1 Code");
+                                      IF PerGlobalDim2 THEN
+                                        SETRANGE("Global Dimension 2 Code","Global Dimension 2 Code");
+                                      IF Amount <> 0 THEN BEGIN
+                                        IF Amount > 0 THEN
+                                          SETFILTER(Amount,'>0')
+                                        ELSE
+                                          SETFILTER(Amount,'<0');
+                                      END ELSE BEGIN
+                                        SETRANGE(Amount,0);
+                                        IF "Additional-Currency Amount" >= 0 THEN
+                                          SETFILTER("Additional-Currency Amount",'>=0')
+                                        ELSE
+                                          SETFILTER("Additional-Currency Amount",'<0');
+                                      END;
+
+                                      InitNewEntry(NewGLEntry);
+
+                                      DimBufMgt.CollectDimEntryNo(
+                                        TempSelectedDim,DATABASE::"G/L Entry Buffer","Entry No.",
+                                        0,FALSE,DimEntryNo);
+
+                                      ComprDimEntryNo := DimEntryNo;
+                                      SummarizeEntry(NewGLEntry,GLEntryBuff2);
+                                      WHILE NEXT <> 0 DO BEGIN
+                                        DimBufMgt.CollectDimEntryNo(
+                                          TempSelectedDim,DATABASE::"G/L Entry Buffer","Entry No.",
+                                          ComprDimEntryNo,TRUE,DimEntryNo);
+                                        IF DimEntryNo = ComprDimEntryNo THEN
+                                          SummarizeEntry(NewGLEntry,GLEntryBuff2);
+                                      END;
+
+                                      InsertNewEntry(NewGLEntry,ComprDimEntryNo);
+
+                                      ComprCollectedEntries;
+
+                                      COPYFILTERS("G/L Entry Buffer");
+                                      SETFILTER("Posting Date",DateComprMgt.GetDateFilter("Posting Date",EntrdDateComprReg,TRUE));
+                                    UNTIL NOT FIND('-');
+                                  END;
+
+                                  IF DateComprReg."No. Records Deleted" >= NoOfDeleted + 10 THEN BEGIN
+                                    NoOfDeleted := DateComprReg."No. Records Deleted";
+                                    InsertRegisters(GLReg,DateComprReg);
+                                  END;
+
+                                  COMMIT;
+                                  ConsSource."Last G/L Entry No." := SourceLastGLEntry;
+                                  ConsSource."Last Consolidation Date" := TODAY;
+                                  ConsSource."Last Consolidation Time" := TIME;
+                                  ConsSource.MODIFY;
+
+                                  COMMIT;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT ConsSource.Compression THEN
+                                  CurrReport.BREAK;
+                                IF ConsSource."Only Global Dimensions" THEN
+                                  CurrReport.BREAK;
+
+                                IF DateComprReg."No. Records Deleted" > NoOfDeleted THEN
+                                  InsertRegisters(GLReg,DateComprReg);
+                              END;
+                               }
+
+    { 1364;    ;DataItem;SourceGLEntry2      ;
+               DataItemTable=Table17;
+               DataItemTableView=SORTING(Entry No.);
+               OnPreDataItem=BEGIN
+                               IF ConsSource.Compression THEN
+                                 CurrReport.BREAK;
+                               SourceGLEntry2.CHANGECOMPANY(ConsSource."Company Name");
+                               SourceLastGLEntry := FindLastGLEntry(ConsSource."Company Name",ToSourceEntry);
+                               SourceGLEntry2.SETFILTER("Entry No.",'%1..%2',ConsSource."Last G/L Entry No." + 1,SourceLastGLEntry);
+
+                               //SourceGLEntry2.SETFILTER("Entry No.",'%1..',ConsSource."Last G/L Entry No.");
+                               //SourceGLEntry.SETRANGE("Entry No.",0,492);
+                               IF SourceGLEntry2.COUNT = 0 THEN BEGIN
+                                 MESSAGE(Text55010,ConsSource."Company Name");
+                                 CurrReport.QUIT;
+                               END;
+
+                               InitConsRegister(ConsSource,ConsSource."Last G/L Entry No." + 1);
+
+                               LedgEntryDim2.CHANGECOMPANY(ConsSource."Company Name");
+
+                               CheckGLEntry.CHANGECOMPANY(ConsSource."Company Name");
+                               IF CheckGLEntry.FINDLAST THEN;
+                               //  SourceLastGLEntry := CheckGLEntry."Entry No.";
+                               CheckGLEntry.SETCURRENTKEY("Transaction No.");
+                               CheckLedgEntryDim.CHANGECOMPANY(ConsSource."Company Name");
+                               LastTrNo := 0;
+                               CurrentGLEntry.RESET;
+                               IF CurrentGLEntry.FINDLAST THEN BEGIN
+                                 ConsLastEntryNo := CurrentGLEntry."Entry No.";
+                                 ConsLastTransNo := CurrentGLEntry."Transaction No.";
+                               END;
+
+                               TotalEntries := SourceGLEntry2.COUNT;
+                               NoOfGLEntries := 0;
+
+                               InitGLRegister;
+
+                               Window.OPEN(
+                                 Text55011 + ' ' + ConsSource."Company Name" + '...\\' +
+                                 Text55012);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  UpdateTransNo@1210000 : Boolean;
+                                BEGIN
+                                  UpdateTransNo := FALSE;
+                                  IF LastTrNo <> SourceGLEntry."Transaction No." THEN BEGIN
+                                    UpdateTransNo := TRUE;
+                                  END;
+                                  CopyGLEntryToGLEntry(SourceGLEntry2,UpdateTransNo);
+                                  NoOfGLEntries += 1;
+                                  Window.UPDATE(1,ROUND(NoOfGLEntries / TotalEntries * 10000,1));
+                                  LastTrNo := SourceGLEntry."Transaction No.";
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF ConsSource.Compression THEN
+                                  CurrReport.BREAK;
+
+                                InsertGLRegister;
+                                InsertConsRegister(SourceLastGLEntry);
+                                ConsSource."Last G/L Entry No." := SourceLastGLEntry;
+                                ConsSource."Last Consolidation Date" := TODAY;
+                                ConsSource."Last Consolidation Time" := TIME;
+                                ConsSource.MODIFY;
+
+                                COMMIT;
+                              END;
+                               }
+
+    { 2255;1   ;DataItem;LedgEntryDim2       ;
+               DataItemTable=Table355;
+               DataItemTableView=SORTING(Field1,Field2,Field3);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Table ID",17);
+                               SETRANGE("Entry No.",SourceGLEntry2."Entry No.");
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LedgEntryDim@1210000 : Record 355;
+                                  DimValue3@1210001 : Record 349;
+                                  DimValue4@1210002 : Record 349;
+                                BEGIN
+                                  IF NOT DimValue3.GET("Dimension Code","Dimension Value Code") THEN BEGIN
+                                    DimValue4.CHANGECOMPANY(ConsSource."Company Name");
+                                    DimValue4.GET("Dimension Code","Dimension Value Code");
+                                    DimValue3."Dimension Code" := DimValue4."Dimension Code";
+                                    DimValue3.Code := DimValue4.Code;
+                                    DimValue3.Name := DimValue4.Name;
+                                    DimValue3."Dimension Value Type" := DimValue4."Dimension Value Type";
+                                    DimValue3.Totaling := DimValue4.Totaling;
+                                    DimValue3.Blocked :=  DimValue4.Blocked;
+                                    DimValue3."Consolidation Code" := DimValue4."Consolidation Code";
+                                    DimValue3.Indentation :=  DimValue4.Indentation;
+                                    DimValue3."Global Dimension No." := DimValue4."Global Dimension No.";
+                                    DimValue3."Name 2" := DimValue4."Name 2";
+                                    DimValue3."Company Name" := DimValue4."Company Name";
+                                    DimValue3."Int Contragent Dim Value" :=  DimValue4."Int Contragent Dim Value";
+                                    DimValue3.INSERT(TRUE);
+                                  END;
+                                  LedgEntryDim.INIT;
+                                  LedgEntryDim.TRANSFERFIELDS(LedgEntryDim2);
+                                  LedgEntryDim."Entry No." := ConsLastEntryNo;
+                                  LedgEntryDim.INSERT;
+                                END;
+                                 }
+
+    { 9304;    ;DataItem;SourceGLEntry3      ;
+               DataItemTable=Table17;
+               DataItemTableView=SORTING(Entry No.);
+               OnPreDataItem=BEGIN
+                               ConsSource.GET(ConsSourceCode);
+                               ConsSource.TESTFIELD("Gen. Journal Batch");
+                               ConsSource.TESTFIELD(Blocked,FALSE);
+                               ConsSource.TESTFIELD("Business Unit Code");
+
+                               IF NOT ConsSource.Compression THEN
+                                 CurrReport.BREAK;
+                               IF NOT ConsSource."Only Global Dimensions" THEN
+                                 CurrReport.BREAK;
+                               SourceGLEntry3.CHANGECOMPANY(ConsSource."Company Name");
+                               SourceLastGLEntry := FindLastGLEntry(ConsSource."Company Name",ToSourceEntry);
+                               SourceGLEntry3.SETFILTER("Entry No.",'%1..%2',ConsSource."Last G/L Entry No." + 1,SourceLastGLEntry);
+                               //SourceGLEntry.SETRANGE("Entry No.",0,492);
+                               IF SourceGLEntry3.COUNT = 0 THEN BEGIN
+                                 MESSAGE(Text55010,ConsSource."Company Name");
+                                 CurrReport.QUIT;
+                               END;
+
+                               InitConsRegister(ConsSource,ConsSource."Last G/L Entry No." + 1);
+
+                               LedgerEntryDimension3.CHANGECOMPANY(ConsSource."Company Name");
+
+                               TempSelectedDimExc.RESET;
+                               TempSelectedDimExc.DELETEALL;
+                               SelectedDim.GetSelectedDim(
+                                 '',8,CODEUNIT::"Consolidation Management",'',TempSelectedDimExc);
+
+                               DimExceptionFilter := '';
+                               IF TempSelectedDimExc.FINDSET(FALSE,FALSE) THEN BEGIN
+                                 REPEAT
+                                   DimExceptionFilter := DimExceptionFilter + TempSelectedDimExc."Dimension Code" + '|';
+                                 UNTIL TempSelectedDimExc.NEXT = 0;
+                                 DimExceptionFilter := DELSTR(DimExceptionFilter,STRLEN(DimExceptionFilter),1);
+                               END;
+
+                               CheckGLEntry.CHANGECOMPANY(ConsSource."Company Name");
+                               IF CheckGLEntry.FINDLAST THEN;
+                               //  SourceLastGLEntry := CheckGLEntry."Entry No.";
+                               CheckGLEntry.SETCURRENTKEY("Transaction No.");
+                               CheckLedgEntryDim.CHANGECOMPANY(ConsSource."Company Name");
+                               LastTrNo := 0;
+                               CurrentGLEntry.RESET;
+                               IF CurrentGLEntry.FINDLAST THEN BEGIN
+                                 ConsLastEntryNo := CurrentGLEntry."Entry No.";
+                                 ConsLastTransNo := CurrentGLEntry."Transaction No.";
+                               END;
+
+                               TotalEntries := SourceGLEntry3.COUNT;
+                               NoOfGLEntries := 0;
+                               NoOfCompEntries := 0;
+
+                               InitGLRegister;
+                               GLRegExists := FALSE;
+
+                               Window.OPEN(
+                                 Text55004 +
+                                 Text55007 +
+                                 Text55008 +
+                                 Text55009);
+
+                               TempGLEntryBuffer.RESET;
+                               TempGLEntryBuffer.DELETEALL;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  UpdateTransNo@1210000 : Boolean;
+                                BEGIN
+                                  UpdateTransNo := FALSE;
+                                  IF LastTrNo <> SourceGLEntry3."Transaction No." THEN BEGIN
+                                    IncInCompr := IncludeInCompress(SourceGLEntry3);
+                                    UpdateTransNo := TRUE;
+                                  END;
+                                  IF IncInCompr THEN BEGIN
+                                    TempGLEntryBuffer.INIT;
+                                    TempGLEntryBuffer.TRANSFERFIELDS(SourceGLEntry3);
+                                    IF ConsSource."Concolidate Add.-Curr. Amount" THEN BEGIN
+                                      TempGLEntryBuffer.Amount := SourceGLEntry3."Additional-Currency Amount";
+                                      TempGLEntryBuffer."Debit Amount" := SourceGLEntry3."Add.-Currency Debit Amount";
+                                      TempGLEntryBuffer."Credit Amount" := SourceGLEntry3."Add.-Currency Credit Amount";
+                                      TempGLEntryBuffer."Additional-Currency Amount" := SourceGLEntry3.Amount;
+                                      TempGLEntryBuffer."Add.-Currency Debit Amount" := SourceGLEntry3."Debit Amount";
+                                      TempGLEntryBuffer."Add.-Currency Credit Amount" := SourceGLEntry3."Credit Amount";
+                                    END;
+                                    TempGLEntryBuffer."Export Cons. Source Code" := ConsSource.Code;
+                                    TempGLEntryBuffer."Export Register No." := ConsRegister."No.";
+                                    TempGLEntryBuffer.INSERT;
+                                    NoOfCompEntries += 1;
+                                    Window.UPDATE(2,NoOfCompEntries);
+                                  END ELSE BEGIN
+                                    CopyGLEntryToGLEntry(SourceGLEntry3,UpdateTransNo);
+                                    NoOfGLEntries += 1;
+                                    Window.UPDATE(1,NoOfGLEntries);
+                                  END;
+                                  Window.UPDATE(3,ROUND((NoOfGLEntries + NoOfCompEntries) / TotalEntries * 10000,1));
+                                  LastTrNo := SourceGLEntry3."Transaction No.";
+                                END;
+
+               OnPostDataItem=VAR
+                                CurrentDateFilter@1210000 : Text[250];
+                                GLAccount@1210001 : Record 15;
+                              BEGIN
+                                //NC PIF001 > DP
+                                IF NOT ConsSource.Compression THEN
+                                  CurrReport.BREAK;
+                                IF NOT ConsSource."Only Global Dimensions" THEN
+                                  CurrReport.BREAK;
+                                InsertGLRegister;
+                                InsertConsRegister(SourceLastGLEntry);
+                                Window.CLOSE;
+                                GLSetup.GET;
+                                // Обработка буфера >
+                                TempGLEntryBuffer.RESET;
+                                TempGLEntryBuffer.SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+                                IF TempGLEntryBuffer.FINDFIRST THEN BEGIN
+                                  TotalGLBufferEntry := TempGLEntryBuffer.COUNT;
+                                  Window.OPEN(
+                                    Text004 +
+                                    Text005 +
+                                    Text006 +
+                                    Text007 +
+                                    Text008 +
+                                    Text55013 +
+                                    Text55014);
+
+                                  SourceCodeSetup.GET;
+                                  SourceCodeSetup.TESTFIELD("Compress G/L");
+
+                                  NewGLEntry.LOCKTABLE;
+                                  GLReg.LOCKTABLE;
+                                  DateComprReg.LOCKTABLE;
+
+                                  GLEntry2.RESET;
+                                  IF GLEntry2.FIND('+') THEN;
+                                  LastEntryNo := GLEntry2."Entry No.";
+                                  NextTransactionNo := GLEntry2."Transaction No." + 1;
+                                  InitRegisters;
+                                  Window.UPDATE(5,TotalGLBufferEntry);
+
+                                  WITH TempGLEntryBuffer DO BEGIN
+                                    REPEAT
+                                      REPEAT
+                                        CurrentDateFilter := DateComprMgt.GetDateFilter("Posting Date",EntrdDateComprReg,TRUE);
+                                        SETFILTER("Posting Date",CurrentDateFilter);
+                                        GLAccount.GET("G/L Account No.");
+                                        SETRANGE("G/L Account No.","G/L Account No.");
+                                        IF GLAccount."Cons. per Global Dimension 1" THEN
+                                          SETRANGE("Global Dimension 1 Code","Global Dimension 1 Code");
+                                        SETRANGE("Global Dimension 2 Code","Global Dimension 2 Code");
+                                        IF Amount <> 0 THEN
+                                          IF Amount > 0 THEN
+                                            SETFILTER(Amount,'>0')
+                                          ELSE
+                                            SETFILTER(Amount,'<0')
+                                        ELSE
+                                          IF "Additional-Currency Amount" > 0 THEN
+                                            SETFILTER("Additional-Currency Amount",'>0')
+                                          ELSE
+                                            SETFILTER("Additional-Currency Amount",'<0');
+                                        CALCSUMS(Amount,"Debit Amount","Credit Amount",
+                                                 "Additional-Currency Amount","Add.-Currency Debit Amount","Add.-Currency Credit Amount");
+                                        NoOfDel := COUNT;
+                                        InsertNewGLEntry;
+                                        Window.UPDATE(1,NewGLEntry."G/L Account No.");
+                                        Window.UPDATE(2,NewGLEntry."Posting Date");
+                                        DateComprReg."No. of New Records" := DateComprReg."No. of New Records" + 1;
+                                        Window.UPDATE(3,DateComprReg."No. of New Records");
+                                        DateComprReg."No. Records Deleted" := DateComprReg."No. Records Deleted" + NoOfDel;
+                                        Window.UPDATE(4,DateComprReg."No. Records Deleted");
+                                        Window.UPDATE(6,ROUND(DateComprReg."No. Records Deleted" / TotalGLBufferEntry * 10000,1));
+                                        DELETEALL;
+                                        //RESET;
+                                        //SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+                                        SETRANGE("G/L Account No.");
+                                        SETRANGE(Amount);
+                                        SETRANGE("Additional-Currency Amount");
+                                        SETRANGE("Global Dimension 1 Code");
+                                        SETRANGE("Global Dimension 2 Code");
+                                      UNTIL NOT FINDFIRST;
+                                      SETRANGE("Posting Date");
+                                    UNTIL NOT FINDFIRST;
+                                    InsertRegisters(GLReg,DateComprReg);
+                                  END;
+                                  Window.CLOSE;
+                                END;
+                                //Обработка буфера <
+                                InsertConsRegister(SourceLastGLEntry);
+                                COMMIT;
+                                ConsSource."Last G/L Entry No." := SourceLastGLEntry;
+                                ConsSource."Last Consolidation Date" := TODAY;
+                                ConsSource."Last Consolidation Time" := TIME;
+                                ConsSource.MODIFY;
+                                COMMIT; //!!!!
+                                //NC PIF001 < DP
+                              END;
+                               }
+
+    { 3897;1   ;DataItem;LedgerEntryDimension3;
+               DataItemTable=Table355;
+               DataItemTableView=SORTING(Field1,Field2,Field3);
+               OnPreDataItem=BEGIN
+                               IF IncInCompr THEN
+                                 CurrReport.BREAK;
+                               SETRANGE("Table ID",17);
+                               SETRANGE("Entry No.",SourceGLEntry3."Entry No.");
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LedgEntryDimGLBuff@1210000 : Record 355;
+                                  DimValue3@1210001 : Record 349;
+                                  DimValue4@1210002 : Record 349;
+                                BEGIN
+                                  IF NOT DimValue3.GET("Dimension Code","Dimension Value Code") THEN BEGIN
+                                    DimValue4.CHANGECOMPANY(ConsSource."Company Name");
+                                    DimValue4.GET("Dimension Code","Dimension Value Code");
+                                    DimValue3."Dimension Code" := DimValue4."Dimension Code";
+                                    DimValue3.Code := DimValue4.Code;
+                                    DimValue3.Name := DimValue4.Name;
+                                    DimValue3."Dimension Value Type" := DimValue4."Dimension Value Type";
+                                    DimValue3.Totaling := DimValue4.Totaling;
+                                    DimValue3.Blocked :=  DimValue4.Blocked;
+                                    DimValue3."Consolidation Code" := DimValue4."Consolidation Code";
+                                    DimValue3.Indentation :=  DimValue4.Indentation;
+                                    DimValue3."Global Dimension No." := DimValue4."Global Dimension No.";
+                                    DimValue3."Name 2" := DimValue4."Name 2";
+                                    DimValue3."Company Name" := DimValue4."Company Name";
+                                    DimValue3."Int Contragent Dim Value" :=  DimValue4."Int Contragent Dim Value";
+                                    DimValue3.INSERT(TRUE);
+                                  END;
+                                  LedgEntryDimGLBuff.INIT;
+                                  LedgEntryDimGLBuff.TRANSFERFIELDS(LedgerEntryDimension3);
+                                  LedgEntryDimGLBuff."Entry No." := ConsLastEntryNo;
+                                  LedgEntryDimGLBuff.INSERT;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF IncInCompr THEN
+                                  CurrReport.BREAK;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU="This batch job deletes entries. ";RUS="Это задание удаляет операции. "';
+      Text001@1001 : TextConst 'ENU=Therefore, it is important that you make a backup of the database before you run the batch job.\\;RUS=Следовательно, важно сделать резервную копию базы данных перед запуском пакетного задания.\\';
+      Text002@1002 : TextConst 'ENU=Do you want to date compress the entries?;RUS=Вы хотите выполнить компрессию операций?';
+      Text003@1003 : TextConst 'ENU=%1 must be specified.;RUS=%1 должно быть определено.';
+      Text004@1004 : TextConst 'ENU=Date compressing G/L entries...\\;RUS=Компрессия финансовых операций...\\';
+      Text005@1005 : TextConst 'ENU=G/L Account No.                 #1######\;RUS=Фин. Счет Но.                   #1######\';
+      Text006@1006 : TextConst 'ENU=Date                            #2######\\;RUS=Дата                            #2######\\';
+      Text007@1007 : TextConst 'ENU=No. of new entries              #3######\;RUS=Число новых операций            #3######\';
+      Text008@1008 : TextConst 'ENU=No. of entries del.             #4######\;RUS=Число удал. операций            #4######\';
+      Text009@1009 : TextConst 'ENU=Date Compressed:;RUS=Дата Компрессии:';
+      Text010@1010 : TextConst 'ENU=Retain Dimensions;RUS=Сохранить Измерения';
+      SourceCodeSetup@1011 : Record 242;
+      DateComprReg@1012 : Record 87;
+      EntrdDateComprReg@1013 : Record 87;
+      GLReg@1014 : Record 45;
+      EntrdGLEntry@1015 : Record 17;
+      NewGLEntry@1016 : Record 17;
+      GLEntryBuff2@1017 : Record 50018;
+      SelectedDim@1018 : Record 369;
+      TempSelectedDim@1210007 : TEMPORARY Record 369;
+      DimSelectionBuf@1210008 : Record 368;
+      AnalysisView@1021 : Record 363;
+      DateComprMgt@1022 : Codeunit 356;
+      DimBufMgt@1023 : Codeunit 411;
+      DimMgt@1024 : Codeunit 408;
+      Window@1025 : Dialog;
+      NoOfFields@1026 : Integer;
+      NoOfFieldsContents@1027 : Integer;
+      Retain@1028 : ARRAY [10] OF Boolean;
+      FieldNumber@1029 : ARRAY [10] OF Integer;
+      FieldNameArray@1030 : ARRAY [10] OF Text[100];
+      LastEntryNo@1031 : Integer;
+      NextTransactionNo@1032 : Integer;
+      NoOfDeleted@1033 : Integer;
+      GLRegExists@1034 : Boolean;
+      i@1035 : Integer;
+      ComprDimEntryNo@1036 : Integer;
+      DimEntryNo@1037 : Integer;
+      RetainDimText@1038 : Text[250];
+      "NCV>"@1210000 : Integer;
+      ConsSource@1210001 : Record 50001;
+      ConsSetup@1210002 : Record 50000;
+      ConsSourceCode@1210003 : Code[20];
+      GLEntryReport@1210004 : Record 17;
+      GLEntry2@1210005 : Record 17;
+      TempSelectedDimExc@1210006 : TEMPORARY Record 369;
+      DimExceptionFilter@1210009 : Text[1000];
+      CheckGLEntry@1210010 : Record 17;
+      CheckLedgEntryDim@1210011 : Record 355;
+      LastTrNo@1210012 : Integer;
+      IncInCompr@1210013 : Boolean;
+      CurrentGLEntry@1210015 : Record 17;
+      ConsLastEntryNo@1210016 : Integer;
+      ConsLastTransNo@1210017 : Integer;
+      "NCT>"@1210022 : TextConst;
+      Text55004@1210021 : TextConst 'ENU=Copying G/L entries...\\;RUS=Копирование финансовых операций...\\';
+      Text55007@1210018 : TextConst 'ENU=No. of G\L Entries            #1######\;RUS=Число операций в Главной Книге #1######\';
+      Text55008@1210014 : TextConst 'ENU=No. of entries in compr.       #2######;RUS=Число операций в Компрессии    #2######\';
+      NoOfGLEntries@1210019 : Integer;
+      NoOfCompEntries@1210020 : Integer;
+      TotalEntries@1210023 : Integer;
+      Text55009@1210024 : TextConst 'ENU=@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text55010@1210025 : TextConst 'ENU=There are no new entries in company %1.;RUS=В компании %1 нет новых операций.';
+      ConsRegisterNo@1210026 : Integer;
+      SourceLastGLEntry@1210027 : Integer;
+      ConsRegister@1210028 : Record 50005;
+      Text55011@1210029 : TextConst 'ENU=Loading G/L entries from;RUS=Загрузка финансовых операций из компании';
+      Text55012@1210030 : TextConst 'ENU=@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text55013@1210031 : TextConst 'ENU=Total Entries                   #5######\;RUS=Всего операций                  #5######\';
+      Text55014@1210032 : TextConst 'ENU=@6@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=@6@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      TotalGLBufferEntry@1210033 : Integer;
+      Text55015@1210034 : TextConst 'ENU=Consolidation was done succesfully.;RUS=Консолидация завершена успешно.';
+      PostingDescription@1210035 : Text[50];
+      FromSourceEntry@1210036 : Integer;
+      ToSourceEntry@1210037 : Integer;
+      Text55016@1210038 : TextConst 'ENU=To Entry No. cannot be less than From Entry No.;RUS=До Операция Но. не может быть меньше От Операция Но.';
+      Currency@1000000000 : Record 4;
+      PerGlobalDim1@1000000001 : Boolean;
+      PerGlobalDim2@1000000002 : Boolean;
+      ConsRegisterExists@1210039 : Boolean;
+      TempGLEntryBuffer@1210040 : TEMPORARY Record 50018;
+      NoOfDel@1210041 : Integer;
+      GLSetup@1210042 : Record 98;
+      TempDimComp@1210043 : TEMPORARY Record 348;
+      IsUpdateAnalysisView@1210047 : Boolean;
+      AnalysisView1@1210046 : Record 363;
+      UpdateAnalysisView@1210045 : Codeunit 410;
+      AnalysisViewFilter@1210044 : Text[50];
+      Log@1101495000 : Codeunit 50014;
+
+    LOCAL PROCEDURE InitRegisters@4();
+    BEGIN
+      IF GLReg.FIND('+') THEN;
+      GLReg.INIT;
+      GLReg."No." := GLReg."No." + 1;
+      GLReg."Creation Date" := TODAY;
+      GLReg."Source Code" := SourceCodeSetup."Compress G/L";
+      GLReg."User ID" := USERID;
+      GLReg."From Entry No." := LastEntryNo + 1;
+
+      IF DateComprReg.FIND('+') THEN;
+      DateComprReg.INIT;
+      DateComprReg."No." := DateComprReg."No." + 1;
+      DateComprReg."Table ID" := DATABASE::"G/L Entry";
+      DateComprReg."Creation Date" := TODAY;
+      DateComprReg."Starting Date" := EntrdDateComprReg."Starting Date";
+      DateComprReg."Ending Date" := EntrdDateComprReg."Ending Date";
+      DateComprReg."Period Length" := EntrdDateComprReg."Period Length";
+      FOR i := 1 TO NoOfFieldsContents DO
+        IF Retain[i] THEN
+          DateComprReg."Retain Field Contents" :=
+            COPYSTR(
+              DateComprReg."Retain Field Contents" + ',' + FieldNameArray[i],1,
+              MAXSTRLEN(DateComprReg."Retain Field Contents"));
+      DateComprReg."Retain Field Contents" := COPYSTR(DateComprReg."Retain Field Contents",2);
+      FOR i := NoOfFieldsContents + 1 TO NoOfFields DO
+        IF Retain[i] THEN
+          DateComprReg."Retain Totals" :=
+            COPYSTR(
+              DateComprReg."Retain Totals" + ',' + FieldNameArray[i],1,
+              MAXSTRLEN(DateComprReg."Retain Totals"));
+      DateComprReg."Retain Totals" := COPYSTR(DateComprReg."Retain Totals",2);
+      DateComprReg."Register No." := GLReg."No.";
+      DateComprReg."Source Code" := SourceCodeSetup."Compress G/L";
+      DateComprReg."User ID" := USERID;
+      DateComprReg."Cons. Source Code" := ConsSource.Code;
+      DateComprReg."Cons. Register No." := ConsRegister."No.";
+
+      GLRegExists := FALSE;
+      NoOfDeleted := 0;
+    END;
+
+    LOCAL PROCEDURE InsertRegisters@1(VAR GLReg@1000 : Record 45;VAR DateComprReg@1001 : Record 87);
+    BEGIN
+      GLReg."To Entry No." := NewGLEntry."Entry No.";
+
+      IF GLRegExists THEN BEGIN
+        GLReg.MODIFY;
+        DateComprReg.MODIFY;
+      END ELSE BEGIN
+        GLReg.INSERT;
+        DateComprReg.INSERT;
+        GLRegExists := TRUE;
+      END;
+      //COMMIT;
+
+      NewGLEntry.LOCKTABLE;
+      GLReg.LOCKTABLE;
+      DateComprReg.LOCKTABLE;
+
+      GLEntry2.RESET;
+      IF GLEntry2.FIND('+') THEN;
+      IF LastEntryNo <> GLEntry2."Entry No." THEN BEGIN
+        LastEntryNo := GLEntry2."Entry No.";
+        NextTransactionNo := GLEntry2."Transaction No." + 1;
+        InitRegisters;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertField@2(Number@1000 : Integer;Name@1001 : Text[100]);
+    BEGIN
+      NoOfFields := NoOfFields + 1;
+      FieldNumber[NoOfFields] := Number;
+      FieldNameArray[NoOfFields] := Name;
+    END;
+
+    LOCAL PROCEDURE RetainNo@3(Number@1000 : Integer) : Boolean;
+    BEGIN
+      EXIT(Retain[Index(Number)]);
+    END;
+
+    LOCAL PROCEDURE Index@6(Number@1000 : Integer) : Integer;
+    BEGIN
+      FOR i := 1 TO NoOfFields DO
+        IF Number = FieldNumber[i] THEN
+          EXIT(i);
+    END;
+
+    PROCEDURE SummarizeEntry@5(VAR NewGLEntry@1000 : Record 17;GLEntryBuff@1001 : Record 50018);
+    VAR
+      LedgEntryDim@1002 : Record 355;
+    BEGIN
+      WITH GLEntryBuff DO BEGIN
+        NewGLEntry.Amount := NewGLEntry.Amount + Amount;
+        NewGLEntry."VAT Amount" := NewGLEntry."VAT Amount" + "VAT Amount";
+        NewGLEntry."Debit Amount" := NewGLEntry."Debit Amount" + "Debit Amount";
+        NewGLEntry."Credit Amount" := NewGLEntry."Credit Amount" + "Credit Amount";
+        NewGLEntry."Additional-Currency Amount" :=
+          NewGLEntry."Additional-Currency Amount" + "Additional-Currency Amount";
+        NewGLEntry."Add.-Currency Debit Amount" :=
+          NewGLEntry."Add.-Currency Debit Amount" + "Add.-Currency Debit Amount";
+        NewGLEntry."Add.-Currency Credit Amount" :=
+          NewGLEntry."Add.-Currency Credit Amount" + "Add.-Currency Credit Amount";
+        IF RetainNo(FIELDNO(Quantity)) THEN
+          NewGLEntry.Quantity := NewGLEntry.Quantity + Quantity;
+        DELETE;
+        LedgEntryDim.RESET;
+        LedgEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry Buffer");
+        LedgEntryDim.SETRANGE("Entry No.","Entry No.");
+        LedgEntryDim.DELETEALL;
+        DateComprReg."No. Records Deleted" := DateComprReg."No. Records Deleted" + 1;
+        Window.UPDATE(4,DateComprReg."No. Records Deleted");
+        Window.UPDATE(6,ROUND(DateComprReg."No. Records Deleted" / TotalGLBufferEntry * 10000,1));
+      END;
+    END;
+
+    PROCEDURE ComprCollectedEntries@12();
+    VAR
+      GLEntryBuff@1000 : Record 50018;
+      OldDimEntryNo@1001 : Integer;
+      Found@1002 : Boolean;
+      GLEntryNo@1003 : Integer;
+    BEGIN
+      OldDimEntryNo := 0;
+      IF DimBufMgt.FindFirstDimEntryNo(DimEntryNo,GLEntryNo) THEN BEGIN
+        InitNewEntry(NewGLEntry);
+        REPEAT
+          GLEntryBuff.GET(GLEntryNo);
+          SummarizeEntry(NewGLEntry,GLEntryBuff);
+          OldDimEntryNo := DimEntryNo;
+          Found := DimBufMgt.NextDimEntryNo(DimEntryNo,GLEntryNo);
+          IF (OldDimEntryNo <> DimEntryNo) OR NOT Found THEN BEGIN
+            InsertNewEntry(NewGLEntry,OldDimEntryNo);
+            IF Found THEN
+              InitNewEntry(NewGLEntry);
+          END;
+          OldDimEntryNo := DimEntryNo;
+        UNTIL NOT Found;
+      END;
+      DimBufMgt.DeleteAllDimEntryNo;
+    END;
+
+    PROCEDURE InitNewEntry@7(VAR NewGLEntry@1000 : Record 17);
+    BEGIN
+      LastEntryNo := LastEntryNo + 1;
+
+      WITH GLEntryBuff2 DO BEGIN
+        NewGLEntry.INIT;
+        NewGLEntry."Entry No." := LastEntryNo;
+        NewGLEntry."G/L Account No." := "G/L Account No.";
+        NewGLEntry."Posting Date" := GETRANGEMIN("Posting Date");
+        NewGLEntry.Description := PostingDescription;
+        //NewGLEntry."Gen. Posting Type" := "Gen. Posting Type";
+        //NewGLEntry."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+        //NewGLEntry."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        NewGLEntry."System-Created Entry" := TRUE;
+        NewGLEntry."Prior-Year Entry" := TRUE;
+        NewGLEntry."Source Code" := SourceCodeSetup."Compress G/L";
+        NewGLEntry."User ID" := USERID;
+        NewGLEntry."Transaction No." := NextTransactionNo;
+        NewGLEntry."Export Cons. Source Code" := ConsSource.Code;
+        NewGLEntry."Export Register No." := ConsRegister."No.";
+        NewGLEntry."Business Unit Code" := ConsSource."Business Unit Code";
+        NewGLEntry."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+        //NC PIF001 > DP
+        {
+        IF RetainNo(FIELDNO("Document Type")) THEN
+          NewGLEntry."Document Type" := "Document Type";
+        IF RetainNo(FIELDNO("Document No.")) THEN
+          NewGLEntry."Document No." := "Document No.";
+        IF RetainNo(FIELDNO("Job No.")) THEN
+          NewGLEntry."Job No." := "Job No.";
+        IF RetainNo(FIELDNO("Business Unit Code")) THEN
+          NewGLEntry."Business Unit Code" := "Business Unit Code";
+        }
+        //NC PIF001 < DP
+        IF PerGlobalDim1 THEN
+          NewGLEntry."Global Dimension 1 Code" := "Global Dimension 1 Code";
+        IF PerGlobalDim2 THEN
+          NewGLEntry."Global Dimension 2 Code" := "Global Dimension 2 Code";
+
+        Window.UPDATE(1,NewGLEntry."G/L Account No.");
+        Window.UPDATE(2,NewGLEntry."Posting Date");
+        DateComprReg."No. of New Records" := DateComprReg."No. of New Records" + 1;
+        Window.UPDATE(3,DateComprReg."No. of New Records");
+      END;
+    END;
+
+    PROCEDURE InsertNewEntry@23(VAR NewGLEntry@1000 : Record 17;DimEntryNo@1001 : Integer);
+    VAR
+      TempDimBuf@1002 : TEMPORARY Record 360;
+    BEGIN
+      NewGLEntry.INSERT;
+      TempDimBuf.DELETEALL;
+      DimBufMgt.GetDimensions(DimEntryNo,TempDimBuf);
+      DimMgt.MoveDimBufToLedgEntryDim(
+        TempDimBuf,DATABASE::"G/L Entry",NewGLEntry."Entry No.");
+    END;
+
+    PROCEDURE "NCF>"@1210001();
+    BEGIN
+    END;
+
+    PROCEDURE IncludeInCompress@1210000(GLEntry@1210000 : Record 17) : Boolean;
+    VAR
+      FromEntryNo@1210001 : Integer;
+      ToEntryNo@1210002 : Integer;
+    BEGIN
+      CheckGLEntry.SETRANGE("Transaction No.",GLEntry."Transaction No.");
+      IF CheckGLEntry.FINDFIRST THEN
+        FromEntryNo := CheckGLEntry."Entry No.";
+      IF CheckGLEntry.FINDLAST THEN
+        ToEntryNo := CheckGLEntry."Entry No.";
+      CheckLedgEntryDim.SETRANGE("Table ID",17);
+      CheckLedgEntryDim.SETRANGE("Entry No.",FromEntryNo,ToEntryNo);
+      CheckLedgEntryDim.SETFILTER("Dimension Code",DimExceptionFilter);
+      IF CheckLedgEntryDim.FINDFIRST THEN
+        EXIT(FALSE);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CopyGLEntryToGLEntry@1210002(SourceGLEntry@1210000 : Record 17;UpdateTransNo@1210001 : Boolean);
+    VAR
+      ConsGLEntry@1210002 : Record 17;
+    BEGIN
+      ConsGLEntry.INIT;
+      ConsGLEntry.TRANSFERFIELDS(SourceGLEntry);
+      ConsLastEntryNo += 1;
+      ConsGLEntry."Entry No." := ConsLastEntryNo;
+      IF UpdateTransNo THEN
+        ConsLastTransNo += 1;
+      ConsGLEntry."Transaction No." := ConsLastTransNo;
+      ConsGLEntry."Export Cons. Source Code" := ConsSource.Code;
+      ConsGLEntry."Export Register No." := ConsRegisterNo;
+      ConsGLEntry."Business Unit Code" := ConsSource."Business Unit Code";
+      ConsGLEntry."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+      ConsGLEntry."Source Entry No." := SourceGLEntry."Entry No.";
+
+
+      IF ConsSource."Concolidate Add.-Curr. Amount" THEN BEGIN
+        IF (ConsSource."LCY Code" = SourceGLEntry."Original Currency Code") AND
+           (ConsSource."LCY Code" <> '')
+        THEN
+          ConsGLEntry."Original Currency Code" := '';
+
+        IF ((SourceGLEntry."Original Currency Code" = '') OR (SourceGLEntry."Original Currency Code" = 'РУБ')) AND
+           (ConsSource."LCY Code" <> '')
+        THEN BEGIN
+          Currency.SETFILTER("Source Currency Code",'=%1','');
+          IF Currency.FINDFIRST THEN
+            ConsGLEntry."Original Currency Code" := Currency.Code;
+          IF SourceGLEntry."Additional-Currency Amount" <> 0 THEN
+            ConsGLEntry."Original Currency Factor" := ROUND(SourceGLEntry."Original Amount" /
+                                                            SourceGLEntry."Additional-Currency Amount",0.0001);
+        END;
+
+        IF (ConsSource."LCY Code" <> SourceGLEntry."Original Currency Code") AND
+           ((SourceGLEntry."Original Currency Code" <> '') AND (SourceGLEntry."Original Currency Code" <> 'РУБ'))
+           AND (ConsSource."LCY Code" <> '')
+        THEN BEGIN
+          Currency.SETFILTER("Source Currency Code",'=%1',SourceGLEntry."Original Currency Code");
+          IF Currency.FINDFIRST THEN
+            ConsGLEntry."Original Currency Code" := Currency.Code;
+          IF SourceGLEntry."Additional-Currency Amount" <> 0 THEN
+            ConsGLEntry."Original Currency Factor" := ROUND(SourceGLEntry."Original Amount" /
+                                                            SourceGLEntry."Additional-Currency Amount",0.0001);
+        END;
+
+        ConsGLEntry.Amount := SourceGLEntry."Additional-Currency Amount";
+        ConsGLEntry."Debit Amount" := SourceGLEntry."Add.-Currency Debit Amount";
+        ConsGLEntry."Credit Amount" := SourceGLEntry."Add.-Currency Credit Amount";
+        ConsGLEntry."Additional-Currency Amount" := SourceGLEntry.Amount;
+        ConsGLEntry."Add.-Currency Debit Amount" := SourceGLEntry."Debit Amount";
+        ConsGLEntry."Add.-Currency Credit Amount" := SourceGLEntry."Credit Amount";
+      END;
+
+
+      ConsGLEntry.INSERT;
+    END;
+
+    PROCEDURE InitConsRegister@1210003(ConsSource@1210000 : Record 50001;FromEntryNo@1210001 : Integer);
+    BEGIN
+      ConsRegister.RESET;
+      ConsRegister.SETRANGE("Cons. Source Code",ConsSource.Code);
+      IF ConsRegister.FINDLAST THEN
+        ConsRegisterNo := ConsRegister."No." + 1
+      ELSE
+        ConsRegisterNo := 1;
+
+      ConsRegister.INIT;
+      ConsRegister."Cons. Source Code" := ConsSource.Code;
+      ConsRegister."No." := ConsRegisterNo;
+      ConsRegister."User ID" := USERID;
+      ConsRegister."Consolidation Date" := TODAY;
+      ConsRegister."From Entry No." := FromEntryNo;
+      ConsRegister."Gen. Journal Template" := ConsSetup."Gen. Jnl. Template";
+      ConsRegister."Gen. Journal Batch" := ConsSource."Gen. Journal Batch";
+      ConsRegister.Compression := ConsSource.Compression;
+    END;
+
+    PROCEDURE InsertConsRegister@1210004(ToEntryNo@1210000 : Integer);
+    BEGIN
+      IF ToEntryNo <> 0 THEN BEGIN
+        ConsRegister."To Entry No." := SourceLastGLEntry;
+        ConsRegister."Consolidation Time" := TIME;
+        IF NOT ConsRegister.INSERT THEN
+          ConsRegister.MODIFY;
+      END;
+    END;
+
+    PROCEDURE SetParameters@1210005(NewConsSourceCode@1210000 : Code[20]);
+    BEGIN
+      ConsSetup.GET;
+      ConsSourceCode := NewConsSourceCode;
+      EntrdDateComprReg."Period Length" := ConsSetup."Compression Period Length";
+    END;
+
+    PROCEDURE InitGLRegister@1210006();
+    VAR
+      GLEntry@1210000 : Record 17;
+    BEGIN
+      IF GLReg.FINDLAST THEN;
+      GLEntry.RESET;
+      IF GLEntry.FINDLAST THEN;
+      GLReg.INIT;
+      GLReg."No." := GLReg."No." + 1;
+      GLReg."Creation Date" := TODAY;
+      //GLReg."Source Code" := ConsSetup."Source Code";
+      GLReg."User ID" := USERID;
+      GLReg."From Entry No." := GLEntry."Entry No." + 1;
+    END;
+
+    PROCEDURE InsertGLRegister@1210009();
+    VAR
+      GLEntry@1210000 : Record 17;
+    BEGIN
+      GLEntry.RESET;
+      IF GLEntry.FINDLAST AND (GLReg."From Entry No." <> GLEntry."Entry No.") THEN BEGIN
+        GLReg."To Entry No." := GLEntry."Entry No.";
+        GLReg."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+        IF NOT GLRegExists THEN
+          GLReg.INSERT
+        ELSE
+          GLReg.MODIFY;
+      END;
+    END;
+
+    PROCEDURE FindLastGLEntry@1210007(CompName@1210000 : Text[30];ToSourceEntry@1210001 : Integer) : Integer;
+    VAR
+      GLEntry6@1210002 : Record 17;
+      TransactionNo@1210003 : Integer;
+    BEGIN
+      GLEntry6.CHANGECOMPANY(CompName);
+      GLEntry6.SETFILTER("Entry No.",'%1..',ToSourceEntry);
+      IF GLEntry6.FINDFIRST THEN BEGIN
+        TransactionNo := GLEntry6."Transaction No.";
+        REPEAT
+          IF GLEntry6."Transaction No." <> TransactionNo THEN
+            EXIT(GLEntry6."Entry No." - 1);
+        UNTIL GLEntry6.NEXT = 0;
+      END;
+      EXIT(GLEntry6."Entry No.");
+    END;
+
+    PROCEDURE GetRegisters@1210014();
+    BEGIN
+      IF NOT GLReg.FIND('+') THEN BEGIN
+        GLReg."No." := GLReg."No." + 1;
+        GLReg."Creation Date" := TODAY;
+        GLReg."Source Code" := SourceCodeSetup."Compress G/L";
+        GLReg."User ID" := USERID;
+        GLReg."From Entry No." := LastEntryNo + 1;
+        GLRegExists := FALSE;
+      END ELSE
+        GLRegExists := TRUE;
+
+      ConsRegister.RESET;
+      ConsSource.GET(GLEntryBuff2."Export Cons. Source Code");
+      ConsRegister.SETRANGE(ConsRegister."Cons. Source Code",GLEntryBuff2."Export Cons. Source Code");
+      ConsRegister.FINDLAST;
+      ConsRegisterExists := TRUE;
+
+      IF NOT DateComprReg.FIND('+') THEN BEGIN
+        DateComprReg.INIT;
+        DateComprReg."No." := DateComprReg."No." + 1;
+        DateComprReg."Table ID" := DATABASE::"G/L Entry";
+        DateComprReg."Creation Date" := TODAY;
+        DateComprReg."Starting Date" := EntrdDateComprReg."Starting Date";
+        DateComprReg."Ending Date" := EntrdDateComprReg."Ending Date";
+        DateComprReg."Period Length" := EntrdDateComprReg."Period Length";
+        FOR i := 1 TO NoOfFieldsContents DO
+          IF Retain[i] THEN
+            DateComprReg."Retain Field Contents" :=
+              COPYSTR(
+                DateComprReg."Retain Field Contents" + ',' + FieldNameArray[i],1,
+                MAXSTRLEN(DateComprReg."Retain Field Contents"));
+        DateComprReg."Retain Field Contents" := COPYSTR(DateComprReg."Retain Field Contents",2);
+        FOR i := NoOfFieldsContents + 1 TO NoOfFields DO
+          IF Retain[i] THEN
+            DateComprReg."Retain Totals" :=
+              COPYSTR(
+                DateComprReg."Retain Totals" + ',' + FieldNameArray[i],1,
+                MAXSTRLEN(DateComprReg."Retain Totals"));
+        DateComprReg."Retain Totals" := COPYSTR(DateComprReg."Retain Totals",2);
+        DateComprReg."Register No." := GLReg."No.";
+        DateComprReg."Source Code" := SourceCodeSetup."Compress G/L";
+        DateComprReg."User ID" := USERID;
+        DateComprReg."Cons. Source Code" := ConsSource.Code;
+        DateComprReg."Cons. Register No." := ConsRegisterNo;
+      END;
+
+      NoOfDeleted := 0;
+    END;
+
+    PROCEDURE InsertNewGLEntry@1210008();
+    BEGIN
+      LastEntryNo := LastEntryNo + 1;
+
+      WITH TempGLEntryBuffer DO BEGIN
+        NewGLEntry.INIT;
+        NewGLEntry."Entry No." := LastEntryNo;
+        NewGLEntry."G/L Account No." := "G/L Account No.";
+        NewGLEntry."Posting Date" := GETRANGEMIN("Posting Date");
+        NewGLEntry.Description := PostingDescription;
+        NewGLEntry."System-Created Entry" := TRUE;
+        NewGLEntry."Prior-Year Entry" := TRUE;
+        NewGLEntry."Source Code" := SourceCodeSetup."Compress G/L";
+        NewGLEntry.Amount := Amount;
+        NewGLEntry."Debit Amount" := "Debit Amount";
+        NewGLEntry."Credit Amount" := "Credit Amount";
+        NewGLEntry."Additional-Currency Amount" := "Additional-Currency Amount";
+        NewGLEntry."Add.-Currency Debit Amount" := "Add.-Currency Debit Amount";
+        NewGLEntry."Add.-Currency Credit Amount" := "Add.-Currency Credit Amount";
+
+        NewGLEntry."User ID" := USERID;
+        NewGLEntry."Transaction No." := NextTransactionNo;
+        NewGLEntry."Export Cons. Source Code" := ConsSource.Code;
+        NewGLEntry."Export Register No." := ConsRegister."No.";
+        NewGLEntry."Business Unit Code" := ConsSource."Business Unit Code";
+        NewGLEntry."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+        IF (GETFILTER("Global Dimension 1 Code") <> '')
+           AND ("Global Dimension 1 Code" <> '')
+        THEN BEGIN
+          NewGLEntry."Global Dimension 1 Code" := "Global Dimension 1 Code";
+          InsertLedEntryDim(LastEntryNo,GLSetup."Global Dimension 1 Code","Global Dimension 1 Code");
+        END;
+
+        IF "Global Dimension 2 Code" <> '' THEN BEGIN
+          NewGLEntry."Global Dimension 2 Code" := "Global Dimension 2 Code";
+          InsertLedEntryDim(LastEntryNo,GLSetup."Global Dimension 2 Code","Global Dimension 2 Code");
+        END;
+        NewGLEntry.INSERT;
+        NoOfGLEntries += 1;
+      END;
+    END;
+
+    PROCEDURE InsertLedEntryDim@1210010(EntryNo@1210000 : Integer;DimCode@1210001 : Code[20];DimValueCode@1210002 : Code[20]);
+    VAR
+      LedgEntryDim@1210003 : Record 355;
+      DimValue3@1210004 : Record 349;
+      DimValue4@1210005 : Record 349;
+    BEGIN
+      IF NOT DimValue3.GET(DimCode,DimValueCode) THEN BEGIN
+        DimValue4.CHANGECOMPANY(ConsSource."Company Name");
+        DimValue4.GET(DimCode,DimValueCode);
+        DimValue3."Dimension Code" := DimValue4."Dimension Code";
+        DimValue3.Code := DimValue4.Code;
+        DimValue3.Name := DimValue4.Name;
+        DimValue3."Dimension Value Type" := DimValue4."Dimension Value Type";
+        DimValue3.Totaling := DimValue4.Totaling;
+        DimValue3.Blocked :=  DimValue4.Blocked;
+        DimValue3."Consolidation Code" := DimValue4."Consolidation Code";
+        DimValue3.Indentation :=  DimValue4.Indentation;
+        DimValue3."Global Dimension No." := DimValue4."Global Dimension No.";
+        DimValue3."Name 2" := DimValue4."Name 2";
+        DimValue3."Company Name" := DimValue4."Company Name";
+        DimValue3."Int Contragent Dim Value" :=  DimValue4."Int Contragent Dim Value";
+        DimValue3.INSERT(TRUE);
+      END;
+      LedgEntryDim.INIT;
+      LedgEntryDim."Table ID" := 17;
+      LedgEntryDim."Entry No." := EntryNo;
+      LedgEntryDim."Dimension Code" := DimCode;
+      LedgEntryDim."Dimension Value Code" := DimValueCode;
+      LedgEntryDim.INSERT;
+    END;
+
+    BEGIN
+    {
+      NC PIF001 MP Разработано задание на базе стандартного задания 98 по компрессии
+      NC PIF001.01 MP Добавлена возвожность консолидации только по глобальным измерениям,
+                      Добавлены коммиты
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

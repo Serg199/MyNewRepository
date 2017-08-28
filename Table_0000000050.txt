@@ -1,0 +1,187 @@
+OBJECT Table 50 Accounting Period
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.04.17;
+    Time=18:17:12;
+    Modified=Yes;
+    Version List=NAVW19.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    OnInsert=BEGIN
+               AccountingPeriod2 := Rec;
+               IF AccountingPeriod2.FIND('>') THEN
+                 AccountingPeriod2.TESTFIELD("Date Locked",FALSE);
+               UpdateAvgItems(1);
+               //NC NOS-26 SPA Код с уведомлением перенесен в CU 50085
+             END;
+
+    OnModify=BEGIN
+               UpdateAvgItems(2);
+             END;
+
+    OnDelete=BEGIN
+               TESTFIELD("Date Locked",FALSE);
+               UpdateAvgItems(3);
+             END;
+
+    OnRename=BEGIN
+               TESTFIELD("Date Locked",FALSE);
+               AccountingPeriod2 := Rec;
+               IF AccountingPeriod2.FIND('>') THEN
+                 AccountingPeriod2.TESTFIELD("Date Locked",FALSE);
+               UpdateAvgItems(4);
+             END;
+
+    CaptionML=[ENU=Accounting Period;
+               RUS=Учетный период];
+    LookupPageID=Page100;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Starting Date       ;Date          ;OnValidate=BEGIN
+                                                                Name := FORMAT("Starting Date",0,Text000);
+                                                              END;
+
+                                                   CaptionML=[ENU=Starting Date;
+                                                              RUS=Дата начала];
+                                                   NotBlank=Yes }
+    { 2   ;   ;Name                ;Text10        ;CaptionML=[ENU=Name;
+                                                              RUS=Название] }
+    { 3   ;   ;New Fiscal Year     ;Boolean       ;OnValidate=BEGIN
+                                                                TESTFIELD("Date Locked",FALSE);
+                                                                IF "New Fiscal Year" THEN BEGIN
+                                                                  IF NOT InvtSetup.GET THEN
+                                                                    EXIT;
+                                                                  "Average Cost Calc. Type" := InvtSetup."Average Cost Calc. Type";
+                                                                  "Average Cost Period" := InvtSetup."Average Cost Period";
+                                                                END ELSE BEGIN
+                                                                  "Average Cost Calc. Type" := "Average Cost Calc. Type"::" ";
+                                                                  "Average Cost Period" := "Average Cost Period"::" ";
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=New Fiscal Year;
+                                                              RUS=Новый финансовый год] }
+    { 4   ;   ;Closed              ;Boolean       ;CaptionML=[ENU=Closed;
+                                                              RUS=Закрыто];
+                                                   Editable=No }
+    { 5   ;   ;Date Locked         ;Boolean       ;CaptionML=[ENU=Date Locked;
+                                                              RUS=Дата закрыта];
+                                                   Editable=No }
+    { 5804;   ;Average Cost Calc. Type;Option     ;AccessByPermission=TableData 27=R;
+                                                   CaptionML=[ENU=Average Cost Calc. Type;
+                                                              RUS=Тип расчета средней себестоимости];
+                                                   OptionCaptionML=[ENU=" ,Item,Item & Location & Variant";
+                                                                    RUS=" ,Товар,Товар и склад и вариант"];
+                                                   OptionString=[ ,Item,Item & Location & Variant];
+                                                   Editable=No }
+    { 5805;   ;Average Cost Period ;Option        ;AccessByPermission=TableData 27=R;
+                                                   CaptionML=[ENU=Average Cost Period;
+                                                              RUS=Период расчета средней себестоимости];
+                                                   OptionCaptionML=[ENU=" ,Day,Week,Month,Quarter,Year,Accounting Period";
+                                                                    RUS=" ,День,Неделя,Месяц,Квартал,Год,Учетный период"];
+                                                   OptionString=[ ,Day,Week,Month,Quarter,Year,Accounting Period];
+                                                   Editable=No }
+    { 50100;  ;Closed Period       ;Boolean       ;CaptionML=[ENU=Closed Period;
+                                                              RUS=Закрытый Период];
+                                                   Description=NC TR221 }
+    { 50101;  ;Closed Period Date  ;Date          ;CaptionML=[ENU=Closed Period Date;
+                                                              RUS=Дата Закрытия Перода];
+                                                   Description=NC TR221 }
+    { 55001;  ;Trans. Table Blocked;Boolean       ;CaptionML=[ENU=Trans. Table Blocked;
+                                                              RUS=Блокировать Трансф. Таблицу];
+                                                   Description=NCPIF001 }
+  }
+  KEYS
+  {
+    {    ;Starting Date                           ;Clustered=Yes }
+    {    ;New Fiscal Year,Date Locked              }
+    {    ;Closed                                   }
+  }
+  FIELDGROUPS
+  {
+    { 1   ;Brick               ;Starting Date,Name,New Fiscal Year,Closed }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=<Month Text>;RUS=<Month Text>';
+      AccountingPeriod2@1001 : Record 50;
+      InvtSetup@1002 : Record 313;
+      Text50001@1101495001 : TextConst 'ENU=General Journal Line %1 - %2 - %3 was not posted;RUS=Не учтена строка фин. журнала %1 - %2 - %3';
+      Text50002@1101495000 : TextConst 'ENU=Item Journal Line %1 - %2 - %3 was not posted;RUS=Не учтена строка товарного журнала %1 - %2 - %3';
+
+    PROCEDURE UpdateAvgItems@1(UpdateType@1005 : Option);
+    VAR
+      ChangeAvgCostSetting@1002 : Codeunit 5810;
+    BEGIN
+      ChangeAvgCostSetting.UpdateAvgCostFromAccPeriodChg(Rec,xRec,UpdateType);
+    END;
+
+    PROCEDURE GetFiscalYearEndDate@9(ReferenceDate@1000 : Date) : Date;
+    VAR
+      AccountingPeriod@1001 : Record 50;
+    BEGIN
+      WITH AccountingPeriod DO BEGIN
+        SETRANGE("New Fiscal Year",TRUE);
+        SETRANGE("Starting Date",0D,ReferenceDate);
+        IF FINDLAST THEN
+          SETRANGE("Starting Date");
+        IF FIND('>') THEN
+          EXIT("Starting Date" - 1);
+      END;
+    END;
+
+    PROCEDURE GetFiscalYearStartDate@10(ReferenceDate@1000 : Date) : Date;
+    VAR
+      AccountingPeriod@1001 : Record 50;
+    BEGIN
+      WITH AccountingPeriod DO BEGIN
+        SETRANGE("New Fiscal Year",TRUE);
+        SETRANGE("Starting Date",0D,ReferenceDate);
+        IF FINDLAST THEN
+          EXIT("Starting Date")
+      END;
+    END;
+
+    LOCAL PROCEDURE "//NCF"@1101495000();
+    BEGIN
+    END;
+
+    PROCEDURE ClosePeriod@1210000();
+    VAR
+      GenJnlLine@1210000 : Record 81;
+      ItemJnlLine@1210001 : Record 83;
+      GLSetup@1210002 : Record 98;
+    BEGIN
+      //NC NOS-26 SPA Функция перененсена из страницы ID 100
+      GenJnlLine.SETRANGE("Posting Date", "Starting Date", CALCDATE('<CM>', "Starting Date"));
+      IF GenJnlLine.FIND('-') THEN
+        ERROR(Text50001, GenJnlLine."Journal Template Name", GenJnlLine."Journal Batch Name",
+        GenJnlLine."Line No.");
+
+      ItemJnlLine.SETRANGE("Posting Date", "Starting Date", CALCDATE('<CM>', "Starting Date"));
+      IF ItemJnlLine.FIND('-') THEN
+        ERROR(Text50002, ItemJnlLine."Journal Template Name", ItemJnlLine."Journal Batch Name",
+        ItemJnlLine."Line No.");
+
+      "Closed Period" := TRUE;
+      "Closed Period Date" := TODAY;
+      MODIFY(TRUE);
+
+      GLSetup.GET;
+      GLSetup.VALIDATE("Allow Posting From", CALCDATE('<1M>', "Starting Date"));
+      GLSetup.VALIDATE("Allow Posting To", CALCDATE('<CM>', CALCDATE('<1M>', "Starting Date")));
+      GLSetup.MODIFY(TRUE);
+    END;
+
+    BEGIN
+    {
+      NC NOS-26 SPA Добавлена функция ClosePeriod
+    }
+    END.
+  }
+}
+

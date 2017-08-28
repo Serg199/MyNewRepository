@@ -1,0 +1,1528 @@
+OBJECT Codeunit 50060 Trans. One Deal Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16.06.14;
+    Time=15:03:49;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            Buffer2@1101495002 : Record 50155;
+            Buffer@1101495003 : Record 50155;
+            EntryType@1101495000 : 'Remove,Repost';
+          BEGIN
+            RecID := "Record ID";
+            IF RecID.TABLENO = 0 THEN
+              ERROR(Text001);
+
+            RecRef.OPEN(RecID.TABLENO,FALSE,"Company No.");
+            RecRef.GET("Record ID");
+            RecRef.SETTABLE(Buffer2);
+
+            Buffer.GET(Buffer2."Cons. Source Code",Buffer2."Entry No.");
+
+            GLSetup.GET;
+            //GLSetup.TESTFIELD("Additional Reporting Currency");
+            GLSetup.TESTFIELD("Allow Posting From");
+            GLSetup.TESTFIELD("Allow Posting To");
+            ConsolidationSetup.GET;
+            ConsolidationSetup.TESTFIELD("Remote Consolidation Source",FALSE);
+            ConsolidationSetup.TESTFIELD("Gen. Jnl. Template");
+            ConsolidationSetup.TESTFIELD("Counterparty Dim Code");
+            ConsolidationSetup.TESTFIELD("IC Dimension Code");
+            ConsolidationSource.GET(Processor);
+            ConsolidationSource.TESTFIELD("Gen. Journal Batch");
+            ConsolidationSource.TESTFIELD("Removed Journal Batch");
+            //ConsolidationSource.TESTFIELD("Reposted Journal Batch");
+            ConsolidationSetup.TESTFIELD("Exception G/L Account No.");
+            ConsolidationSetup.TESTFIELD("Fin. Instrument Dimension Code");
+            ConsolidationSetup.TESTFIELD("Exception Batch Name");
+
+            //NC NCS-1373.2 > DP
+            MovingDataSetup.GET;
+            ConsolidationSetup.TESTFIELD("BOOK Mapping Code");
+            //NC NCS-1373.2 < DP
+
+            SourceCodeSetup.GET;
+            SourceCodeSetup.TESTFIELD("Accounting Engine");
+
+            //NC Серии номеров для фин. журналов
+            ConsolidationSource.TESTFIELD("Source  No. Series");
+            IF NoSeriesRec.GET(ConsolidationSource."Source  No. Series") THEN BEGIN
+              NoSerManag.SetNoSeriesLineFilter(NoSeriesLine1,ConsolidationSource."Source  No. Series",0D);
+              CLEAR(NoSeriesLine1);
+              CLEAR(NoSerManag);
+            END;
+            {
+            ConsolidationSource.TESTFIELD("Reposted  No. Series");
+            IF NoSeriesRec.GET(ConsolidationSource."Reposted  No. Series") THEN BEGIN
+              NoSerManag.SetNoSeriesLineFilter(NoSeriesLine2,ConsolidationSource."Reposted  No. Series",0D);
+              CLEAR(NoSeriesLine2);
+              CLEAR(NoSerManag);
+            END;
+
+            ConsolidationSource.TESTFIELD("Removed  No. Series");
+            IF NoSeriesRec.GET(ConsolidationSource."Removed  No. Series") THEN BEGIN
+              NoSerManag.SetNoSeriesLineFilter(NoSeriesLine3,ConsolidationSource."Removed  No. Series",0D);
+              CLEAR(NoSeriesLine3);
+              CLEAR(NoSerManag);
+            END;
+            }
+
+            ConsolidationMgt.SetGlobal;
+
+            IF NOT Buffer."Not Translate" THEN BEGIN
+                IF Buffer."Source Operation No." = 0 THEN BEGIN  // новый
+
+                  IsError := NewOperation(Buffer,Rec);
+
+                END ELSE BEGIN
+                  IF Buffer.Removed THEN BEGIN  // Удаление
+
+                    IsError := DeleteOperation(EntryType::Remove,Buffer,Rec);
+
+                  END ELSE BEGIN  // изменение
+
+                    IsError := NewOperation(Buffer,Rec);
+
+                    IF NOT IsError THEN
+                      IsError := DeleteOperation(EntryType::Repost,Buffer,Rec);
+
+                  END;
+                END;
+            END ELSE BEGIN
+              IsError := FALSE;
+            END;
+
+
+            IF IsError THEN BEGIN
+              Buffer2.GET(Buffer."Cons. Source Code",Buffer."Entry No.");
+              Buffer2."Error in Import" := TRUE;
+              Buffer2.MODIFY;
+            END ELSE BEGIN
+              Buffer2.GET(Buffer."Cons. Source Code",Buffer."Entry No.");
+              Buffer2."Export Consolidation Register" := "Cons. Register";
+              Buffer2."Time Complete" := CURRENTDATETIME;
+              Buffer2.MODIFY;
+            END;
+
+            ConsolidationSource."Last Consolidation Date" := TODAY;
+            ConsolidationSource."Last Consolidation Time" := TIME;
+            ConsolidationSource.MODIFY;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1101495000 : Record 98;
+      ConsolidationSetup@1101495001 : Record 50000;
+      ConsolidationSource@1101495002 : Record 50001;
+      SourceCodeSetup@1101495003 : Record 242;
+      NoSeriesRec@1101495004 : Record 308;
+      NoSerManag@1101495005 : Codeunit 396;
+      NoSeriesLine1@1101495006 : Record 309;
+      NoSeriesLine2@1101495007 : Record 309;
+      NoSeriesLine3@1101495008 : Record 309;
+      ConsolidationMgt@1101495009 : Codeunit 50000;
+      RecID@1101495010 : RecordID;
+      RecRef@1101495011 : RecordRef;
+      Text001@1101495012 : TextConst 'ENU=Wrong identifier to record;RUS=Неправильный идентификатор записи';
+      Text010@1101495017 : TextConst 'ENU="There is no mapping for G/L Account ";RUS="Для счета "';
+      Text011@1101495016 : TextConst 'ENU=.;RUS=" не задан соответствующий счет в МСФО"';
+      Text012@1101495043 : TextConst 'ENU="There is no mapping for value ";RUS="Для значения "';
+      Text013@1101495042 : TextConst 'ENU=" of Dimension ";RUS=" измерения "';
+      Text014@1101495041 : TextConst 'ENU=.;RUS=" не задано преобразование."';
+      Text004@1101495060 : TextConst 'ENU=Operation is not poised on %1;RUS=Операция не балансирует на %1';
+      Text016@1101495022 : TextConst 'ENU="G/L Account ";RUS="Счет "';
+      Text017@1101495021 : TextConst 'ENU=" does not exist in the chart of accounts.";RUS=" отсутствует в плане счетов МСФО."';
+      Text019@1101495044 : TextConst 'ENU=" there is no required dimension ";RUS=" нет обязательного измерения "';
+      Text020@1101495037 : TextConst 'ENU="For Entry on G/L Account ";RUS="На операции по счету "';
+      IsGlobalError@1101495018 : Boolean;
+      IsError@1101495032 : Boolean;
+      ErrMessage@1101495019 : Text[250];
+      ErrorJournal@1101495020 : Record 50023;
+      Text021@1101495045 : TextConst 'ENU=" with value ";RUS=" со значением "';
+      Text022@1101495029 : TextConst 'ENU="Dimension ";RUS="Для измерения "';
+      Text023@1101495030 : TextConst 'ENU=" value ";RUS=" нет значения "';
+      Text024@1101495031 : TextConst 'ENU=" does no exist in NAV.";RUS=" в справочнике NAV."';
+      Text025@1101495028 : TextConst 'ENU="Dimension ";RUS="Измерение "';
+      Text026@1101495034 : TextConst 'RUS=" значение "';
+      Text027@1101495035 : TextConst 'ENU=" is blocked in NAV.";RUS=" блокировано в справочнике NAV."';
+      Text028@1101495048 : TextConst 'ENU=" Dimension ";RUS=" Измерение "';
+      Text029@1101495047 : TextConst 'ENU=" is not allowed for posting.";RUS=" не разрешено для учета."';
+      Text030@1101495015 : TextConst 'ENU=" in correspondence with account ";RUS=" в корреспонденции со счетом "';
+      Text032@1101495033 : TextConst 'ENU=" Value Type must be Standart.";RUS=" Тип Значения должен быть Стандартный."';
+      Text033@1101495046 : TextConst 'ENU="For G/L Account ";RUS="Для счета "';
+      Text034@1101495027 : TextConst 'ENU="For value ";RUS="Для значения "';
+      Text035@1101495023 : TextConst 'ENU=Account Type for G/L Account %1 must be Posting.;RUS=Тип Счета %1 должен быть Учетный.';
+      Text041@1101495024 : TextConst 'ENU=G/L Account %1 is blocked in NAV.;RUS=Фин. Счет %1 блокирован в NAV.';
+      Text042@1101495026 : TextConst 'ENU=Dimension %1 is blocked in NAV.;RUS=Измерение %1 блокировано в NAV.';
+      Text043@1101495025 : TextConst 'ENU=Dimension %1 does not exist in NAV.;RUS=Измерение %1 не существует в NAV.';
+      ConsType@1101495039 : 'Buffer,Navision';
+      OperType@1101495038 : 'Normal,Repost';
+      CloseOperation@1101495040 : Boolean;
+      CurrExchRate@1101495036 : Record 330;
+      Text044@1101495049 : TextConst 'ENU=On the operation did not state the Amount or Quantity.;RUS=По операции не указана Сумма или Количество.';
+      CountDim@1101495050 : Integer;
+      Text045@1101495054 : TextConst 'RUS=Документ %1 не балансирует на %2';
+      GLEntry@1101495053 : Record 17;
+      ChangeLogMgt@1101495052 : Codeunit 423;
+      CountGL@1101495051 : Integer;
+      TextEDTC02@1101495055 : TextConst 'ENU=In the Buffer NAV submitted incomplete data. Please enter %1. Record not processed.;RUS=В Буфере NAV переданы не полные данные. Не заполнено поле %1. Запись не обработана.';
+      GV@1101495013 : Codeunit 50033;
+      TextEDTC02_@1101495014 : TextConst 'ENU=For %1 %2 and %3 %4 not defined template entries.;RUS=Для %1 %2 и %3 %4 не задан шаблон проводок.';
+      TextEDTC18@1101495056 : TextConst 'ENU=For %1 %2 and %3 %4 previous event is not permitted %5 %6.;RUS=Для %1 %2 и %3 %4 не разрешено предыдущее событие %5 %6.';
+      TextEDTC19@1101495057 : TextConst 'ENU=Line %1 Goto statement does not exist.;RUS=Строка %1 инструкции Goto не существует.';
+      DimensionMgt@1101495058 : Codeunit 408;
+      TextEDTC20@1101495059 : TextConst 'ENU=When processing operation is a conflict of dimensions. %1;RUS=При обработке операции есть конфликт измерений. %1';
+      TextEDTC21@1101495061 : TextConst 'ENU=For the removal/change %1 not found the original operation.;RUS=Для операции удаления/изменения %1 не найдена исходная операция.';
+      MovingDataSetup@1101495062 : Record 50064;
+
+    PROCEDURE NewOperation@1101495014(VAR Buffer@1101495000 : TEMPORARY Record 50155;VAR JobProcStatus@1101495001 : TEMPORARY Record 50063) isErr : Boolean;
+    VAR
+      TMPDimCheck@1101495003 : TEMPORARY Record 348;
+      TMPDimCheckNeedMapp@1101495002 : TEMPORARY Record 348;
+      TempMapping@1101495005 : TEMPORARY Record 50022;
+      OneMapping@1101495004 : Boolean;
+      GLEntryTemp@1101495006 : TEMPORARY Record 17;
+      DebitLEDimTemp@1101495008 : TEMPORARY Record 355;
+      CreditLEDimTemp@1101495007 : TEMPORARY Record 355;
+      GenJournalBatchTemp@1101495022 : TEMPORARY Record 81;
+      JournalBatch@1101495021 : Code[20];
+      DimValue@1101495020 : Record 349;
+      DimMappingSel@1101495019 : Record 50031;
+      EventTemplate@1101495018 : Record 50151;
+      AllowedPrevEvents@1101495017 : Record 50150;
+      isExit@1101495016 : Boolean;
+      retTempl@1101495015 : Integer;
+      GenJnlLineTemp@1101495014 : TEMPORARY Record 81;
+      DimGenJnlLineTemp@1101495013 : TEMPORARY Record 356;
+      JournalTemplateName@1101495012 : Code[20];
+      JournalBatchName@1101495011 : Code[20];
+      LineNo@1101495010 : Integer;
+      CurrentBalance@1101495009 : Decimal;
+      Buffer2@1101495023 : Record 50155;
+      BufferDataSet@1101495024 : Record 50156;
+      GenJournalLine@1101495026 : Record 81;
+      JournalLineDimension@1101495025 : Record 356;
+      DocumentNo@1101495027 : Code[20];
+      VendorAgr@1101495028 : Record 14901;
+      CustomerAgr@1101495029 : Record 14902;
+      Deal@1101495030 : Record 50037;
+      TempMapping2@1101495031 : TEMPORARY Record 50022;
+      DimMappingSel2@1101495032 : Record 50031;
+    BEGIN
+      BufferDataSet.RESET;
+      BufferDataSet.SETRANGE("Cons. Source Code",Buffer."Cons. Source Code");
+      BufferDataSet.SETRANGE("Entry No.",Buffer."Entry No.");
+
+      GV.GetMapping(TempMapping,ConsolidationSource."Mapping Code",0,OneMapping);
+
+      ConsolidationMgt.CreateConsDimList(TMPDimCheck,ConsolidationSource,FALSE);  // измерения с источника
+
+      ConsolidationMgt.CreateConsDimList(TMPDimCheckNeedMapp,ConsolidationSource,TRUE); // измерения подлежащие мэппингу !!! НЕ НУЖНО
+
+      IF NOT OneMapping THEN
+        ConsolidationMgt.GetMapping(Buffer."Posting Date",TempMapping);
+
+      GLEntryTemp.DELETEALL;
+      DebitLEDimTemp.DELETEALL;
+      CreditLEDimTemp.DELETEALL;
+
+      CreateDebitDimBuffer(Buffer,DebitLEDimTemp);
+      CreateCreditDimBuffer(Buffer,CreditLEDimTemp);
+
+      //NC NCS-1373.2 > DP
+      // мэппинг измерений BOOK
+      GV.GetMapping2(TempMapping2,ConsolidationSetup."BOOK Mapping Code",0,OneMapping);
+      IF NOT OneMapping THEN
+        ConsolidationMgt.GetMapping(Buffer."Posting Date",TempMapping2);
+      IF ConsolidationSource."Consolidate Dimensions" THEN BEGIN
+        DimMappingSel2.SETRANGE("Mapping Code",TempMapping2.Code);
+        IF GV.FIND_DimMappingSelection(DimMappingSel2) THEN REPEAT
+          IF DebitLEDimTemp.GET(17,Buffer."Entry No.",DimMappingSel2."Dimension Code") AND
+             (DebitLEDimTemp."Dim in Source" = '')
+          THEN
+            isErr := isErr OR CheckDimMapp(Buffer,DebitLEDimTemp,ConsolidationSource,JobProcStatus."Cons. Register",
+
+            //NC NCS-1530 > DP
+            //                                   DimMappingSel2."Save when Mapping",TempMapping2.Code,JobProcStatus."Line No.");
+                                               DimMappingSel2."Save when Mapping",TempMapping2.Code,JobProcStatus."Line No.",TRUE);
+            //NC NCS-1530 < DP
+
+          IF CreditLEDimTemp.GET(17,Buffer."Entry No.",DimMappingSel2."Dimension Code") AND
+             (CreditLEDimTemp."Dim in Source" = '')
+          THEN
+            isErr := isErr OR CheckDimMapp(Buffer,CreditLEDimTemp,ConsolidationSource,JobProcStatus."Cons. Register",
+
+            //NC NCS-1530 > DP
+            //                                   DimMappingSel2."Save when Mapping",TempMapping2.Code,JobProcStatus."Line No.");
+                                               DimMappingSel2."Save when Mapping",TempMapping2.Code,JobProcStatus."Line No.",TRUE);
+            //NC NCS-1530 < DP
+
+        UNTIL GV.NEXT_DimMappingSelection(DimMappingSel2) = 0;
+      END;
+      //NC NCS-1373.2 < DP
+
+
+      // проверка и мэппинг измерений
+      IF ConsolidationSource."Consolidate Dimensions" THEN BEGIN
+        DimMappingSel.SETRANGE("Mapping Code",TempMapping.Code);
+        IF GV.FIND_DimMappingSelection(DimMappingSel) THEN REPEAT
+          IF DebitLEDimTemp.GET(17,Buffer."Entry No.",DimMappingSel."Dimension Code") AND
+
+             //NC NCS-1373.2 > DP
+             {
+             (DebitLEDimTemp."Dim in Source" = '')
+             }
+             ((DebitLEDimTemp."Dim in Source" = '') OR (DebitLEDimTemp."Dim in Source"=MovingDataSetup."BOOK Dimension Code"))
+             //NC NCS-1373.2 < DP
+
+          THEN
+            isErr := isErr OR CheckDimMapp(Buffer,DebitLEDimTemp,ConsolidationSource,JobProcStatus."Cons. Register",
+
+            //NC NCS-1530 > DP
+            //                                   DimMappingSel."Save when Mapping",TempMapping.Code,JobProcStatus."Line No.");
+                                               DimMappingSel."Save when Mapping",TempMapping.Code,JobProcStatus."Line No.",FALSE);
+            //NC NCS-1530 < DP
+
+          IF CreditLEDimTemp.GET(17,Buffer."Entry No.",DimMappingSel."Dimension Code") AND
+
+             //NC NCS-1373.2 > DP
+             {
+             (CreditLEDimTemp."Dim in Source" = '')
+             }
+             ((CreditLEDimTemp."Dim in Source" = '') OR (CreditLEDimTemp."Dim in Source"=MovingDataSetup."BOOK Dimension Code"))
+             //NC NCS-1373.2 < DP
+
+          THEN
+            isErr := isErr OR CheckDimMapp(Buffer,CreditLEDimTemp,ConsolidationSource,JobProcStatus."Cons. Register",
+
+            //NC NCS-1530 > DP
+            //                                   DimMappingSel."Save when Mapping",TempMapping.Code,JobProcStatus."Line No.");
+                                               DimMappingSel."Save when Mapping",TempMapping.Code,JobProcStatus."Line No.",FALSE);
+            //NC NCS-1530 < DP
+
+        UNTIL GV.NEXT_DimMappingSelection(DimMappingSel) = 0;
+
+      END;
+      DebitLEDimTemp.RESET;
+      CreditLEDimTemp.RESET;
+
+      // поиск схемы трансформации
+      EventTemplate.RESET;
+      EventTemplate.SETRANGE("Mapping Code",TempMapping.Code);
+      EventTemplate.SETRANGE("Deal Type",Buffer."Deal Type");
+      EventTemplate.SETRANGE("Event Code",Buffer."Event Code");
+      IF NOT GV.FIND_EventTempl(EventTemplate) THEN BEGIN
+        isErr := TRUE;
+        IsGlobalError := TRUE;
+        ErrorJournal.AddErrorBuferDealEntry(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                   ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                   STRSUBSTNO(TextEDTC02_,Buffer.FIELDCAPTION("Deal Type"),Buffer."Deal Type",
+                                                          Buffer.FIELDCAPTION("Event Code"),Buffer."Event Code"),
+                                   COMPANYNAME,Buffer,JobProcStatus."Line No.");
+      END;
+
+      //проверка предыдущего события
+      AllowedPrevEvents.RESET;
+      AllowedPrevEvents.SETRANGE("Deal Type",Buffer."Deal Type");
+      AllowedPrevEvents.SETRANGE("Event Code",Buffer."Event Code");
+      IF GV.FIND_AllowedPrevEvents(AllowedPrevEvents) THEN BEGIN
+        Buffer2.RESET;
+        Buffer2.SETRANGE("Export Cons. Source Code",Buffer."Export Cons. Source Code");
+        Buffer2.SETRANGE("Deal Type",Buffer."Deal Type");
+        Buffer2.SETRANGE("Deal No.",Buffer."Deal No.");
+        Buffer2.SETRANGE(Removed, FALSE);
+        Buffer2.SETRANGE("Remove Oper. No", 0);
+        Buffer2.SETRANGE(Reposted, FALSE);
+        Buffer2 := Buffer;
+        IF Buffer2.NEXT(-1) <> 0 THEN
+          IF NOT GV.GET_AllowedPrevEvents(AllowedPrevEvents,Buffer."Deal Type",Buffer."Event Code",Buffer2."Event Code") THEN BEGIN
+            isErr := TRUE;
+            IsGlobalError := TRUE;
+            ErrorJournal.AddErrorBuferDealEntry(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC18',
+                                       STRSUBSTNO(TextEDTC18,Buffer.FIELDCAPTION("Deal Type"),Buffer."Deal Type",
+                                                             Buffer.FIELDCAPTION("Event Code"),Buffer."Event Code",
+                                                             Buffer2."Deal Type",Buffer2."Event Code"),
+                                       COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          END;
+      END;
+
+      //выполнение инструкций
+      IF NOT isErr THEN BEGIN
+        isExit := FALSE;
+        REPEAT
+          retTempl := EventTemplate.Run(Buffer,BufferDataSet,DebitLEDimTemp,CreditLEDimTemp,GenJnlLineTemp,DimGenJnlLineTemp);
+
+          IF retTempl < 0 THEN
+            isExit := TRUE
+          ELSE IF retTempl = 0 THEN
+            isExit := GV.NEXT_EventTempl(EventTemplate) = 0
+          ELSE IF NOT GV.GET_EventTempl(EventTemplate,EventTemplate."Mapping Code",EventTemplate."Deal Type",
+                                                      EventTemplate."Event Code",retTempl) THEN BEGIN
+            isExit := TRUE;
+            isErr := TRUE;
+            IsGlobalError := TRUE;
+            ErrorJournal.AddErrorEventTemplate(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC18',
+                                       STRSUBSTNO(TextEDTC19,retTempl),COMPANYNAME,EventTemplate,JobProcStatus."Line No.");
+          END;
+        UNTIL isExit;
+      END;
+
+      IF GenJnlLineTemp.FINDSET THEN REPEAT
+        DimGenJnlLineTemp.RESET;
+        DimGenJnlLineTemp.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+        DimGenJnlLineTemp.SETRANGE("Journal Line No.",GenJnlLineTemp."Line No.");
+
+        IF NOT CheckJnlLineDimValuePosting(DimGenJnlLineTemp,GenJnlLineTemp."Account Type",
+                                           GenJnlLineTemp."Account No.",
+                                           GenJnlLineTemp,Buffer,JobProcStatus) THEN
+          isErr := TRUE;
+      UNTIL GenJnlLineTemp.NEXT = 0;
+
+
+      IF NOT isErr THEN BEGIN
+        GenJournalBatchTemp.DELETEALL;
+        CurrentBalance := 0;
+
+        IF GenJnlLineTemp.FINDSET THEN REPEAT
+          DimGenJnlLineTemp.RESET;
+          DimGenJnlLineTemp.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+          DimGenJnlLineTemp.SETRANGE("Journal Line No.",GenJnlLineTemp."Line No.");
+
+          JournalTemplateName := ConsolidationSetup."Gen. Jnl. Template";
+          JournalBatchName := ConsolidationSource."Gen. Journal Batch";
+          IF (GenJnlLineTemp."Debit Amount" < 0) OR (GenJnlLineTemp."Credit Amount" < 0) THEN
+            JournalBatchName := ConsolidationSource."Removed Journal Batch";
+          IF DocumentNo = '' THEN
+            DocumentNo := NoSerManag.GetNextNo(ConsolidationSource."Source  No. Series",Buffer."Posting Date",TRUE);
+
+          // сохранение диапазона добавленных строк журналов
+          GenJournalBatchTemp.RESET;
+          GenJournalBatchTemp.SETRANGE("Journal Template Name",JournalTemplateName);
+          GenJournalBatchTemp.SETRANGE("Journal Batch Name",JournalBatchName);
+          IF GenJournalBatchTemp.FINDFIRST THEN BEGIN
+            GenJournalBatchTemp."Source Entry No." += 10; // послендняя добавленная строка
+            GenJournalBatchTemp.MODIFY;
+            LineNo := GenJournalBatchTemp."Source Entry No.";
+          END ELSE BEGIN
+            GenJournalLine.RESET;
+            GenJournalLine.SETRANGE("Journal Template Name",JournalTemplateName);
+            GenJournalLine.SETRANGE("Journal Batch Name",JournalBatchName);
+            IF GenJournalLine.FINDLAST THEN
+              LineNo := GenJournalLine."Line No." + 10
+            ELSE
+              LineNo := 10;
+
+            GenJournalBatchTemp.INIT;
+            GenJournalBatchTemp."Journal Template Name" := JournalTemplateName;
+            GenJournalBatchTemp."Journal Batch Name" := JournalBatchName;
+            GenJournalBatchTemp."Line No." := LineNo;  // первая добавленная строка
+            GenJournalBatchTemp."Source Entry No." := LineNo; // послендняя добавленная строка
+            GenJournalBatchTemp."Document No." := GenJnlLineTemp."Document No.";
+            GenJournalBatchTemp.INSERT;
+          END;
+
+
+
+          GenJournalLine.INIT;
+          GenJournalLine := GenJnlLineTemp;
+          GenJournalLine."Journal Template Name" := JournalTemplateName;
+          GenJournalLine."Journal Batch Name" := JournalBatchName;
+          GenJournalLine."Line No." := LineNo;
+
+          GenJournalLine."Document No." := DocumentNo;
+          IF GenJnlLineTemp."Source Code" <> '' THEN
+            GenJournalLine."Source Code" := GenJnlLineTemp."Source Code"
+          ELSE
+            GenJournalLine."Source Code" := SourceCodeSetup."Accounting Engine";
+          IF GenJnlLineTemp."External Document No." <> '' THEN
+            GenJournalLine."External Document No." := GenJnlLineTemp."External Document No.";
+
+          IF GenJournalLine."Posting Date" < GLSetup."Allow Posting From" THEN
+            GenJournalLine."Posting Date" := GLSetup."Allow Posting From";
+          IF GenJournalLine."Posting Date" < GLSetup."Allow Transformation From" THEN
+            GenJournalLine."Posting Date" := GLSetup."Allow Transformation From";
+
+          //NC NCS-622.2 > DP
+          GenJournalLine."Currency Code" := ConvertCurrencyCode(GenJnlLineTemp."Currency Code");
+          //NC NCS-622.2 < DP
+
+          GenJournalLine.VALIDATE("Posting Date");
+
+          IF GenJnlLineTemp."Document Date" <> 0D THEN
+            GenJournalLine."Document Date" := GenJnlLineTemp."Document Date";
+
+          GenJournalLine.VALIDATE("Account No.");
+
+          GenJournalLine.Description := GenJnlLineTemp.Description;
+          GenJournalLine."Description 2" := GenJnlLineTemp."Description 2";
+
+          //NC NSC-622.4 < DP
+          //добавление карточки договора Договора
+
+
+          DimGenJnlLineTemp.SETRANGE("Dimension Code",ConsolidationSetup."Deal Dimension Code");
+          IF DimGenJnlLineTemp.FINDFIRST AND (DimGenJnlLineTemp."Dimension Value Code" = GenJournalLine."Agreement No.") THEN
+
+          //NC NCS-622.5 > DP
+          GenJournalLine."Currency Code" := ConvertCurrencyCode(GenJnlLineTemp."Currency Code");
+          IF GenJnlLineTemp."Posting Group" <> '' THEN
+            GenJournalLine.VALIDATE("Posting Group",GenJnlLineTemp."Posting Group");
+          //NC NCS-622.5 < DP
+
+
+          IF (GenJournalLine."Account No." <> '') AND (GenJournalLine."Agreement No." <> '')
+
+
+             {
+             AND JournalLineDimension.GET(81, GenJournalLine."Journal Template Name",
+                                      GenJournalLine."Journal Batch Name",
+                                      GenJournalLine."Line No.",
+                                      0,
+                                      ConsolidationSetup."Deal Dimension Code") AND
+             (JournalLineDimension."Dimension Value Code" = GenJournalLine."Agreement No.")
+             }
+
+
+          THEN BEGIN
+
+            //NC NCS-1276 > DP
+            MovingDataSetup.GET;
+            IF Deal.GET(GenJournalLine."Agreement No.") THEN;
+            //NC NCS-1276 < DP
+
+            CASE GenJournalLine."Account Type" OF
+              GenJournalLine."Account Type"::Customer :
+                IF NOT CustomerAgr.GET(GenJournalLine."Account No.", GenJournalLine."Agreement No.") THEN BEGIN
+                  CustomerAgr.INIT;
+                  CustomerAgr."Customer No." := GenJournalLine."Account No.";
+                  CustomerAgr."No." := DimGenJnlLineTemp."Dimension Value Code";
+                  DimGenJnlLineTemp.CALCFIELDS("Dimension Value Name");
+                  CustomerAgr."External Agreement No." := DimGenJnlLineTemp."Dimension Value Name";
+                  CustomerAgr.Description := DimGenJnlLineTemp."Dimension Value Name";
+                  CustomerAgr.Active := TRUE;
+                  CustomerAgr."Customer Posting Group" := GenJournalLine."Posting Group";
+                  CustomerAgr."Deal No." := DimGenJnlLineTemp."Dimension Value Code";
+                  CustomerAgr."Currency Code" := GenJournalLine."Currency Code";
+                  CustomerAgr."Agreement Type" := CustomerAgr."Agreement Type"::"1";
+                  IF CustomerAgr.INSERT THEN;
+                  //NC NCS-622.6 > PCH
+                  AddDefDimForAgr(DATABASE::"Customer Agreement",GenJournalLine."Account No.",
+                    GenJournalLine."Agreement No.",TempMapping.Code);
+                  //NC NCS-622.6 > PCH
+
+
+                END ELSE BEGIN
+                  CustomerAgr.TESTFIELD(Active,TRUE);
+                  CustomerAgr.TESTFIELD(Blocked,CustomerAgr.Blocked::" ");
+                END;
+              GenJournalLine."Account Type"::Vendor :
+                IF NOT VendorAgr.GET(GenJournalLine."Account No.", GenJournalLine."Agreement No.") THEN BEGIN
+                  VendorAgr.INIT;
+                  VendorAgr."Vendor No." := GenJournalLine."Account No.";
+                  VendorAgr."No." := GenJournalLine."Agreement No.";
+                  DimGenJnlLineTemp.CALCFIELDS("Dimension Value Name");
+                  VendorAgr."External Agreement No." := DimGenJnlLineTemp."Dimension Value Name";
+                  VendorAgr.Description := DimGenJnlLineTemp."Dimension Value Name";
+                  VendorAgr.Active := TRUE;
+                  VendorAgr."Vendor Posting Group" := GenJournalLine."Posting Group";
+                  VendorAgr."Deal No." := DimGenJnlLineTemp."Dimension Value Code";
+                  VendorAgr."Currency Code" := GenJournalLine."Currency Code";
+                  VendorAgr."Agreement Type" := VendorAgr."Agreement Type"::"1";
+                  IF VendorAgr.INSERT THEN;
+                  //NC NCS-622.6 > PCH
+                  AddDefDimForAgr(DATABASE::"Vendor Agreement", GenJournalLine."Account No.",
+                    GenJournalLine."Agreement No.",TempMapping.Code);
+                  //NC NCS-622.6 > PCH
+                END ELSE BEGIN
+                  VendorAgr.TESTFIELD(Active,TRUE);
+                  VendorAgr.TESTFIELD(Blocked,VendorAgr.Blocked::" ");
+                END;
+
+            END;
+          END;
+          DimGenJnlLineTemp.SETRANGE("Dimension Code");
+          //NC NSC-622.4 < DP
+
+          IF GenJnlLineTemp."Agreement No." <> '' THEN
+            GenJournalLine.VALIDATE("Agreement No.",GenJnlLineTemp."Agreement No.");
+
+          IF GenJnlLineTemp."Posting Group" <> '' THEN
+            GenJournalLine.VALIDATE("Posting Group",GenJnlLineTemp."Posting Group");
+
+          IF GenJnlLineTemp."Gen. Posting Type" <> 0 THEN
+            GenJournalLine."Gen. Posting Type" := GenJnlLineTemp."Gen. Posting Type";
+          IF GenJnlLineTemp."Gen. Bus. Posting Group" <> '' THEN
+            GenJournalLine."Gen. Bus. Posting Group" := GenJnlLineTemp."Gen. Bus. Posting Group";
+          IF GenJnlLineTemp."Gen. Prod. Posting Group" <> '' THEN
+            GenJournalLine."Gen. Prod. Posting Group" := GenJnlLineTemp."Gen. Prod. Posting Group";
+          IF GenJnlLineTemp."VAT Bus. Posting Group" <> '' THEN
+            GenJournalLine."VAT Bus. Posting Group" := GenJnlLineTemp."VAT Bus. Posting Group";
+          IF GenJnlLineTemp."VAT Prod. Posting Group" <> '' THEN
+            GenJournalLine."VAT Prod. Posting Group" := GenJnlLineTemp."VAT Prod. Posting Group";
+
+          //NC NCS-622.5 > DP
+          GenJournalLine."Currency Code" := ConvertCurrencyCode(GenJnlLineTemp."Currency Code");
+          //NC NCS-622.5 < DP
+
+          //NC NCS-815 > DP
+          GenJournalLine."Reversing Entry" := GenJnlLineTemp."Reversing Entry";
+          GenJournalLine.VALIDATE("Currency Code");
+          {
+          GenJournalLine."Reversing Entry" := GenJnlLineTemp."Reversing Entry";
+          }
+          //NC NCS-815 > DP
+
+          IF GenJnlLineTemp."Debit Amount" <> 0 THEN
+            GenJournalLine.VALIDATE("Debit Amount",GenJnlLineTemp."Debit Amount");
+          IF GenJnlLineTemp."Credit Amount" <> 0 THEN
+            GenJournalLine.VALIDATE("Credit Amount",GenJnlLineTemp."Credit Amount");
+
+          IF GenJnlLineTemp."Debit Amount (LCY)" <> 0 THEN
+            GenJournalLine.VALIDATE("Debit Amount (LCY)",GenJnlLineTemp."Debit Amount (LCY)");
+          IF GenJnlLineTemp."Credit Amount (LCY)" <> 0 THEN
+            GenJournalLine.VALIDATE("Credit Amount (LCY)",GenJnlLineTemp."Credit Amount (LCY)");
+
+          IF GenJnlLineTemp."VAT Amount" <> 0 THEN
+            GenJournalLine."VAT Amount" := GenJnlLineTemp."VAT Amount";
+
+          IF GenJnlLineTemp."Due Date" <> 0D THEN
+            GenJournalLine.VALIDATE("Due Date",GenJnlLineTemp."Due Date");
+
+          IF ConsolidationSource."Business Unit Code" <> '' THEN
+            GenJournalLine."Business Unit Code" := ConsolidationSource."Business Unit Code";
+
+          IF GenJnlLineTemp."Financial Instrument No." <> '' THEN
+            GenJournalLine."Financial Instrument No." := GenJnlLineTemp."Financial Instrument No.";
+
+          GenJournalLine."Additional-Currency Posting" := GenJnlLineTemp."Additional-Currency Posting";
+
+          GenJournalLine."Source Historical Date" := GenJnlLineTemp."Source Historical Date";
+          GenJournalLine."Currency Index Entry" := GenJnlLineTemp."Currency Index Entry";
+          GenJournalLine."Currency Index" := GenJnlLineTemp."Currency Index";
+
+          GenJournalLine."Export Cons. Source Code" := JobProcStatus.Processor;
+          GenJournalLine."Export Register No." := JobProcStatus."Cons. Register";
+          GenJournalLine."Buffer Entry No." := Buffer."Entry No.";
+          GenJournalLine."Source Entry No." := 0;
+          GenJournalLine."External Document ID" := Buffer."Document ID";
+          GenJournalLine."External System ID" := Buffer."Id External System";
+          GenJournalLine.Removed := Buffer.Removed;
+          GenJournalLine.Reposted := Buffer.Reposted;
+          GenJournalLine."Cons. Source Code" := Buffer."Cons. Source Code";
+          GenJournalLine."Register No." := Buffer."Consolidation Register";
+          GenJournalLine."Transaction Type" := GenJournalLine."Transaction Type"::"1";
+
+          GenJournalLine.INSERT;
+          CurrentBalance := CurrentBalance + GenJournalLine."Balance (LCY)";
+
+          IF DimGenJnlLineTemp.FINDSET THEN REPEAT
+            IF NOT JournalLineDimension.GET(DATABASE::"Gen. Journal Line",
+                                      GenJournalLine."Journal Template Name",GenJournalLine."Journal Batch Name",
+                                      GenJournalLine."Line No.",0,DimGenJnlLineTemp."Dimension Code") THEN BEGIN
+              JournalLineDimension := DimGenJnlLineTemp;
+              JournalLineDimension."Journal Template Name"  := GenJournalLine."Journal Template Name";
+              JournalLineDimension."Journal Batch Name"  := GenJournalLine."Journal Batch Name";
+              JournalLineDimension."Journal Line No." := GenJournalLine."Line No.";
+              JournalLineDimension.INSERT;
+
+
+
+            //NC NCS-1276 > DP
+            {
+            END ELSE IF JournalLineDimension."Dimension Value Code" = ''
+            }
+            END ELSE IF (JournalLineDimension."Dimension Value Code" = '')
+            OR (Deal."Deal Between Books" AND (DimGenJnlLineTemp."Dimension Code" IN
+            [MovingDataSetup."BOOK Dimension Code", MovingDataSetup."PROFIT CENTER Dimension Code"]))
+            //NC NCS-1276 < DP
+
+            THEN BEGIN
+              JournalLineDimension."Dimension Value Code" := DimGenJnlLineTemp."Dimension Value Code";
+              JournalLineDimension.MODIFY;
+            END;
+            IF GLSetup."Global Dimension 1 Code" = JournalLineDimension."Dimension Code" THEN
+              GenJournalLine."Shortcut Dimension 1 Code" := JournalLineDimension."Dimension Value Code";
+            IF GLSetup."Global Dimension 2 Code" = JournalLineDimension."Dimension Code" THEN
+              GenJournalLine."Shortcut Dimension 2 Code" := JournalLineDimension."Dimension Value Code";
+          UNTIL DimGenJnlLineTemp.NEXT = 0;
+
+          GenJournalLine.MODIFY;
+
+          //NC NSC-622.3 > DP
+          //добавление карточки договора Договора
+          {
+          IF (GenJournalLine."Account No." <> '') AND (GenJournalLine."Agreement No." <> '') AND
+             JournalLineDimension.GET(81, GenJournalLine."Journal Template Name",
+                                      GenJournalLine."Journal Batch Name",
+                                      GenJournalLine."Line No.",
+                                      0,
+                                      ConsolidationSetup."Deal Dimension Code") AND
+             (JournalLineDimension."Dimension Value Code" = GenJournalLine."Agreement No.") THEN BEGIN
+            CASE GenJournalLine."Account Type" OF
+              GenJournalLine."Account Type"::Customer :
+                IF NOT CustomerAgr.GET(GenJournalLine."Account No.", GenJournalLine."Agreement No.") THEN BEGIN
+                  CustomerAgr.INIT;
+                  CustomerAgr."Customer No." := GenJournalLine."Account No.";
+                  CustomerAgr."No." := JournalLineDimension."Dimension Value Code";
+                  JournalLineDimension.CALCFIELDS("Dimension Value Name");
+                  CustomerAgr."External Agreement No." := JournalLineDimension."Dimension Value Name";
+                  CustomerAgr.Description := JournalLineDimension."Dimension Value Name";
+                  CustomerAgr.Active := TRUE;
+                  CustomerAgr."Customer Posting Group" := GenJournalLine."Posting Group";
+                  CustomerAgr."Deal No." := JournalLineDimension."Dimension Value Code";
+                  CustomerAgr."Currency Code" := GenJournalLine."Currency Code";
+                  CustomerAgr."Agreement Type" := CustomerAgr."Agreement Type"::Trade;
+                  IF CustomerAgr.INSERT THEN;
+                END ELSE BEGIN
+                  CustomerAgr.TESTFIELD(Active,TRUE);
+                  CustomerAgr.TESTFIELD(Blocked,CustomerAgr.Blocked::" ");
+                END;
+              GenJournalLine."Account Type"::Vendor :
+                IF NOT VendorAgr.GET(GenJournalLine."Account No.", GenJournalLine."Agreement No.") THEN BEGIN
+                  VendorAgr.INIT;
+                  VendorAgr."Vendor No." := GenJournalLine."Account No.";
+                  VendorAgr."No." := GenJournalLine."Agreement No.";
+                  JournalLineDimension.CALCFIELDS("Dimension Value Name");
+                  VendorAgr."External Agreement No." := JournalLineDimension."Dimension Value Name";
+                  VendorAgr.Description := JournalLineDimension."Dimension Value Name";
+                  VendorAgr.Active := TRUE;
+                  VendorAgr."Vendor Posting Group" := GenJournalLine."Posting Group";
+                  VendorAgr."Deal No." := JournalLineDimension."Dimension Value Code";
+                  VendorAgr."Currency Code" := GenJournalLine."Currency Code";
+                  VendorAgr."Agreement Type" := VendorAgr."Agreement Type"::Trade;
+                  IF VendorAgr.INSERT THEN;
+                END ELSE BEGIN
+                  VendorAgr.TESTFIELD(Active,TRUE);
+                  VendorAgr.TESTFIELD(Blocked,VendorAgr.Blocked::" ");
+                END;
+            END;
+          END;
+          }
+          //NC NSC-622.3 < DP
+
+        UNTIL GenJnlLineTemp.NEXT = 0;
+
+        IF ABS(CurrentBalance) >= ABS(ConsolidationSource."Cons. Max Round. Amount") THEN
+
+          ERROR(Text004,ABS(CurrentBalance))
+        ELSE IF CurrentBalance <> 0 THEN BEGIN
+          GenJournalBatchTemp.RESET;
+          IF GenJournalBatchTemp.FINDFIRST THEN REPEAT
+            InsertCorrectLine(GenJournalBatchTemp,GenJournalLine,JournalLineDimension);
+          UNTIL GenJournalBatchTemp.NEXT = 0;
+        END;
+
+      END;
+    END;
+
+    PROCEDURE CheckDimMapp@1000000032(Buffer@1210001 : Record 50155;VAR LedgDimensionTmp@1000000010 : TEMPORARY Record 355;ConsolidationSource@1000000009 : Record 50001;ConsSession@1210000 : Integer;SaveSourceDimValue@1000000001 : Boolean;MappingCode@1000000002 : Code[20];JobProcStatusLineNo@1101495001 : Integer;NoError@1101495004 : Boolean) IsErr : Boolean;
+    VAR
+      ConvDimensions@1000000008 : Record 50003;
+      DimCode@1000000014 : Code[20];
+      DimVal@1000000013 : Code[20];
+      tmp@1210002 : Integer;
+      lDim1Exist@1210007 : Boolean;
+      lDim2Exist@1210006 : Boolean;
+      lDim3Exist@1210005 : Boolean;
+      ConsDimCode@1210004 : Code[20];
+      ConsDimValue@1101495003 : Code[20];
+      LedgDimension1@1210003 : Record 355;
+      DimensionValue@1101495000 : Record 349;
+      LedgDimensionTmp2@1101495002 : TEMPORARY Record 355;
+    BEGIN
+      IsErr := FALSE;
+      DimCode := LedgDimensionTmp."Dimension Code";
+      DimVal := LedgDimensionTmp."Dimension Value Code";
+
+      IF ConsolidationSetup."Mapping Dimension Type"=ConsolidationSetup."Mapping Dimension Type"::"Combination-To-One" THEN BEGIN
+        ConsDimCode :='';
+        ConsDimValue := '';
+
+        LedgDimensionTmp.RESET;
+        LedgDimensionTmp.SETRANGE("Table ID", DATABASE::"G/L Entry");
+        LedgDimensionTmp.SETRANGE("Entry No.", Buffer."Entry No.");
+
+        ConvDimensions.RESET;
+        ConvDimensions.SETRANGE("Mapping Code",MappingCode);
+        ConvDimensions.SETRANGE("Source Dimension Code",DimCode);
+        ConvDimensions.SETRANGE("Source Dimension Value Code",DimVal);
+        IF GV.FIND_DimMapping(ConvDimensions) THEN
+          REPEAT
+            //проверяем, есть ли строка, соответствующая исключению, в измерениях в данной операции
+
+            IF ConsDimCode='' THEN BEGIN
+              //Проверка на соответствие до 3-х измерений
+              lDim1Exist := TRUE;
+              lDim2Exist := TRUE;
+              lDim3Exist := TRUE;
+
+              WITH LedgDimensionTmp DO BEGIN
+                IF ConvDimensions."Source Dimension Code" <> '' THEN BEGIN
+                  SETRANGE("Dimension Code", ConvDimensions."Source Dimension Code");
+                  SETRANGE("Dimension Value Code", ConvDimensions."Source Dimension Value Code");
+                  lDim1Exist := NOT ISEMPTY;
+                END;
+
+                IF ConvDimensions."Source Dimension Code 2" <> '' THEN BEGIN
+                  SETRANGE("Dimension Code", ConvDimensions."Source Dimension Code 2");
+                  SETRANGE("Dimension Value Code", ConvDimensions."Source Dimension Value Code 2");
+                  lDim2Exist := NOT ISEMPTY;
+                END;
+
+                IF ConvDimensions."Source Dimension Code 3" <> '' THEN BEGIN
+                  SETRANGE("Dimension Code", ConvDimensions."Source Dimension Code 3");
+                  SETRANGE("Dimension Value Code", ConvDimensions."Source Dimension Value Code 3");
+                  lDim3Exist := NOT ISEMPTY;
+                END;
+              END;
+              IF (lDim1Exist AND lDim2Exist AND lDim3Exist) THEN BEGIN
+                ConsDimCode := ConvDimensions."Receiver Dimension Code";
+                ConsDimValue := ConvDimensions."Receiver Dimension Value Code";
+              END
+            END;
+          UNTIL (GV.NEXT_DimMapping(ConvDimensions) = 0) OR (ConsDimCode <> '');
+          IF ConsDimCode='' THEN BEGIN
+            ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+            IsErr := TRUE;
+            IsGlobalError := TRUE;
+            IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+            ErrorJournal.AddErrorBufferDealDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,ConsSession,'EDTC02',
+                                       ErrMessage,COMPANYNAME,Buffer,DimensionValue,JobProcStatusLineNo);
+          END ELSE BEGIN
+            LedgDimensionTmp2 := LedgDimensionTmp;
+            IF NOT SaveSourceDimValue THEN
+              LedgDimensionTmp.DELETE;
+            LedgDimensionTmp.INIT;
+            LedgDimensionTmp."Table ID" := 17;
+            LedgDimensionTmp."Entry No." := Buffer."Entry No.";
+            LedgDimensionTmp."Dimension Code" := ConsDimCode;
+            LedgDimensionTmp."Dimension Value Code" := ConsDimValue;
+            LedgDimensionTmp."Dim in Source" := DimCode;
+            LedgDimensionTmp."Dim Value Code in Source" := DimVal;
+            IF NOT LedgDimensionTmp.INSERT THEN
+              LedgDimensionTmp.MODIFY;
+            LedgDimensionTmp := LedgDimensionTmp2;
+          END;
+      END ELSE BEGIN
+        ConvDimensions.SETCURRENTKEY("Company Name","Source Dimension Code","Source Dimension Value Code");
+        ConvDimensions.SETRANGE("Mapping Code",MappingCode);
+        ConvDimensions.SETRANGE("Company Name",COMPANYNAME);
+        ConvDimensions.SETRANGE("Source Dimension Code",DimCode);
+        ConvDimensions.SETRANGE("Source Dimension Value Code",DimVal);
+        IF NOT GV.FIND_DimMapping(ConvDimensions) THEN BEGIN
+          ConvDimensions.SETRANGE("Company Name",'');
+          IF NOT GV.FIND_DimMapping(ConvDimensions) THEN BEGIN
+
+            //NC NCS-1530 > DP
+            IF NOT NoError THEN BEGIN
+            //NC NCS-1530 < DP
+
+              ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+              IsErr := TRUE;
+              IsGlobalError := TRUE;
+              IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+              ErrorJournal.AddErrorBufferDealDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource.Code,ConsSession,'EDTC02',
+                                         ErrMessage,COMPANYNAME,Buffer,DimensionValue,JobProcStatusLineNo);
+            //NC NCS-1530 > DP
+            END;
+            //NC NCS-1530 < DP
+
+          END ELSE BEGIN
+            IF (ConvDimensions."Receiver Dimension Code" = '') OR (ConvDimensions."Receiver Dimension Value Code" = '') THEN BEGIN
+              ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+              IsErr := TRUE;
+              IsGlobalError := TRUE;
+              IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+              ErrorJournal.AddErrorBufferDealDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource.Code,ConsSession,'EDTC02',
+                                         ErrMessage,COMPANYNAME,Buffer,DimensionValue,JobProcStatusLineNo);
+            END ELSE BEGIN
+              IF NOT DimensionValue.GET(ConvDimensions."Receiver Dimension Code",ConvDimensions."Receiver Dimension Value Code")
+              THEN BEGIN
+                IsGlobalError := TRUE;
+                IsErr := TRUE;
+                ErrMessage := Text022 + FORMAT(ConvDimensions."Receiver Dimension Code") + Text023 +
+                              FORMAT(ConvDimensions."Receiver Dimension Value Code") + Text024;
+                ErrorJournal.AddErrorBufferDealDimMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                           ConsolidationSource.Code,ConsSession,'EDTC06',
+                                           ErrMessage,COMPANYNAME,Buffer,ConvDimensions,JobProcStatusLineNo);
+
+              END ELSE BEGIN
+                  LedgDimensionTmp2 := LedgDimensionTmp;
+                  IF NOT SaveSourceDimValue THEN
+                    LedgDimensionTmp.DELETE;
+                  LedgDimensionTmp.INIT;
+                  LedgDimensionTmp."Table ID" := 17;
+                  LedgDimensionTmp."Entry No." := Buffer."Entry No.";
+                  LedgDimensionTmp."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+                  LedgDimensionTmp."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+                  LedgDimensionTmp."Dim in Source" := DimCode;
+                  LedgDimensionTmp."Dim Value Code in Source" := DimVal;
+                  IF NOT LedgDimensionTmp.INSERT THEN
+                    LedgDimensionTmp.MODIFY;
+                  LedgDimensionTmp := LedgDimensionTmp2;
+              END;
+            END;
+          END;
+        END ELSE BEGIN
+          IF (ConvDimensions."Receiver Dimension Code" = '') OR (ConvDimensions."Receiver Dimension Value Code" = '') THEN BEGIN
+            ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+            IsErr := TRUE;
+            IsGlobalError := TRUE;
+            IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+            ErrorJournal.AddErrorBufferDealDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,ConsSession,'EDTC02',
+                                       ErrMessage,COMPANYNAME,Buffer,DimensionValue,JobProcStatusLineNo);
+              END ELSE BEGIN
+            IF NOT DimensionValue.GET(ConvDimensions."Receiver Dimension Code",ConvDimensions."Receiver Dimension Value Code")
+            THEN BEGIN
+              IsGlobalError := TRUE;
+              IsErr := TRUE;
+              ErrMessage := Text022 + FORMAT(ConvDimensions."Receiver Dimension Code") + Text023 +
+                            FORMAT(ConvDimensions."Receiver Dimension Value Code") + Text024;
+              ErrorJournal.AddErrorBufferDealDimMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource.Code,ConsSession,'EDTC06',
+                                         ErrMessage,COMPANYNAME,Buffer,ConvDimensions,JobProcStatusLineNo);
+            END ELSE BEGIN
+                  LedgDimensionTmp2 := LedgDimensionTmp;
+                  IF NOT SaveSourceDimValue THEN
+                    LedgDimensionTmp.DELETE;
+                  LedgDimensionTmp.INIT;
+                  LedgDimensionTmp."Table ID" := 17;
+                  LedgDimensionTmp."Entry No." := Buffer."Entry No.";
+                  LedgDimensionTmp."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+                  LedgDimensionTmp."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+                  LedgDimensionTmp."Dim in Source" := DimCode;
+                  LedgDimensionTmp."Dim Value Code in Source" := DimVal;
+                  IF NOT LedgDimensionTmp.INSERT THEN
+                    LedgDimensionTmp.MODIFY;
+                  LedgDimensionTmp := LedgDimensionTmp2;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ConvertCurrencyCode@1101495007(BufferCode@1210000 : Code[10]) : Code[10];
+    VAR
+      Currency@1210001 : Record 4;
+    BEGIN
+      IF BufferCode='' THEN EXIT(BufferCode);
+      GLSetup.GET;
+      IF GLSetup."LCY Code" = BufferCode THEN
+        EXIT('');
+      Currency.GET(BufferCode);
+      EXIT(Currency.Code);
+    END;
+
+    PROCEDURE InsertCorrectLine@1101495012(VAR GenJournalLineTemp@1101495002 : TEMPORARY Record 81;VAR GenJournalLine@1101495001 : Record 81;VAR JournalLineDimension@1101495000 : Record 356);
+    VAR
+      DocBalanceAmount@1101495003 : Decimal;
+    BEGIN
+      GenJournalLineTemp.RESET;
+      IF GenJournalLineTemp.FINDSET THEN REPEAT
+
+        IF GenJournalLineTemp."Source Entry No." = 0 THEN
+          GenJournalLineTemp."Source Entry No." := GenJournalLineTemp."Line No.";
+
+        GenJournalLine.RESET;
+        GenJournalLine.SETRANGE("Journal Template Name",GenJournalLineTemp."Journal Template Name");
+        GenJournalLine.SETRANGE("Journal Batch Name",GenJournalLineTemp."Journal Batch Name");
+        GenJournalLine.SETRANGE("Line No.",GenJournalLineTemp."Line No.",GenJournalLineTemp."Source Entry No.");
+        ConsolidationMgt.InsertRoundingCorrectionLines(ConsolidationSource.Code, GenJournalLine, JournalLineDimension);
+
+        //Проверка баланса
+        IF GenJournalLine.FINDFIRST THEN BEGIN
+          GenJournalLine.SETFILTER("Line No.",'>=%1',GenJournalLineTemp."Line No.");
+                                                       //т.к. могли добавиться проводки функцией вставки балансирующих строк
+          GenJournalLine.SETRANGE("Document No.",GenJournalLineTemp."Document No.");
+          DocBalanceAmount := 0;
+          IF GenJournalLine.FINDSET THEN REPEAT
+            DocBalanceAmount := DocBalanceAmount + GenJournalLine."Amount (LCY)";
+          UNTIL GenJournalLine.NEXT = 0;
+
+          IF DocBalanceAmount <> 0 THEN
+            ERROR(Text045,GenJournalLine."Document No.",DocBalanceAmount);
+
+        END;
+
+      UNTIL GenJournalLineTemp.NEXT = 0;
+    END;
+
+    PROCEDURE CreateDebitDimBuffer@1000000020(Buffer@1210000 : Record 50155;VAR LedgerEntryDimTmp@1210001 : TEMPORARY Record 355) nErr : Integer;
+    VAR
+      IntContrValue@1210002 : Code[20];
+      ReclAcc@1210004 : Code[20];
+    BEGIN
+      IF (Buffer."Dimension 1 Code" <> '') AND
+         (Buffer."Debit Dimension 1 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 1 Code",Buffer."Debit Dimension 1 Value Code");
+      IF (Buffer."Dimension 2 Code" <> '') AND
+         (Buffer."Debit Dimension 2 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 2 Code",Buffer."Debit Dimension 2 Value Code");
+      IF (Buffer."Dimension 3 Code" <> '') AND
+         (Buffer."Debit Dimension 3 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 3 Code",Buffer."Debit Dimension 3 Value Code");
+      IF (Buffer."Dimension 4 Code" <> '') AND
+         (Buffer."Debit Dimension 4 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 4 Code",Buffer."Debit Dimension 4 Value Code");
+      IF (Buffer."Dimension 5 Code" <> '') AND
+         (Buffer."Debit Dimension 5 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 5 Code",Buffer."Debit Dimension 5 Value Code");
+      IF (Buffer."Dimension 6 Code" <> '') AND
+         (Buffer."Debit Dimension 6 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 6 Code",Buffer."Debit Dimension 6 Value Code");
+      IF (Buffer."Dimension 7 Code" <> '') AND
+         (Buffer."Debit Dimension 7 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 7 Code",Buffer."Debit Dimension 7 Value Code");
+      IF (Buffer."Dimension 8 Code" <> '') AND
+         (Buffer."Debit Dimension 8 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 8 Code",Buffer."Debit Dimension 8 Value Code");
+      IF (Buffer."Dimension 9 Code" <> '') AND
+         (Buffer."Debit Dimension 9 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 9 Code",Buffer."Debit Dimension 9 Value Code");
+      IF (Buffer."Dimension 10 Code" <> '') AND
+         (Buffer."Debit Dimension 10 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 10 Code",Buffer."Debit Dimension 10 Value Code");
+      IF (Buffer."Dimension 11 Code" <> '') AND
+         (Buffer."Debit Dimension 11 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 11 Code",Buffer."Debit Dimension 11 Value Code");
+      IF (Buffer."Dimension 12 Code" <> '') AND
+         (Buffer."Debit Dimension 12 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 12 Code",Buffer."Debit Dimension 12 Value Code");
+      IF (Buffer."Dimension 13 Code" <> '') AND
+         (Buffer."Debit Dimension 13 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 13 Code",Buffer."Debit Dimension 13 Value Code");
+      IF (Buffer."Dimension 14 Code" <> '') AND
+         (Buffer."Debit Dimension 14 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 14 Code",Buffer."Debit Dimension 14 Value Code");
+      IF (Buffer."Dimension 15 Code" <> '') AND
+         (Buffer."Debit Dimension 15 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 15 Code",Buffer."Debit Dimension 15 Value Code");
+      IF (Buffer."Dimension 16 Code" <> '') AND
+         (Buffer."Debit Dimension 16 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 16 Code",Buffer."Debit Dimension 16 Value Code");
+      IF (Buffer."Dimension 17 Code" <> '') AND
+         (Buffer."Debit Dimension 17 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 17 Code",Buffer."Debit Dimension 17 Value Code");
+      IF (Buffer."Dimension 18 Code" <> '') AND
+         (Buffer."Debit Dimension 18 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 18 Code",Buffer."Debit Dimension 18 Value Code");
+      IF (Buffer."Dimension 19 Code" <> '') AND
+         (Buffer."Debit Dimension 19 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 19 Code",Buffer."Debit Dimension 19 Value Code");
+      IF (Buffer."Dimension 20 Code" <> '') AND
+         (Buffer."Debit Dimension 20 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 20 Code",Buffer."Debit Dimension 20 Value Code");
+    END;
+
+    PROCEDURE CreateCreditDimBuffer@1000000017(Buffer@1210001 : Record 50155;VAR LedgerEntryDimTmp@1210000 : TEMPORARY Record 355) nErr : Integer;
+    VAR
+      IntContrValue@1210002 : Code[20];
+      ReclAcc@1210004 : Code[20];
+    BEGIN
+      IF (Buffer."Dimension 1 Code" <> '') AND
+         (Buffer."Credit Dimension 1 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 1 Code",Buffer."Credit Dimension 1 Value Code");
+      IF (Buffer."Dimension 2 Code" <> '') AND
+         (Buffer."Credit Dimension 2 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 2 Code",Buffer."Credit Dimension 2 Value Code");
+      IF (Buffer."Dimension 3 Code" <> '') AND
+         (Buffer."Credit Dimension 3 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 3 Code",Buffer."Credit Dimension 3 Value Code");
+      IF (Buffer."Dimension 4 Code" <> '') AND
+         (Buffer."Credit Dimension 4 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 4 Code",Buffer."Credit Dimension 4 Value Code");
+      IF (Buffer."Dimension 5 Code" <> '') AND
+         (Buffer."Credit Dimension 5 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 5 Code",Buffer."Credit Dimension 5 Value Code");
+      IF (Buffer."Dimension 6 Code" <> '') AND
+         (Buffer."Credit Dimension 6 Value Code" <> '')
+       THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 6 Code",Buffer."Credit Dimension 6 Value Code");
+      IF (Buffer."Dimension 7 Code" <> '') AND
+         (Buffer."Credit Dimension 7 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 7 Code",Buffer."Credit Dimension 7 Value Code");
+      IF (Buffer."Dimension 8 Code" <> '') AND
+         (Buffer."Credit Dimension 8 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 8 Code",Buffer."Credit Dimension 8 Value Code");
+      IF (Buffer."Dimension 9 Code" <> '') AND
+         (Buffer."Credit Dimension 9 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 9 Code",Buffer."Credit Dimension 9 Value Code");
+      IF (Buffer."Dimension 10 Code" <> '') AND
+         (Buffer."Credit Dimension 10 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 10 Code",Buffer."Credit Dimension 10 Value Code");
+      IF (Buffer."Dimension 11 Code" <> '') AND
+         (Buffer."Credit Dimension 11 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 11 Code",Buffer."Credit Dimension 11 Value Code");
+      IF (Buffer."Dimension 12 Code" <> '') AND
+         (Buffer."Credit Dimension 12 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 12 Code",Buffer."Credit Dimension 12 Value Code");
+      IF (Buffer."Dimension 13 Code" <> '') AND
+         (Buffer."Credit Dimension 13 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 13 Code",Buffer."Credit Dimension 13 Value Code");
+      IF (Buffer."Dimension 14 Code" <> '') AND
+         (Buffer."Credit Dimension 14 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 14 Code",Buffer."Credit Dimension 14 Value Code");
+      IF (Buffer."Dimension 15 Code" <> '') AND
+         (Buffer."Credit Dimension 15 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 15 Code",Buffer."Credit Dimension 15 Value Code");
+      IF (Buffer."Dimension 16 Code" <> '') AND
+         (Buffer."Credit Dimension 16 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 16 Code",Buffer."Credit Dimension 16 Value Code");
+      IF (Buffer."Dimension 17 Code" <> '') AND
+         (Buffer."Credit Dimension 17 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 17 Code",Buffer."Credit Dimension 17 Value Code");
+      IF (Buffer."Dimension 18 Code" <> '') AND
+         (Buffer."Credit Dimension 18 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 18 Code",Buffer."Credit Dimension 18 Value Code");
+      IF (Buffer."Dimension 19 Code" <> '') AND
+         (Buffer."Credit Dimension 19 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 19 Code",Buffer."Credit Dimension 19 Value Code");
+      IF (Buffer."Dimension 20 Code" <> '') AND
+         (Buffer."Credit Dimension 20 Value Code" <> '')
+      THEN
+        CreateDimBuffer(LedgerEntryDimTmp,DATABASE::"G/L Entry",Buffer."Entry No.",
+                        Buffer."Dimension 20 Code",Buffer."Credit Dimension 20 Value Code");
+    END;
+
+    PROCEDURE CreateDimBuffer@1000000018(VAR LedgerEntryDimTMP@1000000000 : TEMPORARY Record 355;TableNo@1000000001 : Integer;EntryNo@1000000002 : Integer;DimCode@1000000003 : Code[20];DimValue@1000000004 : Code[20]);
+    VAR
+      LinkedDim@1000000005 : Record 50016;
+    BEGIN
+      IF DimValue = '' THEN
+        EXIT;
+      LedgerEntryDimTMP.INIT;
+      LedgerEntryDimTMP."Table ID" := TableNo;
+      LedgerEntryDimTMP."Entry No." := EntryNo;
+      LedgerEntryDimTMP."Dimension Code" := DimCode;
+      LedgerEntryDimTMP."Dimension Value Code" := DimValue;
+      IF NOT LedgerEntryDimTMP.INSERT THEN ;
+    END;
+
+    PROCEDURE CheckJnlLineDimValuePosting@1000000009(VAR JnlLineDimTemp@1000000017 : TEMPORARY Record 356;AccountType@1000000000 : Option;AccountNo@1000000001 : Code[20];VAR GenJnlLineLocal@1000000008 : Record 81;VAR Buffer@1000000003 : Record 50155;VAR JobProcStatus@1000000002 : Record 50063) retOK : Boolean;
+    VAR
+      TableID@1000000007 : ARRAY [10] OF Integer;
+      AccNo@1000000006 : ARRAY [10] OF Code[20];
+      CustPostingGroup@1000000005 : Record 92;
+      VendPostingGroup@1000000004 : Record 93;
+      BankAccount@1000000009 : Record 270;
+      BankAccountPostingGroup@1000000010 : Record 277;
+      FIPostingGroup@1000000011 : Record 50103;
+      FILedgEntryTemp@1000000013 : TEMPORARY Record 50106;
+      FIValueEntryTemp@1000000014 : TEMPORARY Record 50107;
+      AmountFI@1000000015 : Decimal;
+    BEGIN
+      retOK := TRUE;
+
+      TableID[1] := DimensionMgt.TypeToTableID1(AccountType);
+      AccNo[1] := AccountNo;
+      IF (TableID[1] <> 0) AND (AccNo[1] <> '') THEN
+        IF NOT DimensionMgt.InsertObject(JnlLineDimTemp,TableID,AccNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferDealEntry(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC20',STRSUBSTNO(TextEDTC20,DimensionMgt.GetDimValuePostingErr),
+                                         COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+      TableID[1] := 0;
+      AccNo[1] := '';
+      IF AccountNo <> '' THEN
+        CASE AccountType OF
+          GenJnlLineLocal."Account Type"::Customer :
+            BEGIN
+              CustPostingGroup.GET(GenJnlLineLocal."Posting Group");
+              TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+              AccNo[1] := CustPostingGroup."Receivables Account";
+            END;
+          GenJnlLineLocal."Account Type"::Vendor :
+            BEGIN
+              VendPostingGroup.GET(GenJnlLineLocal."Posting Group");
+              TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+              AccNo[1] := VendPostingGroup."Payables Account";
+            END;
+          GenJnlLineLocal."Account Type"::"Bank Account" : BEGIN
+            BankAccount.GET(AccountNo);
+            BankAccountPostingGroup.GET(BankAccount."Bank Acc. Posting Group");
+            TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+            AccNo[1] := BankAccountPostingGroup."G/L Bank Account No.";
+          END;
+        END;
+      IF (TableID[1] <> 0) AND (AccNo[1] <> '') THEN
+        IF NOT DimensionMgt.InsertObject(JnlLineDimTemp,TableID,AccNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferDealEntry(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC20',STRSUBSTNO(TextEDTC20,DimensionMgt.GetDimValuePostingErr),
+                                         COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+    END;
+
+    PROCEDURE DeleteOperation@1000000003(EntryType@1000000004 : 'Remove,Repost';VAR BufferLocal@1000000001 : Record 50155;VAR JobProcStatus@1000000000 : Record 50063) isErr : Boolean;
+    VAR
+      BufferLocalOld@1000000003 : Record 50155;
+    BEGIN
+      IF NOT BufferLocalOld.GET(BufferLocal."Cons. Source Code",BufferLocal."Source Operation No.") THEN BEGIN
+        ErrorJournal.AddErrorBuferDealEntry(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC21',STRSUBSTNO(TextEDTC21,BufferLocal."Document ID"),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        EXIT(TRUE);
+      END;
+
+      isErr := NOT CreateCorrectionJnlLines(EntryType,BufferLocal,BufferLocalOld,ConsolidationSource,JobProcStatus);
+    END;
+
+    PROCEDURE CreateCorrectionJnlLines@1210017(EntryType@1000000003 : 'Remove,Repost';VAR BufferLocal@1210000 : Record 50155;BufferLocalOld@1000000002 : Record 50155;ConsolidationSource@1210005 : Record 50001;VAR JobProcStatus@1000000005 : Record 50063) retOK : Boolean;
+    VAR
+      GLEntry@1210001 : Record 17;
+      GLEntry2@1000000000 : Record 17;
+      GenJnlLineDel@1101495002 : Record 81;
+      GenJnlLineDel2@1101495003 : Record 81;
+      ChangeLogMgt@1101495004 : Codeunit 423;
+      RecRef@1101495005 : RecordRef;
+      GenJnlLineDimDel@1101495006 : Record 356;
+      GenJnlLineDimDel2@1101495007 : Record 356;
+      GLBuff2Correct@1000000001 : Record 50155;
+      DocumentNo@1000000004 : Code[20];
+      CorrTemplate@1000000007 : Code[10];
+      CorrBatch@1000000006 : Code[10];
+    BEGIN
+      retOK := TRUE;
+      GenJnlLineDel.RESET;
+      GenJnlLineDel.SETRANGE("External Document ID",BufferLocal."Document ID");
+      GenJnlLineDel.SETFILTER("Buffer Entry No.",'<>%1',BufferLocal."Entry No.");  // кроме тех которые созданы для текущего события
+      ChangeLogMgt.ClearTempChangeLogSetupTable;
+      IF GenJnlLineDel.FINDSET THEN REPEAT
+        GenJnlLineDel2.GET(GenJnlLineDel."Journal Template Name",GenJnlLineDel."Journal Batch Name",GenJnlLineDel."Line No.");
+        RecRef.GETTABLE(GenJnlLineDel2);
+        ChangeLogMgt.LogDeletion(RecRef);
+        GenJnlLineDel2.DELETE;
+        GenJnlLineDimDel.RESET;
+        GenJnlLineDimDel.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+        GenJnlLineDimDel.SETRANGE("Journal Template Name",GenJnlLineDel."Journal Template Name");
+        GenJnlLineDimDel.SETRANGE("Journal Batch Name",GenJnlLineDel."Journal Batch Name");
+        GenJnlLineDimDel.SETRANGE("Journal Line No.",GenJnlLineDel."Line No.");
+        IF GenJnlLineDimDel.FINDSET THEN REPEAT
+          GenJnlLineDimDel2.GET(81, GenJnlLineDel."Journal Template Name", GenJnlLineDel."Journal Batch Name",
+                                    GenJnlLineDel."Line No.",
+                                    GenJnlLineDimDel."Allocation Line No.",
+                                    GenJnlLineDimDel."Dimension Code");
+          RecRef.GETTABLE(GenJnlLineDimDel2);
+          ChangeLogMgt.LogDeletion(RecRef);
+          GenJnlLineDimDel2.DELETE;
+        UNTIL GenJnlLineDimDel.NEXT = 0;
+
+      UNTIL GenJnlLineDel.NEXT = 0;
+      GLEntry.SETRANGE("External Document ID",BufferLocal."Document ID");
+      GLEntry.SETRANGE(Reposted,FALSE);
+      GLEntry.SETRANGE(Removed,FALSE);
+      GLEntry.SETRANGE(Reversed,FALSE);
+
+      IF GLEntry.FINDSET THEN REPEAT
+        IF DocumentNo = '' THEN
+          DocumentNo := NoSerManag.GetNextNo(ConsolidationSource."Source  No. Series",BufferLocal."Posting Date",TRUE);
+        ConsolidationMgt.CreateCorrectionLine(GLEntry, JobProcStatus."Cons. Register",ConsolidationSource,
+                                              DocumentNo,CorrTemplate,CorrBatch, EntryType,BufferLocal."Entry No.");
+      UNTIL GLEntry.NEXT = 0;
+    END;
+
+    PROCEDURE AddDefDimForAgr@1101495000(TableNo@1101495000 : Integer;SourceNo@1101495009 : Code[20];AgrNo@1101495001 : Code[20];MappCode@1101495008 : Code[20]);
+    VAR
+      DefDim@1101495004 : Record 50128;
+      DefDim2@1101495006 : Record 352;
+      Deal@1101495003 : Record 50037;
+      FI@1101495002 : Record 50021;
+      DimValue@1101495005 : Record 349;
+      DimMapping@1101495007 : Record 50003;
+    BEGIN
+      //NC NCS-622.6 > PCH
+      MovingDataSetup.GET;
+      MovingDataSetup.TESTFIELD("BOOK Dimension Code");
+      MovingDataSetup.TESTFIELD("Customer Dimension Code");
+      MovingDataSetup.TESTFIELD("PROFIT CENTER Dimension Code");
+      MovingDataSetup.TESTFIELD("FI Dimension Code");
+      MovingDataSetup.TESTFIELD("INC.TAX Dimension Code");
+      MovingDataSetup.TESTFIELD("Deal Dimension Code");
+      IF Deal.GET(AgrNo) THEN BEGIN
+        IF DimValue.GET(MovingDataSetup."Deal Dimension Code",AgrNo) THEN BEGIN
+          DefDim.INIT;
+          DefDim."Table ID" := TableNo;
+          DefDim."Source No." := SourceNo;
+          DefDim."No." := AgrNo;
+          DefDim."Dimension Code" := MovingDataSetup."Deal Dimension Code";
+          DefDim."Dimension Value Code" := AgrNo;
+          DefDim."Value Posting" := DefDim."Value Posting"::"Same Code";
+          //NC NCS-622.10 > DP
+          {
+          IF DefDim.INSERT THEN;
+          }
+          IF DefDim.INSERT(TRUE) THEN;
+          //NC NCS-622.10 DP
+        END;
+
+        IF (Deal."Customer No." <> '') AND DimValue.GET(MovingDataSetup."Customer Dimension Code",Deal."Customer No.") THEN BEGIN
+          DefDim.INIT;
+          DefDim."Table ID" := TableNo;
+          DefDim."Source No." := SourceNo;
+          DefDim."No." := AgrNo;
+          DefDim."Dimension Code" := MovingDataSetup."Customer Dimension Code";
+
+          //NC NCS-1500 > DP
+          {
+          DefDim."Dimension Value Code" := Deal."Customer No.";
+          }
+          DefDim."Dimension Value Code" := SourceNo;
+          //NC NCS-1500 < DP
+
+          //NC NCS-622.10 > DP
+          {
+          IF DefDim.INSERT THEN;
+          }
+          IF DefDim.INSERT(TRUE) THEN;
+          //NC NCS-622.10 DP
+        END;
+
+        IF (Deal.Book <> '') AND DimValue.GET(MovingDataSetup."BOOK Dimension Code",Deal.Book) THEN BEGIN
+          DefDim.INIT;
+          DefDim."Table ID" := TableNo;
+          DefDim."Source No." := SourceNo;
+          DefDim."No." := AgrNo;
+          DefDim."Dimension Code" := MovingDataSetup."BOOK Dimension Code";
+          DefDim."Dimension Value Code" := Deal.Book;
+
+          //NC NCS-622.10 > DP
+          {
+          IF DefDim.INSERT THEN;
+          }
+          IF DefDim.INSERT(TRUE) THEN;
+          //NC NCS-622.10 DP
+
+          DefDim.INIT;
+          DefDim."Table ID" := TableNo;
+          DefDim."Source No." := SourceNo;
+          DefDim."No." := AgrNo;
+          DefDim."Dimension Code" := MovingDataSetup."PROFIT CENTER Dimension Code";
+          DefDim."Dimension Value Code" := '';
+
+          DimMapping.RESET;
+          DimMapping.SETRANGE("Mapping Code",MappCode);
+          DimMapping.SETRANGE("Receiver Dimension Code",MovingDataSetup."PROFIT CENTER Dimension Code");
+          DimMapping.SETFILTER("Receiver Dimension Value Code",'<>%1','');
+          DimMapping.SETFILTER("Company Name",'%1',COMPANYNAME);
+
+          //NC NCS-622.8 > PCH
+          {
+          IF GV.FIND_DimMapping(DimMapping) THEN REPEAT
+            IF (DimMapping."Source Dimension Code" = MovingDataSetup."BOOK Dimension Code")
+            AND (DimMapping."Source Dimension Value Code" <> '') THEN
+              DefDim."Dimension Value Code" := DimMapping."Source Dimension Value Code";
+            IF (DimMapping."Source Dimension Code 2" = MovingDataSetup."BOOK Dimension Code")
+            AND (DimMapping."Source Dimension Value Code 2" <> '') THEN
+              DefDim."Dimension Value Code" := DimMapping."Source Dimension Value Code 2";
+            IF (DimMapping."Source Dimension Code 3" = MovingDataSetup."BOOK Dimension Code")
+            AND (DimMapping."Source Dimension Value Code 3" <> '') THEN
+              DefDim."Dimension Value Code" := DimMapping."Source Dimension Value Code 3";
+          UNTIL (GV.NEXT_DimMapping(DimMapping) = 0) OR (DefDim."Dimension Value Code" <> '');
+
+          IF DefDim."Dimension Value Code" = '' THEN BEGIN
+            DimMapping.SETFILTER("Company Name",'%1','');
+            IF GV.FIND_DimMapping(DimMapping) THEN REPEAT
+              IF (DimMapping."Source Dimension Code" = MovingDataSetup."BOOK Dimension Code")
+              AND (DimMapping."Source Dimension Value Code" <> '') THEN
+                DefDim."Dimension Value Code" := DimMapping."Source Dimension Value Code";
+              IF (DimMapping."Source Dimension Code 2" = MovingDataSetup."BOOK Dimension Code")
+              AND (DimMapping."Source Dimension Value Code 2" <> '') THEN
+                DefDim."Dimension Value Code" := DimMapping."Source Dimension Value Code 2";
+              IF (DimMapping."Source Dimension Code 3" = MovingDataSetup."BOOK Dimension Code")
+              AND (DimMapping."Source Dimension Value Code 3" <> '') THEN
+                DefDim."Dimension Value Code" := DimMapping."Source Dimension Value Code 3";
+            UNTIL (GV.NEXT_DimMapping(DimMapping) = 0) OR (DefDim."Dimension Value Code" <> '');
+          END;
+          }
+          IF GV.FIND_DimMapping(DimMapping) THEN REPEAT
+            IF (DimMapping."Source Dimension Code" = MovingDataSetup."BOOK Dimension Code")
+              AND (DimMapping."Source Dimension Value Code" = Deal.Book) THEN
+              DefDim."Dimension Value Code" := DimMapping."Receiver Dimension Value Code";
+            IF (DimMapping."Source Dimension Code 2" = MovingDataSetup."BOOK Dimension Code")
+              AND (DimMapping."Source Dimension Value Code 2" = Deal.Book) THEN
+              DefDim."Dimension Value Code" := DimMapping."Receiver Dimension Value Code";
+            IF (DimMapping."Source Dimension Code 3" = MovingDataSetup."BOOK Dimension Code")
+              AND (DimMapping."Source Dimension Value Code 3" = Deal.Book) THEN
+              DefDim."Dimension Value Code" := DimMapping."Receiver Dimension Value Code";
+          UNTIL (GV.NEXT_DimMapping(DimMapping) = 0) OR (DefDim."Dimension Value Code" <> '');
+
+          IF DefDim."Dimension Value Code" = '' THEN BEGIN
+            DimMapping.SETFILTER("Company Name",'%1','');
+            IF GV.FIND_DimMapping(DimMapping) THEN REPEAT
+              IF (DimMapping."Source Dimension Code" = MovingDataSetup."BOOK Dimension Code")
+                AND (DimMapping."Source Dimension Value Code" = Deal.Book) THEN
+                DefDim."Dimension Value Code" := DimMapping."Receiver Dimension Value Code";
+                IF (DimMapping."Source Dimension Code 2" = MovingDataSetup."BOOK Dimension Code")
+                AND (DimMapping."Source Dimension Value Code 2" = Deal.Book) THEN
+                   DefDim."Dimension Value Code" := DimMapping."Receiver Dimension Value Code";
+                IF (DimMapping."Source Dimension Code 3" = MovingDataSetup."BOOK Dimension Code")
+                AND (DimMapping."Source Dimension Value Code 3" = Deal.Book) THEN
+                   DefDim."Dimension Value Code" := DimMapping."Receiver Dimension Value Code";
+            UNTIL (GV.NEXT_DimMapping(DimMapping) = 0) OR (DefDim."Dimension Value Code" <> '');
+         END;
+         //NC NCS-622.8 > PCH
+
+         IF DefDim."Dimension Value Code" <> '' THEN
+          //NC NCS-622.10 > DP
+          {
+          IF DefDim.INSERT THEN;
+          }
+          IF DefDim.INSERT(TRUE) THEN;
+          //NC NCS-622.10 DP
+
+
+
+        END;
+
+        IF (Deal."Financial instrument No." <> '') AND
+        DimValue.GET(MovingDataSetup."FI Dimension Code",Deal."Financial instrument No.") THEN BEGIN
+          DefDim.INIT;
+          DefDim."Table ID" := TableNo;
+          DefDim."Source No." := SourceNo;
+          DefDim."No." := AgrNo;
+          DefDim."Dimension Code" := MovingDataSetup."FI Dimension Code";
+          DefDim."Dimension Value Code" := Deal."Financial instrument No.";
+          //NC NCS-622.10 > DP
+          {
+          IF DefDim.INSERT THEN;
+          }
+          IF DefDim.INSERT(TRUE) THEN;
+          //NC NCS-622.10 DP
+
+          IF DefDim2.GET(DATABASE::"Financial Instrument",Deal."Financial instrument No.",
+             MovingDataSetup."INC.TAX Dimension Code") THEN BEGIN
+            DefDim.INIT;
+            DefDim."Table ID" := TableNo;
+            DefDim."Source No." := SourceNo;
+            DefDim."No." := AgrNo;
+            DefDim."Dimension Code" := MovingDataSetup."INC.TAX Dimension Code";
+            DefDim."Dimension Value Code" := DefDim2."Dimension Value Code";
+            //NC NCS-622.10 > DP
+            {
+            IF DefDim.INSERT THEN;
+            }
+            IF DefDim.INSERT(TRUE) THEN;
+            //NC NCS-622.10 DP
+
+          END;
+        END;
+
+      END;
+      //NC NCS-622.6 < PCH
+    END;
+
+    BEGIN
+    {
+      NC S622 PCH
+      NC NCS-622.2 DP Коррекция для локальной валюты
+      NC NCS-622.3 DP Добавление договоров
+      NC NCS-622.4 DP Корректировка добавления договоров
+      NC NCS-622.5 DP Корректировка добавления договоров
+      NC NCS-622.6 PCH добавление измерений по умолчанию для договора
+      NC NCS-622.8 PCH корректировка определения СС по мэппингу
+      NC NCS-622.10 DP Определение глобальных измерений для договора
+      NC NCS-815 DP Сумма в локальной валюте для реверсивных проводок
+      NC NCS-1276 DP Изменена функция NewOperation - измерения на межбуковых сделках
+      NC NCS-1373 DP Мэппинг измерений BOOK: изменены функции OnRun, NewOperation
+      NC NCS-1500 DP Изменена функция AddDefDimForAgr
+      NC NCS-1530 DP Выделена модификация по исправлению логики S1373
+    }
+    END.
+  }
+}
+

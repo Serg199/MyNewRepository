@@ -1,0 +1,279 @@
+OBJECT Table 17430 Payroll Calendar Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnModify=BEGIN
+               TESTFIELD(Status,Status::Open);
+             END;
+
+    OnDelete=BEGIN
+               TESTFIELD(Status,Status::Open);
+
+               TimesheetLine.RESET;
+               TimesheetLine.SETCURRENTKEY("Calendar Code",Date);
+               TimesheetLine.SETRANGE("Calendar Code","Calendar Code");
+               TimesheetLine.SETRANGE(Date,Date);
+               IF NOT TimesheetLine.ISEMPTY THEN
+                 ERROR('');
+             END;
+
+    OnRename=BEGIN
+               ERROR('');
+             END;
+
+    CaptionML=[ENU=Payroll Calendar Line;
+               RUS=Строка зарплатного календаря];
+  }
+  FIELDS
+  {
+    { 1   ;   ;Calendar Code       ;Code10        ;TableRelation="Payroll Calendar";
+                                                   CaptionML=[ENU=Calendar Code;
+                                                              RUS=Код календаря];
+                                                   NotBlank=Yes;
+                                                   Editable=No }
+    { 2   ;   ;Date                ;Date          ;OnValidate=VAR
+                                                                ShiftDayNo@1210000 : Integer;
+                                                              BEGIN
+                                                                GetCalendar;
+                                                                IF PayrollCalendar."Shift Start Date" <> 0D THEN BEGIN
+                                                                  // Shift calendar
+                                                                  PayrollCalendar.TESTFIELD("Shift Days");
+                                                                  IF Date >= PayrollCalendar."Shift Start Date" THEN
+                                                                    ShiftDayNo := (Date - PayrollCalendar."Shift Start Date") MOD PayrollCalendar."Shift Days" + 1
+                                                                  ELSE
+                                                                    ShiftDayNo := -1;
+
+                                                                  PayrollCalendarSetup.RESET;
+                                                                  PayrollCalendarSetup.SETRANGE("Calendar Code","Calendar Code");
+                                                                  PayrollCalendarSetup.SETRANGE("Period Type",PayrollCalendarSetup."Period Type"::Shift);
+                                                                  PayrollCalendarSetup.SETRANGE("Day No.",ShiftDayNo);
+                                                                  PayrollCalendarSetup.SETRANGE(Year,DATE2DMY(Date,3));
+                                                                  IF PayrollCalendarSetup.FINDFIRST THEN
+                                                                    InitLine(PayrollCalendarSetup)
+                                                                  ELSE BEGIN
+                                                                    PayrollCalendarSetup.SETRANGE(Year);
+                                                                    IF PayrollCalendarSetup.FINDFIRST THEN
+                                                                      InitLine(PayrollCalendarSetup);
+                                                                  END;
+                                                                END ELSE BEGIN
+                                                                  // Regular calendar
+                                                                  PayrollCalendarSetup.RESET;
+                                                                  PayrollCalendarSetup.SETRANGE("Calendar Code","Calendar Code");
+                                                                  PayrollCalendarSetup.SETRANGE(Year,0); // No year defined
+                                                                  IF PayrollCalendarSetup.FINDFIRST THEN BEGIN
+                                                                    GetDayWeek;
+                                                                    GetDayMonth;
+                                                                  END;
+                                                                  PayrollCalendarSetup.SETRANGE(Year,DATE2DMY(Date,3));
+                                                                  IF PayrollCalendarSetup.FINDFIRST THEN BEGIN // if Year defined
+                                                                    GetDayWeek;
+                                                                    GetDayMonth;
+                                                                  END;
+                                                                END;
+
+                                                                "Week Day" := DATE2DWY(Date,1) - 1;
+                                                              END;
+
+                                                   CaptionML=[ENU=Date;
+                                                              RUS=Дата];
+                                                   NotBlank=Yes }
+    { 3   ;   ;Description         ;Text50        ;CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 4   ;   ;Nonworking          ;Boolean       ;OnValidate=BEGIN
+                                                                IF Nonworking THEN BEGIN
+                                                                  "Starting Time" := 0T;
+                                                                  "Work Hours" := 0;
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Nonworking;
+                                                              RUS=Нерабочий] }
+    { 5   ;   ;Starting Time       ;Time          ;CaptionML=[ENU=Starting Time;
+                                                              RUS=Время начала];
+                                                   BlankNumbers=BlankZero }
+    { 6   ;   ;Work Hours          ;Decimal       ;CaptionML=[ENU=Work Hours;
+                                                              RUS=Рабочие часы];
+                                                   MinValue=0;
+                                                   MaxValue=24;
+                                                   BlankZero=Yes }
+    { 7   ;   ;Week Day            ;Option        ;CaptionML=[ENU=Week Day;
+                                                              RUS=День недели];
+                                                   OptionCaptionML=[ENU=Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday;
+                                                                    RUS=Понедельник,Вторник,Среда,Четверг,Пятница,Суббота,Воскресенье];
+                                                   OptionString=Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday;
+                                                   Editable=No }
+    { 8   ;   ;Night Hours         ;Decimal       ;OnValidate=BEGIN
+                                                                GetCalendar;
+                                                                IF PayrollCalendar."Shift Days" = 0 THEN
+                                                                  ERROR(Text001,FIELDCAPTION("Night Hours"));
+                                                              END;
+
+                                                   CaptionML=[ENU=Night Hours;
+                                                              RUS=Ночные часы] }
+    { 10  ;   ;Day Status          ;Option        ;CaptionML=[ENU=Day Status;
+                                                              RUS=Статус дня];
+                                                   OptionCaptionML=[ENU=" ,Weekend,Holiday";
+                                                                    RUS=" ,Выходной,Праздник"];
+                                                   OptionString=[ ,Weekend,Holiday] }
+    { 11  ;   ;Time Activity Code  ;Code10        ;TableRelation="Time Activity";
+                                                   CaptionML=[ENU=Time Activity Code;
+                                                              RUS=Код временной активности] }
+    { 12  ;   ;Status              ;Option        ;CaptionML=[ENU=Status;
+                                                              RUS=Статус];
+                                                   OptionCaptionML=[ENU=Open,Released;
+                                                                    RUS=Открыт,Выпущен];
+                                                   OptionString=Open,Released;
+                                                   Editable=No }
+  }
+  KEYS
+  {
+    {    ;Calendar Code,Date                      ;Clustered=Yes }
+    {    ;Calendar Code,Nonworking,Day Status,Date;SumIndexFields=Work Hours,Night Hours }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      PayrollCalendar@1210004 : Record 17428;
+      PayrollCalendarSetup@1210000 : Record 17429;
+      PayrollCalendarSetup2@1210002 : Record 17429;
+      PayrollCalendarLine@1210001 : Record 17430;
+      TimesheetLine@1210003 : Record 17441;
+      TimesheetStatus@1210005 : Record 17440;
+      Text001@1210006 : TextConst 'ENU=You can enter %1 in shift calendar only.;RUS=%1 можно ввести только в календарь смен.';
+      TimesheetMgt@1210007 : Codeunit 17440;
+
+    PROCEDURE GetCalendar@1210003();
+    BEGIN
+      TESTFIELD("Calendar Code");
+      IF "Calendar Code" <> PayrollCalendar.Code THEN
+        PayrollCalendar.GET("Calendar Code");
+    END;
+
+    PROCEDURE SetNewLine@2(xPayrollCalendarLine@1210000 : Record 17430);
+    BEGIN
+      PayrollCalendarLine.SETRANGE("Calendar Code","Calendar Code");
+      IF PayrollCalendarLine.FINDFIRST THEN
+        VALIDATE(Date,xPayrollCalendarLine.Date + 1);
+    END;
+
+    PROCEDURE InitLine@1210002(PayrollCalendarSetup@1210000 : Record 17429);
+    BEGIN
+      Description := PayrollCalendarSetup.Description;
+      Nonworking := PayrollCalendarSetup.Nonworking;
+      "Starting Time" := PayrollCalendarSetup."Starting Time";
+      "Work Hours" := PayrollCalendarSetup."Work Hours";
+      "Night Hours" := PayrollCalendarSetup."Night Hours";
+      "Day Status" := PayrollCalendarSetup."Day Status";
+      PayrollCalendarSetup.TESTFIELD("Time Activity Code");
+      "Time Activity Code" := PayrollCalendarSetup."Time Activity Code";
+    END;
+
+    PROCEDURE GetDayMonth@3();
+    BEGIN
+      PayrollCalendarSetup2.COPYFILTERS(PayrollCalendarSetup);
+      PayrollCalendarSetup2.SETRANGE("Period Type",PayrollCalendarSetup2."Period Type"::Month);
+      IF PayrollCalendarSetup2.FINDFIRST THEN BEGIN
+        PayrollCalendarSetup2.SETFILTER("Period No.",'%1|%2',0,DATE2DMY(Date,2));
+        IF PayrollCalendarSetup2.FINDFIRST THEN BEGIN
+          PayrollCalendarSetup2.SETRANGE("Period No.",DATE2DMY(Date,2));
+          IF NOT PayrollCalendarSetup2.FINDFIRST THEN
+            PayrollCalendarSetup2.SETRANGE("Period No.",0);
+          PayrollCalendarSetup2.SETFILTER("Day No.",'%1|%2',0,DATE2DMY(Date,1));
+          IF PayrollCalendarSetup2.FINDFIRST THEN BEGIN
+            PayrollCalendarSetup2.SETRANGE("Day No.",DATE2DMY(Date,1));
+            IF NOT PayrollCalendarSetup2.FINDFIRST THEN
+              PayrollCalendarSetup2.SETRANGE("Day No.",0);
+            IF PayrollCalendarSetup2.FINDLAST THEN
+              InitLine(PayrollCalendarSetup2);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetDayWeek@4();
+    BEGIN
+      PayrollCalendarSetup2.COPYFILTERS(PayrollCalendarSetup);
+      PayrollCalendarSetup2.SETRANGE("Period Type",PayrollCalendarSetup2."Period Type"::Week);
+      IF PayrollCalendarSetup2.FINDFIRST THEN BEGIN
+        PayrollCalendarSetup2.SETFILTER("Period No.",'%1|%2',0,DATE2DWY(Date,2));
+        IF PayrollCalendarSetup2.FINDFIRST THEN BEGIN
+          PayrollCalendarSetup2.SETRANGE("Period No.",DATE2DWY(Date,2));
+          IF NOT PayrollCalendarSetup2.FINDFIRST THEN
+            PayrollCalendarSetup2.SETRANGE("Period No.",0);
+          PayrollCalendarSetup2.SETFILTER("Day No.",'%1|%2',0,DATE2DWY(Date,1));
+          IF PayrollCalendarSetup2.FINDFIRST THEN BEGIN
+            PayrollCalendarSetup2.SETRANGE("Day No.",DATE2DWY(Date,1));
+            IF NOT PayrollCalendarSetup2.FINDFIRST THEN
+              PayrollCalendarSetup2.SETRANGE("Day No.",0);
+            IF PayrollCalendarSetup2.FINDFIRST THEN
+              InitLine(PayrollCalendarSetup2);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE Release@1210000();
+    VAR
+      PayrollPeriod@1210000 : Record 17426;
+      Employee@1210001 : Record 5200;
+      EmployeeJobEntry@1210002 : Record 17363;
+    BEGIN
+      VALIDATE(Status,Status::Open);
+      TESTFIELD("Time Activity Code");
+
+      GetCalendar;
+      IF (PayrollCalendar."Shift Days" = 0) AND (NOT Nonworking) THEN
+        TESTFIELD("Work Hours");
+
+      Employee.RESET;
+      IF Employee.FINDSET THEN
+        REPEAT
+          IF Employee.GetJobEntry(Employee."No.",Date,EmployeeJobEntry) THEN
+            IF (EmployeeJobEntry."Calendar Code" = "Calendar Code") AND
+               TimesheetStatus.GET(PayrollPeriod.PeriodByDate(Date),Employee."No.")
+            THEN BEGIN
+              TimesheetStatus.TESTFIELD(Status,TimesheetStatus.Status::Open);
+              TimesheetMgt.UpdateTimesheet(Employee,Date,Date,"Calendar Code",FALSE);
+            END;
+        UNTIL Employee.NEXT = 0;
+
+      Status := Status::Released;
+      MODIFY;
+    END;
+
+    PROCEDURE Reopen@1210001();
+    VAR
+      PayrollPeriod@1210000 : Record 17426;
+      Employee@1210001 : Record 5200;
+      EmployeeJobEntry@1210003 : Record 17363;
+    BEGIN
+      VALIDATE(Status,Status::Released);
+
+      Employee.RESET;
+      IF Employee.FINDSET THEN
+        REPEAT
+          IF Employee.GetJobEntry(Employee."No.",Date,EmployeeJobEntry) THEN
+            IF (EmployeeJobEntry."Calendar Code" = "Calendar Code") AND
+               TimesheetStatus.GET(PayrollPeriod.PeriodByDate(Date),Employee."No.")
+            THEN
+              TimesheetStatus.TESTFIELD(Status,TimesheetStatus.Status::Open);
+        UNTIL Employee.NEXT = 0;
+
+      Status := Status::Open;
+      MODIFY;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

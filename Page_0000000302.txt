@@ -1,0 +1,793 @@
+OBJECT Page 302 Customer Entry Statistics
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVW110.00,NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    Editable=No;
+    CaptionML=[ENU=Customer Entry Statistics;
+               RUS=Статистика операций клиента];
+    LinksAllowed=No;
+    SourceTable=Table18;
+    PageType=Card;
+    OnAfterGetRecord=BEGIN
+                       CLEARALL;
+
+                       FOR j := 1 TO 7 DO BEGIN
+                         CustLedgEntry[j].SETCURRENTKEY("Document Type","Customer No.","Posting Date");
+                         CustLedgEntry[j].SETFILTER("Agreement No.",GETFILTER("Agreement Filter"));
+                         IF j = 7 THEN
+                           CustLedgEntry[j].SETRANGE("Document Type",1) // prepayment
+                         ELSE
+                           CustLedgEntry[j].SETRANGE("Document Type",j); // Payment,Invoice,Credit Memo,Finance Charge Memo,Reminder,Refund
+                         CustLedgEntry[j].SETRANGE("Customer No.","No.");
+                         IF j = 1 THEN
+                           CustLedgEntry[j].SETRANGE(Prepayment,FALSE);
+                         IF j = 7 THEN
+                           CustLedgEntry[j].SETRANGE(Prepayment,TRUE);
+                         IF CustLedgEntry[j].FINDLAST THEN
+                           CustLedgEntry[j].CALCFIELDS(Amount,"Remaining Amount");
+                       END;
+
+                       CustLedgEntry2.SETCURRENTKEY("Customer No.",Open);
+                       CustLedgEntry2.SETRANGE("Customer No.","No.");
+                       CustLedgEntry2.SETRANGE(Open,TRUE);
+                       CustLedgEntry2.SETFILTER("Agreement No.",GETFILTER("Agreement Filter"));
+                       IF CustLedgEntry2.FIND('+') THEN
+                         REPEAT
+                           j := CustLedgEntry2."Document Type";
+                           IF CustLedgEntry2.Prepayment THEN
+                             j := 7;
+                           IF j > 0 THEN BEGIN
+                             CustLedgEntry2.CALCFIELDS("Remaining Amt. (LCY)");
+                             TotalRemainAmountLCY[j] := TotalRemainAmountLCY[j] + CustLedgEntry2."Remaining Amt. (LCY)";
+                           END;
+                         UNTIL CustLedgEntry2.NEXT(-1) = 0;
+
+                       DateFilterCalc.CreateAccountingPeriodFilter(CustDateFilter[1],CustDateName[1],WORKDATE,0);
+                       DateFilterCalc.CreateFiscalYearFilter(CustDateFilter[2],CustDateName[2],WORKDATE,0);
+                       DateFilterCalc.CreateFiscalYearFilter(CustDateFilter[3],CustDateName[3],WORKDATE,-1);
+
+                       FOR i := 1 TO 3 DO BEGIN
+                         CustLedgEntry2.RESET;
+                         CustLedgEntry2.SETCURRENTKEY("Customer No.","Posting Date");
+                         CustLedgEntry2.SETRANGE("Customer No.","No.");
+                         CustLedgEntry2.SETFILTER("Agreement No.",GETFILTER("Agreement Filter"));
+
+                         CustLedgEntry2.SETFILTER("Posting Date",CustDateFilter[i]);
+                         CustLedgEntry2.SETRANGE("Posting Date",0D,CustLedgEntry2.GETRANGEMAX("Posting Date"));
+                         DtldCustLedgEntry2.SETCURRENTKEY("Customer No.","Posting Date");
+                         CustLedgEntry2.COPYFILTER("Customer No.",DtldCustLedgEntry2."Customer No.");
+                         CustLedgEntry2.COPYFILTER("Posting Date",DtldCustLedgEntry2."Posting Date");
+                         CustLedgEntry2.COPYFILTER("Agreement No.",DtldCustLedgEntry2."Agreement No.");
+                         DtldCustLedgEntry2.CALCSUMS("Amount (LCY)");
+                         CustBalanceLCY := DtldCustLedgEntry2."Amount (LCY)";
+                         HighestBalanceLCY[i] := CustBalanceLCY;
+                         DaysToPay := 0;
+                         NoOfInv := 0;
+
+                         CustLedgEntry2.SETFILTER("Posting Date",CustDateFilter[i]);
+                         IF CustLedgEntry2.FIND('+') THEN
+                           REPEAT
+                             j := CustLedgEntry2."Document Type";
+                             IF CustLedgEntry2.Prepayment THEN
+                               j := 7;
+                             IF j > 0 THEN
+                               NoOfDoc[i][j] := NoOfDoc[i][j] + 1;
+
+                             CustLedgEntry2.CALCFIELDS("Amount (LCY)");
+                             CustBalanceLCY := CustBalanceLCY - CustLedgEntry2."Amount (LCY)";
+                             IF CustBalanceLCY > HighestBalanceLCY[i] THEN
+                               HighestBalanceLCY[i] := CustBalanceLCY;
+
+                             // Optimized Approximation
+                             IF (CustLedgEntry2."Document Type" = CustLedgEntry2."Document Type"::Invoice) AND
+                                NOT CustLedgEntry2.Open
+                             THEN
+                               IF CustLedgEntry2."Closed at Date" > CustLedgEntry2."Posting Date" THEN
+                                 UpdateDaysToPay(CustLedgEntry2."Closed at Date" - CustLedgEntry2."Posting Date")
+                               ELSE
+                                 IF CustLedgEntry2."Closed by Entry No." <> 0 THEN BEGIN
+                                   IF CustLedgEntry3.GET(CustLedgEntry2."Closed by Entry No.") THEN
+                                     UpdateDaysToPay(CustLedgEntry3."Posting Date" - CustLedgEntry2."Posting Date");
+                                 END ELSE BEGIN
+                                   CustLedgEntry3.SETCURRENTKEY("Closed by Entry No.");
+                                   CustLedgEntry3.SETRANGE("Closed by Entry No.",CustLedgEntry2."Entry No.");
+                                   IF CustLedgEntry3.FINDLAST THEN
+                                     UpdateDaysToPay(CustLedgEntry3."Posting Date" - CustLedgEntry2."Posting Date");
+                                 END;
+                           UNTIL CustLedgEntry2.NEXT(-1) = 0;
+                         IF NoOfInv <> 0 THEN
+                           AvgDaysToPay[i] := DaysToPay / NoOfInv;
+                       END;
+                     END;
+
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 1   ;1   ;Group     ;
+                CaptionML=[ENU=Last Documents;
+                           RUS=Последние документы] }
+
+    { 1903895301;2;Group  ;
+                GroupType=FixedLayout }
+
+    { 1900724601;3;Group  ;
+                CaptionML=[ENU=Date;
+                           RUS=Дата] }
+
+    { 7   ;4   ;Field     ;
+                CaptionML=[ENU=Payment;
+                           RUS=Платеж];
+                ToolTipML=[ENU=Specifies the amount that relates to payments.;
+                           RUS=Определяет сумму, которая относится к платежам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[1]."Posting Date" }
+
+    { 13  ;4   ;Field     ;
+                CaptionML=[ENU=Invoice;
+                           RUS=Счет];
+                ToolTipML=[ENU=Specifies the amount that relates to invoices.;
+                           RUS=Определяет сумму, которая относится к счетам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[2]."Posting Date" }
+
+    { 19  ;4   ;Field     ;
+                CaptionML=[ENU=Credit Memo;
+                           RUS=Кредит-нота];
+                ToolTipML=[ENU=Specifies the amount that relates to credit memos.;
+                           RUS=Определяет сумму, которая относится к кредит-нотам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[3]."Posting Date" }
+
+    { 25  ;4   ;Field     ;
+                CaptionML=[ENU=Reminder;
+                           RUS=Напоминание];
+                ToolTipML=[ENU=Specifies the amount that relates to reminders.;
+                           RUS=Определяет сумму, которая относится к напоминаниям.];
+                SourceExpr=CustLedgEntry[5]."Posting Date" }
+
+    { 69  ;4   ;Field     ;
+                CaptionML=[ENU=Finance Charge Memo;
+                           RUS=Процент-нота];
+                ToolTipML=[ENU=Specifies the amount that relates to finance charge memos.;
+                           RUS=Определяет сумму, которая относится к процент-нотам.];
+                SourceExpr=CustLedgEntry[4]."Posting Date" }
+
+    { 9   ;4   ;Field     ;
+                CaptionML=[ENU=Refund;
+                           RUS=Возмещение];
+                ToolTipML=[ENU=Specifies the amount that relates to refunds.;
+                           RUS=Определяет сумму, которая относится к возмещениям.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[6]."Posting Date" }
+
+    { 1210005;4;Field     ;
+                CaptionML=[ENU=Prepayment;
+                           RUS=Предоплата];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[7]."Posting Date" }
+
+    { 1900724501;3;Group  ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа] }
+
+    { 8   ;4   ;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ToolTipML=[ENU=Specifies the number of the document that the statistic is based on.;
+                           RUS=Определяет номер документа, на котором основана статистика.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[1]."Document No." }
+
+    { 14  ;4   ;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ToolTipML=[ENU=Specifies the number of the document that the statistic is based on.;
+                           RUS=Определяет номер документа, на котором основана статистика.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[2]."Document No." }
+
+    { 20  ;4   ;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ToolTipML=[ENU=Specifies the number of the document that the statistic is based on.;
+                           RUS=Определяет номер документа, на котором основана статистика.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[3]."Document No." }
+
+    { 26  ;4   ;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ToolTipML=[ENU=Specifies the number of the document that the statistic is based on.;
+                           RUS=Определяет номер документа, на котором основана статистика.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[5]."Document No." }
+
+    { 70  ;4   ;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ToolTipML=[ENU=Specifies the number of the document that the statistic is based on.;
+                           RUS=Определяет номер документа, на котором основана статистика.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[4]."Document No." }
+
+    { 15  ;4   ;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ToolTipML=[ENU=Specifies the number of the document that the statistic is based on.;
+                           RUS=Определяет номер документа, на котором основана статистика.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[6]."Document No." }
+
+    { 1210001;4;Field     ;
+                CaptionML=[ENU=Document No.;
+                           RUS=Номер документа];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[7]."Document No." }
+
+    { 1902760801;3;Group  ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты] }
+
+    { 77  ;4   ;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ToolTipML=[ENU=Specifies the code for the currency that amounts are shown in.;
+                           RUS=Определяет код валюты, в которой отображаются суммы.];
+                ApplicationArea=#Suite;
+                SourceExpr=CustLedgEntry[1]."Currency Code" }
+
+    { 76  ;4   ;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ToolTipML=[ENU=Specifies the code for the currency that amounts are shown in.;
+                           RUS=Определяет код валюты, в которой отображаются суммы.];
+                ApplicationArea=#Suite;
+                SourceExpr=CustLedgEntry[2]."Currency Code" }
+
+    { 75  ;4   ;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ToolTipML=[ENU=Specifies the code for the currency that amounts are shown in.;
+                           RUS=Определяет код валюты, в которой отображаются суммы.];
+                ApplicationArea=#Suite;
+                SourceExpr=CustLedgEntry[3]."Currency Code" }
+
+    { 27  ;4   ;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ToolTipML=[ENU=Specifies the code for the currency that amounts are shown in.;
+                           RUS=Определяет код валюты, в которой отображаются суммы.];
+                ApplicationArea=#Suite;
+                SourceExpr=CustLedgEntry[5]."Currency Code" }
+
+    { 80  ;4   ;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ToolTipML=[ENU=Specifies the code for the currency that amounts are shown in.;
+                           RUS=Определяет код валюты, в которой отображаются суммы.];
+                ApplicationArea=#Suite;
+                SourceExpr=CustLedgEntry[4]."Currency Code" }
+
+    { 21  ;4   ;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ToolTipML=[ENU=Specifies the code for the currency that amounts are shown in.;
+                           RUS=Определяет код валюты, в которой отображаются суммы.];
+                ApplicationArea=#Suite;
+                SourceExpr=CustLedgEntry[6]."Currency Code" }
+
+    { 1210002;4;Field     ;
+                CaptionML=[ENU=Currency Code;
+                           RUS=Код валюты];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[7]."Currency Code" }
+
+    { 1900724301;3;Group  ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма] }
+
+    { 10  ;4   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-CustLedgEntry[1].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[1]."Currency Code" }
+
+    { 16  ;4   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[2].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[2]."Currency Code" }
+
+    { 22  ;4   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-CustLedgEntry[3].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[3]."Currency Code" }
+
+    { 28  ;4   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[5].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[5]."Currency Code" }
+
+    { 72  ;4   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[4].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[4]."Currency Code" }
+
+    { 71  ;4   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[6].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[6]."Currency Code" }
+
+    { 1210003;4;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-CustLedgEntry[7].Amount;
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[7]."Currency Code" }
+
+    { 1900724201;3;Group  ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка] }
+
+    { 11  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ToolTipML=[ENU=Specifies the net remaining amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму остатка по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-CustLedgEntry[1]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[1]."Currency Code" }
+
+    { 17  ;4   ;Field     ;
+                Name=RemainingAmount;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ToolTipML=[ENU=Specifies the net remaining amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму остатка по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[2]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[2]."Currency Code" }
+
+    { 23  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ToolTipML=[ENU=Specifies the net remaining amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму остатка по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-CustLedgEntry[3]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[3]."Currency Code" }
+
+    { 29  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ToolTipML=[ENU=Specifies the net remaining amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму остатка по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[5]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[5]."Currency Code" }
+
+    { 73  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ToolTipML=[ENU=Specifies the net remaining amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму остатка по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[4]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[4]."Currency Code" }
+
+    { 78  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ToolTipML=[ENU=Specifies the net remaining amount of all the lines in the customer entry.;
+                           RUS=Определяет чистую сумму остатка по всем строкам в операции клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustLedgEntry[6]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[6]."Currency Code" }
+
+    { 1210004;4;Field     ;
+                CaptionML=[ENU=Remaining Amount;
+                           RUS=Сумма остатка];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-CustLedgEntry[7]."Remaining Amount";
+                AutoFormatType=1;
+                AutoFormatExpr=CustLedgEntry[7]."Currency Code" }
+
+    { 1907032201;1;Group  ;
+                CaptionML=[ENU=No. of Documents;
+                           RUS=Кол-во документов] }
+
+    { 1904230801;2;Group  ;
+                GroupType=FixedLayout }
+
+    { 1900296801;3;Group  ;
+                CaptionML=[ENU=This Period;
+                           RUS=Этот период] }
+
+    { 31  ;4   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CustDateName[1];
+                ShowCaption=No }
+
+    { 35  ;4   ;Field     ;
+                CaptionML=[ENU=Payments;
+                           RUS=Платежи];
+                ToolTipML=[ENU=Specifies the amount that relates to payments.;
+                           RUS=Определяет сумму, которая относится к платежам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[1][1] }
+
+    { 40  ;4   ;Field     ;
+                CaptionML=[ENU=Invoices;
+                           RUS=Счета];
+                ToolTipML=[ENU=Specifies the amount that relates to invoices.;
+                           RUS=Определяет сумму, которая относится к счетам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[1][2] }
+
+    { 45  ;4   ;Field     ;
+                CaptionML=[ENU=Credit Memos;
+                           RUS=Кредит-ноты];
+                ToolTipML=[ENU=Specifies the amount that relates to credit memos.;
+                           RUS=Определяет сумму, которая относится к кредит-нотам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[1][3] }
+
+    { 64  ;4   ;Field     ;
+                CaptionML=[ENU=Reminder;
+                           RUS=Напоминание];
+                ToolTipML=[ENU=Specifies the amount that relates to reminders.;
+                           RUS=Определяет сумму, которая относится к напоминаниям.];
+                SourceExpr=NoOfDoc[1][5] }
+
+    { 50  ;4   ;Field     ;
+                CaptionML=[ENU=Finance Charge Memos;
+                           RUS=Процент-ноты];
+                ToolTipML=[ENU=Specifies the amount that relates to finance charge memos.;
+                           RUS=Определяет сумму, которая относится к процент-нотам.];
+                SourceExpr=NoOfDoc[1][4] }
+
+    { 81  ;4   ;Field     ;
+                CaptionML=[ENU=Refund;
+                           RUS=Возмещение];
+                ToolTipML=[ENU=Specifies the amount that relates to refunds.;
+                           RUS=Определяет сумму, которая относится к возмещениям.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[1][6] }
+
+    { 1210009;4;Field     ;
+                CaptionML=[ENU=Prepayment;
+                           RUS=Предоплата];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[1][7] }
+
+    { 55  ;4   ;Field     ;
+                Name=AvgCollectionPeriodDays_ThisPeriod;
+                CaptionML=[ENU=Avg. Collection Period (Days);
+                           RUS=Сред. срок погаш. долга (дни)];
+                ToolTipML=[ENU=Specifies the time it usually takes to collect payment from the customer. The value is determined by subtracting the posting dates from the corresponding payment dates and dividing the total by the number of invoices.;
+                           RUS=Задает среднее время получения оплаты от клиента. Оно определяется путем вычитания дат учета из соответствующих дат оплаты и деления результата на число счетов.];
+                ApplicationArea=#Basic,#Suite;
+                DecimalPlaces=0:0;
+                SourceExpr=AvgDaysToPay[1] }
+
+    { 59  ;4   ;Field     ;
+                CaptionML=[ENU=Largest Balance (LCY);
+                           RUS=Наибольшее сальдо (руб.)];
+                ToolTipML=[ENU=Specifies the largest balance that the customer has had.;
+                           RUS=Определяет самое большое сальдо, которое когда-либо было у этого клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=HighestBalanceLCY[1];
+                AutoFormatType=1 }
+
+    { 1902759701;3;Group  ;
+                CaptionML=[ENU=This Year;
+                           RUS=Текущий год] }
+
+    { 86  ;4   ;Field     ;
+                SourceExpr=Text000;
+                Visible=FALSE }
+
+    { 36  ;4   ;Field     ;
+                CaptionML=[ENU=Payments;
+                           RUS=Платежи];
+                ToolTipML=[ENU=Specifies the amount that relates to payments.;
+                           RUS=Определяет сумму, которая относится к платежам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[2][1] }
+
+    { 41  ;4   ;Field     ;
+                CaptionML=[ENU=Invoices;
+                           RUS=Счета];
+                ToolTipML=[ENU=Specifies the amount that relates to invoices.;
+                           RUS=Определяет сумму, которая относится к счетам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[2][2] }
+
+    { 46  ;4   ;Field     ;
+                CaptionML=[ENU=Credit Memos;
+                           RUS=Кредит-ноты];
+                ToolTipML=[ENU=Specifies the amount that relates to credit memos.;
+                           RUS=Определяет сумму, которая относится к кредит-нотам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[2][3] }
+
+    { 65  ;4   ;Field     ;
+                CaptionML=[ENU=Reminder;
+                           RUS=Напоминание];
+                ToolTipML=[ENU=Specifies the amount that relates to reminders.;
+                           RUS=Определяет сумму, которая относится к напоминаниям.];
+                SourceExpr=NoOfDoc[2][5] }
+
+    { 51  ;4   ;Field     ;
+                CaptionML=[ENU=Finance Charge Memos;
+                           RUS=Процент-ноты];
+                ToolTipML=[ENU=Specifies the amount that relates to finance charge memos.;
+                           RUS=Определяет сумму, которая относится к процент-нотам.];
+                SourceExpr=NoOfDoc[2][4] }
+
+    { 83  ;4   ;Field     ;
+                CaptionML=[ENU=Refund;
+                           RUS=Возмещение];
+                ToolTipML=[ENU=Specifies the amount that relates to refunds.;
+                           RUS=Определяет сумму, которая относится к возмещениям.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[2][6] }
+
+    { 1210008;4;Field     ;
+                CaptionML=[ENU=Prepayment;
+                           RUS=Предоплата];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[2][7] }
+
+    { 56  ;4   ;Field     ;
+                Name=AvgCollectionPeriodDays_ThisYear;
+                CaptionML=[ENU=Avg. Collection Period (Days);
+                           RUS=Сред. срок погаш. долга (дни)];
+                ToolTipML=[ENU=Specifies the time it usually takes to collect payment from the customer. The value is determined by subtracting the posting dates from the corresponding payment dates and dividing the total by the number of invoices.;
+                           RUS=Задает среднее время получения оплаты от клиента. Оно определяется путем вычитания дат учета из соответствующих дат оплаты и деления результата на число счетов.];
+                ApplicationArea=#Basic,#Suite;
+                DecimalPlaces=0:0;
+                SourceExpr=AvgDaysToPay[2] }
+
+    { 60  ;4   ;Field     ;
+                CaptionML=[ENU=Largest Balance;
+                           RUS=Наибольшее сальдо];
+                ToolTipML=[ENU=Specifies the largest balance that the customer has had.;
+                           RUS=Определяет самое большое сальдо, которое когда-либо было у этого клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=HighestBalanceLCY[2];
+                AutoFormatType=1 }
+
+    { 1900206101;3;Group  ;
+                CaptionML=[ENU=Last Year;
+                           RUS=Прошлый год] }
+
+    { 87  ;4   ;Field     ;
+                SourceExpr=Text000;
+                Visible=FALSE }
+
+    { 37  ;4   ;Field     ;
+                CaptionML=[ENU=Payments;
+                           RUS=Платежи];
+                ToolTipML=[ENU=Specifies the amount that relates to payments.;
+                           RUS=Определяет сумму, которая относится к платежам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[3][1] }
+
+    { 42  ;4   ;Field     ;
+                CaptionML=[ENU=Invoices;
+                           RUS=Счета];
+                ToolTipML=[ENU=Specifies the amount that relates to invoices.;
+                           RUS=Определяет сумму, которая относится к счетам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[3][2] }
+
+    { 47  ;4   ;Field     ;
+                CaptionML=[ENU=Credit Memos;
+                           RUS=Кредит-ноты];
+                ToolTipML=[ENU=Specifies the amount that relates to credit memos.;
+                           RUS=Определяет сумму, которая относится к кредит-нотам.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[3][3] }
+
+    { 66  ;4   ;Field     ;
+                CaptionML=[ENU=Reminder;
+                           RUS=Напоминание];
+                ToolTipML=[ENU=Specifies the amount that relates to reminders.;
+                           RUS=Определяет сумму, которая относится к напоминаниям.];
+                SourceExpr=NoOfDoc[3][5] }
+
+    { 52  ;4   ;Field     ;
+                CaptionML=[ENU=Finance Charge Memos;
+                           RUS=Процент-ноты];
+                ToolTipML=[ENU=Specifies the amount that relates to finance charge memos.;
+                           RUS=Определяет сумму, которая относится к процент-нотам.];
+                SourceExpr=NoOfDoc[3][4] }
+
+    { 84  ;4   ;Field     ;
+                CaptionML=[ENU=Refund;
+                           RUS=Возмещение];
+                ToolTipML=[ENU=Specifies the amount that relates to refunds.;
+                           RUS=Определяет сумму, которая относится к возмещениям.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[3][6] }
+
+    { 1210006;4;Field     ;
+                CaptionML=[ENU=Prepayment;
+                           RUS=Предоплата];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=NoOfDoc[3][7] }
+
+    { 57  ;4   ;Field     ;
+                Name=AvgCollectionPeriodDays_LastYear;
+                CaptionML=[ENU=Avg. Collection Period (Days);
+                           RUS=Сред. срок погаш. долга (дни)];
+                ToolTipML=[ENU=Specifies the time it usually takes to collect payment from the customer. The value is determined by subtracting the posting dates from the corresponding payment dates and dividing the total by the number of invoices.;
+                           RUS=Задает среднее время получения оплаты от клиента. Оно определяется путем вычитания дат учета из соответствующих дат оплаты и деления результата на число счетов.];
+                ApplicationArea=#Basic,#Suite;
+                DecimalPlaces=0:0;
+                SourceExpr=AvgDaysToPay[3] }
+
+    { 61  ;4   ;Field     ;
+                CaptionML=[ENU=Largest Balance;
+                           RUS=Наибольшее сальдо];
+                ToolTipML=[ENU=Specifies the largest balance that the customer has had.;
+                           RUS=Определяет самое большое сальдо, которое когда-либо было у этого клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=HighestBalanceLCY[3];
+                AutoFormatType=1 }
+
+    { 1901652501;3;Group  ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)] }
+
+    { 93  ;4   ;Field     ;
+                SourceExpr=Text000;
+                Visible=FALSE }
+
+    { 38  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ToolTipML=[ENU=Specifies the amount that remains to be paid.;
+                           RUS=Определяет сумму, которую осталось оплатить.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-TotalRemainAmountLCY[1];
+                AutoFormatType=1 }
+
+    { 43  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ToolTipML=[ENU=Specifies the amount that remains to be paid.;
+                           RUS=Определяет сумму, которую осталось оплатить.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=TotalRemainAmountLCY[2];
+                AutoFormatType=1 }
+
+    { 48  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ToolTipML=[ENU=Specifies the amount that remains to be paid.;
+                           RUS=Определяет сумму, которую осталось оплатить.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-TotalRemainAmountLCY[3];
+                AutoFormatType=1 }
+
+    { 67  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ToolTipML=[ENU=Specifies the amount that remains to be paid.;
+                           RUS=Определяет сумму, которую осталось оплатить.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=TotalRemainAmountLCY[5];
+                AutoFormatType=1 }
+
+    { 53  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ToolTipML=[ENU=Specifies the amount that remains to be paid.;
+                           RUS=Определяет сумму, которую осталось оплатить.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=TotalRemainAmountLCY[4];
+                AutoFormatType=1 }
+
+    { 85  ;4   ;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ToolTipML=[ENU=Specifies the amount that remains to be paid.;
+                           RUS=Определяет сумму, которую осталось оплатить.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=TotalRemainAmountLCY[6];
+                AutoFormatType=1 }
+
+    { 1210007;4;Field     ;
+                CaptionML=[ENU=Remaining Amt. (LCY);
+                           RUS=Сумма остатка (руб.)];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=-TotalRemainAmountLCY[7];
+                AutoFormatType=1 }
+
+    { 89  ;4   ;Field     ;
+                SourceExpr=Text000;
+                Visible=FALSE }
+
+    { 90  ;4   ;Field     ;
+                SourceExpr=Text000;
+                Visible=FALSE }
+
+  }
+  CODE
+  {
+    VAR
+      CustLedgEntry@1004 : ARRAY [7] OF Record 21;
+      CustLedgEntry2@1000 : Record 21;
+      CustLedgEntry3@1001 : Record 21;
+      DtldCustLedgEntry2@1002 : Record 379;
+      DateFilterCalc@1003 : Codeunit 358;
+      CustDateFilter@1005 : ARRAY [3] OF Text[30];
+      CustDateName@1006 : ARRAY [3] OF Text[30];
+      TotalRemainAmountLCY@1007 : ARRAY [7] OF Decimal;
+      NoOfDoc@1008 : ARRAY [3,7] OF Integer;
+      AvgDaysToPay@1009 : ARRAY [3] OF Decimal;
+      DaysToPay@1010 : Decimal;
+      NoOfInv@1011 : Integer;
+      HighestBalanceLCY@1012 : ARRAY [3] OF Decimal;
+      CustBalanceLCY@1013 : Decimal;
+      i@1014 : Integer;
+      j@1015 : Integer;
+      Text000@1016 : TextConst 'ENU=Placeholder;RUS=Заполнитель';
+
+    LOCAL PROCEDURE UpdateDaysToPay@1(NoOfDays@1000 : Integer);
+    BEGIN
+      DaysToPay := DaysToPay + NoOfDays;
+      NoOfInv := NoOfInv + 1;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

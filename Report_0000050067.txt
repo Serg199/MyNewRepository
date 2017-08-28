@@ -1,0 +1,588 @@
+OBJECT Report 50067 Customer Rec. and Payables
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:05;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    CaptionML=RUS=Отчет по кредиторам/дебиторам;
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   maxaddrlen:=28;
+                   maxacclen:=38;
+                 END;
+
+    OnPreReport=BEGIN
+                   ExcelBuf.DELETEALL;
+                   IF newfile=newfile::new THEN
+                     ExcelBuf.CreateBook
+                   ELSE
+                     ExcelBuf.OpenBook(FileName,'Sheet1');
+                END;
+
+    OnPostReport=BEGIN
+
+                   ExcelBuf.SaveCellsToExcel;
+                   ExcelBuf.GiveUserControl;
+                   ExcelBuf.DELETEALL;
+                   CLEAR(ExcelBuf);
+                 END;
+
+  }
+  DATASET
+  {
+    { 6836;    ;DataItem;                    ;
+               DataItemTable=Table18;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               //CLEAR(Customer);
+                               SETFILTER("Date Filter",'<=%1',ReportDate);
+
+                               CustHeadline:=7;
+                               //номер строки в шаблоне с клиентом и итоговыми цифрами
+
+                               DebtsTotal:=0;
+                               DebtsTotal1:=0;
+                               DebtsTotal2:=0;
+                               //incremented in cle.OnPostDataItem
+
+
+                               VATEntry.SETCURRENTKEY("Transaction No.");
+
+                               Wnd.OPEN(ch1);
+                               i := 0;
+                               iCount := COUNT;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  Wnd.UPDATE(1, ROUND(i/iCount*10000, 1));
+                                  Wnd.UPDATE(2, Name);
+                                  i += 1;
+
+
+                                    //lines with entries for each group
+                                    i1:=CustHeadline;
+                                    i2:=CustHeadline+1;
+                                    i3:=CustHeadline+1;
+
+                                     BankName:='';
+                                     BankTransitNo:='';
+                                     BankAddress:='';
+                                     BankAccount:='';
+                                   BankFull:='';
+                                   CustomerAddress:='';
+                                   CLEAR(cba);
+                                   cba.SETRANGE("Customer No.","No.");
+
+                                  IF DELCHR(Customer."Post Code",'<>',' ')<>'' THEN BEGIN
+                                    CustomerAddress+=Customer."Post Code" +' ';
+                                    IF rPostCode.GET(Customer."Post Code") THEN BEGIN
+                                      tBuffer:=DELCHR(rPostCode.City,'<>',' ');
+                                      IF tBuffer<>'' THEN
+                                        CustomerAddress+=', '+tBuffer;
+                                    END;
+                                  END;
+
+
+
+                                  IF Customer."Country/Region Code"<>'' THEN BEGIN
+                                    Country.GET(Customer."Country/Region Code");
+                                    CustomerAddress+=DELCHR(Country.Name,'<>',' ');
+                                  END;
+
+                                  IF Customer.City<>'' THEN BEGIN
+                                    CustomerAddress+= ', ' + DELCHR(Customer.City,'<>',' ');
+                                  END;
+
+
+                                  IF  (DELCHR(Address,'<>',' ')<>'') OR (DELCHR("Address 2",'<>',' ')<>'') THEN
+                                    IF CustomerAddress<>'' THEN
+                                      CustomerAddress+=', '+DELCHR(Address,'<>',' ')+' '+DELCHR("Address 2",'>',' ')
+                                    ELSE
+                                      CustomerAddress:=DELCHR(Address,'<>',' ')+' '+DELCHR("Address 2",'>',' ');
+
+                                   IF cba.FIND('-') THEN BEGIN
+                                     BankFull:=DELCHR(cba.Name,'<>',' ');
+                                     tBuffer:=DELCHR(cba."Bank Branch No.",'<>',' ');
+                                     IF tBuffer<>'' THEN
+                                       BankFull+=', '+tBuffer;
+                                     tBuffer:=DELCHR(cba.Address,'<>',' ');
+                                     IF tBuffer<>'' THEN
+                                       BankFull+=', '+tBuffer;
+                                     tBuffer:=DELCHR(cba."Transit No.",'<>',' ');
+                                     IF tBuffer<>'' THEN
+                                       BankFull+=', к/с '+tBuffer;
+                                     BankAccount:=cba."Bank Account No.";
+                                     CustomerAddress +=' р/с '+BankAccount;
+                                   END;
+
+                                   LineNo:=LineNo+1;
+
+                                  //customer name
+                                  CVName:='';
+                                  IF bShowCVCode THEN
+                                    CVName:=tcCustomer+' '+"No.";
+                                  IF bShowName2 THEN
+                                    CVName+=DELCHR("Name 2",'<>',' ')
+                                  ELSE
+                                    CVName+=DELCHR(Name,'<>',' ');
+                                END;
+
+               OnPostDataItem=VAR
+                                im@1000000000 : Integer;
+                              BEGIN
+                                Wnd.CLOSE;
+
+                                //Writing Super grand Totals
+                                IF ABS(DebtsTotal)>0 THEN BEGIN
+
+                                ExcelBuf.INIT;
+                                ExcelBuf."Row No.":=CustHeadline;
+                                ExcelBuf."Column No.":=2;
+                                ExcelBuf.xlColID:='B';
+                                ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                ExcelBuf.Bold:=TRUE;
+                                ExcelBuf."Cell Value as Text":='ИТОГО';
+                                ExcelBuf.INSERT;
+
+                                //Total receivable
+                                ExcelBuf.INIT;
+                                ExcelBuf."Row No.":=CustHeadline;
+                                ExcelBuf."Column No.":=3;
+                                ExcelBuf.xlColID:='C';
+                                ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                ExcelBuf."Cell Value as Text":=FORMAT(ROUND(DebtsTotal,2));
+                                ExcelBuf.Bold:=TRUE;
+                                ExcelBuf.INSERT;
+
+                                {ExcelBuf.INIT;
+                                ExcelBuf."Row No.":=CustHeadline;
+                                ExcelBuf."Column No.":=4;
+                                ExcelBuf.xlColID:='D';
+                                ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                ExcelBuf."Cell Value as Text":=FORMAT(ROUND(DebtsTotal2,2));
+                                ExcelBuf.Bold:=TRUE;
+                                ExcelBuf.INSERT;}
+
+                                //overdue receivable
+                                ExcelBuf.INIT;
+                                ExcelBuf."Row No.":=CustHeadline;
+                                ExcelBuf."Column No.":=4;
+                                ExcelBuf.xlColID:='D';
+                                ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                ExcelBuf."Cell Value as Text":=FORMAT(ROUND(DebtsTotal1,2));
+                                ExcelBuf.Bold:=TRUE;
+                                ExcelBuf.INSERT;
+
+                                END;
+                              END;
+
+               ReqFilterFields=No.;
+               CalcFields=Balance (LCY) }
+
+    { 7407;1   ;DataItem;cle                 ;
+               DataItemTable=Table21;
+               DataItemTableView=SORTING(Customer No.,Posting Date,Currency Code)
+                                 ORDER(Ascending);
+               OnPreDataItem=BEGIN
+
+                               IF CPGFilter<>'' THEN
+                                 cle.SETFILTER("Customer Posting Group",CPGFilter);
+                               cle.SETFILTER("Date Filter",'<=%1',ReportDate);
+
+
+                               // DTT-SI >
+                               SETRANGE(Prepayment, rtype = rtype::Creditor);
+                               // DTT-SI <
+
+                               //BalanceLCY:=0;
+                               Debts:=0;
+                               Debts1:=0;
+                               Debts2:=0;
+
+                               CustWrtitten := FALSE; //used for determining whether to write cust to excel
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                       cle.CALCFIELDS("Remaining Amt. (LCY)");
+                                       cle.CALCFIELDS("Amount (LCY)");
+
+                                       IF cle."Remaining Amt. (LCY)"=0 THEN
+                                         CurrReport.SKIP;
+
+                                       EntryBalanceLCY:="Remaining Amt. (LCY)";
+
+                                       //------------------------------
+                                       //VAT Rate
+
+                                       VATRate:=0;
+                                       DetCustLgrEntry.SETRANGE("Cust. Ledger Entry No.", cle."Entry No.");
+                                       DetCustLgrEntry.SETRANGE("Entry Type", DetCustLgrEntry."Entry Type"::"Initial Entry");
+
+                                       IF DetCustLgrEntry.FIND('-') THEN REPEAT
+                                         VATEntry.SETRANGE("Transaction No.", DetCustLgrEntry."Transaction No.");
+                                         VATEntry.SETRANGE("Document No.", DetCustLgrEntry."Document No.");
+
+                                         VATEntry.SETFILTER(Base, '<>0');
+                                         VATEntry.SETFILTER(Amount, '<>0');
+
+                                         IF VATEntry.FIND('-') THEN REPEAT
+                                           VATRate := VATEntry.Amount / VATEntry.Base
+                                         UNTIL VATEntry.NEXT = 0;
+
+                                         IF VATRate=0 THEN BEGIN
+                                           VATEntry.SETRANGE(Amount);
+                                           VATEntry.SETRANGE(Base);
+                                           VATEntry.SETFILTER("Unrealized Amount", '<>0');
+                                           VATEntry.SETFILTER("Unrealized Base", '<>0');
+                                           IF VATEntry.FIND('-') THEN REPEAT
+                                             VATRate := VATEntry."Unrealized Amount" / VATEntry."Unrealized Base";
+                                           UNTIL VATEntry.NEXT = 0;
+                                         END;
+                                       UNTIL DetCustLgrEntry.NEXT = 0;
+
+                                      //аванс хранится в CLE с учетом НДС
+                                      // DTT-SI >
+                                      IF ("Document Type" = "Document Type"::Payment) AND Prepayment THEN
+                                         EntryBalanceLCY:=EntryBalanceLCY/(1+VATRate);
+                                      // DTT-SI <
+
+                                      //------------------------------
+
+                                      IF (cle."Posting Date"<=OldDate) THEN  BEGIN
+                                         Debts:= Debts + EntryBalanceLCY;
+                                         q:='+7 дней  > 90 дней';
+                                      END;
+
+
+                                      IF ((cle."Posting Date"> OldDate) AND (cle."Posting Date"<=SecDate))
+                                      THEN BEGIN
+                                         q:='+7 дн от 45д до 90д';
+                                         Debts1:= Debts1 +  EntryBalanceLCY;
+                                      END;
+
+                                      IF ((cle."Posting Date"> SecDate)  AND (cle."Posting Date"<=ReportDate))
+                                      THEN BEGIN
+                                        q:='+7 дней  < 45 дней';
+                                        Debts2:= Debts2 +  EntryBalanceLCY;
+                                      END;
+
+                                      WriteAmttoExcel(i1,q);
+                                      i1:=i1+2;
+                                END;
+
+               OnPostDataItem=VAR
+                                i@1000000000 : Integer;
+                                im@1000000001 : Integer;
+                              BEGIN
+                                //Writing total amounts
+
+                                //IF ABS(Debts)+ABS(Debts1)+ABS(Debts2)>0 THEN BEGIN
+                                IF CustWrtitten THEN BEGIN
+                                //If customer has overdue
+
+                                //--------------------------------------------
+                                {  //<45 days
+                                  ExcelBuf.INIT;
+                                  ExcelBuf."Row No.":=CustHeadline;
+                                  ExcelBuf."Column No.":=6;
+                                  ExcelBuf.xlColID:='F';
+                                  ExcelBuf.Bold:=TRUE;
+                                  ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                  ExcelBuf."Cell Value as Text":=FORMAT(ROUND(Debts2,2));
+                                  ExcelBuf.INSERT;
+                                  DebtsTotal2:=DebtsTotal2+Debts2;
+
+                                  //45..90 days
+                                  ExcelBuf.INIT;
+                                  ExcelBuf."Row No.":=CustHeadline;
+                                  ExcelBuf.Bold:=TRUE;
+                                  ExcelBuf."Column No.":=9;
+                                  ExcelBuf.xlColID:='I';
+                                  ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                  ExcelBuf."Cell Value as Text":=FORMAT(ROUND(Debts1,2));
+                                  ExcelBuf.INSERT;
+                                  DebtsTotal1:=DebtsTotal1+Debts1; }
+                                 //--------------------------------------------
+
+
+                                  //>90 days
+                                  ExcelBuf.INIT;
+                                  ExcelBuf."Row No.":=CustHeadline;
+                                  ExcelBuf."Column No.":=4;
+                                  ExcelBuf.xlColID:='D';
+                                  ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                  ExcelBuf."Cell Value as Text":=FORMAT(ROUND(Debts,2));
+                                  ExcelBuf.Bold:=TRUE;
+                                  ExcelBuf.INSERT;
+
+                                  DebtsTotal:=DebtsTotal+Debts+Debts1+Debts2;
+                                  //overdue amount
+                                  DebtsTotal1:=DebtsTotal1+Debts;
+
+                                  //Customer GrandDtotal
+                                  ExcelBuf.INIT;
+                                  ExcelBuf."Row No.":=CustHeadline;
+                                  ExcelBuf."Column No.":=3;
+                                  ExcelBuf.Bold:=TRUE;
+                                  ExcelBuf.xlColID:='C';
+                                  ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                  ExcelBuf."Cell Value as Text":=FORMAT(ROUND(Debts+Debts1+Debts2,2));
+                                  ExcelBuf.INSERT;
+
+                                  //----------------------------------------
+                                  //client info
+
+                                  //customer addr
+                                  //formed in Customer - on AfterGetRecord
+                                  //SplitLongString(CustomerAddress,2,i3);
+
+                                  //bank addr
+                                  //formed in Customer - on AfterGetRecord
+                                  //SplitLongString(BankFull,8,i4);
+
+
+                                  //customer name
+                                  ExcelBuf.INIT;
+                                  ExcelBuf."Row No.":=CustHeadline;
+                                  ExcelBuf."Column No.":=1;
+                                  ExcelBuf.xlColID:='A';
+                                  ExcelBuf.Bold:=TRUE;
+                                  ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+                                  ExcelBuf."Cell Value as Text":=CVName;
+                                  ExcelBuf.INSERT;
+                                  //------------
+
+                                  //Number of next cust line
+                                  IF i2>i1 THEN
+                                    im:=i2
+                                  ELSE
+                                    im:=i1;
+
+                                  IF im<i3 THEN
+                                    im:=i3;
+
+                                  IF im<i4 THEN
+                                    im:=i4;
+
+                                  CustHeadline:=im+1;
+
+                                END; //IF
+                              END;
+
+               DataItemLink=Customer No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      VATEntry@1000000058 : Record 254;
+      DetCustLgrEntry@1000000057 : Record 379;
+      VATRate@1000000056 : Decimal;
+      LineNo@1000000000 : Integer;
+      BankName@1000000001 : Text[250];
+      BankTransitNo@1000000002 : Text[250];
+      BankAddress@1000000003 : Text[250];
+      cba@1000000005 : Record 287;
+      BankFull@1000000006 : Text[250];
+      BankAccount@1000000007 : Text[250];
+      AccountAddress@1000000008 : Text[250];
+      EntryBalanceLCY@1000000037 : Decimal;
+      BalanceLCY@1000000009 : Decimal;
+      Debts@1000000010 : Decimal;
+      Debts1@1000000049 : Decimal;
+      Debts2@1000000050 : Decimal;
+      rtype@1000000014 : 'Creditor,Debitor';
+      OldDate@1000000015 : Date;
+      MinimalSum@1000000016 : Decimal;
+      HeaderText1@1000000017 : TextConst 'RUS=Номер расчетного\или иного счета\предприятия-кредитора,\юридический адрес';
+      HeaderText2@1000000018 : TextConst 'RUS=Номер расчетного\или иного счета\предприятия-дебитора,\юридический адрес';
+      CompanyName1@1000000019 : TextConst 'RUS=Наименование\предприятия-\кредитора';
+      CompanyName2@1000000020 : TextConst 'RUS=Наименование\предприятия-\дебитора';
+      DebtName1@1000000021 : TextConst 'RUS=Сумма кредиторской задолженности в\рублях';
+      DebtName2@1000000022 : TextConst 'RUS=Сумма дебиторской задолженности в\рублях';
+      BankName1@1000000023 : TextConst 'RUS=Наименование,\местонахождение,\№ корр/счета банка\предприятия-кредитора';
+      BankName2@1000000024 : TextConst 'RUS=Наименование,\местонахождение,\№ корр/счета банка\предприятия-дебитора';
+      MainHeader1@1000000025 : TextConst 'RUS=Перечень\предприятий-кредиторов по состоянию\на';
+      MainHeader2@1000000026 : TextConst 'RUS=Перечень\предприятий-дебиторов по состоянию\на';
+      CompanyInfo@1000000027 : Record 79;
+      ReportDate@1000000028 : Date;
+      LocalizationManagement@1000000012 : Codeunit 12400;
+      DebtsTotal@1000000030 : Decimal;
+      DebtsTotal1@1000000051 : Decimal;
+      DebtsTotal2@1000000052 : Decimal;
+      CVName@1000000032 : Text[250];
+      tcVendor@1000000033 : TextConst 'RUS=Поставщик';
+      tcCustomer@1000000034 : TextConst 'RUS=Покупатель';
+      bShowCVCode@1000000031 : Boolean;
+      bShowVendors@1000000035 : Boolean;
+      bShowCustomers@1000000036 : Boolean;
+      bShowEngagements@1000000038 : Boolean;
+      bShowName2@1000000039 : Boolean;
+      tEngagements@1000000040 : Text[250];
+      CustomerAddress@1000000042 : Text[250];
+      Country@1000000043 : Record 9;
+      rPostCode@1000000044 : Record 225;
+      tBuffer@1000000045 : Text[250];
+      bExcludeAdvance@1000000047 : Boolean;
+      SecDate@1000000048 : Date;
+      CPGFilter@1000000053 : Text[100];
+      ExcelBuf@1000000013 : Record 370;
+      CustHeadline@1000000004 : Integer;
+      i1@1000000011 : Integer;
+      i2@1000000041 : Integer;
+      i3@1000000046 : Integer;
+      i4@1000000063 : Integer;
+      CustWrtitten@1000000029 : Boolean;
+      newfile@1000000054 : 'new,existing';
+      FileName@1000000055 : Text[250];
+      Graceper@1000000059 : Integer;
+      q@1000000060 : Text[30];
+      maxaddrlen@1000000061 : Integer;
+      maxacclen@1000000062 : Integer;
+      Wnd@1210000 : Dialog;
+      i@1210001 : Integer;
+      iCount@1210002 : Integer;
+      ch1@1210003 : TextConst 'ENU="@1@@@@@@@@@@@@@@@@@@@\Customer #2#################### ";RUS="@1@@@@@@@@@@@@@@@@@@@\Клиент #2#################### "';
+
+    PROCEDURE WriteAmttoExcel@1000000007(i@1000000001 : Integer;qualifier@1000000000 : Text[30]);
+    BEGIN
+
+          //amount
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=i;
+          ExcelBuf."Column No.":=7;
+          ExcelBuf.xlColID:='G';
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+
+
+          IF NOT ((cle."Document Type" = cle."Document Type"::Payment) AND cle.Prepayment) THEN
+            ExcelBuf."Cell Value as Text":=FORMAT(cle."Remaining Amt. (LCY)")
+          ELSE
+            ExcelBuf."Cell Value as Text":=FORMAT(ROUND(EntryBalanceLCY,2));
+
+          ExcelBuf.INSERT;
+
+          //invoice date
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=i;
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+          ExcelBuf."Column No.":=6;
+          ExcelBuf.xlColID:='F';
+          ExcelBuf."Cell Value as Text":=FORMAT(cle."Posting Date");
+          ExcelBuf.INSERT;
+
+          //invoice no
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=i;
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+          ExcelBuf."Column No.":=9;
+          ExcelBuf.xlColID:='I';
+          ExcelBuf."Cell Value as Text":=FORMAT(cle."Document No.");
+          ExcelBuf.INSERT;
+
+          //invoice no
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=i;
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+          ExcelBuf."Column No.":=10;
+          ExcelBuf.xlColID:='J';
+          ExcelBuf."Cell Value as Text":=FORMAT(cle."External Document No.");
+          ExcelBuf.INSERT;
+
+          //VAT %
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=i;
+          ExcelBuf."Column No.":=5;
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+          ExcelBuf.xlColID:='E';
+          ExcelBuf."Cell Value as Text":=FORMAT(ROUND(VATRate*100),2);
+
+
+          ExcelBuf.INSERT;
+
+          //overdue time qualifier
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=i+1;
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+          ExcelBuf."Column No.":=6;
+          ExcelBuf.xlColID:='F';
+          ExcelBuf.Italic:=TRUE;
+          ExcelBuf."Cell Value as Text":=q;
+          ExcelBuf.INSERT;
+
+          CustWrtitten:=TRUE;
+    END;
+
+    PROCEDURE SplitLongString@1000000008(InputStr@1000000001 : Text[120];Col@1000000000 : Integer;VAR strnum@1000000002 : Integer);
+    VAR
+      strrest@1000000007 : Text[120];
+      strwrite@1000000006 : Text[120];
+      breakpos@1000000005 : Integer;
+      s@1000000004 : Text[1];
+      exitloop@1000000003 : Boolean;
+    BEGIN
+        exitloop:=FALSE;
+        strrest:=InputStr;
+        strnum:=CustHeadline;
+
+        REPEAT
+          //Form substr not longer than maxaddrlen
+          strwrite:=strrest;
+          IF STRLEN(strrest)>maxaddrlen THEN BEGIN
+            breakpos:=maxaddrlen;
+            REPEAT
+              s:=COPYSTR(strrest,breakpos,1);
+              breakpos:=breakpos-1;
+            UNTIL NOT ((s<>' ') AND (s<>','));
+            strwrite:=COPYSTR(strrest,1,breakpos-1);
+            strrest:=COPYSTR(strrest,breakpos+1,STRLEN(strrest)-breakpos);
+          END
+          ELSE
+            exitloop:=TRUE;
+
+          //write current piece
+          ExcelBuf.INIT;
+          ExcelBuf."Row No.":=strnum;
+          ExcelBuf."Column No.":=Col;
+          CASE Col OF
+            2:ExcelBuf.xlColID:='B';
+            8:ExcelBuf.xlColID:='H';
+          END;
+
+          ExcelBuf.Bold:=TRUE;
+          ExcelBuf.xlRowID:=FORMAT(ExcelBuf."Row No.");
+          ExcelBuf."Cell Value as Text":=strwrite;
+          ExcelBuf.INSERT;
+          strnum:=strnum+1;
+
+        UNTIL exitloop;
+    END;
+
+    BEGIN
+    {
+      NC PIF005 DP Перенос отчетности
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

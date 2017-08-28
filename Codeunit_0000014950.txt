@@ -1,0 +1,344 @@
+OBJECT Codeunit 14950 KLADR Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      KLADRRegion@1210012 : Record 14952;
+      FileMgt@1210011 : Codeunit 419;
+      Connection@1210015 : DotNet "'ADODB, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.ADODB.ConnectionClass" RUNONCLIENT;
+      RecSet@1210025 : DotNet "'ADODB, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.ADODB.RecordsetClass" RUNONCLIENT;
+      Field@1210026 : DotNet "'ADODB, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.ADODB.Field" RUNONCLIENT;
+      CursorType@1210009 : DotNet "'ADODB, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.ADODB.CursorTypeEnum" RUNONCLIENT;
+      LockType@1210008 : DotNet "'ADODB, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.ADODB.LockTypeEnum" RUNONCLIENT;
+      RegionCode@1210007 : Code[2];
+      ALTName@1210006 : Text[250];
+      SOCRName@1210005 : Text[250];
+      DOMAName@1210004 : Text[250];
+      PathToKLADR@1210003 : Text;
+      KLADRName@1210002 : Text[250];
+      STREETName@1210001 : Text[250];
+      i@1210000 : Integer;
+      Text001@1210024 : TextConst 'ENU=Process Region Codes @1@@@@@@@@@@@@@@@;RUS=Обработать коды регионов        @1@@@@@@@@@@@@@@@';
+      Text002@1210023 : TextConst 'ENU=Process Abbreviations #1###################;RUS=Обработать аббревиатуры         #1###################';
+      Text003@1210022 : TextConst 'ENU=Status  #7########################;RUS=Статус                          #7########################';
+      Text005@1210021 : TextConst 'ENU=Process Classificator Codes @1@@@@@@@@@@@@@@@;RUS=Обработать коды классификаторов @1@@@@@@@@@@@@@@@';
+      Text006@1210020 : TextConst 'ENU=Cities  #1###### @2@@@@@@@@@@@@@@@;RUS=Города                          #1###### @2@@@@@@@@@@@@@@@';
+      Text007@1210019 : TextConst 'ENU=Streets #3###### @4@@@@@@@@@@@@@@@;RUS=Улицы                           #3###### @4@@@@@@@@@@@@@@@';
+      Text008@1210018 : TextConst 'ENU=Houses  #5###### @6@@@@@@@@@@@@@@@;RUS=Дома                            #5###### @6@@@@@@@@@@@@@@@';
+      Text009@1210017 : TextConst 'ENU=Connect to %1;RUS=Подключиться к %1';
+      Text010@1210016 : TextConst 'ENU=Import data from %1;RUS=Импорт данных из %1';
+      Text012@1210014 : TextConst 'ENU=Import %1 first.;RUS=Сначала импорт %1.';
+      Text013@1210013 : TextConst 'ENU=Enter Region Code.;RUS=Введите код региона.';
+
+    PROCEDURE LookupAddress@1210000(VAR AltAddr@1210004 : Record 5201;Level@1210000 : Integer);
+    VAR
+      KLADRAddr@1210002 : Record 14950;
+      KLADRForm@1210006 : Page 14951;
+      ParentCode@1210003 : Text[23];
+      CurrCode@1210005 : Text[23];
+    BEGIN
+      IF (AltAddr."KLADR Code" = '') AND (Level <> 1) THEN
+        EXIT;
+
+      ParentCode := KLADRAddr.GetParentCode(AltAddr."KLADR Code",Level);
+
+      KLADRAddr.RESET;
+      KLADRAddr.SETCURRENTKEY(Level,Parent,Name);
+      KLADRAddr.SETRANGE(Level,Level);
+      IF Level > 1 THEN
+        KLADRAddr.SETRANGE(Parent,ParentCode);
+      CurrCode := KLADRAddr.GetParentCode(AltAddr."KLADR Code",Level + 1);
+      IF NOT KLADRAddr.ISEMPTY THEN BEGIN
+        IF KLADRAddr.GET(CurrCode) THEN;
+        KLADRForm.SETTABLEVIEW(KLADRAddr);
+        KLADRForm.SETRECORD(KLADRAddr);
+        KLADRForm.LOOKUPMODE(TRUE);
+        IF KLADRForm.RUNMODAL = ACTION::LookupOK THEN BEGIN
+          KLADRForm.GETRECORD(KLADRAddr);
+          IF CurrCode <> KLADRAddr.Code THEN BEGIN
+            AltAddr."KLADR Code" := KLADRAddr.Code;
+            AltAddr.SetValues(Level,KLADRAddr.Name,KLADRAddr."Category Code");
+            IF KLADRAddr.Index <> '' THEN
+              AltAddr."Post Code" := KLADRAddr.Index;
+            IF KLADRAddr.GNINMB <> '' THEN
+              AltAddr."Tax Inspection Code" := KLADRAddr.GNINMB;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE InitFileNames@1210003();
+    BEGIN
+      KLADRName := 'KLADR.DBF';
+      STREETName := 'STREET.DBF';
+      ALTName := 'ALTNAMES.DBF';
+      SOCRName := 'SOCRBASE.DBF';
+      DOMAName := 'DOMA.DBF';
+    END;
+
+    PROCEDURE UpdateRegions@1470000();
+    VAR
+      KLADRCategory@1210000 : Record 14951;
+      Window@1210001 : Dialog;
+      Count@1470006 : Integer;
+      Socr@1470002 : Text[10];
+    BEGIN
+      GetConnection(PathToKLADR,Connection);
+
+      IF ISNULL(RecSet) THEN
+        RecSet := RecSet.RecordsetClass;
+
+      RecSet.Open('select COUNT(*) from ' + KLADRName + ' where (INSTR(CODE,"000000000000") = 2) OR (INSTR(CODE,"00000000000") = 3)',
+        Connection,
+        CursorType.adOpenUnspecified,LockType.adLockUnspecified,0);
+
+      Field := RecSet.Fields.Item(0);
+      Count := Field.Value;
+      RecSet.Close;
+      IF Count > 0 THEN
+        KLADRRegion.DELETEALL;
+      i := 0;
+
+      RecSet.Open(
+        'select CODE,NAME,SOCR from ' + KLADRName + ' where (INSTR(CODE,"000000000000") = 2) OR (INSTR(CODE,"00000000000") = 3)',
+        Connection,CursorType.adOpenUnspecified,LockType.adLockUnspecified,0);
+      RecSet.MoveFirst;
+      Window.OPEN(Text001);
+      WHILE NOT RecSet.EOF DO BEGIN
+        i += 1;
+        Window.UPDATE(1,ROUND(i / Count * 10000,1));
+
+        KLADRRegion.INIT;
+        KLADRRegion.Code := COPYSTR(FORMAT(RecSet.Fields.Item('CODE').Value),1,2);
+        KLADRRegion.Name := FORMAT(RecSet.Fields.Item('NAME').Value);
+        Socr := FORMAT(RecSet.Fields.Item('SOCR').Value);
+        KLADRRegion."Address Name" := KLADRCategory.GetTextWithCategory(Socr,1,KLADRRegion.Name,FALSE,TRUE);
+        KLADRRegion.INSERT;
+
+        RecSet.MoveNext;
+      END;
+      Window.CLOSE;
+
+      RecSet.Close;
+      Connection.Close;
+    END;
+
+    PROCEDURE GetPathName@1470001() Path : Text;
+    VAR
+      Pos@1470003 : Integer;
+      FullPath@1470002 : Text[250];
+      Name@1470000 : Text[250];
+    BEGIN
+      FullPath := FileMgt.OpenFileDialog(Name,'.dbf','');
+      IF (FullPath <> '') AND (FullPath <> '.dbf') THEN BEGIN
+        Name := FullPath;
+        Pos := 0;
+        WHILE STRPOS(Name,'\') <> 0 DO BEGIN
+          Pos := Pos + STRPOS(Name,'\');
+          Name := COPYSTR(Name,STRPOS(Name,'\') + 1);
+        END;
+        Path := COPYSTR(FullPath,1,Pos - 1);
+      END;
+    END;
+
+    PROCEDURE ImportKLADR@1470002();
+    VAR
+      KLADRAddr@1470000 : Record 14950;
+      Window@1210000 : Dialog;
+      Count@1470002 : BigInteger;
+      Divider@1470006 : Integer;
+      FileType@1470001 : 'KLADR,STREET,DOMA';
+      FileName@1470004 : Text[250];
+      MessNo@1470003 : Integer;
+    BEGIN
+      IF RegionCode = '' THEN
+        ERROR(Text013);
+
+      IF KLADRRegion.ISEMPTY THEN
+        ERROR(Text012,KLADRRegion.TABLECAPTION);
+
+      Window.OPEN(Text006 + '\' + Text007 + '\' + Text008 + '\' + Text003);
+      FOR FileType := 0 TO 2 DO BEGIN
+        CASE FileType OF
+          FileType::KLADR:
+            FileName := KLADRName;
+          FileType::STREET:
+            FileName := STREETName;
+          FileType::DOMA:
+            FileName := DOMAName;
+        END;
+        MessNo := 2 * FileType + 1;
+
+        Window.UPDATE(7,STRSUBSTNO(Text009,FileName));
+
+        GetConnection(PathToKLADR,Connection);
+        RecSet := RecSet.RecordsetClass;
+        i := 0;
+
+        RecSet.Open('select COUNT(*) from ' + FileName + ' where INSTR(CODE,"' + RegionCode + '") = 1',
+          Connection,CursorType.adOpenUnspecified,LockType.adLockUnspecified,0);
+        Count := RecSet.Fields.Item(0).Value;
+        RecSet.Close;
+        IF Count = 0 THEN BEGIN
+          Connection.Close;
+          EXIT;
+        END;
+        Window.UPDATE(MessNo,Count);
+
+        RecSet.Open('select * from ' + FileName + ' where INSTR(CODE,"' + RegionCode + '") = 1',
+          Connection,CursorType.adOpenUnspecified,LockType.adLockUnspecified,0);
+        RecSet.MoveFirst;
+        Divider := 1;
+        IF Count > 100 THEN
+          Divider := ROUND(Count / 100,1);
+        Window.UPDATE(7,STRSUBSTNO(Text010,FileName));
+        WHILE NOT RecSet.EOF DO BEGIN
+          KLADRAddr.INIT;
+          KLADRAddr.Code := FORMAT(RecSet.Fields.Item('CODE').Value);
+          KLADRAddr.Name := FORMAT(RecSet.Fields.Item('NAME').Value);
+          KLADRAddr."Category Code" := GetFieldsValue('SOCR');
+          KLADRAddr.Index := GetFieldsValue('INDEX');
+          KLADRAddr.GNINMB := GetFieldsValue('GNINMB');
+          KLADRAddr.UNO := GetFieldsValue('UNO');
+          KLADRAddr.OKATO := GetFieldsValue('OCATD');
+          CASE FileType OF
+            FileType::KLADR:
+              KLADRAddr.Status := GetFieldsValue('STATUS');
+            FileType::DOMA:
+              KLADRAddr.Building := GetFieldsValue('KORP');
+          END;
+          IF NOT KLADRAddr.INSERT(TRUE) THEN
+            KLADRAddr.MODIFY(TRUE);
+
+          i += 1;
+          IF i / Divider = ROUND(i / Divider,1) THEN
+            Window.UPDATE(MessNo + 1,ROUND(i / Count * 10000,1));
+
+          RecSet.MoveNext;
+        END;
+
+        RecSet.Close;
+        Connection.Close;
+      END;
+      Window.CLOSE;
+    END;
+
+    PROCEDURE ImportSOCR@1470005();
+    VAR
+      KLADRCategory@1470000 : Record 14951;
+      Window@1470002 : Dialog;
+    BEGIN
+      GetConnection(PathToKLADR,Connection);
+
+      RecSet := RecSet.RecordsetClass;
+      KLADRCategory.DELETEALL;
+
+      RecSet.Open('select * from ' + SOCRName,
+        Connection,CursorType.adOpenUnspecified,LockType.adLockUnspecified,0);
+      RecSet.MoveFirst;
+      Window.OPEN(Text002);
+      WHILE NOT RecSet.EOF DO BEGIN
+        KLADRCategory.INIT;
+        KLADRCategory.Code := FORMAT(RecSet.Fields.Item('SCNAME').Value);
+        EVALUATE(KLADRCategory.Level,FORMAT(RecSet.Fields.Item('LEVEL').Value));
+        KLADRCategory.Name := FORMAT(RecSet.Fields.Item('SOCRNAME').Value);
+        KLADRCategory.Type := FORMAT(RecSet.Fields.Item('KOD_T_ST').Value);
+        KLADRCategory.INSERT;
+
+        Window.UPDATE(1,KLADRCategory.Name);
+        RecSet.MoveNext;
+      END;
+
+      Window.CLOSE;
+      RecSet.Close;
+      Connection.Close;
+    END;
+
+    PROCEDURE ImportALTNAMES@1470006();
+    VAR
+      AltAddr@1470000 : Record 5201;
+      KLADRAddr@1210000 : Record 14950;
+      Window@1470001 : Dialog;
+      RecCount@1470002 : Integer;
+      CurrLevel@1470004 : Integer;
+    BEGIN
+      IF KLADRRegion.ISEMPTY THEN
+        ERROR(Text012,KLADRRegion.TABLECAPTION);
+
+      GetConnection(PathToKLADR,Connection);
+      RecSet := RecSet.RecordsetClass;
+
+      Window.OPEN(Text005);
+      WITH AltAddr DO BEGIN
+        RESET;
+        RecCount := COUNT;
+        IF FIND('-') THEN
+          REPEAT
+            IF "KLADR Code" <> '' THEN BEGIN
+              CurrLevel := KLADRAddr.GetLevel("KLADR Code");
+              RecSet.Open(
+                'select * from ' + ALTName + ' where (LEVEL = "' + FORMAT(CurrLevel) +
+                '") AND (INSTR(OLDCODE,"' + "KLADR Code" + '") = 1)',
+                Connection,CursorType.adOpenUnspecified,LockType.adLockUnspecified,0);
+
+              IF NOT RecSet.EOF THEN BEGIN
+                RecSet.MoveFirst;
+                "KLADR Code" := FORMAT(RecSet.Fields.Item('NEWCODE').Value);
+                MODIFY;
+              END;
+              RecSet.Close;
+            END;
+            Window.UPDATE(1,ROUND(i / RecCount * 10000,1));
+          UNTIL NEXT = 0;
+      END;
+      Window.CLOSE;
+      Connection.Close;
+    END;
+
+    PROCEDURE GetConnection@1470008(Path@1470000 : Text[250];VAR Connection@1210000 : DotNet "'ADODB, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.ADODB.ConnectionClass" RUNONCLIENT);
+    BEGIN
+      Connection := Connection.ConnectionClass;
+      Connection.Open(
+        'Provider=Microsoft.Jet.OLEDB.4.0;Data Source=' + Path + ';Extended Properties=DBASE IV;',
+        '','',0);
+    END;
+
+    PROCEDURE GetFieldsValue@1210002(FieldName@1470000 : Code[20]) Result : Text[40];
+    VAR
+      Size@1470002 : Integer;
+    BEGIN
+      Result := '';
+      EVALUATE(Size,FORMAT(RecSet.Fields.Item(FieldName).ActualSize));
+      IF Size <> 0 THEN
+        Result := FORMAT(RecSet.Fields.Item(FieldName).Value);
+      EXIT(Result);
+    END;
+
+    PROCEDURE SetPathName@1470004(NewPath@1470000 : Text[250];NewRegionCode@1470001 : Code[2]);
+    BEGIN
+      PathToKLADR := NewPath;
+      RegionCode := NewRegionCode;
+      KLADRName := 'KLADR.DBF';
+      STREETName := 'STREET.DBF';
+      ALTName := 'ALTNAMES.DBF';
+      SOCRName := 'SOCRBASE.DBF';
+      DOMAName := 'DOMA.DBF';
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

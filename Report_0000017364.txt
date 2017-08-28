@@ -1,0 +1,286 @@
+OBJECT Report 17364 Vacation Calculation T-60
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Vacation Calculation T-60;
+               RUS=Расчет отпуска T-60];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CompanyInfo.GET;
+
+                  HRSetup.GET;
+                  HRSetup.TESTFIELD("T-60 Template Code");
+                  FileName := ExcelTemplate.OpenTemplate(HRSetup."T-60 Template Code");
+
+                  ExcelMgt.OpenBook(FileName);
+                  ExcelMgt.OpenSheet('Sheet1');
+                END;
+
+    OnPostReport=BEGIN
+                   ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7220;    ;DataItem;                    ;
+               DataItemTable=Table17387;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=CONST(Vacation));
+               OnAfterGetRecord=BEGIN
+                                  Employee.GET("Employee No.");
+                                  WITH Employee DO BEGIN
+                                    ExcelMgt.FillCell('A7',CompanyInfo.Name + ' ' + CompanyInfo."Name 2");
+                                    ExcelMgt.FillCell('DA7',CompanyInfo."OKPO Code");
+
+                                    ExcelMgt.FillCell('BH11',"HR Order No.");
+                                    ExcelMgt.FillCell('BZ11',FORMAT("HR Order Date"));
+
+                                    ExcelMgt.FillCell('A15',GetFullName);
+                                    ExcelMgt.FillCell('CY15',"No.");
+
+                                    ExcelMgt.FillCell('A17',"Org. Unit Name");
+                                    ExcelMgt.FillCell('A19',"Job Title");
+
+                                    IF HRManager.GET(CompanyInfo."HR Manager No.") THEN BEGIN
+                                      ExcelMgt.FillCell('AF44',HRManager."Job Title");
+                                      ExcelMgt.FillCell('CI44',HRManager.GetNameInitials);
+                                    END;
+                                    IF Accountant.GET(CompanyInfo."Accountant No.") THEN
+                                      ExcelMgt.FillCell('AI85',Accountant."Job Title" + ' ' + Accountant.GetNameInitials);
+                                  END;
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 6618;1   ;DataItem;                    ;
+               DataItemTable=Table17388;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  PayrollDocLine@1210005 : Record 17415;
+                                  PayrollCalculation@1210004 : Record 17406;
+                                  PayrollCalcLineRounding@1210003 : Record 17407;
+                                  PayrollDocLineCalc@1210002 : Record 17459;
+                                  PayrollDocCalculate@1210001 : Codeunit 17404;
+                                  IncomeTaxAmount@1210000 : Decimal;
+                                BEGIN
+
+                                  TimeActivity.GET("Time Activity Code");
+
+                                  EmplAbsenceEntry.RESET;
+                                  EmplAbsenceEntry.SETCURRENTKEY("Employee No.");
+                                  EmplAbsenceEntry.SETRANGE("Employee No.","Employee No.");
+                                  EmplAbsenceEntry.SETRANGE("Time Activity Code","Time Activity Code");
+                                  EmplAbsenceEntry.SETRANGE("Entry Type",EmplAbsenceEntry."Entry Type"::Usage);
+                                  EmplAbsenceEntry.SETRANGE("Document Type","Document Type");
+                                  EmplAbsenceEntry.SETRANGE("Document No.","Document No.");
+
+                                  IF "Vacation Type" < "Vacation Type"::Additional THEN BEGIN
+                                    IF EmplAbsenceEntry.FINDFIRST THEN BEGIN
+                                      IF EmplAbsenceEntry2.GET(EmplAbsenceEntry."Accrual Entry No.") THEN BEGIN
+                                        ExcelMgt.FillCell('V22',LocMgt.Date2Text(EmplAbsenceEntry2."Start Date"));
+                                        ExcelMgt.FillCell('V22',LocMgt.Date2Text(EmplAbsenceEntry2."End Date"));
+                                      END;
+                                    END;
+                                    ExcelMgt.FillCell('E24',FORMAT("Calendar Days"));
+                                    ExcelMgt.FillCell('D27',LocMgt.Date2Text("Start Date"));
+                                    ExcelMgt.FillCell('AQ27',LocMgt.Date2Text("End Date"));
+                                  END ELSE BEGIN
+                                    ExcelMgt.FillCell('BI29',FORMAT("Calendar Days"));
+                                    FillLastVacations("Employee No.");
+                                  END;
+
+                                  ExcelMgt.FillCell('BI40',FORMAT("Calendar Days"));
+                                  ExcelMgt.FillCell('D43',LocMgt.Date2Text("Start Date"));
+                                  ExcelMgt.FillCell('AQ43',LocMgt.Date2Text("End Date"));
+
+                                  FirstLine := TRUE;
+                                  PostedPayrollDocLine.RESET;
+                                  PostedPayrollDocLine.SETCURRENTKEY("Document Type","HR Order No.");
+                                  PostedPayrollDocLine.SETRANGE("Document Type","Document Type" + 1);
+                                  PostedPayrollDocLine.SETRANGE("HR Order No.","Document No.");
+                                  PostedPayrollDocLine.SETRANGE("Employee No.","Employee No.");
+                                  PostedPayrollDocLine.SETRANGE("Element Code","Element Code");
+                                  IF PostedPayrollDocLine.FINDSET THEN BEGIN
+                                    REPEAT
+                                      IF NOT CalcGroupTypeIsBetween(PostedPayrollDocLine."Document No.") THEN BEGIN
+                                        IF FirstLine THEN BEGIN
+                                          // кол-во календарных дней расчетного периода
+                                          PostedPayrollDocLine.CALCFIELDS("AE Total Days","AE Total Earnings");
+                                          ExcelMgt.FillCell('BL52',FORMAT(PostedPayrollDocLine."AE Total Days"));
+                                          // средний дневной заработок
+                                          ExcelMgt.FillCell('DB52',FORMAT(PostedPayrollDocLine."AE Daily Earnings"));
+                                          // итого
+                                          ExcelMgt.FillCell('AF64',FORMAT(PostedPayrollDocLine."AE Total Earnings"));
+
+                                          RowNo := 52;
+                                          PostedPayrollPeriodAE.SETRANGE("Document No.",PostedPayrollDocLine."Document No.");
+                                          PostedPayrollPeriodAE.SETRANGE("Line No.",PostedPayrollDocLine."Line No.");
+                                          IF PostedPayrollPeriodAE.FINDSET THEN
+                                            REPEAT
+                                              ExcelMgt.FillCell('A' + FORMAT(RowNo),FORMAT(PostedPayrollPeriodAE.Year));
+                                              ExcelMgt.FillCell('Q' + FORMAT(RowNo),FORMAT(PostedPayrollPeriodAE.Month));
+                                              ExcelMgt.FillCell('AF' + FORMAT(RowNo),
+                                                FORMAT(PostedPayrollPeriodAE."Salary Amount" + PostedPayrollPeriodAE."Bonus Amount"));
+                                              RowNo += 1;
+                                            UNTIL PostedPayrollPeriodAE.NEXT = 0;
+                                          // За текущий месяц
+                                            ExcelMgt.FillCell('K67',LocMgt.GetMonthName("Start Date",TRUE));
+                                          IF "End Date" <= CALCDATE('<CM>',"Posted Absence Line"."Start Date") THEN
+                                            CurrMonthDate := "End Date"
+                                          ELSE
+                                            CurrMonthDate := CALCDATE('<CM>',"Posted Absence Line"."Start Date");
+                                          CurrMonthDays :=
+                                            CalendarMgt.GetPeriodInfo(PostedPayrollDocLine."Calendar Code",
+                                            "Posted Absence Line"."Start Date",CurrMonthDate,1) -
+                                            CalendarMgt.GetPeriodInfo(PostedPayrollDocLine."Calendar Code",
+                                            "Posted Absence Line"."Start Date",CurrMonthDate,4);
+                                          ExcelMgt.FillCell('A72',FORMAT(CurrMonthDays));
+                                          ExcelMgt.FillCell('P72',FORMAT(CurrMonthDays * PostedPayrollDocLine."AE Daily Earnings"));
+                                          FirstAmt := PostedPayrollDocLine."Payroll Amount";
+                                        END;
+                                        FirstLine := NOT FirstLine;
+                                        // Всего начислено
+                                        TotalAmt += PostedPayrollDocLine."Payroll Amount";
+                                      END;
+                                    UNTIL PostedPayrollDocLine.NEXT = 0;
+
+                                    PayrollDocLine."Element Code" := HRSetup."Income Tax 13%";
+                                    PayrollDocLine."Period Code" := PostedPayrollDocLine."Period Code";
+                                    PayrollDocLine."Corr. Amount" := TotalAmt;
+                                    IncomeTaxAmount := PayrollDocCalculate.Withholding(PayrollDocLine,TotalAmt);
+                                    PayrollCalculation.SETRANGE("Element Code",HRSetup."Income Tax 13%");
+                                    PayrollCalculation.SETRANGE("Period Code",'',PayrollDocLine."Period Code");
+                                    IF PayrollCalculation.FINDLAST THEN BEGIN
+                                      PayrollCalcLineRounding.SETRANGE("Element Code",PayrollCalculation."Element Code");
+                                      PayrollCalcLineRounding.SETRANGE("Period Code",PayrollCalculation."Period Code");
+                                      IF PayrollCalcLineRounding.FINDLAST THEN BEGIN
+                                        PayrollDocLineCalc."Rounding Precision" := PayrollCalcLineRounding."Rounding Precision";
+                                        PayrollDocLineCalc."Rounding Type" := PayrollCalcLineRounding."Rounding Type";
+                                        IncomeTaxAmount := PayrollDocLineCalc.Rounding(IncomeTaxAmount);
+                                      END;
+                                    END;
+                                    ExcelMgt.FillCell('A77',FORMAT(IncomeTaxAmount));
+                                    ExcelMgt.FillCell('CD77',FORMAT(IncomeTaxAmount));
+                                    ExcelMgt.FillCell('CR77',FORMAT(TotalAmt - IncomeTaxAmount));
+                                  END;
+
+                                  // За следующий месяц
+                                  ExcelMgt.FillCell('AZ72',FORMAT("Posted Absence Line"."Calendar Days" - CurrMonthDays));
+                                  ExcelMgt.FillCell('BN72',
+                                    FORMAT(TotalAmt - FirstAmt));
+                                  IF DATE2DMY("Start Date",2) < DATE2DMY("End Date",2) THEN
+                                    ExcelMgt.FillCell('BJ67',LocMgt.GetMonthName("End Date",TRUE));
+                                  ExcelMgt.FillCell('S79',LocMgt.Amount2Text('',TotalAmt - IncomeTaxAmount));
+                                  ExcelMgt.FillCell('CX72',FORMAT(TotalAmt));
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210007;2;Field     ;
+                  CaptionML=[ENU=Payment Sheet No.;
+                             RUS=Номер платежной ведомости];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PaymentSheetNo }
+
+      { 1210001;2;Field     ;
+                  CaptionML=[ENU=Payment Sheet Date;
+                             RUS=Дата платежной ведомости];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PaymentSheetDate }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Employee@1210012 : Record 5200;
+      HRSetup@1210011 : Record 5218;
+      CompanyInfo@1210000 : Record 79;
+      ExcelTemplate@1210010 : Record 14919;
+      HRManager@1210013 : Record 5200;
+      Accountant@1210021 : Record 5200;
+      EmplAbsenceEntry@1210014 : Record 17389;
+      EmplAbsenceEntry2@1210022 : Record 17389;
+      TimeActivity@1210015 : Record 5206;
+      PostedPayrollDocLine@1210016 : Record 17417;
+      PostedPayrollPeriodAE@1210017 : Record 17456;
+      ExcelMgt@1210007 : Codeunit 12416;
+      LocMgt@1210006 : Codeunit 12400;
+      CalendarMgt@1210020 : Codeunit 17430;
+      PaymentSheetNo@1210005 : Code[10];
+      PaymentSheetDate@1210004 : Date;
+      FileName@1210001 : Text[1024];
+      RowNo@1210018 : Integer;
+      CurrMonthDays@1210019 : Decimal;
+      CurrMonthDate@1210002 : Date;
+      FirstLine@1210023 : Boolean;
+      TotalAmt@1210024 : Decimal;
+      FirstAmt@1210025 : Decimal;
+
+    PROCEDURE FillLastVacations@1210015(EmployeeNo@1210001 : Code[10]);
+    BEGIN
+      WITH EmplAbsenceEntry DO BEGIN
+        IF FINDSET THEN BEGIN
+          IF COUNT > 4 THEN
+            NEXT(COUNT - 4);
+
+          RowNo := 35;
+          REPEAT
+            ExcelMgt.FillCell('A' + FORMAT(RowNo),FORMAT(TimeActivity.Description));
+            ExcelMgt.FillCell('AG' + FORMAT(RowNo),FORMAT("Time Activity Code"));
+            ExcelMgt.FillCell('AW' + FORMAT(RowNo),FORMAT("Calendar Days"));
+            ExcelMgt.FillCell('BQ' + FORMAT(RowNo),FORMAT("Start Date"));
+            ExcelMgt.FillCell('CC' + FORMAT(RowNo),FORMAT("End Date"));
+            ExcelMgt.FillCell('CQ' + FORMAT(RowNo),Description);
+
+            RowNo += 1;
+          UNTIL NEXT = 0;
+        END
+      END
+    END;
+
+    PROCEDURE CalcGroupTypeIsBetween@1210026(DocumentNo@1210027 : Code[20]) : Boolean;
+    VAR
+      PostedPayrollDoc@1210028 : Record 17416;
+      PayrollCalcGroup@1210029 : Record 17402;
+    BEGIN
+      PostedPayrollDoc.GET(DocumentNo);
+      PayrollCalcGroup.GET(PostedPayrollDoc."Calc Group Code");
+      EXIT(PayrollCalcGroup.Type = PayrollCalcGroup.Type::Between);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

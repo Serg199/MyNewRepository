@@ -1,0 +1,1970 @@
+OBJECT Page 42 Sales Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.02.17;
+    Time=12:00:00;
+    Version List=NAVW110.00.00.15601,NAVRU10.00.00.15601;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Sales Order;
+               RUS=Заказ на продажу];
+    SourceTable=Table36;
+    SourceTableView=WHERE(Document Type=FILTER(Order));
+    PageType=Document;
+    RefreshOnActivate=Yes;
+    PromotedActionCategoriesML=[ENU=New,Process,Report,Approve,Release,Posting,Prepare,Invoice,Request Approval;
+                                RUS=Создать,Обработать,Отчет,Утвердить,Выпустить,Учет,Подготовить,Счет,Запросить утверждение];
+    OnInit=VAR
+             SalesReceivablesSetup@1000 : Record 311;
+           BEGIN
+             SetExtDocNoMandatoryCondition;
+
+             JobQueuesUsed := SalesReceivablesSetup."Post & Print with Job Queue" OR SalesReceivablesSetup."Post with Job Queue";
+           END;
+
+    OnOpenPage=VAR
+                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                 OfficeMgt@1001 : Codeunit 1630;
+               BEGIN
+                 IF UserMgt.GetSalesFilter <> '' THEN BEGIN
+                   FILTERGROUP(2);
+                   SETRANGE("Responsibility Center",UserMgt.GetSalesFilter);
+                   FILTERGROUP(0);
+                 END;
+
+                 SETRANGE("Date Filter",0D,WORKDATE - 1);
+
+                 SetDocNoVisible;
+
+                 CRMIntegrationEnabled := CRMIntegrationManagement.IsCRMIntegrationEnabled;
+                 IsOfficeHost := OfficeMgt.IsAvailable;
+
+                 IF "Quote No." <> '' THEN
+                   ShowQuoteNo := TRUE;
+               END;
+
+    OnAfterGetRecord=BEGIN
+                       SetControlVisibility;
+                       UpdateShipToBillToGroupVisibility;
+                     END;
+
+    OnNewRecord=BEGIN
+                  "Responsibility Center" := UserMgt.GetSalesFilter;
+                  IF (NOT DocNoVisible) AND ("No." = '') THEN
+                    SetSellToCustomerFromFilter;
+
+                  SetDefaultPaymentServices;
+                END;
+
+    OnInsertRecord=BEGIN
+                     IF DocNoVisible THEN
+                       CheckCreditMaxBeforeInsert;
+
+                     IF ("Sell-to Customer No." = '') AND (GETFILTER("Sell-to Customer No.") <> '') THEN
+                       CurrPage.UPDATE(FALSE);
+                   END;
+
+    OnDeleteRecord=BEGIN
+                     CurrPage.SAVERECORD;
+                     EXIT(ConfirmDeletion);
+                   END;
+
+    OnQueryClosePage=BEGIN
+                       IF NOT DocumentIsPosted THEN
+                         EXIT(ConfirmCloseUnposted);
+                     END;
+
+    OnAfterGetCurrRecord=VAR
+                           CRMCouplingManagement@1000 : Codeunit 5331;
+                         BEGIN
+                           DynamicEditable := CurrPage.EDITABLE;
+                           CurrPage.IncomingDocAttachFactBox.PAGE.LoadDataFromRecord(Rec);
+                           CurrPage.ApprovalFactBox.PAGE.UpdateApprovalEntriesFromSourceRecord(RECORDID);
+                           CRMIsCoupledToRecord := CRMIntegrationEnabled AND CRMCouplingManagement.IsRecordCoupledToCRM(RECORDID);
+                           ShowWorkflowStatus := CurrPage.WorkflowStatus.PAGE.SetFilterOnWorkflowRecord(RECORDID);
+
+                           UpdatePaymentService;
+                         END;
+
+    ActionList=ACTIONS
+    {
+      { 1900000003;0 ;ActionContainer;
+                      ActionContainerType=RelatedInformation }
+      { 59      ;1   ;ActionGroup;
+                      CaptionML=[ENU=O&rder;
+                                 RUS=З&аказ];
+                      Image=Order }
+      { 61      ;2   ;Action    ;
+                      Name=Statistics;
+                      ShortCutKey=F7;
+                      CaptionML=[ENU=Statistics;
+                                 RUS=Статистика];
+                      ToolTipML=[ENU=View statistical information, such as the value of posted entries, for the record.;
+                                 RUS=Просмотр статистических сведений, например суммы учтенных операций для записи.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=Statistics;
+                      PromotedCategory=Process;
+                      PromotedOnly=Yes;
+                      OnAction=VAR
+                                 Handled@1000 : Boolean;
+                               BEGIN
+                                 OnBeforeStatisticsAction(Rec,Handled);
+                                 IF NOT Handled THEN BEGIN
+                                   OpenSalesOrderStatistics;
+                                   SalesCalcDiscountByType.ResetRecalculateInvoiceDisc(Rec);
+                                 END
+                               END;
+                                }
+      { 62      ;2   ;Action    ;
+                      ShortCutKey=Shift+F7;
+                      CaptionML=[ENU=Card;
+                                 RUS=Карточка];
+                      ToolTipML=[ENU=View or create the standard sales lines that are represented by the code on the recurring sales line.;
+                                 RUS=Просмотр или создание строк стандартной продажи, представляемых кодом в строке типовых продаж.];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Page 21;
+                      RunPageLink=No.=FIELD(Sell-to Customer No.);
+                      Image=EditLines }
+      { 122     ;2   ;Action    ;
+                      Name=Dimensions;
+                      AccessByPermission=TableData 348=R;
+                      ShortCutKey=Shift+Ctrl+D;
+                      CaptionML=[ENU=Dimensions;
+                                 RUS=Измерения];
+                      ToolTipML=[ENU=View or edits dimensions, such as area, project, or department, that you can assign to sales and purchase documents to distribute costs and analyze transaction history.;
+                                 RUS=Просмотр или изменение измерений, например области, проекта или отдела, которые можно назначать документам покупки и продажи для распределения себестоимости и анализа истории транзакций.];
+                      ApplicationArea=#Suite;
+                      Enabled="No." <> '';
+                      Image=Dimensions;
+                      OnAction=BEGIN
+                                 ShowDocDim;
+                                 CurrPage.SAVERECORD;
+                               END;
+                                }
+      { 78      ;2   ;Action    ;
+                      Name=Approvals;
+                      AccessByPermission=TableData 454=R;
+                      CaptionML=[ENU=Approvals;
+                                 RUS=Утверждения];
+                      ToolTipML=[ENU=View a list of the records that are waiting to be approved. For example, you can see who requested the record to be approved, when it was sent, and when it is due to be approved.;
+                                 RUS=Просмотр списка записей, ожидающих утверждения. Например, вы можете видеть имя пользователя, запросившего утверждение записи, время отправки запроса и время, когда он должен быть утвержден.];
+                      ApplicationArea=#Suite;
+                      Promoted=Yes;
+                      Image=Approvals;
+                      PromotedCategory=Category9;
+                      PromotedOnly=Yes;
+                      OnAction=VAR
+                                 ApprovalEntries@1001 : Page 658;
+                               BEGIN
+                                 ApprovalEntries.Setfilters(DATABASE::"Sales Header","Document Type","No.");
+                                 ApprovalEntries.RUN;
+                               END;
+                                }
+      { 63      ;2   ;Action    ;
+                      CaptionML=[ENU=Co&mments;
+                                 RUS=Ко&мментарии];
+                      RunObject=Page 67;
+                      RunPageLink=Document Type=FIELD(Document Type),
+                                  No.=FIELD(No.),
+                                  Document Line No.=CONST(0);
+                      Image=ViewComments }
+      { 1470002 ;2   ;Action    ;
+                      CaptionML=[ENU=Employee Sig&natures;
+                                 RUS=Под&писи сотрудников];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Page 12463;
+                      RunPageLink=Table ID=CONST(36),
+                                  Document Type=FIELD(Document Type),
+                                  Document No.=FIELD(No.);
+                      Image=Signature }
+      { 11      ;2   ;Action    ;
+                      AccessByPermission=TableData 90=R;
+                      CaptionML=[ENU=Assembly Orders;
+                                 RUS=Заказы на сборку];
+                      Image=AssemblyOrder;
+                      OnAction=VAR
+                                 AssembleToOrderLink@1000 : Record 904;
+                               BEGIN
+                                 AssembleToOrderLink.ShowAsmOrders(Rec);
+                               END;
+                                }
+      { 79      ;1   ;ActionGroup;
+                      Name=ActionGroupCRM;
+                      CaptionML=[ENU=Dynamics CRM;
+                                 RUS=Dynamics CRM];
+                      Visible=CRMIntegrationEnabled }
+      { 71      ;2   ;Action    ;
+                      Name=CRMGoToSalesOrder;
+                      CaptionML=[ENU=Sales Order;
+                                 RUS=Заказ на продажу];
+                      ToolTipML=[ENU=View the selected sales order.;
+                                 RUS=Просмотр выбранного заказа на продажу.];
+                      ApplicationArea=#Basic,#Suite;
+                      Enabled=CRMIntegrationEnabled AND CRMIsCoupledToRecord;
+                      Image=CoupledOrder;
+                      OnAction=VAR
+                                 CRMIntegrationManagement@1000 : Codeunit 5330;
+                               BEGIN
+                                 CRMIntegrationManagement.ShowCRMEntityFromRecordID(RECORDID);
+                               END;
+                                }
+      { 13      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Documents;
+                                 RUS=Документы];
+                      Image=Documents }
+      { 64      ;2   ;Action    ;
+                      CaptionML=[ENU=S&hipments;
+                                 RUS=Рас&х. накладные];
+                      ToolTipML=[ENU=View a list of the sales shipments you have posted.;
+                                 RUS=Просмотр списка учтенных расходных накладных продажи.];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Page 142;
+                      RunPageView=SORTING(Order No.);
+                      RunPageLink=Order No.=FIELD(No.);
+                      Image=Shipment }
+      { 65      ;2   ;Action    ;
+                      CaptionML=[ENU=Invoices;
+                                 RUS=Счета];
+                      ToolTipML=[ENU=View the history of posted sales invoices that have been posted for the document.;
+                                 RUS=Просмотр истории учтенных счетов продажи, которые были учтены для документа.];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Page 143;
+                      RunPageView=SORTING(Order No.);
+                      RunPageLink=Order No.=FIELD(No.);
+                      Image=Invoice }
+      { 15      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Warehouse;
+                                 RUS=Склад];
+                      Image=Warehouse }
+      { 150     ;2   ;Action    ;
+                      CaptionML=[ENU=In&vt. Put-away/Pick Lines;
+                                 RUS=Строки &товарного размещения/подбора];
+                      RunObject=Page 5774;
+                      RunPageView=SORTING(Source Document,Source No.,Location Code);
+                      RunPageLink=Source Document=CONST(Sales Order),
+                                  Source No.=FIELD(No.);
+                      Image=PickLines }
+      { 168     ;2   ;Action    ;
+                      CaptionML=[ENU=Whse. Shipment Lines;
+                                 RUS=Строки складской отгрузки];
+                      RunObject=Page 7341;
+                      RunPageView=SORTING(Source Type,Source Subtype,Source No.,Source Line No.);
+                      RunPageLink=Source Type=CONST(37),
+                                  Source Subtype=FIELD(Document Type),
+                                  Source No.=FIELD(No.);
+                      Image=ShipmentLines }
+      { 17      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Prepayment;
+                                 RUS=Предоплата];
+                      Image=Prepayment }
+      { 234     ;2   ;Action    ;
+                      Name=PagePostedSalesPrepaymentInvoices;
+                      CaptionML=[ENU=Prepa&yment Invoices;
+                                 RUS=Счета на п&редоплату];
+                      RunObject=Page 143;
+                      RunPageView=SORTING(Prepayment Order No.);
+                      RunPageLink=Prepayment Order No.=FIELD(No.);
+                      Image=PrepaymentInvoice }
+      { 235     ;2   ;Action    ;
+                      Name=PagePostedSalesPrepaymentCrMemos;
+                      CaptionML=[ENU=Prepayment Credi&t Memos;
+                                 RUS=Кредит-но&ты предоплаты];
+                      RunObject=Page 144;
+                      RunPageView=SORTING(Prepayment Order No.);
+                      RunPageLink=Prepayment Order No.=FIELD(No.);
+                      Image=PrepaymentCreditMemo }
+      { 1900000004;0 ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 47      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Approval;
+                                 RUS=Утверждение] }
+      { 43      ;2   ;Action    ;
+                      Name=Approve;
+                      CaptionML=[ENU=Approve;
+                                 RUS=Утвердить];
+                      ToolTipML=[ENU=Approve the requested changes.;
+                                 RUS=Утверждение запрошенных изменений.];
+                      ApplicationArea=#All;
+                      Promoted=Yes;
+                      Visible=OpenApprovalEntriesExistForCurrUser;
+                      PromotedIsBig=Yes;
+                      Image=Approve;
+                      PromotedCategory=Category4;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1000 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.ApproveRecordApprovalRequest(RECORDID);
+                               END;
+                                }
+      { 41      ;2   ;Action    ;
+                      Name=Reject;
+                      CaptionML=[ENU=Reject;
+                                 RUS=Отклонить];
+                      ToolTipML=[ENU=Reject the approval request.;
+                                 RUS=Отклонение запроса на утверждение.];
+                      ApplicationArea=#All;
+                      Promoted=Yes;
+                      Visible=OpenApprovalEntriesExistForCurrUser;
+                      PromotedIsBig=Yes;
+                      Image=Reject;
+                      PromotedCategory=Category4;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1000 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.RejectRecordApprovalRequest(RECORDID);
+                               END;
+                                }
+      { 39      ;2   ;Action    ;
+                      Name=Delegate;
+                      CaptionML=[ENU=Delegate;
+                                 RUS=Делегировать];
+                      ToolTipML=[ENU=Delegate the approval to a substitute approver.;
+                                 RUS=Делегирование утверждения заместителю утверждающего лица.];
+                      ApplicationArea=#All;
+                      Promoted=Yes;
+                      Visible=OpenApprovalEntriesExistForCurrUser;
+                      Image=Delegate;
+                      PromotedCategory=Category4;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1000 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.DelegateRecordApprovalRequest(RECORDID);
+                               END;
+                                }
+      { 37      ;2   ;Action    ;
+                      Name=Comment;
+                      CaptionML=[ENU=Comments;
+                                 RUS=Комментарии];
+                      ToolTipML=[ENU=View or add comments.;
+                                 RUS=Просмотр или добавление комментариев.];
+                      ApplicationArea=#All;
+                      Promoted=Yes;
+                      Visible=OpenApprovalEntriesExistForCurrUser;
+                      Image=ViewComments;
+                      PromotedCategory=Category4;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1000 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.GetApprovalComment(Rec);
+                               END;
+                                }
+      { 21      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Release;
+                                 RUS=Выпустить];
+                      Image=ReleaseDoc }
+      { 133     ;2   ;Action    ;
+                      Name=Release;
+                      ShortCutKey=Ctrl+F9;
+                      CaptionML=[ENU=Re&lease;
+                                 RUS=Вы&пустить];
+                      Promoted=Yes;
+                      Image=ReleaseDoc;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 ReleaseSalesDoc@1000 : Codeunit 414;
+                               BEGIN
+                                 ReleaseSalesDoc.PerformManualRelease(Rec);
+                               END;
+                                }
+      { 134     ;2   ;Action    ;
+                      Name=Reopen;
+                      CaptionML=[ENU=Re&open;
+                                 RUS=&Открыть];
+                      ToolTipML=[ENU=Reopen the document to change it after it has been approved. Approved documents have the Released status and must be opened before they can be changed.;
+                                 RUS=Повторное открытие документа для его изменения после утверждения. Утвержденные документы имеют статус "Выпущено", и их необходимо открывать перед изменением.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Enabled=Status <> Status::Open;
+                      Image=ReOpen;
+                      PromotedCategory=Process;
+                      PromotedOnly=Yes;
+                      OnAction=VAR
+                                 ReleaseSalesDoc@1001 : Codeunit 414;
+                               BEGIN
+                                 ReleaseSalesDoc.PerformManualReopen(Rec);
+                               END;
+                                }
+      { 66      ;1   ;ActionGroup;
+                      CaptionML=[ENU=F&unctions;
+                                 RUS=Ф&ункции];
+                      Image=Action }
+      { 87      ;2   ;Action    ;
+                      Name=CreatePurchaseInvoice;
+                      CaptionML=[ENU=Create Purchase Invoice;
+                                 RUS=Создать счет покупки];
+                      ToolTipML=[ENU=Create a new purchase invoice so you can buy items from a vendor.;
+                                 RUS=Создание счета покупки для приобретения товаров у поставщика.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=No;
+                      PromotedIsBig=Yes;
+                      Image=NewPurchaseInvoice;
+                      PromotedCategory=Category8;
+                      OnAction=VAR
+                                 SelectedSalesLine@1001 : Record 37;
+                                 PurchInvFromSalesInvoice@1000 : Codeunit 1314;
+                               BEGIN
+                                 CurrPage.SalesLines.PAGE.SETSELECTIONFILTER(SelectedSalesLine);
+                                 PurchInvFromSalesInvoice.CreatePurchaseInvoice(Rec,SelectedSalesLine);
+                               END;
+                                }
+      { 67      ;2   ;Action    ;
+                      Name=CalculateInvoiceDiscount;
+                      AccessByPermission=TableData 19=R;
+                      CaptionML=[ENU=Calculate &Invoice Discount;
+                                 RUS=Вычи&слить скидку по счету];
+                      ToolTipML=[ENU=Calculate the invoice discount that applies to the sales order.;
+                                 RUS=Расчет скидки по счету, применимой к заказу на продажу.];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=CalculateInvoiceDiscount;
+                      OnAction=BEGIN
+                                 ApproveCalcInvDisc;
+                                 SalesCalcDiscountByType.ResetRecalculateInvoiceDisc(Rec);
+                               END;
+                                }
+      { 167     ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Get St&d. Cust. Sales Codes;
+                                 RUS=Получить ст&андарт. коды продажи клиента];
+                      ToolTipML=[ENU=View a list of the standard sales codes that have been assigned to the current customer.;
+                                 RUS=Просмотр списка кодов стандартных продаж, которые были назначены текущему клиенту.];
+                      ApplicationArea=#Suite;
+                      Image=CustomerCode;
+                      OnAction=VAR
+                                 StdCustSalesCode@1000 : Record 172;
+                               BEGIN
+                                 StdCustSalesCode.InsertSalesLines(Rec);
+                               END;
+                                }
+      { 1210009 ;2   ;Action    ;
+                      CaptionML=[ENU=Reserve from &Inventory;
+                                 RUS=Зарезервировать на &складе];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=Reserve;
+                      OnAction=VAR
+                                 SalesLine@1210000 : Record 37;
+                               BEGIN
+                                 CurrPage.SalesLines.PAGE.ReserveSelectedLines;
+                               END;
+                                }
+      { 1210008 ;2   ;Action    ;
+                      CaptionML=[ENU=Create Tracking from Reservation;
+                                 RUS=Создать трассировку из резервирования];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=ItemTracking;
+                      OnAction=VAR
+                                 ItemTrackingDocMgt@1210002 : Codeunit 6503;
+                               BEGIN
+                                 ItemTrackingDocMgt.CopyDocTrkgFromReservation(DATABASE::"Sales Header","Document Type","No.",FALSE);
+                               END;
+                                }
+      { 177     ;2   ;Separator  }
+      { 68      ;2   ;Action    ;
+                      Name=CopyDocument;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Copy Document;
+                                 RUS=Копировать документ];
+                      ToolTipML=[ENU=Copy document lines and header information from another sales document to this document. You can copy a posted sales invoice into a new sales invoice to quickly create a similar document.;
+                                 RUS=Копирование строк документа и сведений заголовка из другого документа продажи в этот документ. Вы можете скопировать учтенный счет продажи в новый счет продажи, чтобы быстро создать подобный документ.];
+                      ApplicationArea=#Suite;
+                      Image=CopyDocument;
+                      OnAction=BEGIN
+                                 CopySalesDoc.SetSalesHeader(Rec);
+                                 CopySalesDoc.RUNMODAL;
+                                 CLEAR(CopySalesDoc);
+                                 IF GET("Document Type","No.") THEN;
+                               END;
+                                }
+      { 154     ;2   ;Action    ;
+                      Name=MoveNegativeLines;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Move Negative Lines;
+                                 RUS=Перемещение отрицательных строк];
+                      Image=MoveNegativeLines;
+                      OnAction=BEGIN
+                                 CLEAR(MoveNegSalesLines);
+                                 MoveNegSalesLines.SetSalesHeader(Rec);
+                                 MoveNegSalesLines.RUNMODAL;
+                                 MoveNegSalesLines.ShowDocument;
+                               END;
+                                }
+      { 196     ;2   ;Action    ;
+                      Name=Archive Document;
+                      CaptionML=[ENU=Archi&ve Document;
+                                 RUS=Архи&вировать документ];
+                      Image=Archive;
+                      OnAction=BEGIN
+                                 ArchiveManagement.ArchiveSalesDocument(Rec);
+                                 CurrPage.UPDATE(FALSE);
+                               END;
+                                }
+      { 204     ;2   ;Action    ;
+                      AccessByPermission=TableData 410=R;
+                      CaptionML=[ENU=Send IC Sales Order Cnfmn.;
+                                 RUS=Отправить подтверждение заказа на продажу МФ];
+                      Image=IntercompanyOrder;
+                      OnAction=VAR
+                                 ICInOutboxMgt@1000 : Codeunit 427;
+                                 ApprovalsMgmt@1003 : Codeunit 1535;
+                               BEGIN
+                                 IF ApprovalsMgmt.PrePostApprovalCheckSales(Rec) THEN
+                                   ICInOutboxMgt.SendSalesDoc(Rec,FALSE);
+                               END;
+                                }
+      { 69      ;2   ;ActionGroup;
+                      Name=IncomingDocument;
+                      CaptionML=[ENU=Incoming Document;
+                                 RUS=Входящий документ];
+                      ActionContainerType=NewDocumentItems;
+                      Image=Documents }
+      { 60      ;3   ;Action    ;
+                      Name=IncomingDocCard;
+                      CaptionML=[ENU=View Incoming Document;
+                                 RUS=Просмотр входящего документа];
+                      ToolTipML=[ENU=View any incoming document records and file attachments that exist for the entry or document.;
+                                 RUS=Просмотр всех входящих записей документов и вложенных файлов, имеющихся для операции или документа.];
+                      ApplicationArea=#Basic,#Suite;
+                      Enabled=HasIncomingDocument;
+                      Image=ViewOrder;
+                      OnAction=VAR
+                                 IncomingDocument@1000 : Record 130;
+                               BEGIN
+                                 IncomingDocument.ShowCardFromEntryNo("Incoming Document Entry No.");
+                               END;
+                                }
+      { 57      ;3   ;Action    ;
+                      Name=SelectIncomingDoc;
+                      AccessByPermission=TableData 130=R;
+                      CaptionML=[ENU=Select Incoming Document;
+                                 RUS=Выбрать входящий документ];
+                      ToolTipML=[ENU=Select an incoming document record and file attachment that you want to link to the entry or document.;
+                                 RUS=Выбор входящей записи документа и вложенного файла, которые нужно связать с операцией или документом.];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=SelectLineToApply;
+                      OnAction=VAR
+                                 IncomingDocument@1000 : Record 130;
+                               BEGIN
+                                 VALIDATE("Incoming Document Entry No.",IncomingDocument.SelectIncomingDocument("Incoming Document Entry No.",RECORDID));
+                               END;
+                                }
+      { 55      ;3   ;Action    ;
+                      Name=IncomingDocAttachFile;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Create Incoming Document from File;
+                                 RUS=Создать входящий документ из файла];
+                      ToolTipML=[ENU=Create an incoming document record by selecting a file to attach, and then link the incoming document record to the entry or document.;
+                                 RUS=Создание входящей записи документа путем выбора файла вложения и связывание входящей записи документа с операцией или документом.];
+                      ApplicationArea=#Basic,#Suite;
+                      Enabled=NOT HasIncomingDocument;
+                      Image=Attach;
+                      OnAction=VAR
+                                 IncomingDocumentAttachment@1000 : Record 133;
+                               BEGIN
+                                 IncomingDocumentAttachment.NewAttachmentFromSalesDocument(Rec);
+                               END;
+                                }
+      { 53      ;3   ;Action    ;
+                      Name=RemoveIncomingDoc;
+                      CaptionML=[ENU=Remove Incoming Document;
+                                 RUS=Удалить входящий документ];
+                      ToolTipML=[ENU=Remove incoming document records and file attachments.;
+                                 RUS=Удаление записей входящих документов и вложенных файлов.];
+                      ApplicationArea=#Basic,#Suite;
+                      Enabled=HasIncomingDocument;
+                      Image=RemoveLine;
+                      OnAction=VAR
+                                 IncomingDocument@1000 : Record 130;
+                               BEGIN
+                                 IF IncomingDocument.GET("Incoming Document Entry No.") THEN
+                                   IncomingDocument.RemoveLinkToRelatedRecord;
+                                 "Incoming Document Entry No." := 0;
+                                 MODIFY(TRUE);
+                               END;
+                                }
+      { 23      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Plan;
+                                 RUS=План];
+                      Image=Planning }
+      { 197     ;2   ;Action    ;
+                      Name=OrderPromising;
+                      AccessByPermission=TableData 99000880=R;
+                      CaptionML=[ENU=Order &Promising;
+                                 RUS=П&ланирование заказов];
+                      Image=OrderPromising;
+                      OnAction=VAR
+                                 OrderPromisingLine@1000 : TEMPORARY Record 99000880;
+                               BEGIN
+                                 OrderPromisingLine.SETRANGE("Source Type","Document Type");
+                                 OrderPromisingLine.SETRANGE("Source ID","No.");
+                                 PAGE.RUNMODAL(PAGE::"Order Promising Lines",OrderPromisingLine);
+                               END;
+                                }
+      { 248     ;2   ;Action    ;
+                      CaptionML=[ENU=Demand Overview;
+                                 RUS=Обзор спроса];
+                      Image=Forecast;
+                      OnAction=VAR
+                                 DemandOverview@1000 : Page 5830;
+                               BEGIN
+                                 DemandOverview.SetCalculationParameter(TRUE);
+                                 DemandOverview.Initialize(0D,1,"No.",'','');
+                                 DemandOverview.RUNMODAL;
+                               END;
+                                }
+      { 121     ;2   ;Action    ;
+                      CaptionML=[ENU=Pla&nning;
+                                 RUS=Пла&нирование];
+                      Image=Planning;
+                      OnAction=VAR
+                                 SalesPlanForm@1001 : Page 99000883;
+                               BEGIN
+                                 SalesPlanForm.SetSalesOrder("No.");
+                                 SalesPlanForm.RUNMODAL;
+                               END;
+                                }
+      { 25      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Request Approval;
+                                 RUS=Утверждение запросов];
+                      Image=SendApprovalRequest }
+      { 250     ;2   ;Action    ;
+                      Name=SendApprovalRequest;
+                      CaptionML=[ENU=Send A&pproval Request;
+                                 RUS=Отправить &запрос на утверждение];
+                      ToolTipML=[ENU=Send an approval request.;
+                                 RUS=Отправка запроса на утверждение.];
+                      ApplicationArea=#Suite;
+                      Promoted=Yes;
+                      Enabled=NOT OpenApprovalEntriesExist;
+                      Image=SendApprovalRequest;
+                      PromotedCategory=Category9;
+                      PromotedOnly=Yes;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1001 : Codeunit 1535;
+                               BEGIN
+                                 IF ApprovalsMgmt.CheckSalesApprovalPossible(Rec) THEN
+                                   ApprovalsMgmt.OnSendSalesDocForApproval(Rec);
+                               END;
+                                }
+      { 251     ;2   ;Action    ;
+                      Name=CancelApprovalRequest;
+                      CaptionML=[ENU=Cancel Approval Re&quest;
+                                 RUS=Отменить запрос на &утверждение];
+                      ToolTipML=[ENU=Cancel the approval request.;
+                                 RUS=Отмена запроса на утверждение.];
+                      ApplicationArea=#Suite;
+                      Promoted=Yes;
+                      Enabled=CanCancelApprovalForRecord;
+                      Image=CancelApprovalRequest;
+                      PromotedCategory=Category9;
+                      PromotedOnly=Yes;
+                      OnAction=VAR
+                                 ApprovalsMgmt@1001 : Codeunit 1535;
+                               BEGIN
+                                 ApprovalsMgmt.OnCancelSalesApprovalRequest(Rec);
+                               END;
+                                }
+      { 3       ;1   ;ActionGroup;
+                      CaptionML=[ENU=Warehouse;
+                                 RUS=Склад];
+                      Image=Warehouse }
+      { 148     ;2   ;Action    ;
+                      AccessByPermission=TableData 7342=R;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Create Inventor&y Put-away/Pick;
+                                 RUS=Создать &товарное размещение / подбор];
+                      Promoted=Yes;
+                      Image=CreateInventoryPickup;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 CreateInvtPutAwayPick;
+
+                                 IF NOT FIND('=><') THEN
+                                   INIT;
+                               END;
+                                }
+      { 149     ;2   ;Action    ;
+                      AccessByPermission=TableData 7320=R;
+                      CaptionML=[ENU=Create &Whse. Shipment;
+                                 RUS=&Создать складскую отгрузку];
+                      Image=NewShipment;
+                      OnAction=VAR
+                                 GetSourceDocOutbound@1001 : Codeunit 5752;
+                               BEGIN
+                                 GetSourceDocOutbound.CreateFromSalesOrder(Rec);
+
+                                 IF NOT FIND('=><') THEN
+                                   INIT;
+                               END;
+                                }
+      { 73      ;1   ;ActionGroup;
+                      CaptionML=[ENU=P&osting;
+                                 RUS=У&чет];
+                      Image=Post }
+      { 75      ;2   ;Action    ;
+                      Name=Post;
+                      ShortCutKey=F9;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=P&ost;
+                                 RUS=У&чет];
+                      ToolTipML=[ENU=Finalize the document or journal by posting the amounts and quantities to the related accounts in your company books.;
+                                 RUS=Завершение подготовки документа или журнала путем учета сумм и количеств на соответствующих счетах в книгах организации.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=PostOrder;
+                      PromotedCategory=Category6;
+                      PromotedOnly=Yes;
+                      OnAction=BEGIN
+                                 Post(CODEUNIT::"Sales-Post (Yes/No)",NavigateAfterPost::"Posted Document");
+                               END;
+                                }
+      { 19      ;2   ;Action    ;
+                      Name=PostAndNew;
+                      ShortCutKey=Shift+F9;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Post and New;
+                                 RUS=Учесть и создать];
+                      Promoted=Yes;
+                      Image=PostOrder;
+                      PromotedCategory=Category6;
+                      OnAction=BEGIN
+                                 Post(CODEUNIT::"Sales-Post (Yes/No)",NavigateAfterPost::"New Document");
+                               END;
+                                }
+      { 29      ;2   ;Action    ;
+                      Name=PostAndSend;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Post and Send;
+                                 RUS=Учесть и отправить];
+                      ToolTipML=[ENU=Finalize and prepare to send the document according to the customer's sending profile, such as attached to an email. The Send document to window opens first so you can confirm or select a sending profile.;
+                                 RUS=Завершение разработки документа и подготовка его к отправке в соответствии с профилем отправки клиента, например в виде вложения электронной почты. Сначала откроется окно "Кому отправить документ", чтобы вы могли подтвердить или выбрать профиль отправки.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=PostMail;
+                      PromotedCategory=Category6;
+                      PromotedOnly=Yes;
+                      OnAction=BEGIN
+                                 Post(CODEUNIT::"Sales-Post and Send",NavigateAfterPost::Nowhere);
+                               END;
+                                }
+      { 74      ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Test Report;
+                                 RUS=Тестовый отчет];
+                      ToolTipML=[ENU=View a test report so that you can find and correct any errors before you perform the actual posting of the journal or document.;
+                                 RUS=Просмотр тестового отчета, чтобы можно было найти и исправить все ошибки перед учетом журнала или документа.];
+                      Image=TestReport;
+                      OnAction=BEGIN
+                                 ReportPrint.PrintSalesHeader(Rec);
+                               END;
+                                }
+      { 7       ;2   ;Action    ;
+                      CaptionML=[ENU=Remove From Job Queue;
+                                 RUS=Удалить из очереди на работу];
+                      ToolTipML=[ENU=Remove the scheduled processing of this record from the job queue.;
+                                 RUS=Удаление запланированной обработки этой записи из очереди работ.];
+                      ApplicationArea=#All;
+                      Visible=JobQueueVisible;
+                      Image=RemoveLine;
+                      OnAction=BEGIN
+                                 CancelBackgroundPosting;
+                               END;
+                                }
+      { 51      ;2   ;Action    ;
+                      Name=PreviewPosting;
+                      CaptionML=[ENU=Preview Posting;
+                                 RUS=Предварительный просмотр учета];
+                      ToolTipML=[ENU=Review the different types of entries that will be created when you post the document or journal.;
+                                 RUS=Просмотр различных типов операций, которые будут созданы в результате учета документа или журнала.];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=ViewPostedOrder;
+                      OnAction=BEGIN
+                                 ShowPreview;
+                               END;
+                                }
+      { 236     ;2   ;ActionGroup;
+                      CaptionML=[ENU=Prepa&yment;
+                                 RUS=П&редоплата];
+                      Image=Prepayment }
+      { 231     ;3   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Prepayment &Test Report;
+                                 RUS=Тестовый от&чет о предоплате];
+                      Image=PrepaymentSimulation;
+                      OnAction=BEGIN
+                                 ReportPrint.PrintSalesHeaderPrepmt(Rec);
+                               END;
+                                }
+      { 232     ;3   ;Action    ;
+                      Name=PostPrepaymentInvoice;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Post Prepayment &Invoice;
+                                 RUS=Учет &счета на предоплату];
+                      Image=PrepaymentPost;
+                      OnAction=VAR
+                                 SalesPostYNPrepmt@1000 : Codeunit 443;
+                               BEGIN
+                                 IF ApprovalsMgmt.PrePostApprovalCheckSales(Rec) THEN
+                                   SalesPostYNPrepmt.PostPrepmtInvoiceYN(Rec,FALSE);
+                               END;
+                                }
+      { 237     ;3   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Post and Print Prepmt. Invoic&e;
+                                 RUS=Учет и печать сч&ета на предоплату];
+                      Image=PrepaymentPostPrint;
+                      OnAction=VAR
+                                 SalesPostYNPrepmt@1000 : Codeunit 443;
+                               BEGIN
+                                 IF ApprovalsMgmt.PrePostApprovalCheckSales(Rec) THEN
+                                   SalesPostYNPrepmt.PostPrepmtInvoiceYN(Rec,TRUE);
+                               END;
+                                }
+      { 233     ;3   ;Action    ;
+                      Name=PostPrepaymentCreditMemo;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Post Prepayment &Credit Memo;
+                                 RUS=Учет &кредит-ноты на предоплату];
+                      Image=PrepaymentPost;
+                      OnAction=VAR
+                                 SalesPostYNPrepmt@1000 : Codeunit 443;
+                               BEGIN
+                                 IF ApprovalsMgmt.PrePostApprovalCheckSales(Rec) THEN
+                                   SalesPostYNPrepmt.PostPrepmtCrMemoYN(Rec,FALSE);
+                               END;
+                                }
+      { 238     ;3   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Post and Print Prepmt. Cr. Mem&o;
+                                 RUS=Учет и печать кредит-н&оты на предоплату];
+                      Image=PrepaymentPostPrint;
+                      OnAction=VAR
+                                 SalesPostYNPrepmt@1000 : Codeunit 443;
+                               BEGIN
+                                 IF ApprovalsMgmt.PrePostApprovalCheckSales(Rec) THEN
+                                   SalesPostYNPrepmt.PostPrepmtCrMemoYN(Rec,TRUE);
+                               END;
+                                }
+      { 31      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Order Confirmation;
+                                 RUS=Подтверждение заказа];
+                      Image=Email }
+      { 33      ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Email Confirmation;
+                                 RUS=Отправить подтверждение по эл. почте];
+                      ToolTipML=[ENU=Send a sales order confirmation by email. The attachment is sent as a .pdf.;
+                                 RUS=Отправка подтверждения заказа на продажу по электронной почте. Вложение отправляется в формате .pdf.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=Email;
+                      PromotedCategory=Process;
+                      PromotedOnly=Yes;
+                      OnAction=BEGIN
+                                 DocPrint.EmailSalesHeader(Rec);
+                               END;
+                                }
+      { 96      ;2   ;ActionGroup;
+                      Visible=FALSE }
+      { 224     ;3   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Print Confirmation;
+                                 RUS=Распечатать подтверждение];
+                      ToolTipML=[ENU=Print a sales order confirmation.;
+                                 RUS=Печать подтверждения заказа на продажу.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Visible=NOT IsOfficeHost;
+                      Image=Print;
+                      PromotedCategory=Process;
+                      PromotedOnly=Yes;
+                      OnAction=BEGIN
+                                 DocPrint.PrintSalesHeader(Rec);
+                               END;
+                                }
+    }
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 1   ;1   ;Group     ;
+                CaptionML=[ENU=General;
+                           RUS=Общее] }
+
+    { 2   ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the number of the sales document. The field can be filled automatically or manually and can be set up to be invisible.;
+                           RUS=Определяет номер документа продажи. Поле можно заполнить вручную или автоматически, а также сделать невидимым.];
+                ApplicationArea=#All;
+                SourceExpr="No.";
+                Visible=DocNoVisible;
+                OnAssistEdit=BEGIN
+                               IF AssistEdit(xRec) THEN
+                                 CurrPage.UPDATE;
+                             END;
+                              }
+
+    { 6   ;2   ;Field     ;
+                CaptionML=[ENU=Customer;
+                           RUS=Клиент];
+                ToolTipML=[ENU=Specifies the name of the customer who will receive the products and be billed by default.;
+                           RUS=Определяет имя клиента, который получит продукты и которому по умолчанию будет выставлен счет.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Sell-to Customer Name";
+                OnValidate=BEGIN
+                             IF GETFILTER("Sell-to Customer No.") = xRec."Sell-to Customer No." THEN
+                               IF "Sell-to Customer No." <> xRec."Sell-to Customer No." THEN
+                                 SETRANGE("Sell-to Customer No.");
+
+                             IF ApplicationAreaSetup.IsFoundationEnabled THEN
+                               SalesCalcDiscountByType.ApplyDefaultInvoiceDiscount(0,Rec);
+
+                             CurrPage.UPDATE;
+                           END;
+
+                ShowMandatory=TRUE }
+
+    { 243 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the number of the sales quote that the sales order was created from. You can track the number to sales quote documents that you have printed, saved, or emailed.;
+                           RUS=Определяет номер предложения по продаже, из которого был создан заказ на продажу. Вы можете отслеживать номер по документам предложения продажи, которые вы распечатали, сохранили или отправили по электронной почте.];
+                ApplicationArea=#All;
+                SourceExpr="Quote No.";
+                Visible=ShowQuoteNo }
+
+    { 190 ;2   ;Group     ;
+                CaptionML=[ENU=Sell-to;
+                           RUS=Клиент];
+                GroupType=Group }
+
+    { 81  ;3   ;Field     ;
+                CaptionML=[ENU=Address;
+                           RUS=Адрес];
+                ToolTipML=[ENU=Specifies the address where the customer is located.;
+                           RUS=Определяет адрес, по которому расположен клиент.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Sell-to Address";
+                Importance=Additional }
+
+    { 83  ;3   ;Field     ;
+                CaptionML=[ENU=Address 2;
+                           RUS=Адрес 2];
+                ToolTipML=[ENU=Specifies additional address information.;
+                           RUS=Определяет дополнительные сведения адреса.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Sell-to Address 2";
+                Importance=Additional }
+
+    { 72  ;3   ;Field     ;
+                CaptionML=[ENU=Post Code;
+                           RUS=Индекс];
+                ToolTipML=[ENU=Specifies the postal code.;
+                           RUS=Определяет почтовый индекс.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Sell-to Post Code";
+                Importance=Additional }
+
+    { 86  ;3   ;Field     ;
+                CaptionML=[ENU=City;
+                           RUS=Город];
+                ToolTipML=[ENU=Specifies the city where the customer is located.;
+                           RUS=Определяет город, где расположен клиент.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Sell-to City";
+                Importance=Additional }
+
+    { 157 ;3   ;Field     ;
+                CaptionML=[ENU=Contact No.;
+                           RUS=Код контакта];
+                ToolTipML=[ENU=Specifies the number of the contact that the sales document will be sent to.;
+                           RUS=Определяет номер контакта, которому будет отправлен документ продажи.];
+                SourceExpr="Sell-to Contact No.";
+                Importance=Additional;
+                OnValidate=BEGIN
+                             IF GETFILTER("Sell-to Contact No.") = xRec."Sell-to Contact No." THEN
+                               IF "Sell-to Contact No." <> xRec."Sell-to Contact No." THEN
+                                 SETRANGE("Sell-to Contact No.");
+                           END;
+                            }
+
+    { 8   ;2   ;Field     ;
+                CaptionML=[ENU=Contact;
+                           RUS=Контакт];
+                ToolTipML=[ENU=Specifies the name of the person to contact at the customer.;
+                           RUS=Определяет имя контактного лица у клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Sell-to Contact" }
+
+    { 198 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the number of archived versions for this sales document.;
+                           RUS=Определяет число архивированных версий этого документа продажи.];
+                SourceExpr="No. of Archived Versions";
+                Importance=Additional }
+
+    { 45  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the date on which you created the sales document.;
+                           RUS=Определяет дату создания этого документа продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Document Date";
+                Importance=Additional }
+
+    { 12  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the date when the posting of the sales document will be recorded.;
+                           RUS=Определяет дату регистрации учета документа продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Posting Date";
+                Importance=Promoted }
+
+    { 14  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the date on which the exchange rate applies to prices listed in a foreign currency on the sales order.;
+                           RUS=Определяет дату, в течение которой применяется этот валютный курс к ценам, указанным в заказе на продажу в иностранной валюте.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Order Date";
+                Importance=Promoted;
+                QuickEntry=FALSE }
+
+    { 30  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies when the sales invoice must be paid.;
+                           RUS=Определяет срок оплаты счета продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Due Date";
+                Importance=Promoted }
+
+    { 135 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the date that the customer has asked for the order to be delivered.;
+                           RUS=Определяет дату, в которую клиент просил осуществить доставку по заказу.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Requested Delivery Date" }
+
+    { 137 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the date that you have promised to deliver the order, as a result of the Order Promising function.;
+                           RUS=Определяет дату доставки заказа, обещанную в результате применения функции "Планирование заказов".];
+                SourceExpr="Promised Delivery Date";
+                Importance=Additional }
+
+    { 155 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the number that the customer uses in their own system to refer to this sales document.;
+                           RUS=Определяет номер, по которому клиент ссылается на этот документ продажи в собственной системе.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="External Document No.";
+                Importance=Promoted;
+                ShowMandatory=ExternalDocNoMandatory }
+
+    { 10  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the name of the salesperson who is assigned to the customer.;
+                           RUS=Определяет имя менеджера по продажам, назначенного клиенту.];
+                ApplicationArea=#Suite;
+                SourceExpr="Salesperson Code";
+                Importance=Additional;
+                OnValidate=BEGIN
+                             SalespersonCodeOnAfterValidate;
+                           END;
+
+                QuickEntry=FALSE }
+
+    { 1148;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the number of the campaign that the document is linked to.;
+                           RUS=Определяет номер кампании, с которой связан документ.];
+                SourceExpr="Campaign No.";
+                Importance=Additional }
+
+    { 245 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the number of the opportunity that the sales quote is assigned to.;
+                           RUS=Определяет номер возможности, которой назначено это предложение по продаже.];
+                ApplicationArea=#RelationshipMgmt;
+                SourceExpr="Opportunity No.";
+                Importance=Additional }
+
+    { 124 ;2   ;Field     ;
+                AccessByPermission=TableData 5714=R;
+                ToolTipML=[ENU=Specifies the code of the responsibility center that is associated with the user, company, or vendor.;
+                           RUS=Определяет код центра ответственности, который связан с пользователем, компанией или поставщиком.];
+                SourceExpr="Responsibility Center";
+                Importance=Additional }
+
+    { 241 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the ID of the user who is responsible for the document.;
+                           RUS=Определяет код пользователя, который отвечает за документ.];
+                SourceExpr="Assigned User ID";
+                Importance=Additional }
+
+    { 9   ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the status of a job queue entry or task that handles the posting of sales orders.;
+                           RUS=Определяет статус операции очереди работ или задачи, которая выполняет учет заказов на продажу.];
+                ApplicationArea=#All;
+                SourceExpr="Job Queue Status";
+                Importance=Additional;
+                Visible=JobQueuesUsed }
+
+    { 129 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies whether the document is open, waiting to be approved, has been invoiced for prepayment, or has been released to the next stage of processing.;
+                           RUS=Определяет состояние документа: открытый, ожидающий утверждения, с выставленным счетом на предоплату или выпущенный на следующий этап обработки.];
+                SourceExpr=Status;
+                Importance=Promoted;
+                QuickEntry=FALSE }
+
+    { 58  ;1   ;Part      ;
+                Name=SalesLines;
+                ApplicationArea=#Basic,#Suite;
+                SubPageLink=Document No.=FIELD(No.);
+                PagePartID=Page46;
+                Enabled="Sell-to Customer No." <> '';
+                Editable=DynamicEditable;
+                UpdatePropagation=Both }
+
+    { 1905885101;1;Group  ;
+                CaptionML=[ENU=Invoice Details;
+                           RUS=Счет - подробности];
+                GroupType=Group }
+
+    { 111 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the currency of amounts on the sales document.;
+                           RUS=Определяет валюту для сумм в документе продажи.];
+                ApplicationArea=#Suite;
+                SourceExpr="Currency Code";
+                Importance=Promoted;
+                OnValidate=BEGIN
+                             CurrPage.UPDATE;
+                             SalesCalcDiscountByType.ApplyDefaultInvoiceDiscount(0,Rec);
+                           END;
+
+                OnAssistEdit=BEGIN
+                               CLEAR(ChangeExchangeRate);
+                               IF "Posting Date" <> 0D THEN
+                                 ChangeExchangeRate.SetParameter("Currency Code","Currency Factor","Posting Date")
+                               ELSE
+                                 ChangeExchangeRate.SetParameter("Currency Code","Currency Factor",WORKDATE);
+                               IF ChangeExchangeRate.RUNMODAL = ACTION::OK THEN BEGIN
+                                 VALIDATE("Currency Factor",ChangeExchangeRate.GetParameter);
+                                 CurrPage.UPDATE;
+                               END;
+                               CLEAR(ChangeExchangeRate);
+                             END;
+                              }
+
+    { 131 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies whether the unit price on the line should be displayed including or excluding VAT.;
+                           RUS=Определяет, должна цена за единицу в этой строке отображаться с НДС или без НДС.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Prices Including VAT";
+                OnValidate=BEGIN
+                             PricesIncludingVATOnAfterValid;
+                           END;
+                            }
+
+    { 221 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the customer's VAT specification to link transactions made for this customer to.;
+                           RUS=Определяет спецификацию НДС клиента для связывания с транзакциями этого клиента.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="VAT Bus. Posting Group";
+                OnValidate=BEGIN
+                             IF ApplicationAreaSetup.IsFoundationEnabled THEN
+                               SalesCalcDiscountByType.ApplyDefaultInvoiceDiscount(0,Rec);
+
+                             CurrPage.UPDATE;
+                           END;
+                            }
+
+    { 1210006;2;Field     ;
+                ToolTipML=[ENU=Specifies the agreement number associated with the sales header.;
+                           RUS=Определяет номер соглашения, связанный с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Agreement No." }
+
+    { 28  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies a formula that calculates the payment due date, payment discount date, and payment discount amount on the sales document.;
+                           RUS=Определяет формулу, по которой рассчитывается срок оплаты, дата скидки по оплате и сумма скидки по оплате по документу продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Payment Terms Code";
+                Importance=Promoted }
+
+    { 105 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies how the customer must pay for products on the sales document.;
+                           RUS=Определяет, как клиент должен оплатить продукты по документу продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Payment Method Code";
+                Importance=Additional;
+                OnValidate=BEGIN
+                             UpdatePaymentService;
+                           END;
+                            }
+
+    { 76  ;2   ;Group     ;
+                Visible=PaymentServiceVisible;
+                GroupType=Group }
+
+    { 16  ;3   ;Field     ;
+                Name=SelectedPayments;
+                CaptionML=[ENU=Payment Service;
+                           RUS=Служба платежей];
+                ToolTipML=[ENU=Specifies the online payment service, such as PayPal, that customers can use to pay the sales document.;
+                           RUS=Определяет службу интернет-платежей, например PayPal, которую клиенты могут использовать для оплаты документа продажи.];
+                ApplicationArea=#All;
+                SourceExpr=GetSelectedPaymentServicesText;
+                Enabled=PaymentServiceEnabled;
+                Editable=FALSE;
+                MultiLine=Yes;
+                OnAssistEdit=BEGIN
+                               ChangePaymentServiceSetting;
+                             END;
+                              }
+
+    { 54  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the type of transaction that the sales document represents, for the purpose of reporting to INTRASTAT.;
+                           RUS=Определяет тип транзакции, представляемой документом продажи, в целях отчетности Интрастат.];
+                SourceExpr="Transaction Type" }
+
+    { 84  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the dimension value code associated with the sales header.;
+                           RUS=Определяет код значения измерения, связанный с заголовком продажи.];
+                SourceExpr="Shortcut Dimension 1 Code";
+                OnValidate=BEGIN
+                             ShortcutDimension1CodeOnAfterV;
+                           END;
+                            }
+
+    { 92  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the dimension value code associated with the sales header.;
+                           RUS=Определяет код значения измерения, связанный с заголовком продажи.];
+                SourceExpr="Shortcut Dimension 2 Code";
+                OnValidate=BEGIN
+                             ShortcutDimension2CodeOnAfterV;
+                           END;
+                            }
+
+    { 32  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the payment discount percentage granted if the customer pays on or before the date entered in the Pmt. Discount Date field.;
+                           RUS=Определяет процент скидки по оплате, которая предоставляется при условии совершения клиентом оплаты не позже даты, указанной в поле "Дата скидки оплаты".];
+                SourceExpr="Payment Discount %" }
+
+    { 34  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the last date the customer can pay the invoice and still receive a payment discount.;
+                           RUS=Определяет последнюю дату, когда клиент может оплатить счет и при этом получить скидку по оплате.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Pmt. Discount Date";
+                Importance=Additional }
+
+    { 27  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the direct-debit mandate that the customer has signed to allow direct debit collection of payments.;
+                           RUS=Определяет поручение прямого дебетования, подписанное клиентом, чтобы разрешить сбор платежей по принципу прямого дебита.];
+                SourceExpr="Direct Debit Mandate ID" }
+
+    { 1906801201;1;Group  ;
+                CaptionML=[ENU=Shipping and Billing;
+                           RUS=Отгрузка и выставление счетов];
+                GroupType=Group }
+
+    { 91  ;2   ;Group     ;
+                GroupType=Group }
+
+    { 90  ;3   ;Group     ;
+                GroupType=Group }
+
+    { 88  ;4   ;Field     ;
+                Name=ShippingOptions;
+                CaptionML=[ENU=Ship-to;
+                           RUS=Получатель];
+                ToolTipML=[ENU=Specifies the address that the products on the sales document are shipped to. Default (Sell-to Address): The same as the customer's sell-to address. Alternate Ship-to Address: One of the customer's alternate ship-to addresses. Custom Address: Any ship-to address that you specify in the fields below.;
+                           RUS=Определяет адрес, по которому должны быть доставлены продукты из документа продажи. По умолчанию ("Адрес клиента"): адрес совпадает с адресом клиента. "Альтернативный адрес получателя": один из альтернативных адресов получателя для клиента. "Пользовательский адрес": произвольный адрес получателя, задаваемый в расположенных ниже полях.];
+                OptionCaptionML=[ENU=Default (Sell-to Address),Alternate Shipping Address,Custom Address;
+                                 RUS=По умолчанию (Адрес клиента),Альтернативный адрес отгрузки,Пользовательский адрес];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=ShipToOptions;
+                OnValidate=VAR
+                             ShipToAddress@1001 : Record 222;
+                             ShipToAddressList@1000 : Page 301;
+                           BEGIN
+                             CASE ShipToOptions OF
+                               ShipToOptions::"Default (Sell-to Address)":
+                                 BEGIN
+                                   VALIDATE("Ship-to Code",'');
+                                   CopySellToAddressToShipToAddress;
+                                 END;
+                               ShipToOptions::"Alternate Shipping Address":
+                                 BEGIN
+                                   ShipToAddress.SETRANGE("Customer No.","Sell-to Customer No.");
+                                   ShipToAddressList.LOOKUPMODE := TRUE;
+                                   ShipToAddressList.SETTABLEVIEW(ShipToAddress);
+
+                                   IF ShipToAddressList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                                     ShipToAddressList.GETRECORD(ShipToAddress);
+                                     VALIDATE("Ship-to Code",ShipToAddress.Code);
+                                   END ELSE
+                                     ShipToOptions := ShipToOptions::"Custom Address";
+                                 END;
+                               ShipToOptions::"Custom Address":
+                                 VALIDATE("Ship-to Code",'');
+                             END;
+                           END;
+                            }
+
+    { 4   ;4   ;Group     ;
+                Visible=NOT (ShipToOptions = ShipToOptions::"Default (Sell-to Address)");
+                GroupType=Group }
+
+    { 36  ;5   ;Field     ;
+                CaptionML=[ENU=Code;
+                           RUS=Код];
+                ToolTipML=[ENU=Specifies the code for another shipment address than the customer's own address, which is entered by default.;
+                           RUS=Определяет код другого адреса получателя, отличающегося от адреса клиента по умолчанию.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Code";
+                Importance=Promoted;
+                Editable=ShipToOptions = ShipToOptions::"Alternate Shipping Address";
+                OnValidate=BEGIN
+                             IF (xRec."Ship-to Code" <> '') AND ("Ship-to Code" = '') THEN
+                               ERROR(EmptyShipToCodeErr);
+                           END;
+                            }
+
+    { 38  ;5   ;Field     ;
+                CaptionML=[ENU=Name;
+                           RUS=Название];
+                ToolTipML=[ENU=Specifies the name that products on the sales document will be shipped to.;
+                           RUS=Определяет имя, на которое будут отгружены продукты из документа продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Name";
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 40  ;5   ;Field     ;
+                CaptionML=[ENU=Address;
+                           RUS=Адрес];
+                ToolTipML=[ENU=Specifies the address that products on the sales document will be shipped to.;
+                           RUS=Определяет адрес, по которому будут доставлены продукты из документа продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Address";
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 42  ;5   ;Field     ;
+                CaptionML=[ENU=Address 2;
+                           RUS=Адрес 2];
+                ToolTipML=[ENU=Specifies additional address information.;
+                           RUS=Определяет дополнительные сведения адреса.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Address 2";
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 97  ;5   ;Field     ;
+                CaptionML=[ENU=Post Code;
+                           RUS=Индекс];
+                ToolTipML=[ENU=Specifies the postal code.;
+                           RUS=Определяет почтовый индекс.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Post Code";
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 44  ;5   ;Field     ;
+                CaptionML=[ENU=City;
+                           RUS=Город];
+                ToolTipML=[ENU=Specifies the city that products on the sales document will be shipped to.;
+                           RUS=Определяет город, в который будут отгружены продукты из документа продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to City";
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 95  ;5   ;Field     ;
+                CaptionML=[ENU=Country/Region;
+                           RUS=Страна/регион];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Country/Region Code";
+                Importance=Additional;
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 46  ;5   ;Field     ;
+                CaptionML=[ENU=Contact;
+                           RUS=Контакт];
+                ToolTipML=[ENU=Specifies the name of the contact person at the address that products on the sales document will be shipped to.;
+                           RUS=Определяет имя контактного лица по адресу, куда будут отгружены продукты по документу продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Ship-to Contact";
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 1470003;5;Field     ;
+                ToolTipML=[ENU=Specifies the act signed by name associated with the sales header.;
+                           RUS=Определяет акт, подписанный именем, которое связано с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Act Signed by Name";
+                Importance=Additional;
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 1470005;5;Field     ;
+                ToolTipML=[ENU=Specifies the act signed by the position associated with the sales header.;
+                           RUS=Определяет акт, подписанный должностью, которая связана с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Act Signed by Position";
+                Importance=Additional;
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 1470007;5;Field     ;
+                ToolTipML=[ENU=Specifies the consignor number associated with the sales header.;
+                           RUS=Определяет номер грузоотправителя, связанный с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Consignor No.";
+                Importance=Additional;
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 1210000;5;Field     ;
+                ToolTipML=[ENU=Specifies the code of the company registration associated with the sales header.;
+                           RUS=Определяет код регистрации компании, связанный с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="KPP Code";
+                Importance=Additional;
+                Editable=ShipToOptions = ShipToOptions::"Custom Address" }
+
+    { 77  ;3   ;Group     ;
+                CaptionML=[ENU=Shipment Method;
+                           RUS=Метод отгрузки];
+                GroupType=Group }
+
+    { 48  ;4   ;Field     ;
+                CaptionML=[ENU=Code;
+                           RUS=Код];
+                ToolTipML=[ENU=Specifies how items on the sales document are shipped to the customer.;
+                           RUS=Определяет способ отгрузки товаров из документа продажи клиенту.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Shipment Method Code";
+                Importance=Additional }
+
+    { 107 ;4   ;Field     ;
+                CaptionML=[ENU=Agent;
+                           RUS=Агент];
+                ToolTipML=[ENU=Specifies which shipping agent is used to transport the items on the sales document to the customer.;
+                           RUS=Определяет экспедитора, который используется для транспортировки клиенту товаров из документа продажи.];
+                ApplicationArea=#Suite;
+                SourceExpr="Shipping Agent Code";
+                Importance=Additional }
+
+    { 139 ;4   ;Field     ;
+                CaptionML=[ENU=Agent Service;
+                           RUS=Услуга агента];
+                ToolTipML=[ENU=Specifies the code that represents the default shipping agent service you are using for this sales order.;
+                           RUS=Определяет код, представляющий услуги экспедитора по умолчанию, которые используются для этого заказа на продажу.];
+                ApplicationArea=#Suite;
+                SourceExpr="Shipping Agent Service Code";
+                Importance=Additional }
+
+    { 109 ;4   ;Field     ;
+                ToolTipML=[ENU=Specifies the shipping agent's package number.;
+                           RUS=Определяет номер пакета экспедитора.];
+                ApplicationArea=#Suite;
+                SourceExpr="Package Tracking No.";
+                Importance=Additional }
+
+    { 85  ;2   ;Group     ;
+                GroupType=Group }
+
+    { 93  ;3   ;Field     ;
+                CaptionML=[ENU=Bill-to;
+                           RUS=Плательщик];
+                ToolTipML=[ENU=Specifies the customer that the sales invoice will be sent to. Default (Customer): The same as the customer on the sales invoice. Another Customer: Any customer that you specify in the fields below.;
+                           RUS=Определяет клиента, которому будет отправлен счет продажи. По умолчанию ("Клиент"): адрес совпадает с адресом клиента в счете продажи. "Другой клиент": произвольный клиент, задаваемый в расположенных ниже полях.];
+                OptionCaptionML=[ENU=Default (Customer),Another Customer;
+                                 RUS=По умолчанию (Клиент),Другой клиент];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=BillToOptions;
+                OnValidate=BEGIN
+                             IF BillToOptions = BillToOptions::"Default (Customer)" THEN
+                               VALIDATE("Bill-to Customer No.","Sell-to Customer No.");
+                           END;
+                            }
+
+    { 82  ;3   ;Group     ;
+                Visible=BillToOptions = BillToOptions::"Another Customer";
+                GroupType=Group }
+
+    { 18  ;4   ;Field     ;
+                CaptionML=[ENU=Name;
+                           RUS=Название];
+                ToolTipML=[ENU=Specifies the customer to whom you will send the sales invoice, when different from the customer that you are selling to.;
+                           RUS=Определяет клиента, которому будет отправлен счет продажи, если продажа осуществляется другому клиенту.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bill-to Name";
+                Importance=Promoted;
+                OnValidate=BEGIN
+                             IF GETFILTER("Bill-to Customer No.") = xRec."Bill-to Customer No." THEN
+                               IF "Bill-to Customer No." <> xRec."Bill-to Customer No." THEN
+                                 SETRANGE("Bill-to Customer No.");
+
+                             IF ApplicationAreaSetup.IsFoundationEnabled THEN
+                               SalesCalcDiscountByType.ApplyDefaultInvoiceDiscount(0,Rec);
+
+                             CurrPage.UPDATE;
+                           END;
+                            }
+
+    { 20  ;4   ;Field     ;
+                CaptionML=[ENU=Address;
+                           RUS=Адрес];
+                ToolTipML=[ENU=Specifies the address of the customer that you will send the invoice to.;
+                           RUS=Определяет адрес клиента, которому будет отправлен счет.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bill-to Address";
+                Importance=Additional }
+
+    { 22  ;4   ;Field     ;
+                CaptionML=[ENU=Address 2;
+                           RUS=Адрес 2];
+                ToolTipML=[ENU=Specifies additional address information.;
+                           RUS=Определяет дополнительные сведения адреса.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bill-to Address 2";
+                Importance=Additional }
+
+    { 89  ;4   ;Field     ;
+                CaptionML=[ENU=Post Code;
+                           RUS=Индекс];
+                ToolTipML=[ENU=Specifies the postal code.;
+                           RUS=Определяет почтовый индекс.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bill-to Post Code";
+                Importance=Additional }
+
+    { 24  ;4   ;Field     ;
+                CaptionML=[ENU=City;
+                           RUS=Город];
+                ToolTipML=[ENU=Specifies the city you will send the invoice to.;
+                           RUS=Определяет город, в который будет отправлен счет.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bill-to City";
+                Importance=Additional }
+
+    { 159 ;4   ;Field     ;
+                CaptionML=[ENU=Contact No.;
+                           RUS=Код контакта];
+                ToolTipML=[ENU=Specifies the number of the contact the invoice will be sent to.;
+                           RUS=Определяет номер контакта, которому будет отправлен счет.];
+                SourceExpr="Bill-to Contact No.";
+                Importance=Additional }
+
+    { 26  ;4   ;Field     ;
+                CaptionML=[ENU=Contact;
+                           RUS=Контакт];
+                ToolTipML=[ENU=Specifies the name of the person you should contact at the customer who you are sending the invoice to.;
+                           RUS=Определяет имя контактного лица у клиента, которому направляется счет.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bill-to Contact" }
+
+    { 94  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the location from where inventory items to the customer on the sales document are to be shipped by default.;
+                           RUS=Указывает расположение, из которого по умолчанию отгружаются складские товары клиенту по документу продажи.];
+                SourceExpr="Location Code" }
+
+    { 50  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the date you expect to ship items on the sales document.;
+                           RUS=Определяет дату ожидаемой отгрузки товаров по документу продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Shipment Date";
+                Importance=Promoted }
+
+    { 119 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies if the customer accepts partial shipment of orders.;
+                           RUS=Определяет, принимает ли клиент частичную поставку заказов.];
+                SourceExpr="Shipping Advice";
+                Importance=Additional;
+                OnValidate=BEGIN
+                             IF "Shipping Advice" <> xRec."Shipping Advice" THEN
+                               IF NOT CONFIRM(Text001,FALSE,FIELDCAPTION("Shipping Advice")) THEN
+                                 ERROR(Text002);
+                           END;
+                            }
+
+    { 141 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the outbound warehouse handling time.;
+                           RUS=Определяет исходящее время обработки склада.];
+                SourceExpr="Outbound Whse. Handling Time";
+                Importance=Additional }
+
+    { 143 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies how long it takes from when the sales order is shipped from the warehouse to when the order is delivered.;
+                           RUS=Определяет время с момента отгрузки заказа на продажу со склада до момента доставки заказа.];
+                SourceExpr="Shipping Time";
+                Importance=Additional }
+
+    { 145 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies that the shipment of one or more lines has been delayed, or that the shipment date is before the work date.;
+                           RUS=Определяет, что есть задержка в доставке одной или более строк, либо указанная дата доставки раньше рабочей даты.];
+                SourceExpr="Late Order Shipping";
+                Importance=Additional }
+
+    { 1470000;2;Field     ;
+                ToolTipML=[ENU=Specifies the external document text associated with the sales header.;
+                           RUS=Определяет текст внешнего документа, связанный с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="External Document Text" }
+
+    { 1907468901;1;Group  ;
+                CaptionML=[ENU=Foreign Trade;
+                           RUS=Внешняя торговля] }
+
+    { 52  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies whether the sales document is part of a three-party trade.;
+                           RUS=Определяет, является ли документ продажи частью трехсторонней торговой сделки.];
+                SourceExpr="EU 3-Party Trade" }
+
+    { 103 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies a code for the sales document's transaction specification, for the purpose of reporting to INTRASTAT.;
+                           RUS=Определяет код спецификации транзакции документа продажи в целях отчетности Интрастат.];
+                SourceExpr="Transaction Specification" }
+
+    { 56  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the transport method, for the purpose of reporting to INTRASTAT.;
+                           RUS=Определяет метод перевозки в целях отчетности Интрастат.];
+                SourceExpr="Transport Method" }
+
+    { 99  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the point of exit through which you ship the items out of your country/region, for reporting to Intrastat.;
+                           RUS=Определяет точку выхода, через которую производится отгрузка товаров за пределы страны или региона, в целях отчетности Интрастат.];
+                SourceExpr="Exit Point" }
+
+    { 101 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the area of the customer's address, for the purpose of reporting to INTRASTAT.;
+                           RUS=Определяет регион для адреса клиента в целях отчетности Интрастат.];
+                SourceExpr=Area }
+
+    { 1900201301;1;Group  ;
+                CaptionML=[ENU=Prepayment;
+                           RUS=Предоплата] }
+
+    { 228 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the prepayment percentage if you want to apply a prepayment to all lines on the sales order.;
+                           RUS=Определяет процент предоплаты, если требуется применить предоплату ко всем строкам в заказе на продажу.];
+                SourceExpr="Prepayment %";
+                Importance=Promoted;
+                OnValidate=BEGIN
+                             Prepayment37OnAfterValidate;
+                           END;
+                            }
+
+    { 229 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies that prepayments on the sales order are combined if they have the same general ledger account for prepayments or the same dimensions.;
+                           RUS=Указывает, что предоплаты в заказе на продажу объединяются, если они имеют одинаковый счет предоплат главной книги или одинаковые измерения.];
+                SourceExpr="Compress Prepayment" }
+
+    { 162 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the code that represents the payment terms for prepayment invoices related to the sales document.;
+                           RUS=Определяет код, отражающий условия оплаты для счета на предоплату, связанного с документом продажи.];
+                SourceExpr="Prepmt. Payment Terms Code" }
+
+    { 239 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies when the prepayment invoice for this sales order is due.;
+                           RUS=Определяет дату, на которую подлежит оплате счет на предоплату по этому заказу на продажу.];
+                SourceExpr="Prepayment Due Date";
+                Importance=Promoted }
+
+    { 164 ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the payment discount percent granted on the prepayment if the customer pays on or before the date entered in the Prepmt. Pmt. Discount Date field.;
+                           RUS=Определяет процент скидки по оплате, которая предоставляется для предоплаты при условии совершения клиентом оплаты не позже даты, указанной в поле "Дата скидки предоплаты".];
+                SourceExpr="Prepmt. Payment Discount %" }
+
+    { 70  ;2   ;Field     ;
+                ToolTipML=[ENU=Specifies the last date the customer can pay the prepayment invoice and still receive a payment discount on the prepayment amount.;
+                           RUS=Определяет крайний срок, когда клиент может оплатить счет на предоплату и при этом получить скидку по оплате на сумму предоплаты.];
+                SourceExpr="Prepmt. Pmt. Discount Date" }
+
+    { 1905569601;1;Group  ;
+                CaptionML=[ENU=VAT;
+                           RUS=НДС] }
+
+    { 1210002;2;Field     ;
+                ToolTipML=[ENU=Specifies the additional VAT ledger sheet associated with the sales header.;
+                           RUS=Определяет дополнительный лист книги НДС, связанный с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Additional VAT Ledger Sheet" }
+
+    { 1210004;2;Field     ;
+                ToolTipML=[ENU=Specifies the date of the corrected document associated with the sales header.;
+                           RUS=Определяет дату скорректированного документа, связанного с заголовком продажи.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Corrected Document Date" }
+
+    { 1210001;2;Field     ;
+                ToolTipML=[ENU=Specifies the VAT entry type for the sales order.;
+                           RUS=Определяет тип операции НДС для заказа на продажу.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="VAT Entry Type" }
+
+    { 1900000007;0;Container;
+                ContainerType=FactBoxArea }
+
+    { 35  ;1   ;Part      ;
+                ApplicationArea=#All;
+                SubPageLink=Table ID=CONST(36),
+                            Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.);
+                PagePartID=Page9103;
+                Visible=OpenApprovalEntriesExistForCurrUser;
+                PartType=Page }
+
+    { 1903720907;1;Part   ;
+                SubPageLink=No.=FIELD(Sell-to Customer No.);
+                PagePartID=Page9080;
+                PartType=Page }
+
+    { 1902018507;1;Part   ;
+                SubPageLink=No.=FIELD(Bill-to Customer No.);
+                PagePartID=Page9082;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1900316107;1;Part   ;
+                SubPageLink=No.=FIELD(Sell-to Customer No.);
+                PagePartID=Page9084;
+                PartType=Page }
+
+    { 1906127307;1;Part   ;
+                ApplicationArea=#Suite;
+                SubPageLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(Document No.),
+                            Line No.=FIELD(Line No.);
+                PagePartID=Page9087;
+                ProviderID=58;
+                PartType=Page }
+
+    { 1901314507;1;Part   ;
+                SubPageLink=No.=FIELD(No.);
+                PagePartID=Page9089;
+                ProviderID=58;
+                PartType=Page }
+
+    { 1906354007;1;Part   ;
+                Name=ApprovalFactBox;
+                PagePartID=Page9092;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 49  ;1   ;Part      ;
+                Name=IncomingDocAttachFactBox;
+                PagePartID=Page193;
+                Visible=FALSE;
+                PartType=Page;
+                ShowFilter=No }
+
+    { 1907012907;1;Part   ;
+                SubPageLink=No.=FIELD(No.);
+                PagePartID=Page9108;
+                ProviderID=58;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1901796907;1;Part   ;
+                SubPageLink=No.=FIELD(No.);
+                PagePartID=Page9109;
+                ProviderID=58;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 1907234507;1;Part   ;
+                SubPageLink=No.=FIELD(Bill-to Customer No.);
+                PagePartID=Page9081;
+                Visible=FALSE;
+                PartType=Page }
+
+    { 80  ;1   ;Part      ;
+                Name=WorkflowStatus;
+                ApplicationArea=#All;
+                PagePartID=Page1528;
+                Visible=ShowWorkflowStatus;
+                Enabled=FALSE;
+                Editable=FALSE;
+                PartType=Page;
+                ShowFilter=No }
+
+    { 1900383207;1;Part   ;
+                Visible=FALSE;
+                PartType=System;
+                SystemPartID=RecordLinks }
+
+    { 1905767507;1;Part   ;
+                PartType=System;
+                SystemPartID=Notes }
+
+  }
+  CODE
+  {
+    VAR
+      ApplicationAreaSetup@1022 : Record 9178;
+      CopySalesDoc@1001 : Report 292;
+      MoveNegSalesLines@1007 : Report 6699;
+      ApprovalsMgmt@1012 : Codeunit 1535;
+      ReportPrint@1002 : Codeunit 228;
+      DocPrint@1003 : Codeunit 229;
+      ArchiveManagement@1008 : Codeunit 5063;
+      SalesCalcDiscountByType@1014 : Codeunit 56;
+      UserMgt@1006 : Codeunit 5700;
+      ChangeExchangeRate@1005 : Page 511;
+      Usage@1010 : 'Order Confirmation,Work Order,Pick Instruction';
+      NavigateAfterPost@1029 : 'Posted Document,New Document,Nowhere';
+      JobQueueVisible@1004 : Boolean INDATASET;
+      Text001@1015 : TextConst 'ENU=Do you want to change %1 in all related records in the warehouse?;RUS=Изменить %1 во всех связанных записях на складе?';
+      Text002@1011 : TextConst 'ENU=The update has been interrupted to respect the warning.;RUS=Обновление прервано из-за предупреждения.';
+      DynamicEditable@1009 : Boolean;
+      HasIncomingDocument@1020 : Boolean;
+      DocNoVisible@1013 : Boolean;
+      ExternalDocNoMandatory@1016 : Boolean;
+      OpenApprovalEntriesExistForCurrUser@1024 : Boolean;
+      OpenApprovalEntriesExist@1023 : Boolean;
+      CRMIntegrationEnabled@1000 : Boolean;
+      CRMIsCoupledToRecord@1017 : Boolean;
+      ShowWorkflowStatus@1018 : Boolean;
+      IsOfficeHost@1019 : Boolean;
+      CanCancelApprovalForRecord@1021 : Boolean;
+      JobQueuesUsed@1026 : Boolean;
+      ShowQuoteNo@1025 : Boolean;
+      DocumentIsPosted@1027 : Boolean;
+      OpenPostedSalesOrderQst@1028 : TextConst 'ENU=The order has been posted and moved to the Posted Sales Invoices window.\\Do you want to open the posted invoice?;RUS=Заказ учтен и перемещен в окно учтенных счетов продажи.\\Открыть учтенный счет?';
+      PaymentServiceVisible@1030 : Boolean;
+      PaymentServiceEnabled@1031 : Boolean;
+      ShipToOptions@1033 : 'Default (Sell-to Address),Alternate Shipping Address,Custom Address';
+      BillToOptions@1032 : 'Default (Customer),Another Customer';
+      EmptyShipToCodeErr@1034 : TextConst 'ENU=The Code field can only be empty if you select Custom Address in the Ship-to field.;RUS=Поле "Код" может быть только пустым, если в поле "Получатель" выбрано значение "Пользовательский адрес".';
+
+    LOCAL PROCEDURE Post@4(PostingCodeunitID@1000 : Integer;Navigate@1004 : Option);
+    VAR
+      SalesHeader@1001 : Record 36;
+      LinesInstructionMgt@1002 : Codeunit 1320;
+      InstructionMgt@1003 : Codeunit 1330;
+    BEGIN
+      IF ApplicationAreaSetup.IsFoundationEnabled THEN
+        LinesInstructionMgt.SalesCheckAllLinesHaveQuantityAssigned(Rec);
+
+      SendToPosting(PostingCodeunitID);
+      DocumentIsPosted := NOT SalesHeader.GET("Document Type","No.");
+
+      IF "Job Queue Status" = "Job Queue Status"::"Scheduled for Posting" THEN
+        CurrPage.CLOSE;
+      CurrPage.UPDATE(FALSE);
+
+      IF PostingCodeunitID <> CODEUNIT::"Sales-Post (Yes/No)" THEN
+        EXIT;
+
+      CASE Navigate OF
+        NavigateAfterPost::"Posted Document":
+          IF InstructionMgt.IsEnabled(InstructionMgt.ShowPostedConfirmationMessageCode) THEN
+            ShowPostedConfirmationMessage;
+        NavigateAfterPost::"New Document":
+          IF DocumentIsPosted THEN BEGIN
+            SalesHeader.INIT;
+            SalesHeader.VALIDATE("Document Type",SalesHeader."Document Type"::Order);
+            SalesHeader.INSERT(TRUE);
+            PAGE.RUN(PAGE::"Sales Order",SalesHeader);
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ApproveCalcInvDisc@3();
+    BEGIN
+      CurrPage.SalesLines.PAGE.ApproveCalcInvDisc;
+    END;
+
+    LOCAL PROCEDURE SalespersonCodeOnAfterValidate@19011896();
+    BEGIN
+      CurrPage.SalesLines.PAGE.UpdateForm(TRUE);
+    END;
+
+    LOCAL PROCEDURE ShortcutDimension1CodeOnAfterV@19029405();
+    BEGIN
+      CurrPage.UPDATE;
+    END;
+
+    LOCAL PROCEDURE ShortcutDimension2CodeOnAfterV@19008725();
+    BEGIN
+      CurrPage.UPDATE;
+    END;
+
+    LOCAL PROCEDURE PricesIncludingVATOnAfterValid@19009096();
+    BEGIN
+      CurrPage.UPDATE;
+    END;
+
+    LOCAL PROCEDURE Prepayment37OnAfterValidate@19040510();
+    BEGIN
+      CurrPage.UPDATE;
+    END;
+
+    LOCAL PROCEDURE SetDocNoVisible@2();
+    VAR
+      DocumentNoVisibility@1000 : Codeunit 1400;
+      DocType@1003 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Reminder,FinChMemo';
+    BEGIN
+      DocNoVisible := DocumentNoVisibility.SalesDocumentNoIsVisible(DocType::Order,"No.");
+    END;
+
+    LOCAL PROCEDURE SetExtDocNoMandatoryCondition@5();
+    VAR
+      SalesReceivablesSetup@1000 : Record 311;
+    BEGIN
+      SalesReceivablesSetup.GET;
+      ExternalDocNoMandatory := SalesReceivablesSetup."Ext. Doc. No. Mandatory"
+    END;
+
+    LOCAL PROCEDURE ShowPreview@6();
+    VAR
+      SalesPostYesNo@1000 : Codeunit 81;
+    BEGIN
+      SalesPostYesNo.Preview(Rec);
+    END;
+
+    LOCAL PROCEDURE SetControlVisibility@7();
+    VAR
+      ApprovalsMgmt@1002 : Codeunit 1535;
+    BEGIN
+      JobQueueVisible := "Job Queue Status" = "Job Queue Status"::"Scheduled for Posting";
+      HasIncomingDocument := "Incoming Document Entry No." <> 0;
+      SetExtDocNoMandatoryCondition;
+
+      OpenApprovalEntriesExistForCurrUser := ApprovalsMgmt.HasOpenApprovalEntriesForCurrentUser(RECORDID);
+      OpenApprovalEntriesExist := ApprovalsMgmt.HasOpenApprovalEntries(RECORDID);
+      CanCancelApprovalForRecord := ApprovalsMgmt.CanCancelApprovalForRecord(RECORDID);
+    END;
+
+    LOCAL PROCEDURE ShowPostedConfirmationMessage@17();
+    VAR
+      OrderSalesHeader@1003 : Record 36;
+      SalesInvoiceHeader@1000 : Record 112;
+      InstructionMgt@1002 : Codeunit 1330;
+    BEGIN
+      IF NOT OrderSalesHeader.GET("Document Type","No.") THEN BEGIN
+        SalesInvoiceHeader.SETRANGE("No.","Last Posting No.");
+        IF SalesInvoiceHeader.FINDFIRST THEN
+          IF InstructionMgt.ShowConfirm(OpenPostedSalesOrderQst,InstructionMgt.ShowPostedConfirmationMessageCode) THEN
+            PAGE.RUN(PAGE::"Posted Sales Invoice",SalesInvoiceHeader);
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdatePaymentService@1();
+    VAR
+      PaymentServiceSetup@1000 : Record 1060;
+    BEGIN
+      PaymentServiceVisible := PaymentServiceSetup.IsPaymentServiceVisible;
+      PaymentServiceEnabled := PaymentServiceSetup.CanChangePaymentService(Rec);
+    END;
+
+    LOCAL PROCEDURE UpdateShipToBillToGroupVisibility@9();
+    BEGIN
+      CASE TRUE OF
+        ("Ship-to Code" = '') AND ShipToAddressEqualsSellToAddress:
+          ShipToOptions := ShipToOptions::"Default (Sell-to Address)";
+        ("Ship-to Code" = '') AND (NOT ShipToAddressEqualsSellToAddress):
+          ShipToOptions := ShipToOptions::"Custom Address";
+        "Ship-to Code" <> '':
+          ShipToOptions := ShipToOptions::"Alternate Shipping Address";
+      END;
+
+      IF "Bill-to Customer No." = "Sell-to Customer No." THEN
+        BillToOptions := BillToOptions::"Default (Customer)"
+      ELSE
+        BillToOptions := BillToOptions::"Another Customer";
+    END;
+
+    [Integration]
+    LOCAL PROCEDURE OnBeforeStatisticsAction@8(VAR SalesHeader@1000 : Record 36;VAR Handled@1001 : Boolean);
+    BEGIN
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,92 @@
+OBJECT Codeunit 455 Job Queue User Handler
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVW110.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            RescheduleJobQueueEntries;
+          END;
+
+  }
+  CODE
+  {
+
+    LOCAL PROCEDURE RescheduleJobQueueEntries@5();
+    VAR
+      JobQueueEntry@1001 : Record 472;
+      TempJobQueueEntry@1000 : TEMPORARY Record 472;
+      User@1002 : Record 2000000120;
+    BEGIN
+      JobQueueEntry.SETFILTER(Status,'<>%1&<>%2',JobQueueEntry.Status::"On Hold",JobQueueEntry.Status::Finished);
+      IF NOT JobQueueEntry.FINDSET THEN
+        EXIT;
+      REPEAT
+        IF JobQueueEntry."User ID" = USERID THEN BEGIN
+          JobQueueEntry.CALCFIELDS(Scheduled);
+          IF NOT JobQueueEntry.Scheduled THEN BEGIN
+            TempJobQueueEntry := JobQueueEntry;
+            TempJobQueueEntry.INSERT;
+          END
+        END ELSE BEGIN
+          User.SETRANGE("User Name",JobQueueEntry."User ID");
+          IF User.ISEMPTY THEN BEGIN
+            TempJobQueueEntry := JobQueueEntry;
+            TempJobQueueEntry.INSERT;
+          END;
+        END;
+      UNTIL JobQueueEntry.NEXT = 0;
+
+      IF NOT TempJobQueueEntry.FINDSET THEN
+        EXIT;
+      JobQueueEntry.LOCKTABLE;
+      REPEAT
+        IF JobQueueEntry.GET(TempJobQueueEntry.ID) THEN
+          IF JobQueueEntry.Status IN [JobQueueEntry.Status::"On Hold",JobQueueEntry.Status::Finished] THEN
+            TempJobQueueEntry.DELETE
+          ELSE
+            JobQueueEntry.Cancel;
+      UNTIL TempJobQueueEntry.NEXT = 0;
+
+      IF NOT TempJobQueueEntry.FINDSET THEN
+        EXIT;
+
+      // Platform work-around because first "Schedule Task" gets userid = nullguid
+      JobQueueEntry."Earliest Start Date/Time" := CREATEDATETIME(01019999D,0T);
+      CODEUNIT.RUN(CODEUNIT::"Job Queue - Enqueue",JobQueueEntry);
+      JobQueueEntry.Cancel;
+
+      REPEAT
+        JobQueueEntry := TempJobQueueEntry;
+        JobQueueEntry.ID := CREATEGUID;
+        CODEUNIT.RUN(CODEUNIT::"Job Queue - Enqueue",JobQueueEntry);
+      UNTIL TempJobQueueEntry.NEXT = 0;
+    END;
+
+    [EventSubscriber(Codeunit,1,OnAfterCompanyOpen,"",Skip,Skip)]
+    LOCAL PROCEDURE RescheduleJobQueueEntriesOnCompanyOpen@1();
+    VAR
+      JobQueueEntry@1001 : Record 472;
+      User@1000 : Record 2000000120;
+      s@1002 : Integer;
+    BEGIN
+      IF NOT GUIALLOWED THEN
+        EXIT;
+      IF NOT (JobQueueEntry.WRITEPERMISSION AND JobQueueEntry.READPERMISSION) THEN
+        EXIT;
+      IF NOT User.GET(USERSECURITYID) THEN
+        EXIT;
+
+      s := 0;
+      IF STARTSESSION(s,CODEUNIT::"Job Queue User Handler") THEN;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,171 @@
+OBJECT Codeunit 26550 Statutory Report Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1210000 : TextConst 'ENU=Sent data cannot be opened.;RUS=Невозможно открыть отправленные данные.';
+      FileMgt@1210008 : Codeunit 419;
+      ServerFileName@1210005 : Text;
+      TestMode@1210001 : Boolean;
+      SelectFileNameTxt@1210006 : TextConst 'ENU=Select a filename to export File Settings to.;RUS=Выберите имя файла для экспорта в него файла настроек.';
+      DefaultFileNameTxt@1210002 : TextConst '@@@=StatutoryReport';
+
+    PROCEDURE ExportReportSettings@1210002(VAR StatutoryReport@1210001 : Record 26550);
+    VAR
+      FormatVersion@1210007 : Record 26573;
+      TempBlob@1210009 : Record 99008535;
+      StatutoryReportsXML@1210000 : XMLport 26550;
+      OutputFile@1210002 : File;
+      OutStr@1210003 : OutStream;
+      FileName@1210005 : Text;
+      PathName@1210006 : Text;
+      ZipServerFileName@1210004 : Text;
+      WebClient@1210008 : Boolean;
+    BEGIN
+      // If there is a WebClient then zip all files on a server and then download it to client
+      WebClient := FileMgt.IsWebClient;
+      IF WebClient THEN
+        ZipServerFileName := FileMgt.CreateZipArchiveObject;
+
+      IF ServerFileName = '' THEN
+        ServerFileName := FileMgt.ServerTempFileName('xml');
+
+      OutputFile.CREATE(ServerFileName);
+      OutputFile.CREATEOUTSTREAM(OutStr);
+      StatutoryReportsXML.SETDESTINATION(OutStr);
+      StatutoryReportsXML.SetData(StatutoryReport);
+      StatutoryReportsXML.EXPORT;
+      OutputFile.CLOSE;
+      CLEAR(OutStr);
+
+      IF TestMode THEN
+        EXIT;
+
+      IF WebClient THEN
+        FileMgt.AddFileToZipArchive(ServerFileName,DefaultFileNameTxt + '.xml')
+      ELSE BEGIN
+        IF FileName = '' THEN
+          FileName := DefaultFileNameTxt + '.xml';
+        DOWNLOAD(ServerFileName,SelectFileNameTxt,PathName,'',FileName);
+        PathName := FileMgt.GetDirectoryName(ServerFileName);
+      END;
+
+      IF StatutoryReport.FINDSET THEN
+        REPEAT
+          IF NOT StatutoryReport.Header THEN BEGIN
+            StatutoryReport.TESTFIELD("Format Version Code");
+            FormatVersion.GET(StatutoryReport."Format Version Code");
+
+            IF FormatVersion."Excel File Name" <> '' THEN BEGIN
+              FormatVersion.CALCFIELDS("Report Template");
+              IF FormatVersion."Report Template".HASVALUE THEN BEGIN
+                CLEAR(TempBlob);
+                TempBlob.Blob := FormatVersion."Report Template";
+                IF WebClient THEN BEGIN
+                  ServerFileName := FileMgt.ServerTempFileName('');
+                  FileMgt.BLOBExportToServerFile(TempBlob,ServerFileName);
+                  FileMgt.AddFileToZipArchive(ServerFileName,FormatVersion."Excel File Name");
+                END ELSE
+                  FileMgt.BLOBExport(TempBlob,PathName + FormatVersion."Excel File Name",TRUE);
+              END;
+            END;
+            IF FormatVersion."XML Schema File Name" <> '' THEN BEGIN
+              FormatVersion.CALCFIELDS("XML Schema");
+              IF FormatVersion."XML Schema".HASVALUE THEN BEGIN
+                CLEAR(TempBlob);
+                TempBlob.Blob := FormatVersion."XML Schema";
+                IF WebClient THEN BEGIN
+                  ServerFileName := FileMgt.ServerTempFileName('');
+                  FileMgt.BLOBExportToServerFile(TempBlob,ServerFileName);
+                  FileMgt.AddFileToZipArchive(ServerFileName,FormatVersion."XML Schema File Name");
+                END ELSE
+                  FileMgt.BLOBExport(TempBlob,PathName + FormatVersion."XML Schema File Name",TRUE);
+              END;
+            END;
+          END;
+        UNTIL StatutoryReport.NEXT = 0;
+
+      IF WebClient THEN BEGIN
+        FileMgt.CloseZipArchive;
+        FileName := DefaultFileNameTxt + '.zip';
+        DOWNLOAD(ZipServerFileName,SelectFileNameTxt,PathName,'',FileName);
+      END;
+    END;
+
+    PROCEDURE ImportReportSettings@1210010(FileName2@1210000 : Text);
+    VAR
+      StatutoryReports@1210001 : XMLport 26550;
+      InStr@1210003 : InStream;
+      ReportFile@1210002 : File;
+      PathName@1210004 : Text;
+    BEGIN
+      IF FileMgt.IsWebClient THEN
+        ReportFile.OPEN(FileName2)
+      ELSE
+        ReportFile.OPEN(FileMgt.UploadFileSilent(FileName2));
+      ReportFile.CREATEINSTREAM(InStr);
+
+      PathName := STRSUBSTNO('%1\',FileMgt.GetDirectoryName(FileName2));
+      StatutoryReports.SETSOURCE(InStr);
+      StatutoryReports.IMPORT;
+      StatutoryReports.ImportData(COPYSTR(PathName,1,1024));
+      CLEAR(InStr);
+      ReportFile.CLOSE;
+    END;
+
+    PROCEDURE ReleaseDataHeader@1210000(VAR StatutoryReportDataHeader@1210000 : Record 26563);
+    BEGIN
+      WITH StatutoryReportDataHeader DO BEGIN
+        IF Status = Status::Released THEN
+          EXIT;
+
+        TESTFIELD(Status,Status::Open);
+
+        Status := Status::Released;
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE ReopenDataHeader@1210001(VAR StatutoryReportDataHeader@1210000 : Record 26563);
+    BEGIN
+      WITH StatutoryReportDataHeader DO BEGIN
+        IF Status = Status::Open THEN
+          EXIT;
+
+        IF Status = Status::Sent THEN
+          ERROR(Text001);
+
+        TESTFIELD(Status,Status::Released);
+
+        Status := Status::Open;
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210004(NewFileName@1210000 : Text);
+    BEGIN
+      ServerFileName := NewFileName;
+    END;
+
+    PROCEDURE SetTestMode@1210003(NewTestMode@1210000 : Boolean);
+    BEGIN
+      TestMode := NewTestMode;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

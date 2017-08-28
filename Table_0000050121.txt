@@ -1,0 +1,267 @@
+OBJECT Table 50121 Sync Log
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.07.17;
+    Time=18:23:41;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    DataPerCompany=No;
+    Permissions=TableData 50224=rimd;
+    CaptionML=RUS=Синхронизация Журнал;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Sync Table          ;Text50         }
+    { 2   ;   ;Entry No.           ;Integer        }
+    { 3   ;   ;Ext. System ID      ;Code2         ;TableRelation="External System" }
+    { 4   ;   ;Created Time        ;DateTime       }
+    { 5   ;   ;Processed Time      ;DateTime       }
+  }
+  KEYS
+  {
+    {    ;Ext. System ID,Sync Table,Entry No.     ;Clustered=Yes }
+    {    ;Ext. System ID,Sync Table,Processed Time }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1000000000 : Record 98;
+      CreationTime@1000000001 : DateTime;
+      Company@1000000002 : Record 2000000006;
+
+    PROCEDURE Synchronise@1000000002(Mode@1000000002 : 'Insert,Modify,Delete,Rename';VAR xRecRef@1000000001 : RecordRef;VAR RecRef@1000000000 : RecordRef);
+    VAR
+      SyncSetup@1000000019 : Record 50122;
+      SyncFilter@1000000018 : Record 50123;
+      ExtSystem@1000000017 : Record 50065;
+      SyncTableRef@1000000013 : RecordRef;
+      TempTableRef@1000000012 : RecordRef;
+      xTempTableRef@1000000011 : RecordRef;
+      FldRef1@1000000009 : FieldRef;
+      FldRef2@1000000008 : FieldRef;
+      i@1000000005 : Integer;
+      TableNo@1000000004 : Integer;
+      EntryNo@1000000003 : Integer;
+      Inserted@1000000022 : Boolean;
+      Deleted@1000000021 : Boolean;
+    BEGIN
+      GLSetup.GET();
+      CreationTime := CURRENTDATETIME;
+
+      TableNo := RecRef.NUMBER;
+      IF TableNo = 0 THEN
+        TableNo := xRecRef.NUMBER;
+      IF TableNo = 0 THEN
+        EXIT;
+
+      TempTableRef.OPEN(RecRef.NUMBER, TRUE);            // Копии Rec и xRec для проверки условий синхронизации
+      xTempTableRef.OPEN(xRecRef.NUMBER, TRUE);
+
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef1 := RecRef.FIELDINDEX(i);
+        IF FORMAT(FldRef1.CLASS) = 'Normal' THEN BEGIN
+          FldRef2 := TempTableRef.FIELDINDEX(i);
+          FldRef2.VALUE := FldRef1.VALUE;
+        END;
+      END;
+      TempTableRef.INSERT;
+
+      FOR i := 1 TO xRecRef.FIELDCOUNT DO BEGIN
+        FldRef1 := xRecRef.FIELDINDEX(i);
+        IF FORMAT(FldRef1.CLASS) = 'Normal' THEN BEGIN
+          FldRef2 := xTempTableRef.FIELDINDEX(i);
+          FldRef2.VALUE := FldRef1.VALUE;
+        END;
+      END;
+      xTempTableRef.INSERT;
+
+      SyncSetup.RESET;
+      SyncSetup.SETRANGE("Table No.", TableNo);
+      //SyncSetup.SETRANGE(Enabled, TRUE);
+
+      IF SyncSetup.FINDSET THEN REPEAT                    // Настройки синхронизации справочников
+        ExtSystem.SETFILTER(ID, SyncSetup."Ext. System ID Filter");  // Перечень внешних систем-получателей
+        ExtSystem.FINDSET;
+
+        SyncSetup.CALCFIELDS("Sync Table Name");
+
+        CASE Mode OF
+          Mode::Insert, Mode::Modify:
+            BEGIN
+              Inserted := TRUE;
+              Deleted := FALSE;
+            END;
+          Mode::Delete:
+            BEGIN
+              Inserted := FALSE;
+              Deleted := TRUE;
+            END;
+          Mode::Rename:
+            BEGIN
+              Inserted := TRUE;
+              Deleted := TRUE;
+            END;
+        END;
+
+        TempTableRef.RESET;
+        xTempTableRef.RESET;
+
+        SyncFilter.RESET;
+        SyncFilter.SETRANGE("Rule No.", SyncSetup."Rule No.");
+
+        IF SyncFilter.FINDSET THEN BEGIN
+          IF Inserted THEN BEGIN                        // Проверка условия отбора по вставленной записи
+            REPEAT
+              FldRef1 := TempTableRef.FIELD(SyncFilter."Field No.");
+              FldRef1.SETFILTER(SyncFilter."Filter Text");
+            UNTIL SyncFilter.NEXT= 0;
+            Inserted := TempTableRef.FINDFIRST;
+          END;
+
+          IF Deleted THEN BEGIN                         // Проверка условия отбора по удаленной записи
+            IF SyncFilter.FINDFIRST THEN REPEAT
+              FldRef1 := xTempTableRef.FIELD(SyncFilter."Field No.");
+              FldRef1.SETFILTER(SyncFilter."Filter Text");
+            UNTIL SyncFilter.NEXT= 0;
+            Deleted := xTempTableRef.FINDFIRST;
+          END;
+        END;
+
+        IF Deleted THEN BEGIN
+          SyncTableRef.OPEN(SyncSetup."Sync Table No.");            // Ссылка на таблицу-буфер
+          SyncTableRef.INIT;
+          FillSyncFields(Mode::Delete, xRecRef, SyncTableRef);
+          SyncTableRef.INSERT;
+          FldRef1 := SyncTableRef.FIELD(1);              // Номер сделанной в буфере записи
+          EVALUATE(EntryNo, FORMAT(FldRef1.VALUE));
+
+          REPEAT
+            INIT;
+            "Entry No."      := EntryNo;
+            "Ext. System ID" := ExtSystem.ID;
+            "Sync Table"     := SyncSetup."Sync Table Name";
+            "Created Time"   := CreationTime;
+            "Processed Time" := 0DT;
+            INSERT;
+          UNTIL ExtSystem.NEXT = 0;
+        END;
+        SyncTableRef.CLOSE;
+
+        IF Inserted THEN BEGIN
+          SyncTableRef.OPEN(SyncSetup."Sync Table No.");            // Ссылка на таблицу-буфер
+          SyncTableRef.INIT;
+          IF Mode = Mode::Rename THEN
+            FillSyncFields(Mode::Insert, RecRef, SyncTableRef)
+          ELSE
+            FillSyncFields(Mode, RecRef, SyncTableRef);
+          SyncTableRef.INSERT;
+          FldRef1 := SyncTableRef.FIELD(1);              // Номер сделанной в буфере записи
+          EVALUATE(EntryNo, FORMAT(FldRef1.VALUE));
+
+          ExtSystem.FINDFIRST;
+          REPEAT
+            INIT;
+            "Entry No."      := EntryNo;
+            "Ext. System ID" := ExtSystem.ID;
+            "Sync Table"     := SyncSetup."Sync Table Name";
+            "Created Time"   := CreationTime;
+            "Processed Time" := 0DT;
+            INSERT;
+          UNTIL ExtSystem.NEXT = 0;
+        END;
+      UNTIL SyncSetup.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE FillSyncFields@1000000006(Mode@1000000004 : 'Insert,Modify,Delete,Rename';VAR FromRecRef@1000000000 : RecordRef;VAR ToRecRef@1000000001 : RecordRef);
+    VAR
+      Fields@1000000003 : Record 2000000041;
+      SyncFields@1000000002 : Record 2000000041;
+      SyncFldRef@1000000005 : FieldRef;
+      FldRef@1000000006 : FieldRef;
+    BEGIN
+      Fields.RESET;
+      Fields.SETRANGE(TableNo, FromRecRef.NUMBER);                 // Перечень полей синхронизируемой таблицы
+
+      SyncFields.RESET;
+      SyncFields.SETRANGE(TableNo, ToRecRef.NUMBER);   // Перечень полей таблицы-буфера
+
+      IF SyncFields.FINDSET THEN REPEAT               // Выбираем поля для синхронизации по перечню таблицы-буфера
+        SyncFldRef := ToRecRef.FIELD(SyncFields."No.");
+        CASE  SyncFields.FieldName OF
+          'Entry Type':    SyncFldRef.VALUE := Mode;
+          'Creation Time': SyncFldRef.VALUE := CreationTime;
+          'Legal Entity ID':
+                           BEGIN
+                             Company.GET(COMPANYNAME);
+                             SyncFldRef.VALUE := Company."Legal Entity Id";
+                           END;
+          'Source No.':    BEGIN
+                             Fields.SETRANGE(FieldName,  SyncFields.FieldName);
+                             IF NOT Fields.FINDFIRST THEN
+                               Fields.SETRANGE(FieldName, 'Customer No.');
+                             IF NOT Fields.FINDFIRST THEN
+                               Fields.SETRANGE(FieldName, 'Vendor No.');
+                             IF Fields.FINDFIRST THEN BEGIN
+                               FldRef := FromRecRef.FIELD(Fields."No.");
+                               SyncFldRef.VALUE := FldRef.VALUE;
+                             END;
+                           END;
+          'Currency Code': BEGIN
+                             Fields.SETRANGE(FieldName,  SyncFields.FieldName);
+                             IF Fields.FINDFIRST THEN BEGIN
+                               FldRef := FromRecRef.FIELD(Fields."No.");
+                               IF FORMAT(FldRef.VALUE) = '' THEN
+                                 FldRef.VALUE := GLSetup."LCY Code";
+                               SyncFldRef.VALUE := FldRef.VALUE;
+                             END;
+                           END;
+          'Costcenter':    BEGIN
+                             Fields.SETRANGE(FieldName,  SyncFields.FieldName);
+                             IF NOT Fields.FINDFIRST THEN
+                               Fields.SETRANGE(FieldName, 'Global Dimension 2 Code');
+                             IF Fields.FINDFIRST THEN BEGIN
+                               FldRef := FromRecRef.FIELD(Fields."No.");
+                               SyncFldRef.VALUE := FldRef.VALUE;
+                             END;
+                           END;
+      { // NCS-2373 BMN 20.12.2016 >
+          'Type Deal':    BEGIN
+                             Fields.SETRANGE(FieldName, 'Agreement Type');
+                             Fields.FINDFIRST;
+                             FldRef := FromRecRef.FIELD(Fields."No.");
+                             CASE FORMAT(FldRef.VALUE) OF
+                               'Standard','Стандартный': SyncFldRef.VALUE := 'UNKNOWN';
+                               'Loans','Кредиты и Займы': SyncFldRef.VALUE := 'LOAN';
+                             END;
+                           END;
+      } // NCS-2373 BMN 20.12.2016 <
+          ELSE BEGIN
+            Fields.SETRANGE(FieldName,  SyncFields.FieldName);  // Ищем поле с таким же именем в таблице-источнике
+            IF Fields.FINDFIRST THEN BEGIN
+              FldRef := FromRecRef.FIELD(Fields."No.");
+              IF Fields.Class = Fields.Class::FlowField THEN
+                FldRef.CALCFIELD;
+              SyncFldRef.VALUE := FldRef.VALUE;
+            END;
+          END;
+        END;
+      UNTIL SyncFields.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      TD BMN 23.11.2012 NCS-712 "Интеграция данных из договоров OFF - IFRS"
+      NCS-2352 BMN 05.12.2016 Refactored
+      NCS-2373 BMN 20.12.2016 FillSyncFields() changed
+    }
+    END.
+  }
+}
+

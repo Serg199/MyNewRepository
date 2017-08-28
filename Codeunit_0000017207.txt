@@ -1,0 +1,186 @@
+OBJECT Codeunit 17207 Create Tax Register FE Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17213;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Window@1210000 : Dialog;
+
+    PROCEDURE CreateRegister@1(SectionCode@1210000 : Code[10];StartDate@1000 : Date;EndDate@1001 : Date);
+    VAR
+      TaxRegisterSetup@1003 : Record 17236;
+      FADepreciationBook@1004 : Record 5612;
+      FALedgEntry@1005 : Record 5601;
+      TaxRegFEEntry@1006 : Record 17213;
+      TaxRegMgt@1010 : Codeunit 17201;
+      Total@1012 : Integer;
+      Procesing@1013 : Integer;
+    BEGIN
+      TaxRegisterSetup.GET;
+      TaxRegisterSetup.TESTFIELD("Future Exp. Depreciation Book");
+
+      TaxRegMgt.ValidateAbsenceFEEntriesDate(StartDate,EndDate,SectionCode);
+
+      IF NOT TaxRegFEEntry.FINDLAST THEN
+        TaxRegFEEntry."Entry No." := 0;
+
+      Window.OPEN(Text21000900);
+      Window.UPDATE(1,StartDate);
+      Window.UPDATE(2,EndDate);
+
+      WITH FADepreciationBook DO BEGIN
+        Window.UPDATE(4,TABLECAPTION);
+
+        RESET;
+        SETRANGE("Depreciation Book Code",TaxRegisterSetup."Future Exp. Depreciation Book");
+        Total := COUNT;
+        Procesing := 0;
+
+        FALedgEntry.SETRANGE("FA Posting Date",StartDate,EndDate);
+        IF FINDSET THEN
+          REPEAT
+            Procesing += 1;
+            IF (Procesing MOD 50) = 1 THEN
+              Window.UPDATE(3,ROUND((Procesing / Total) * 10000,1));
+
+            FALedgEntry.SETRANGE("FA No.","FA No.");
+            FALedgEntry.SETRANGE("Depreciation Book Code","Depreciation Book Code");
+
+            IF FALedgEntry.FINDFIRST THEN BEGIN
+              TaxRegFEEntry.INIT;
+              TaxRegFEEntry."Section Code" := SectionCode;
+              TaxRegFEEntry."Starting Date" := StartDate;
+              TaxRegFEEntry."Ending Date" := EndDate;
+              TaxRegFEEntry."FE No." := "FA No.";
+              TaxRegFEEntry."Depreciation Book Code" := "Depreciation Book Code";
+              TaxRegFEEntry."Entry No." += 1;
+              TaxRegFEEntry.INSERT;
+
+              TaxRegFEEntry.CALCFIELDS(
+                "Acquisition Cost","Valuation Changes","Depreciation Amount");
+            END;
+          UNTIL NEXT = 0;
+      END;
+
+      CreateTaxRegAccumulation(StartDate,EndDate,SectionCode);
+    END;
+
+    LOCAL PROCEDURE CreateTaxRegAccumulation@2(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1003 : Record 17200;
+      TaxRegTemplate@1004 : Record 17202;
+      TaxRegAccumulation@1005 : Record 17208;
+      TaxRegAccumulation2@1006 : Record 17208;
+      TaxRegFEEntry@1007 : Record 17213;
+      TaxRegFEEntry2@1008 : Record 17213;
+      TempTaxRegTemplate@1009 : TEMPORARY Record 17202;
+      TaxRegTermMgt@1010 : Codeunit 17200;
+      AddValue@1011 : Decimal;
+    BEGIN
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register FE Entry");
+      IF NOT TaxReg.FIND('-') THEN
+        EXIT;
+
+      TaxRegTemplate.SETRANGE("Section Code",SectionCode);
+      REPEAT
+        TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+        IF TaxRegTemplate.FINDSET THEN
+          REPEAT
+            TempTaxRegTemplate := TaxRegTemplate;
+            TempTaxRegTemplate.Value := 0;
+            TempTaxRegTemplate.INSERT;
+          UNTIL TaxRegTemplate.NEXT = 0;
+      UNTIL TaxReg.NEXT = 0;
+
+      TaxRegFEEntry.SETCURRENTKEY("Section Code","Ending Date");
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxRegFEEntry.SETRANGE("Ending Date",EndDate);
+      TaxRegFEEntry2.SETRANGE("Date Filter",StartDate,EndDate);
+      IF TaxRegFEEntry.FINDSET THEN
+        REPEAT
+          IF TempTaxRegTemplate.FINDSET THEN BEGIN
+            TaxRegFEEntry2 := TaxRegFEEntry;
+            TaxRegFEEntry2.CALCFIELDS(
+              "Acquisition Cost","Valuation Changes","Depreciation Amount");
+            REPEAT
+              CASE TempTaxRegTemplate."Sum Field No." OF
+                TaxRegFEEntry.FIELDNO("Acquisition Cost"):
+                  AddValue := TaxRegFEEntry2."Acquisition Cost";
+                TaxRegFEEntry.FIELDNO("Valuation Changes"):
+                  AddValue := TaxRegFEEntry2."Valuation Changes";
+                TaxRegFEEntry.FIELDNO("Depreciation Amount"):
+                  AddValue := TaxRegFEEntry2."Depreciation Amount";
+                ELSE
+                  AddValue := 0;
+              END;
+              IF AddValue <> 0 THEN BEGIN
+                TempTaxRegTemplate.Value += AddValue;
+                TempTaxRegTemplate.MODIFY;
+              END;
+            UNTIL TempTaxRegTemplate.NEXT = 0;
+          END;
+        UNTIL TaxRegFEEntry.NEXT = 0;
+
+      TaxRegAccumulation.RESET;
+      IF NOT TaxRegAccumulation.FINDLAST THEN
+        TaxRegAccumulation."Entry No." := 0;
+
+      TaxRegAccumulation.INIT;
+      TaxRegAccumulation."Section Code" := SectionCode;
+      TaxRegAccumulation."Starting Date" := StartDate;
+      TaxRegAccumulation."Ending Date" := EndDate;
+
+      TempTaxRegTemplate.RESET;
+      IF TempTaxRegTemplate.FINDSET THEN
+        REPEAT
+          TaxRegAccumulation."Report Line Code" := TempTaxRegTemplate."Report Line Code";
+          TaxRegAccumulation."Template Line Code" := TempTaxRegTemplate."Line Code";
+          TaxRegAccumulation."Tax Register No." := TempTaxRegTemplate.Code;
+          TaxRegAccumulation.Indentation := TempTaxRegTemplate.Indentation;
+          TaxRegAccumulation.Bold := TempTaxRegTemplate.Bold;
+          TaxRegAccumulation.Description := TempTaxRegTemplate.Description;
+          TaxRegAccumulation."Amount Period" := TempTaxRegTemplate.Value;
+          TaxRegAccumulation."Template Line No." := TempTaxRegTemplate."Line No.";
+          TaxRegAccumulation."Amount Date Filter" :=
+            TaxRegTermMgt.CalcIntervalDate(
+              TaxRegAccumulation."Starting Date",
+              TaxRegAccumulation."Ending Date",
+              TempTaxRegTemplate.Period);
+          TaxRegAccumulation.Amount := TaxRegAccumulation."Amount Period";
+          TaxRegAccumulation."Entry No." += 1;
+          TaxRegAccumulation.INSERT;
+          IF TempTaxRegTemplate.Period <> '' THEN BEGIN
+            TaxRegAccumulation2 := TaxRegAccumulation;
+            TaxRegAccumulation2.RESET;
+            TaxRegAccumulation2.SETCURRENTKEY("Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+            TaxRegAccumulation2.SETRANGE("Section Code",SectionCode);
+            TaxRegAccumulation2.SETRANGE("Tax Register No.",TaxRegAccumulation."Tax Register No.");
+            TaxRegAccumulation2.SETRANGE("Template Line No.",TaxRegAccumulation."Template Line No.");
+            TaxRegAccumulation2.SETFILTER("Starting Date",TaxRegAccumulation."Amount Date Filter");
+            TaxRegAccumulation2.SETFILTER("Ending Date",TaxRegAccumulation."Amount Date Filter");
+            TaxRegAccumulation2.CALCSUMS("Amount Period");
+            TaxRegAccumulation.Amount := TaxRegAccumulation2."Amount Period";
+            TaxRegAccumulation.MODIFY;
+          END;
+        UNTIL TempTaxRegTemplate.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

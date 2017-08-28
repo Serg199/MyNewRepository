@@ -1,0 +1,291 @@
+OBJECT Report 12475 Purchase Receipt M-4
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.02.17;
+    Time=12:00:00;
+    Version List=NAVRU10.00.00.15601;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 48=rimd;
+    CaptionML=[ENU=Purchase Receipt M-4;
+               RUS=Приходный ордер М-4];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  InventoryReportsHelper.InitM4Report;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     InventoryReportsHelper.ExportDataFile(FileName)
+                   ELSE
+                     InventoryReportsHelper.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 4458;    ;DataItem;                    ;
+               DataItemTable=Table38;
+               OnAfterGetRecord=BEGIN
+                                  InvPostBuffer.DELETEALL;
+                                  AccNo := '';
+                                  CompanyInfo.GET;
+
+                                  PurchLine.RESET;
+                                  PurchLine.SETRANGE("Document No.","Purchase Header"."No.");
+                                  IF PurchLine.FINDSET THEN
+                                    REPEAT
+                                      CASE PurchLine.Type OF
+                                        PurchLine.Type::"G/L Account":
+                                          InsertBuffer(PurchLine."No.");
+                                        PurchLine.Type::Item:
+                                          BEGIN
+                                            InvPostingSetup.GET("Location Code",PurchLine."Posting Group");
+                                            InsertBuffer(InvPostingSetup."Inventory Account (Interim)");
+                                          END;
+                                        PurchLine.Type::"Charge (Item)":
+                                          BEGIN
+                                            GeneralPostingSetup.GET("Gen. Bus. Posting Group",PurchLine."Gen. Prod. Posting Group");
+                                            InsertBuffer(GeneralPostingSetup."Purch. Account");
+                                          END;
+                                        PurchLine.Type::"Fixed Asset":
+                                          BEGIN
+                                            PurchLine.TESTFIELD("Depreciation Book Code");
+                                            FADepreciationBook.GET(PurchLine."No.",PurchLine."Depreciation Book Code");
+                                            FAPostingGroup.GET(FADepreciationBook."FA Posting Group");
+                                            InsertBuffer(FAPostingGroup."Acquisition Cost Account");
+                                          END;
+                                        PurchLine.Type::"Empl. Purchase":
+                                          BEGIN
+                                            VendPostingGroup.GET("Vendor Posting Group");
+                                            InsertBuffer(VendPostingGroup."Payables Account");
+                                          END;
+                                      END;
+                                    UNTIL PurchLine.NEXT = 0;
+
+                                  CheckSignature(ReleasedBy,ReleasedBy."Employee Type"::ReleasedBy);
+                                  CheckSignature(ReceivedBy,ReceivedBy."Employee Type"::ReceivedBy);
+
+                                  CalcAmounts("Purchase Header");
+
+                                  FillReportTitle;
+                                END;
+                                 }
+
+    { 9522;1   ;DataItem;                    ;
+               DataItemTable=Table49;
+               DataItemTableView=SORTING(Type,G/L Account,Gen. Bus. Posting Group,Gen. Prod. Posting Group,VAT Bus. Posting Group,VAT Prod. Posting Group,Tax Area Code,Tax Group Code,Tax Liable,Use Tax,Dimension Set ID,Job No.,Fixed Asset Line No.);
+               OnAfterGetRecord=BEGIN
+                                  IF "G/L Account" <> AccNo THEN
+                                    InventoryReportsHelper.FillM4BodyInv("G/L Account");
+                                END;
+                                 }
+
+    { 6547;1   ;DataItem;                    ;
+               DataItemTable=Table39;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnPreDataItem=BEGIN
+                               CurrReport.CREATETOTALS(Amount,"Amount Including VAT");
+
+                               VATExemptTotal := TRUE;
+
+                               InventoryReportsHelper.FillM4PageHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  UnitCost := 0;
+                                  IF (Type <> Type::" ") AND (Quantity <> 0) THEN
+                                    UnitCost := ROUND(Amount / Quantity,0.00001);
+
+                                  IF PurchLineWithLCYAmt.GET("Document Type","Document No.","Line No.") THEN BEGIN
+                                    IF PurchLineWithLCYAmt.Quantity <> 0 THEN
+                                      UnitCost := PurchLineWithLCYAmt.Amount / PurchLineWithLCYAmt.Quantity;
+
+                                    Amount := PurchLineWithLCYAmt.Amount;
+                                    "Amount Including VAT" := PurchLineWithLCYAmt."Amount Including VAT";
+                                  END;
+
+                                  IF StdRepMgt.VATExemptLine("VAT Bus. Posting Group","VAT Prod. Posting Group") THEN
+                                    StdRepMgt.FormatVATExemptLine(LineVATText[1],LineVATText[2])
+                                  ELSE BEGIN
+                                    VATExemptTotal := FALSE;
+                                    LineVATText[2] :=
+                                      StdRepMgt.FormatReportValue("Amount Including VAT" - Amount,2);
+                                  END;
+
+                                  IF Type <> Type::" " THEN
+                                    TotalQtyToReceive := TotalQtyToReceive + "Qty. to Receive";
+
+                                  FillBody;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                FormatTotalAmounts;
+
+                                FillReportFooter;
+                              END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210023 : Record 79;
+      GeneralPostingSetup@1210022 : Record 252;
+      InvPostingSetup@1210021 : Record 5813;
+      PurchLine@1210020 : Record 39;
+      InvPostBuffer@1210019 : Record 49;
+      FADepreciationBook@1210018 : Record 5612;
+      FAPostingGroup@1210017 : Record 5606;
+      VendPostingGroup@1210016 : Record 93;
+      ReleasedBy@1470000 : Record 12420;
+      ReceivedBy@1470005 : Record 12420;
+      PurchLineWithLCYAmt@1210002 : TEMPORARY Record 39;
+      StdRepMgt@1210001 : Codeunit 12401;
+      DocSignMgt@1470004 : Codeunit 12420;
+      InventoryReportsHelper@1210006 : Codeunit 14938;
+      AccNo@1210014 : Code[20];
+      TotalAmount@1470003 : Decimal;
+      TotalAmountInclVAT@1470006 : Decimal;
+      UnitCost@1470007 : Decimal;
+      LineVATText@1210004 : ARRAY [2] OF Text[50];
+      TotalVATAmountText@1210003 : Text[50];
+      FileName@1210007 : Text;
+      VATExemptTotal@1210000 : Boolean;
+      TotalQtyToReceive@1210005 : Decimal;
+
+    PROCEDURE InsertBuffer@1210000(AccountNo@1210000 : Code[20]);
+    BEGIN
+      InvPostBuffer.RESET;
+      InvPostBuffer.SETRANGE("G/L Account",AccountNo);
+      IF NOT InvPostBuffer.FINDFIRST THEN BEGIN
+        InvPostBuffer."G/L Account" := AccountNo;
+        InvPostBuffer.INSERT;
+        IF AccNo = '' THEN
+          AccNo := AccountNo;
+      END;
+    END;
+
+    PROCEDURE CheckSignature@1470002(VAR DocSign@1470000 : Record 12420;EmpType@1470001 : Integer);
+    BEGIN
+      DocSignMgt.GetDocSign(
+        DocSign,DATABASE::"Purchase Header",
+        "Purchase Header"."Document Type","Purchase Header"."No.",EmpType,TRUE);
+    END;
+
+    PROCEDURE CalcAmounts@1210001(PurchHeader@1210003 : Record 38);
+    VAR
+      PurchLine@1210001 : Record 39;
+      PurchasePosting@1210000 : Codeunit 90;
+      TotalAmountFCY@1210008 : Decimal;
+      TotalAmountInclVATFCY@1210007 : Decimal;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETFILTER(Type,'>0');
+        PurchLine.SETFILTER(Quantity,'<>0');
+
+        PurchasePosting.SumPurchLines2Ex("Purchase Header",PurchLineWithLCYAmt,PurchLine,0,
+          TotalAmountFCY,TotalAmount,TotalAmountInclVATFCY,TotalAmountInclVAT);
+      END;
+    END;
+
+    PROCEDURE FormatTotalAmounts@1210019();
+    BEGIN
+      IF VATExemptTotal THEN
+        TotalVATAmountText := '-'
+      ELSE
+        TotalVATAmountText := StdRepMgt.FormatReportValue(TotalAmountInclVAT - TotalAmount,2);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210007(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    LOCAL PROCEDURE FillReportTitle@1210003();
+    VAR
+      ReportHeaderArr@1210000 : ARRAY [10] OF Text;
+    BEGIN
+      WITH "Purchase Header" DO BEGIN
+        ReportHeaderArr[1] := StdRepMgt.GetCompanyName;
+        ReportHeaderArr[2] := ReceivedBy."Employee Org. Unit";
+        ReportHeaderArr[3] := CompanyInfo."OKPO Code";
+        ReportHeaderArr[4] := "No.";
+        ReportHeaderArr[5] := FORMAT("Document Date");
+        ReportHeaderArr[6] := "Location Code";
+        ReportHeaderArr[7] := StdRepMgt.GetVendorName("Buy-from Vendor No.");
+        ReportHeaderArr[8] := "Buy-from Vendor No.";
+        ReportHeaderArr[9] := AccNo;
+        ReportHeaderArr[10] := "Vendor Shipment No.";
+      END;
+
+      InventoryReportsHelper.FillM4ReportTitle(ReportHeaderArr);
+    END;
+
+    PROCEDURE FillBody@1210010();
+    VAR
+      PageHeaderArr@1210000 : ARRAY [10] OF Text;
+    BEGIN
+      WITH "Purchase Line" DO BEGIN
+        PageHeaderArr[1] := Description + "Description 2";
+        PageHeaderArr[2] := "No.";
+        PageHeaderArr[3] := "Unit of Measure Code";
+        PageHeaderArr[4] := "Unit of Measure";
+        PageHeaderArr[5] := FORMAT(Quantity);
+        PageHeaderArr[6] := FORMAT("Qty. to Receive");
+        PageHeaderArr[7] := FormatAmount(UnitCost);
+        PageHeaderArr[8] := FormatAmount(Amount);
+        PageHeaderArr[9] := LineVATText[2];
+        PageHeaderArr[10] := FormatAmount("Amount Including VAT");
+      END;
+
+      InventoryReportsHelper.FillM4Body(PageHeaderArr);
+    END;
+
+    LOCAL PROCEDURE FillReportFooter@1210031();
+    VAR
+      ReportFooterArr@1210000 : ARRAY [8] OF Text;
+    BEGIN
+      ReportFooterArr[1] := FORMAT(TotalQtyToReceive);
+      ReportFooterArr[2] := FormatAmount(TotalAmount);
+      ReportFooterArr[3] := TotalVATAmountText;
+      ReportFooterArr[4] := FormatAmount(TotalAmountInclVAT);
+      ReportFooterArr[5] := ReceivedBy."Employee Job Title";
+      ReportFooterArr[6] := ReceivedBy."Employee Name";
+      ReportFooterArr[7] := ReleasedBy."Employee Job Title";
+      ReportFooterArr[8] := ReleasedBy."Employee Name";
+
+      InventoryReportsHelper.FillM4ReportFooter(ReportFooterArr);
+    END;
+
+    LOCAL PROCEDURE FormatAmount@1210024(Amount@1210000 : Decimal) : Text;
+    BEGIN
+      EXIT(StdRepMgt.FormatReportValue(Amount,2));
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,347 @@
+OBJECT Report 14912 Allocate FA Charges
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Allocate FA Charges;
+               RUS=Распределение издержек ОС];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF SourceDocNo = '' THEN
+                    ERROR(Text000);
+
+                  IF AmountToAllocate = 0 THEN
+                    ERROR(Text001);
+
+                  IF FAChargeNo = '' THEN
+                    ERROR(Text002);
+
+                  GLSetup.GET;
+                END;
+
+  }
+  DATASET
+  {
+    { 4458;    ;DataItem;                    ;
+               DataItemTable=Table38;
+               DataItemTableView=SORTING(Document Type,No.);
+               OnAfterGetRecord=BEGIN
+                                  IF SourceDocNo = "No." THEN
+                                    FIELDERROR("No.");
+
+                                  IF "Currency Code" = '' THEN
+                                    Currency.InitRoundingPrecision
+                                  ELSE BEGIN
+                                    TESTFIELD("Currency Factor");
+                                    Currency.GET("Currency Code");
+                                    Currency.TESTFIELD("Amount Rounding Precision");
+                                  END;
+
+                                  CreatePurchLineBuffer;
+
+                                  IF SourcePurchLine.FINDSET THEN BEGIN
+                                    REPEAT
+                                      SourceDocAmount += SourcePurchLine."Direct Unit Cost";
+                                    UNTIL SourcePurchLine.NEXT = 0;
+
+                                    PurchLine.SETRANGE("Document Type","Document Type");
+                                    PurchLine.SETRANGE("Document No.","No.");
+                                    IF PurchLine.FINDLAST THEN;
+                                    LineNo := PurchLine."Line No." + 10000;
+
+                                    SourcePurchLine.FINDSET;
+                                    REPEAT
+                                      PurchLine.INIT;
+                                      PurchLine := SourcePurchLine;
+                                      PurchLine."Document Type" := "Document Type";
+                                      PurchLine."Document No." := "No.";
+                                      PurchLine."Line No." := LineNo;
+                                      PurchLine.VALIDATE("Direct Unit Cost",
+                                        ROUND(PurchLine."Direct Unit Cost" * AmountToAllocate / SourceDocAmount,
+                                          Currency."Amount Rounding Precision"));
+                                      PurchLine.VALIDATE(Quantity);
+                                      PurchLine.VALIDATE("FA Charge No.",FAChargeNo);
+                                      PurchLine.INSERT;
+
+                                      LineNo += 10000;
+                                      TotalAmount += PurchLine."Direct Unit Cost";
+                                    UNTIL SourcePurchLine.NEXT = 0;
+
+                                    IF TotalAmount <> AmountToAllocate THEN BEGIN
+                                      PurchLine.FINDLAST;
+                                      PurchLine.VALIDATE("Direct Unit Cost",
+                                        PurchLine."Direct Unit Cost" + AmountToAllocate - TotalAmount);
+                                      PurchLine.MODIFY;
+                                    END;
+                                  END;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   SourceDocType := GetSourceType;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Source Document Type;
+                             RUS=Тип исходного документа];
+                  OptionCaptionML=[ENU=Invoice,Order,Posted Invoice;
+                                   RUS=Счет,Заказ,Учтенный счет];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DocType;
+                  OnValidate=BEGIN
+                               SourceDocType := GetSourceType;
+                             END;
+                              }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Source Document No.;
+                             RUS=Номер исходного документа];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=SourceDocNo;
+                  OnLookup=BEGIN
+                             LookupDocNo;
+                           END;
+                            }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Amount;
+                             RUS=Сумма];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=AmountToAllocate }
+
+      { 1210006;2;Field     ;
+                  CaptionML=[ENU=FA Charge No.;
+                             RUS=Код издержки ОС];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=FAChargeNo;
+                  TableRelation="FA Charge" }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Currency@1210013 : Record 4;
+      PurchHeader@1210023 : Record 38;
+      FromPurchHeader@1210022 : Record 38;
+      FromPurchRcptHeader@1210021 : Record 120;
+      FromPurchInvHeader@1210020 : Record 122;
+      FromReturnShptHeader@1210019 : Record 6650;
+      FromPurchCrMemoHeader@1210018 : Record 124;
+      SourcePurchLine@1210008 : TEMPORARY Record 39;
+      PurchLine@1210007 : Record 39;
+      GLSetup@1210012 : Record 98;
+      CopyDocMgt@1210000 : Codeunit 6620;
+      DocType@1210024 : 'Invoice,Order,Posted Invoice';
+      SourceDocType@1210017 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order,Posted Receipt,Posted Invoice,Posted Return Shipment,Posted Credit Memo';
+      SourceDocNo@1210001 : Code[20];
+      SourceDocAmount@1210002 : Decimal;
+      AmountToAllocate@1210011 : Decimal;
+      TotalAmount@1210010 : Decimal;
+      FAChargeNo@1210003 : Code[20];
+      Text000@1210004 : TextConst 'ENU=The Source Document No. must be entered.;RUS=Необходимо ввести номер исходного документа.';
+      Text001@1210005 : TextConst 'ENU=The Amount must be entered.;RUS=Необходимо ввести сумму.';
+      Text002@1210006 : TextConst 'ENU=The FA Charge No. must be entered.;RUS=Необходимо ввести код издержки ОС.';
+      LineNo@1210009 : Integer;
+
+    LOCAL PROCEDURE LookupDocNo@3();
+    BEGIN
+      CASE SourceDocType OF
+        SourceDocType::Quote,
+        SourceDocType::"Blanket Order",
+        SourceDocType::Order,
+        SourceDocType::Invoice,
+        SourceDocType::"Return Order",
+        SourceDocType::"Credit Memo":
+          BEGIN
+            FromPurchHeader.FILTERGROUP := 0;
+            FromPurchHeader.SETRANGE("Document Type",SourceDocType);
+            IF PurchHeader."Document Type" = CopyDocMgt.PurchHeaderDocType(SourceDocType) THEN
+              FromPurchHeader.SETFILTER("No.",'<>%1',PurchHeader."No.");
+            FromPurchHeader.FILTERGROUP := 2;
+            FromPurchHeader."Document Type" := SourceDocType;
+            FromPurchHeader."No." := SourceDocNo;
+            IF (SourceDocNo = '') AND (PurchHeader."Buy-from Vendor No." <> '') THEN
+              IF FromPurchHeader.SETCURRENTKEY("Document Type","Buy-from Vendor No.") THEN BEGIN
+                FromPurchHeader."Buy-from Vendor No." := PurchHeader."Buy-from Vendor No.";
+                IF FromPurchHeader.FIND('=><') THEN;
+              END;
+            IF PAGE.RUNMODAL(0,FromPurchHeader) = ACTION::LookupOK THEN
+              SourceDocNo := FromPurchHeader."No.";
+          END;
+        SourceDocType::"Posted Receipt":
+          BEGIN
+            FromPurchRcptHeader."No." := SourceDocNo;
+            IF (SourceDocNo = '') AND (PurchHeader."Buy-from Vendor No." <> '') THEN
+              IF FromPurchRcptHeader.SETCURRENTKEY("Buy-from Vendor No.") THEN BEGIN
+                FromPurchRcptHeader."Buy-from Vendor No." := PurchHeader."Buy-from Vendor No.";
+                IF FromPurchRcptHeader.FIND('=><') THEN;
+              END;
+            IF PAGE.RUNMODAL(0,FromPurchRcptHeader) = ACTION::LookupOK THEN
+              SourceDocNo := FromPurchRcptHeader."No.";
+          END;
+        SourceDocType::"Posted Invoice":
+          BEGIN
+            FromPurchInvHeader."No." := SourceDocNo;
+            IF (SourceDocNo = '') AND (PurchHeader."Buy-from Vendor No." <> '') THEN
+              IF FromPurchInvHeader.SETCURRENTKEY("Buy-from Vendor No.") THEN BEGIN
+                FromPurchInvHeader."Buy-from Vendor No." := PurchHeader."Buy-from Vendor No.";
+                IF FromPurchInvHeader.FIND('=><') THEN;
+              END;
+            IF PAGE.RUNMODAL(0,FromPurchInvHeader) = ACTION::LookupOK THEN
+              SourceDocNo := FromPurchInvHeader."No.";
+          END;
+        SourceDocType::"Posted Return Shipment":
+          BEGIN
+            FromReturnShptHeader."No." := SourceDocNo;
+            IF (SourceDocNo = '') AND (PurchHeader."Buy-from Vendor No." <> '') THEN
+              IF FromReturnShptHeader.SETCURRENTKEY("Buy-from Vendor No.") THEN BEGIN
+                FromReturnShptHeader."Buy-from Vendor No." := PurchHeader."Buy-from Vendor No.";
+                IF FromReturnShptHeader.FIND('=><') THEN;
+              END;
+            IF PAGE.RUNMODAL(0,FromReturnShptHeader) = ACTION::LookupOK THEN
+              SourceDocNo := FromReturnShptHeader."No.";
+          END;
+        SourceDocType::"Posted Credit Memo":
+          BEGIN
+            FromPurchCrMemoHeader."No." := SourceDocNo;
+            IF (SourceDocNo = '') AND (PurchHeader."Buy-from Vendor No." <> '') THEN
+              IF FromPurchCrMemoHeader.SETCURRENTKEY("Buy-from Vendor No.") THEN BEGIN
+                FromPurchCrMemoHeader."Buy-from Vendor No." := PurchHeader."Buy-from Vendor No.";
+                IF FromPurchCrMemoHeader.FIND('=><') THEN;
+              END;
+            IF PAGE.RUNMODAL(0,FromPurchCrMemoHeader) = ACTION::LookupOK THEN
+              SourceDocNo := FromPurchCrMemoHeader."No.";
+          END;
+      END;
+    END;
+
+    PROCEDURE CreatePurchLineBuffer@1210000();
+    VAR
+      PurchaseLine@1210000 : Record 39;
+      PurchRcptLine@1210001 : Record 121;
+      PurchInvLine@1210002 : Record 123;
+      PurchCrMemoLine@1210003 : Record 125;
+      ReturnShipmentLine@1210004 : Record 6651;
+    BEGIN
+      CASE SourceDocType OF
+        SourceDocType::Quote,
+        SourceDocType::"Blanket Order",
+        SourceDocType::Order,
+        SourceDocType::Invoice,
+        SourceDocType::"Return Order",
+        SourceDocType::"Credit Memo":
+          BEGIN
+            PurchaseLine.SETRANGE("Document Type",SourceDocType);
+            PurchaseLine.SETRANGE("Document No.",SourceDocNo);
+            PurchaseLine.SETRANGE(Type,PurchaseLine.Type::"Fixed Asset");
+            IF PurchaseLine.FIND('-') THEN
+              REPEAT
+                SourcePurchLine := PurchaseLine;
+                SourcePurchLine.INSERT;
+              UNTIL PurchaseLine.NEXT = 0;
+          END;
+        SourceDocType::"Posted Receipt":
+          BEGIN
+            WITH PurchRcptLine DO BEGIN
+              SETRANGE("Document No.",SourceDocNo);
+              SETRANGE(Type,Type::"Fixed Asset");
+              IF FIND('-') THEN
+                REPEAT
+                  SourcePurchLine.TRANSFERFIELDS(PurchRcptLine);
+                  SourcePurchLine.INSERT;
+                UNTIL NEXT = 0;
+            END
+          END;
+        SourceDocType::"Posted Invoice":
+          BEGIN
+            WITH PurchInvLine DO BEGIN
+              SETRANGE("Document No.",SourceDocNo);
+              SETRANGE(Type,Type::"Fixed Asset");
+              IF FIND('-') THEN
+                REPEAT
+                  SourcePurchLine.TRANSFERFIELDS(PurchInvLine);
+                  SourcePurchLine.INSERT;
+                UNTIL NEXT = 0;
+            END
+          END;
+        SourceDocType::"Posted Return Shipment":
+          BEGIN
+            WITH ReturnShipmentLine DO BEGIN
+              SETRANGE("Document No.",SourceDocNo);
+              SETRANGE(Type,Type::"Fixed Asset");
+              IF FIND('-') THEN
+                REPEAT
+                  SourcePurchLine.TRANSFERFIELDS(ReturnShipmentLine);
+                  SourcePurchLine.INSERT;
+                UNTIL NEXT = 0;
+            END
+          END;
+        SourceDocType::"Posted Credit Memo":
+          BEGIN
+            WITH PurchCrMemoLine DO BEGIN
+              SETRANGE("Document No.",SourceDocNo);
+              SETRANGE(Type,Type::"Fixed Asset");
+              IF FIND('-') THEN
+                REPEAT
+                  SourcePurchLine.TRANSFERFIELDS(PurchCrMemoLine);
+                  SourcePurchLine.INSERT;
+                UNTIL NEXT = 0;
+            END
+          END;
+      END;
+    END;
+
+    PROCEDURE GetSourceType@1210001() : Integer;
+    BEGIN
+      CASE DocType OF
+        DocType::Invoice:
+          EXIT(SourceDocType::Invoice);
+        DocType::Order:
+          EXIT(SourceDocType::Order);
+        DocType::"Posted Invoice":
+          EXIT(SourceDocType::"Posted Invoice");
+      END;
+    END;
+
+    PROCEDURE SetParameters@1210002(NewDocType@1210000 : Integer;NewDocNo@1210001 : Code[20];NewAmountToAllocate@1210002 : Decimal;NewFAChargeNo@1210003 : Code[20]);
+    BEGIN
+      DocType := NewDocType;
+      SourceDocType := GetSourceType;
+      SourceDocNo := NewDocNo;
+      AmountToAllocate := NewAmountToAllocate;
+      FAChargeNo := NewFAChargeNo;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

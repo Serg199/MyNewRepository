@@ -1,0 +1,369 @@
+OBJECT Report 50101 ACY Unrealized FX Correction
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:10;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   StandParam.RESET;
+                   StandParam.SETRANGE("Report ID",REPORT::"Auto Application");
+                   IF StandParam.FINDFIRST THEN BEGIN
+                     IF (StandParam."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                       PostingDate:=CALCDATE(StandParam."Posting Date",WORKDATE);
+                     IF StandParam."Gen. Journal Template"<>'' THEN
+                       GenJnlTemplate:=StandParam."Gen. Journal Template";
+                     IF StandParam."Gen. Journal Batch"<>'' THEN
+                       GenJnlBatch:=StandParam."Gen. Journal Batch";
+                     IF StandParam."Prefix Numbers"<>'' THEN
+                       PostingDocNo:=StandParam."Prefix Numbers";
+                     IF PostingDate <> 0D THEN
+                       PostingDocNo:=PostingDocNo+FORMAT(PostingDate,0,'<Year><Month,2><Day,2>');
+                     IF StandParam."Posting Description"<>'' THEN
+                       PostingDescription:='ACY Unrealized FX correction';
+                   END
+                   ELSE
+                     ERROR(Text50002+StandParam.TABLECAPTION);
+                   IsByAccount := TRUE;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7382;    ;DataItem;                    ;
+               DataItemTable=Table50136;
+               DataItemTableView=SORTING(Company,Source Type,Source No.,Source Posting Group,Source Currency,DEAL,INC.TAX,AC.COMP,BOOK,CC)
+                                 ORDER(Ascending);
+               OnPreDataItem=BEGIN
+                               "Temp ACY Unreal. FX Corr.".SETRANGE(Company,COMPANYNAME);
+                               GLSetup.GET;
+                               SourceCodeSetup.GET;
+                               NextLineNo :=0;
+                               GenJnlLine.RESET;
+                               GenJnlLine.SETRANGE("Journal Template Name", GenJnlTemplate);
+                               GenJnlLine.SETRANGE("Journal Batch Name", GenJnlBatch);
+                               IF GenJnlLine.FINDLAST THEN
+                                 NextLineNo := GenJnlLine."Line No.";
+
+                               intIndicatorTotal := COUNT;
+                               dlgIndicator.OPEN(Text50001);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  intIndicatorCounter += 1;
+                                  dlgIndicator.UPDATE(1, ROUND((intIndicatorCounter * 999) / intIndicatorTotal*9, 1));
+
+                                  IF Amount <> 0 THEN BEGIN
+                                  NextLineNo += 1;
+                                  GenJnlLine.INIT;
+                                  GenJnlLine."Journal Template Name" := GenJnlTemplate;
+                                  GenJnlLine."Journal Batch Name" := GenJnlBatch;
+                                  GenJnlLine."Line No." :=NextLineNo;
+                                  GLAccNo := '';
+                                  SourceType :="Source Type";
+                                  IF IsByAccount THEN BEGIN
+                                    IF COPYSTR("Source Posting Group",1,1)='1' THEN BEGIN
+                                      SourceType := SourceType::Customer;
+                                    END ELSE
+                                      IF COPYSTR("Source Posting Group",1,1)='2' THEN BEGIN
+                                        SourceType := SourceType::Vendor;
+                                      END ELSE
+                                        CurrReport.SKIP;
+                                  END;
+                                  IF SourceType = SourceType::Customer THEN BEGIN
+                                    DCustLE.RESET;
+                                    DCustLE.SETCURRENTKEY(
+                                      "Customer No.","Posting Date","Entry Type","Currency Code","Agreement No.","Prepmt. Diff. in TA");
+                                    DCustLE.SETRANGE("Customer No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                    DCustLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                    IF DCustLE.FINDLAST THEN
+
+                                      //NC NCS-1078 > DP
+                                      {
+                                      IF DCustLE."Posting Date"<=311211D THEN
+                                      }
+                                      IF DCustLE."Posting Date"<=311212D THEN
+                                      //NC NCS-1078 < DP
+
+                                        CurrReport.SKIP;
+
+
+                                    GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+                                    GenJnlLine."Source Code" := SourceCodeSetup."Sales Entry Application";
+                                    IF IsByAccount THEN
+                                      GLAccNo :="Temp ACY Unreal. FX Corr."."Source Posting Group"
+                                    ELSE
+                                      IF CustPG.GET("Temp ACY Unreal. FX Corr."."Source Posting Group") THEN
+                                        GLAccNo :=CustPG."Receivables Account";
+
+                                    IF GLAcc.GET(GLAccNo) AND GLAcc."FI Required" THEN BEGIN
+                                      CustLE.RESET;
+                                      CustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.");
+                                      CustLE.SETRANGE("Customer No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                      CustLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                      IF CustLE.FINDFIRST THEN
+                                        IF GLE.GET(CustLE."Entry No.") THEN BEGIN
+
+                                          GenJnlLine."Financial Instrument No." := GLE."Financial Instrument No.";
+                                          IF GenJnlLine."Financial Instrument No."='' THEN
+                                            GenJnlLine."Financial Instrument No." := 'DUMMY';
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'FIN.INSTR', GenJnlLine."Financial Instrument No.");
+
+                                        END;
+                                    END;
+                                    IF DefDim.GET(15,GLAccNo,'PROJECT') AND (DefDim."Value Posting"<DefDim."Value Posting"::"No Code") THEN BEGIN
+                                      CustLE.RESET;
+                                      CustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.");
+                                      CustLE.SETRANGE("Customer No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                      CustLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                      IF CustLE.FINDFIRST THEN
+                                        IF LEDim.GET(17,CustLE."Entry No.",'PROJECT') THEN
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'PROJECT', LEDim."Dimension Value Code");
+                                    END;
+                                    IF DefDim.GET(15,GLAccNo,'TAX.OTHER') AND (DefDim."Value Posting"<DefDim."Value Posting"::"No Code") THEN BEGIN
+                                      CustLE.RESET;
+                                      CustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.");
+                                      CustLE.SETRANGE("Customer No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                      IF "Temp ACY Unreal. FX Corr.".DEAL<>'' THEN
+                                      CustLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                      IF CustLE.FINDFIRST THEN
+                                        IF LEDim.GET(17,CustLE."Entry No.",'TAX.OTHER') THEN
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'TAX.OTHER', LEDim."Dimension Value Code");
+                                    END;
+
+                                  END;
+                                  IF SourceType = SourceType::Vendor THEN BEGIN
+                                    DVendLE.RESET;
+                                    DVendLE.SETCURRENTKEY(
+                                    "Vendor No.","Posting Date","Entry Type","Currency Code","Agreement No.","Prepmt. Diff. in TA");
+                                    DVendLE.SETRANGE("Vendor No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                    DVendLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                    IF DVendLE.FINDLAST THEN
+
+                                      //NC NCS-1078 > DP
+                                      {
+                                      IF DVendLE."Posting Date"<=311211D THEN
+                                      }
+                                      IF DVendLE."Posting Date"<=311212D THEN
+                                      //NC NCS-1078 < DP
+
+                                        CurrReport.SKIP;
+
+                                    GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+                                    GenJnlLine."Source Code" := SourceCodeSetup."Purchase Entry Application";
+
+                                    IF IsByAccount THEN
+                                      GLAccNo :="Temp ACY Unreal. FX Corr."."Source Posting Group"
+                                    ELSE
+                                      IF VendPG.GET("Temp ACY Unreal. FX Corr."."Source Posting Group") THEN
+                                        GLAccNo :=VendPG."Payables Account";
+                                    IF GLAcc.GET(GLAccNo) AND GLAcc."FI Required" THEN BEGIN
+                                      VendLE.RESET;
+                                      VendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.");
+                                      VendLE.SETRANGE("Vendor No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                      VendLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                      IF VendLE.FINDFIRST THEN
+                                        IF GLE.GET(VendLE."Entry No.") THEN BEGIN
+                                          GenJnlLine."Financial Instrument No." := GLE."Financial Instrument No.";
+                                          IF GenJnlLine."Financial Instrument No."='' THEN
+                                            GenJnlLine."Financial Instrument No." := 'DUMMY';
+
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'FIN.INSTR', GenJnlLine."Financial Instrument No.");
+
+                                        END;
+                                    END;
+                                    IF DefDim.GET(15,GLAccNo,'PROJECT') AND (DefDim."Value Posting"<DefDim."Value Posting"::"No Code") THEN BEGIN
+                                      VendLE.RESET;
+                                      VendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.");
+                                      VendLE.SETRANGE("Vendor No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                      VendLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                      IF VendLE.FINDFIRST THEN
+                                        IF LEDim.GET(17,VendLE."Entry No.",'PROJECT') THEN
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'PROJECT', LEDim."Dimension Value Code");
+                                    END;
+                                    IF DefDim.GET(15,GLAccNo,'TAX.OTHER') AND (DefDim."Value Posting"<DefDim."Value Posting"::"No Code") THEN BEGIN
+                                      VendLE.RESET;
+                                      VendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.");
+                                      VendLE.SETRANGE("Vendor No.",  "Temp ACY Unreal. FX Corr."."Source No.");
+                                      IF "Temp ACY Unreal. FX Corr.".DEAL<>'' THEN
+                                      VendLE.SETRANGE("Agreement No.",  "Temp ACY Unreal. FX Corr.".DEAL);
+                                      IF VendLE.FINDFIRST THEN
+                                        IF LEDim.GET(17,VendLE."Entry No.",'TAX.OTHER') THEN
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'TAX.OTHER', LEDim."Dimension Value Code");
+
+                                    END;
+                                  END;
+
+
+                                  IF DefDim.GET(15,GLAccNo,'RECONC.TYPE') AND (DefDim."Dimension Value Code"<>'') THEN
+                                          AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'RECONC.TYPE', DefDim."Dimension Value Code");
+
+                                  GenJnlLine."Source No." := "Temp ACY Unreal. FX Corr."."Source No.";
+                                  GenJnlLine."Additional-Currency Posting" := GenJnlLine."Additional-Currency Posting"::"Additional-Currency Amount Only";
+                                  GenJnlLine."Currency Code" := GLSetup."Additional Reporting Currency";
+                                  GenJnlLine.Amount := "Temp ACY Unreal. FX Corr.".Amount;
+                                  GenJnlLine."Amount (LCY)" := 0;
+                                  GenJnlLine."Document No." := PostingDocNo;
+                                  GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                                  GenJnlLine."Account No." := GLAccNo;
+                                  GenJnlLine."Bal. Account Type" := GenJnlLine."Bal. Account Type"::"G/L Account";
+                                  GenJnlLine."Bal. Account No." :='41002000';
+                                  GenJnlLine."Posting Date" := PostingDate;
+                                  GenJnlLine.Description := PostingDescription;
+                                  GenJnlLine."System-Created Entry" := TRUE;
+                                  GenJnlLine."Currency Index Entry" := TRUE;
+                                  GenJnlLine."Currency Index" := "Temp ACY Unreal. FX Corr."."Source Currency";
+                                  GenJnlLine."Not Consolidate" := GLSetup."Not Consolidate Revaluation";
+                                  GenJnlLine."Not Translate" := StandParam."Not Translate";
+                                  GenJnlLine."Not Translate IFRS" := StandParam."Not Translate IFRS";
+
+                                  IF GLAccNo<>'' THEN BEGIN
+                                    GenJnlLine.INSERT;
+
+                                    IF "Temp ACY Unreal. FX Corr."."Source No."<>'' THEN
+                                      AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'COUNTERPARTY', "Temp ACY Unreal. FX Corr."."Source No.");
+
+                                    IF "Temp ACY Unreal. FX Corr.".DEAL<>'' THEN
+                                      AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'DEAL', "Temp ACY Unreal. FX Corr.".DEAL);
+
+                                    IF "Temp ACY Unreal. FX Corr."."INC.TAX"<>'' THEN
+                                      AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'INC.TAX', "Temp ACY Unreal. FX Corr."."INC.TAX");
+
+                                    IF "Temp ACY Unreal. FX Corr."."AC.COMP"<>'' THEN
+                                      AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'AC.COMP', "Temp ACY Unreal. FX Corr."."AC.COMP");
+
+                                    IF "Temp ACY Unreal. FX Corr.".BOOK<>'' THEN BEGIN
+                                      AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'BOOK', "Temp ACY Unreal. FX Corr.".BOOK);
+                                      GenJnlLine."Shortcut Dimension 2 Code" := "Temp ACY Unreal. FX Corr.".BOOK;
+                                      GenJnlLine.MODIFY;
+                                    END;
+                                    IF "Temp ACY Unreal. FX Corr.".CC<>'' THEN BEGIN
+                                      AddJnlDim(GenJnlLine."Journal Template Name",
+                                                GenJnlLine."Journal Batch Name",
+                                                GenJnlLine."Line No.",
+                                                'COSTCENTER', "Temp ACY Unreal. FX Corr.".CC);
+                                      GenJnlLine."Shortcut Dimension 1 Code" := "Temp ACY Unreal. FX Corr.".CC;
+                                      GenJnlLine.MODIFY;
+                                    END;
+                                  END;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                dlgIndicator.CLOSE;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GenJnlLine@1101495001 : Record 81;
+      JnlLineDim@1101495000 : Record 356;
+      NextLineNo@1101495002 : Integer;
+      GenJnlTemplate@1101495003 : Code[10];
+      GenJnlBatch@1101495004 : Code[10];
+      GLSetup@1101495005 : Record 98;
+      PostingDocNo@1101495006 : Code[20];
+      PostingDate@1101495010 : Date;
+      PostingDescription@1101495013 : Text[50];
+      CustPG@1101495007 : Record 92;
+      VendPG@1101495008 : Record 93;
+      GLAccNo@1101495009 : Code[20];
+      SourceCodeSetup@1101495011 : Record 242;
+      StandParam@1101495012 : Record 50076;
+      Text50002@1101495014 : TextConst 'ENU=Please set in;RUS="Не заполнены настройки в "';
+      locGenJnlBatch@1000000000 : Record 232;
+      dlgIndicator@1101495017 : Dialog;
+      intIndicatorCounter@1101495016 : Integer;
+      intIndicatorTotal@1101495015 : Integer;
+      Text50001@1101495018 : TextConst 'ENU=Correction table processing...\Executed @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка таблицы корректировок...\Выполнено @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      GLAcc@1101495019 : Record 15;
+      CustLE@1101495020 : Record 21;
+      VendLE@1101495021 : Record 25;
+      GLE@1101495022 : Record 17;
+      DefDim@1101495023 : Record 352;
+      LEDim@1101495024 : Record 355;
+      IsByAccount@1000000001 : Boolean;
+      SourceType@1000000002 : 'Customer,Vendor';
+      DCustLE@1101495025 : Record 379;
+      DVendLE@1101495026 : Record 380;
+
+    PROCEDURE AddJnlDim@1101495000(JnlTemplate@1101495000 : Code[10];JnlBatch@1101495001 : Code[10];JnlLine@1101495002 : Integer;DimCode@1101495003 : Code[20];DimValueCode@1101495004 : Code[20]);
+    BEGIN
+      JnlLineDim.INIT;
+      JnlLineDim."Table ID" :=81;
+      JnlLineDim."Journal Template Name" := JnlTemplate;
+      JnlLineDim."Journal Batch Name" := JnlBatch;
+      JnlLineDim."Journal Line No." := JnlLine;
+      JnlLineDim."Allocation Line No." :=0;
+      JnlLineDim."Dimension Code" := DimCode;
+      JnlLineDim."Dimension Value Code" := DimValueCode;
+      IF DimValueCode <>'' THEN
+        IF JnlLineDim.INSERT(TRUE) THEN;
+    END;
+
+    BEGIN
+    {
+      NC NCS-854 Отчет по ДОВ коррекции Unreal. FX
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

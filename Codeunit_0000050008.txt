@@ -1,0 +1,259 @@
+OBJECT Codeunit 50008 CurrencyRate
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.12.09;
+    Time=17:41:51;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 330=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Window@1000000010 : Dialog;
+      CurrExchRate@1000000009 : Record 330;
+      Dates@1000000008 : Record 2000000007;
+      DatePeriodStart@1000000007 : Date;
+      DatePeriodEnd@1000000006 : Date;
+      ExtDatePeriodStart@1000000005 : Date;
+      ExtDatePeriodEnd@1000000004 : Date;
+      CurrCode@1000000003 : Code[10];
+      Currency@1000000002 : Record 4;
+      ShowWindow@1000000001 : Boolean;
+      i@1000000000 : Integer;
+      Text001@1000000015 : TextConst 'ENU=Loading currency rates from CBR;RUS=Загрузка курсов валют с сайта ЦБ';
+      Text002@1000000014 : TextConst 'ENU=Date;RUS="Дата  "';
+      Text003@1000000013 : TextConst 'ENU=Cannot load XML document from CBR. Contact developers;RUS=Невозможно загрузить XML-документ. Возможно отсутствует соединение с Интернет';
+      Text004@1000000012 : TextConst 'RUS=Валюта';
+      Text005@1000000011 : TextConst 'ENU=Update finished;RUS=Обновление завершено';
+      UsedDate@1000000016 : Date;
+      Text006@1000000017 : TextConst 'RUS=Курсы валют загружены  до %1, %2';
+      ShowFinishMessage@1000000018 : Boolean;
+      LCYRate@1000000019 : Decimal;
+      CurrCodeTmp@1000000020 : Code[10];
+      CurrXML@1000000021 : Code[10];
+      Currency1@1210000 : Record 4;
+      Currency2@1210001 : Record 4;
+      CurrExchRate1@1210002 : Record 330;
+
+    PROCEDURE GetCurrRateCbr@1000000009(dtXDate@1000000000 : Date;CurrencyCode@1210001 : Code[10];CurrencyCodeXML@1210002 : Code[10];UseRelationCurrency@1101495000 : Boolean;RelCurrencyCode@1101495001 : Code[10];NationalCurrency@1101495002 : Boolean);
+    VAR
+      CurrRateTmp@1000000001 : Record 330;
+      CurrencyExchangeRate@1000000012 : Record 330;
+      CurrencyExchangeRateUE@1000000011 : Record 330;
+      XmlDoc@1000000010 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument" WITHEVENTS;
+      NodeList@1000000009 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{AA634FC7-5888-44A7-A257-3A47150D3A0E}:'Microsoft XML, v3.0'.IXMLDOMSelection";
+      urlrequest@1000000008 : Variant;
+      NodeAttr@1000000007 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMAttribute";
+      xdate@1000000006 : Date;
+      strS@1000000005 : Text[255];
+      i@1000000004 : Integer;
+      iIndex@1000000003 : Integer;
+      xmlNode@1000000002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF86-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMElement";
+      tempText@1000000013 : Text[1024];
+      Currency1@1210000 : Record 4;
+      RecIsInited@1101495003 : Boolean;
+      RecordsInNoteFound@1101495004 : Integer;
+      tempText2@1000000014 : Text[30];
+    BEGIN
+      CLEAR(xdate);
+      CLEAR(urlrequest);
+      CREATE(XmlDoc,TRUE);
+      COMMIT;
+      XmlDoc.async:= FALSE;
+      urlrequest:= 'http://www.cbr.ru/scripts/XML_daily.asp?date_req='+
+                   GetDays(dtXDate)+'.'+GetMonth(dtXDate)+'.'+FORMAT(DATE2DMY(dtXDate,3));
+      IF NOT XmlDoc.load(urlrequest) THEN BEGIN
+        CLEAR(XmlDoc);
+        ERROR(Text003);
+      END;
+
+      NodeList  := XmlDoc.selectNodes('ValCurs');
+      xmlNode   := NodeList.item(0).cloneNode(TRUE);
+      NodeAttr  := xmlNode.attributes.item(0);
+      EVALUATE(xdate,NodeAttr.text);
+      UsedDate := xdate;
+      NodeList  := XmlDoc.selectNodes('*/Valute');
+
+      IF (UsedDate <> dtXDate) AND  (dtXDate+1 > TODAY) THEN
+        EXIT;
+      RecIsInited := FALSE;
+      RecordsInNoteFound := 0;
+
+      FOR iIndex := 0 TO (NodeList.length-1) DO BEGIN
+        xmlNode := NodeList.item(iIndex).cloneNode(TRUE);
+        CurrXML := xmlNode.childNodes.item(1).text;
+        IF (CurrencyCodeXML= CurrXML) AND (NOT NationalCurrency) THEN BEGIN
+          IF Currency1.GET(CurrencyCode) THEN BEGIN
+            IF NOT CurrencyExchangeRate.GET(Currency1.Code,dtXDate) THEN BEGIN
+              IF NOT RecIsInited THEN BEGIN
+                CurrencyExchangeRate.INIT;
+                RecIsInited := TRUE;
+              END;
+              CurrencyExchangeRate."Currency Code" := Currency1.Code;
+              CurrencyExchangeRate."Starting Date" := dtXDate;
+              CurrencyExchangeRate."Fix Exchange Rate Amount" := CurrencyExchangeRate."Fix Exchange Rate Amount"::Currency;
+              tempText := xmlNode.childNodes.item(4).text;
+              tempText2 := xmlNode.childNodes.item(2).text;
+              CASE GetDecimalDelimiter OF
+                 ',':
+                   BEGIN
+                     tempText := CONVERTSTR(tempText,'.',',');
+                     tempText2 := CONVERTSTR(tempText2,'.',',');
+                   END;
+                 '.':
+                   BEGIN
+                     tempText := CONVERTSTR(tempText,',','.');
+                     tempText2 := CONVERTSTR(tempText2,',','.');
+                   END;
+              END;
+              IF (NOT UseRelationCurrency) THEN BEGIN
+                {
+                CurrencyExchangeRate."Exchange Rate Amount" := 1;
+                CurrencyExchangeRate."Adjustment Exch. Rate Amount" := 1;
+                }
+                EVALUATE(CurrencyExchangeRate."Exchange Rate Amount",tempText2);
+                EVALUATE(CurrencyExchangeRate."Adjustment Exch. Rate Amount",tempText2);
+              END;
+              EVALUATE(CurrencyExchangeRate."Relational Exch. Rate Amount",tempText);
+              EVALUATE(CurrencyExchangeRate."Relational Adjmt Exch Rate Amt",tempText);
+              RecordsInNoteFound += 1;
+              IF ((NOT UseRelationCurrency) AND (RecordsInNoteFound = 1)) OR
+                (UseRelationCurrency AND (RecordsInNoteFound = 2))
+              THEN
+                ShowFinishMessage := CurrencyExchangeRate.INSERT(TRUE)
+            END;
+          END;
+        END;
+        IF UseRelationCurrency AND (RelCurrencyCode = CurrXML) THEN BEGIN
+          IF Currency1.GET(CurrencyCode) THEN BEGIN
+            IF NOT CurrencyExchangeRate.GET(Currency1.Code,dtXDate) THEN BEGIN
+              IF NOT RecIsInited THEN BEGIN
+                CurrencyExchangeRate.INIT;
+                RecIsInited := TRUE;
+              END;
+              CurrencyExchangeRate."Currency Code" := Currency1.Code;
+              CurrencyExchangeRate."Starting Date" := dtXDate;
+              CurrencyExchangeRate."Fix Exchange Rate Amount" := CurrencyExchangeRate."Fix Exchange Rate Amount"::Currency;
+              tempText := xmlNode.childNodes.item(4).text;
+              tempText2 := xmlNode.childNodes.item(2).text;
+              CASE GetDecimalDelimiter OF
+                 ',':
+                   BEGIN
+                     tempText := CONVERTSTR(tempText,'.',',');
+                     tempText2 := CONVERTSTR(tempText2,'.',',');
+                   END;
+                 '.':
+                   BEGIN
+                     tempText := CONVERTSTR(tempText,',','.');
+                     tempText2 := CONVERTSTR(tempText2,',','.');
+                   END;
+              END;
+              IF NationalCurrency THEN BEGIN
+                CurrencyExchangeRate."Relational Exch. Rate Amount" := 1;
+                CurrencyExchangeRate."Relational Adjmt Exch Rate Amt" := 1;
+              END;
+              EVALUATE(CurrencyExchangeRate."Exchange Rate Amount",tempText);
+              EVALUATE(CurrencyExchangeRate."Adjustment Exch. Rate Amount",tempText);
+              RecordsInNoteFound += 1;
+              IF NationalCurrency THEN
+                RecordsInNoteFound := 2;
+              IF ((NOT UseRelationCurrency) AND (RecordsInNoteFound = 1)) OR
+                (UseRelationCurrency AND (RecordsInNoteFound = 2))
+              THEN
+                ShowFinishMessage := CurrencyExchangeRate.INSERT(TRUE)
+            END;
+          END;
+        END;
+      END;
+
+      CLEAR(XmlDoc);
+      CLEAR(xmlNode);
+      CLEAR(NodeList);
+      CLEAR(NodeAttr);
+    END;
+
+    PROCEDURE GetMonth@1000000014(dtMonth@1000000000 : Date) strMonth : Text[2];
+    BEGIN
+      IF DATE2DMY(dtMonth,2)<10 THEN strMonth:='0'+FORMAT(DATE2DMY(dtMonth,2))
+      ELSE strMonth:=FORMAT(DATE2DMY(dtMonth,2));
+    END;
+
+    PROCEDURE GetDays@1000000021(dtDay@1000000000 : Date) strDays : Text[2];
+    BEGIN
+      IF DATE2DMY(dtDay,1)<10 THEN strDays:='0'+FORMAT(DATE2DMY(dtDay,1))
+      ELSE strDays:=FORMAT(DATE2DMY(dtDay,1));
+    END;
+
+    PROCEDURE Start@1000000008();
+    VAR
+      GLSetup@1000000000 : Record 98;
+    BEGIN
+      GLSetup.GET;
+      GLSetup.TESTFIELD("LCY Code");
+      ShowFinishMessage := FALSE;
+
+      Currency.RESET;
+      Currency.SETFILTER(Currency."RU Bank Code",'<>%1','');
+      IF Currency.FINDSET(FALSE,FALSE) THEN REPEAT
+
+        DatePeriodStart :=  010106D;
+
+        CurrExchRate.RESET;
+        CurrExchRate.SETRANGE("Currency Code",Currency.Code);
+        IF CurrExchRate.FINDLAST THEN
+          DatePeriodStart := CurrExchRate."Starting Date";
+
+        DatePeriodEnd := TODAY;
+        IF DatePeriodStart < DatePeriodEnd THEN BEGIN
+
+          Dates.RESET;
+          Dates.SETRANGE(Dates."Period Type",0);
+          Dates.SETRANGE("Period Start",DatePeriodStart,DatePeriodEnd);
+          IF Dates.FINDSET(FALSE,FALSE) THEN REPEAT
+             IF NOT ShowWindow THEN BEGIN
+               Window.OPEN(Text001+'\'+Text004+'#2################'+'\'+Text002+'#1################');
+               ShowWindow := TRUE;
+             END;
+             Window.UPDATE(2,Currency.Code);
+             Window.UPDATE(1,Dates."Period Start");
+             IF NOT CurrExchRate.GET(Currency.Code,Dates."Period Start") THEN BEGIN
+                Window.UPDATE(1,Dates."Period Start");
+                GetCurrRateCbr(Dates."Period Start",Currency.Code,Currency."RU Bank Code",
+                  (Currency."Relational Currency Code" <> ''), Currency."Relational Currency Code",
+                  Currency."RU Bank Base Currency");
+             END;
+          UNTIL Dates.NEXT=0;
+
+        END;
+      UNTIL Currency.NEXT=0;
+
+      IF ShowWindow THEN BEGIN
+        Window.UPDATE(1,Text005);
+        SLEEP(1000);
+        Window.CLOSE;
+      END;
+    END;
+
+    PROCEDURE GetDecimalDelimiter@1000000000() : Text[30];
+    BEGIN
+      // Функция возвращает символ - десятичный разделитель для данного пользователя
+
+      EXIT(COPYSTR(FORMAT(0.00,0,'<Precision,2:2><Standard Format,1>'),2,1));
+    END;
+
+    BEGIN
+    {
+      Загрузка курсов валют с сайта ЦБ
+    }
+    END.
+  }
+}
+

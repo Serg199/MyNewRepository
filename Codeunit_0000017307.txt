@@ -1,0 +1,249 @@
+OBJECT Codeunit 17307 Create Tax Calc. FA Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    TableNo=17318;
+    OnRun=BEGIN
+            Code("Starting Date","Ending Date","Section Code");
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+
+    PROCEDURE Code@1(StartDate@1000 : Date;EndDate@1001 : Date;TaxCalcSectionCode@1002 : Code[10]);
+    VAR
+      TaxRegisterSetup@1003 : Record 17236;
+      FixedAsset@1004 : Record 5600;
+      FADepreciationBook@1005 : Record 5612;
+      DepreciationBook@1006 : Record 5611;
+      TaxCalcFAEntry@1009 : Record 17318;
+      TempTaxCalcFAEntry@1010 : TEMPORARY Record 17318;
+      TaxCalcMgt@1015 : Codeunit 17303;
+      Window@1016 : Dialog;
+      Total@1017 : Integer;
+      Procesing@1018 : Integer;
+      BaseAmountDepreciation@1019 : Decimal;
+      TaxAmountDepreciation@1020 : Decimal;
+      Disposed@1022 : Boolean;
+    BEGIN
+      TaxRegisterSetup.GET;
+      TaxRegisterSetup.TESTFIELD("Tax Depreciation Book");
+
+      TaxCalcMgt.ValidateAbsenceFAEntriesDate(StartDate,EndDate,TaxCalcSectionCode);
+
+      IF NOT TaxCalcFAEntry.FINDLAST THEN
+        TaxCalcFAEntry."Entry No." := 0;
+
+      Window.OPEN(Text21000900);
+      Window.UPDATE(1,StartDate);
+      Window.UPDATE(2,EndDate);
+
+      FixedAsset.SETFILTER("FA Type",'%1|%2',
+        FixedAsset."FA Type"::"Fixed Assets",FixedAsset."FA Type"::"Intangible Asset");
+      DepreciationBook.SETFILTER("Posting Book Type",'%1|%2',
+        DepreciationBook."Posting Book Type"::Accounting,DepreciationBook."Posting Book Type"::"Tax Accounting");
+      Total := FixedAsset.COUNT * DepreciationBook.COUNT;
+      Procesing := 0;
+      IF FixedAsset.FINDSET THEN
+        REPEAT
+          Disposed := DepreciationBook.FINDSET;
+          IF Disposed THEN BEGIN
+            Procesing += 1;
+            Window.UPDATE(3,ROUND((Procesing / Total) * 10000,1));
+            TaxAmountDepreciation := 0;
+            BaseAmountDepreciation := 0;
+            TempTaxCalcFAEntry."Entry No." := 0;
+            TempTaxCalcFAEntry.DELETEALL;
+            REPEAT
+              IF FADepreciationBook.GET(FixedAsset."No.",DepreciationBook.Code) THEN BEGIN
+                FADepreciationBook.CALCFIELDS("Book Value");
+                Disposed := Disposed AND
+                  ((FADepreciationBook."Disposal Date" > 0D) AND
+                   (FADepreciationBook."Disposal Date" <= EndDate) AND
+                   (FADepreciationBook."Book Value" = 0));
+                FADepreciationBook.SETRANGE("FA Posting Date Filter",StartDate,EndDate);
+                FADepreciationBook.CALCFIELDS(Depreciation);
+                FADepreciationBook.SETRANGE("FA Posting Date Filter");
+                TempTaxCalcFAEntry.INIT;
+                TempTaxCalcFAEntry."Section Code" := TaxCalcSectionCode;
+                TempTaxCalcFAEntry."Starting Date" := StartDate;
+                TempTaxCalcFAEntry."Ending Date" := EndDate;
+                TempTaxCalcFAEntry."FA No." := FixedAsset."No.";
+                TempTaxCalcFAEntry."Depreciation Group" := FixedAsset."Depreciation Group";
+                TempTaxCalcFAEntry."Belonging to Manufacturing" := FixedAsset."Belonging to Manufacturing";
+                TempTaxCalcFAEntry."FA Type" := FixedAsset."FA Type";
+                IF DepreciationBook."Posting Book Type" = DepreciationBook."Posting Book Type"::Accounting THEN BEGIN
+                  TempTaxCalcFAEntry."Depreciation Book Code (Base)" := DepreciationBook.Code;
+                  BaseAmountDepreciation += FADepreciationBook.Depreciation;
+                END ELSE BEGIN
+                  TempTaxCalcFAEntry."Depreciation Book Code (Tax)" := DepreciationBook.Code;
+                  TaxAmountDepreciation += FADepreciationBook.Depreciation;
+                END;
+                TempTaxCalcFAEntry."Entry No." += 1;
+                TempTaxCalcFAEntry.INSERT;
+              END;
+            UNTIL DepreciationBook.NEXT = 0;
+            IF Disposed OR (BaseAmountDepreciation <> TaxAmountDepreciation) THEN
+              CASE TempTaxCalcFAEntry.COUNT OF
+                2:
+                  BEGIN
+                    TempTaxCalcFAEntry.FIND('-');
+                    TaxCalcFAEntry.TRANSFERFIELDS(TempTaxCalcFAEntry,FALSE);
+                    TaxCalcFAEntry.Disposed := Disposed;
+                    TempTaxCalcFAEntry.NEXT;
+                    IF TaxCalcFAEntry."Depreciation Book Code (Base)" <> '' THEN
+                      TaxCalcFAEntry."Depreciation Book Code (Tax)" :=
+                        TempTaxCalcFAEntry."Depreciation Book Code (Tax)"
+                    ELSE
+                      TaxCalcFAEntry."Depreciation Book Code (Base)" :=
+                        TempTaxCalcFAEntry."Depreciation Book Code (Base)";
+                    TaxCalcFAEntry."Entry No." += 1;
+                    TaxCalcFAEntry.INSERT;
+                  END;
+                ELSE BEGIN
+                  TempTaxCalcFAEntry.FINDSET;
+                  REPEAT
+                    TaxCalcFAEntry.TRANSFERFIELDS(TempTaxCalcFAEntry,FALSE);
+                    TaxCalcFAEntry.Disposed := Disposed;
+                    TaxCalcFAEntry."Entry No." += 1;
+                    TaxCalcFAEntry.INSERT;
+                  UNTIL TempTaxCalcFAEntry.NEXT = 0;
+                END;
+              END;
+          END;
+        UNTIL FixedAsset.NEXT = 0;
+
+      CreateTaxCalcAccumulationation(StartDate,EndDate,TaxCalcSectionCode);
+    END;
+
+    PROCEDURE CreateTaxCalcAccumulationation@2(DateBegin@1000 : Date;DateEnd@1001 : Date;TaxCalcSectionCode@1002 : Code[10]);
+    VAR
+      TaxCalcHeader@1003 : Record 17308;
+      TaxCalcLine@1004 : Record 17310;
+      TaxCalcAccumulation@1005 : Record 17314;
+      TaxCalcAccumulation2@1006 : Record 17314;
+      TaxCalcFAEntry@1007 : Record 17318;
+      TaxCalcFAEntry0@1008 : Record 17318;
+      TempTaxCalcLine@1009 : TEMPORARY Record 17310;
+      TaxRegTermMgt@1010 : Codeunit 17200;
+      AddValue@1011 : Decimal;
+    BEGIN
+      TaxCalcHeader.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. FA Entry");
+      IF NOT TaxCalcHeader.FINDFIRST THEN
+        EXIT;
+
+      TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+      REPEAT
+        TaxCalcLine.SETRANGE(Code,TaxCalcHeader."No.");
+        IF TaxCalcLine.FINDSET THEN
+          REPEAT
+            TempTaxCalcLine := TaxCalcLine;
+            TempTaxCalcLine.Value := 0;
+            TempTaxCalcLine.INSERT;
+          UNTIL TaxCalcLine.NEXT = 0;
+      UNTIL TaxCalcHeader.NEXT = 0;
+
+      TaxCalcFAEntry0.SETRANGE("Date Filter",DateBegin,DateEnd);
+
+      TaxCalcFAEntry.SETCURRENTKEY("Section Code","Ending Date");
+      TaxCalcFAEntry.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcFAEntry.SETRANGE("Ending Date",DateEnd);
+      IF TaxCalcFAEntry.FINDSET THEN
+        REPEAT
+          TempTaxCalcLine.SETFILTER("Depreciation Group",'%1|%2','',TaxCalcFAEntry."Depreciation Group");
+          TempTaxCalcLine.SETFILTER("Belonging to Manufacturing",'%1|%2',
+            TempTaxCalcLine."Belonging to Manufacturing"::" ",TaxCalcFAEntry."Belonging to Manufacturing");
+          TempTaxCalcLine.SETFILTER("FA Type",'%1|%2',
+            TempTaxCalcLine."FA Type"::" ",TaxCalcFAEntry."FA Type" + 1);
+          IF TempTaxCalcLine.FINDSET THEN BEGIN
+            TaxCalcFAEntry0 := TaxCalcFAEntry;
+            TaxCalcFAEntry0.CALCFIELDS(
+              "Total Depr. Amount (Base)","Total Depr. Amount (Tax)",
+              "Depreciation Amount (Base)","Depreciation Amount (Tax)",
+              "Depr. Group Elimination");
+            REPEAT
+              AddValue := 0;
+              CASE TempTaxCalcLine."Sum Field No." OF
+                TaxCalcFAEntry.FIELDNO("Total Depr. Amount (Base)"):
+                  IF TaxCalcFAEntry.Disposed THEN
+                    AddValue := TaxCalcFAEntry0."Total Depr. Amount (Base)";
+                TaxCalcFAEntry.FIELDNO("Total Depr. Amount (Tax)"):
+                  IF TaxCalcFAEntry.Disposed THEN
+                    AddValue := TaxCalcFAEntry0."Total Depr. Amount (Tax)";
+                TaxCalcFAEntry.FIELDNO("Depreciation Amount (Base)"):
+                  AddValue := TaxCalcFAEntry0."Depreciation Amount (Base)";
+                TaxCalcFAEntry.FIELDNO("Depreciation Amount (Tax)"):
+                  AddValue := TaxCalcFAEntry0."Depreciation Amount (Tax)";
+                TaxCalcFAEntry.FIELDNO("Depr. Group Elimination"):
+                  IF TempTaxCalcLine."Tax Diff. Amount (Tax)" THEN
+                    AddValue := TaxCalcFAEntry0."Depr. Group Elimination";
+              END;
+              IF AddValue <> 0 THEN BEGIN
+                TempTaxCalcLine.Value += AddValue;
+                TempTaxCalcLine.MODIFY;
+              END;
+            UNTIL TempTaxCalcLine.NEXT = 0;
+          END;
+        UNTIL TaxCalcFAEntry.NEXT = 0;
+
+      TaxCalcAccumulation.RESET;
+      IF NOT TaxCalcAccumulation.FINDLAST THEN
+        TaxCalcAccumulation."Entry No." := 0;
+
+      TaxCalcAccumulation.INIT;
+      TaxCalcAccumulation."Section Code" := TaxCalcSectionCode;
+      TaxCalcAccumulation."Starting Date" := DateBegin;
+      TaxCalcAccumulation."Ending Date" := DateEnd;
+
+      TempTaxCalcLine.RESET;
+      IF TempTaxCalcLine.FINDSET THEN
+        REPEAT
+          TaxCalcAccumulation."Template Line Code" := TempTaxCalcLine."Line Code";
+          TaxCalcAccumulation."Register No." := TempTaxCalcLine.Code;
+          TaxCalcAccumulation.Indentation := TempTaxCalcLine.Indentation;
+          TaxCalcAccumulation.Bold := TempTaxCalcLine.Bold;
+          TaxCalcAccumulation.Description := TempTaxCalcLine.Description;
+          TaxCalcAccumulation."Amount Period" := TempTaxCalcLine.Value;
+          TaxCalcAccumulation."Template Line No." := TempTaxCalcLine."Line No.";
+          TaxCalcAccumulation."Tax Diff. Amount (Base)" := TempTaxCalcLine."Tax Diff. Amount (Base)";
+          TaxCalcAccumulation."Tax Diff. Amount (Tax)" := TempTaxCalcLine."Tax Diff. Amount (Tax)";
+          TaxCalcAccumulation.Disposed := TempTaxCalcLine.Disposed;
+          TaxCalcAccumulation."Amount Date Filter" :=
+            TaxRegTermMgt.CalcIntervalDate(
+              TaxCalcAccumulation."Starting Date",
+              TaxCalcAccumulation."Ending Date",
+              TempTaxCalcLine.Period);
+          TaxCalcAccumulation.Amount := TaxCalcAccumulation."Amount Period";
+          TaxCalcAccumulation."Entry No." += 1;
+          TaxCalcAccumulation.INSERT;
+          IF TempTaxCalcLine.Period <> '' THEN BEGIN
+            TaxCalcAccumulation2 := TaxCalcAccumulation;
+            TaxCalcAccumulation2.RESET;
+            TaxCalcAccumulation2.SETCURRENTKEY("Section Code","Register No.","Template Line No.","Starting Date","Ending Date");
+            TaxCalcAccumulation2.SETRANGE("Section Code",TaxCalcSectionCode);
+            TaxCalcAccumulation2.SETRANGE("Register No.",TaxCalcAccumulation."Register No.");
+            TaxCalcAccumulation2.SETRANGE("Template Line No.",TaxCalcAccumulation."Template Line No.");
+            TaxCalcAccumulation2.SETFILTER("Starting Date",TaxCalcAccumulation."Amount Date Filter");
+            TaxCalcAccumulation2.SETFILTER("Ending Date",TaxCalcAccumulation."Amount Date Filter");
+            TaxCalcAccumulation2.CALCSUMS("Amount Period");
+            TaxCalcAccumulation.Amount := TaxCalcAccumulation2."Amount Period";
+            TaxCalcAccumulation.MODIFY;
+          END;
+        UNTIL TempTaxCalcLine.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

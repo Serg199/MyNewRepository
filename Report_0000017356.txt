@@ -1,0 +1,575 @@
+OBJECT Report 17356 Statistic Form FNS-1
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28.01.17;
+    Time=12:00:00;
+    Version List=NAVRU10.00.00.15140;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Statistic Form FNS-1;
+               RUS=Статистическая форма FNS-1];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   ReportDate := WORKDATE;
+
+                   StartDate := 010415D;
+                   EndDate := 300415D;
+
+                   HiredDate := 010415D;
+                   FiredDate := 010515D;
+                 END;
+
+    OnPreReport=VAR
+                  Text001@1210000 : TextConst 'ENU=All fields must be filled.;RUS=Все поля должны быть заполнены.';
+                BEGIN
+                  IF (ReportDate = 0D) OR (StartDate = 0D) OR (EndDate = 0D) OR (EmployeeFullName = '') THEN
+                    ERROR(Text001);
+
+                  WageAmount := GetLatestMinimumWageAmount(EndDate);
+
+                  StatisticalLines := 21;
+
+                  IF NOT IsSilentEmpStatisticalBuffer THEN
+                    InitialiseStatisticalBuffer(EmployeeStatisticalBuffer,StatisticalLines);
+                END;
+
+    OnPostReport=VAR
+                   FileName@1210000 : Text[250];
+                   ExcelMgt@1210001 : Codeunit 12416;
+                   LocalisationMgt@1210004 : Codeunit 12400;
+                   HumanResourcesSetup@1210002 : Record 5218;
+                   CompanyInformation@1210005 : Record 79;
+                   ExcelTemplate@1210006 : Record 14919;
+                   LocRepMgt@1210007 : Codeunit 12401;
+                 BEGIN
+                   CompanyInformation.GET;
+                   HumanResourcesSetup.GET;
+                   HumanResourcesSetup.TESTFIELD("FSN-1 Template Code");
+
+                   IF NOT IsSilentEmpStatisticalBuffer THEN
+                     FillStatisticalBuffer;
+
+                   FileName := ExcelTemplate.OpenTemplate(HumanResourcesSetup."FSN-1 Template Code");
+
+                   ExcelMgt.OpenBook(FileName);
+                   //Sheet1
+                   ExcelMgt.OpenSheet('Sheet1');
+
+                   ExcelMgt.FillCell('AV24',LocRepMgt.GetCompanyName);
+
+                   ExcelMgt.FillCell('S26',CompanyInformation."Post Code" + ', ' + CompanyInformation.City + ', ' +
+                     CompanyInformation.Address + ' ' + CompanyInformation."Address 2");
+
+                   ExcelMgt.FillCell('S31',CompanyInformation."OKPO Code");
+
+                   //Sheet2
+                   ExcelMgt.OpenSheet('Sheet2');
+
+                   FillExcelStatisticalSheet(ExcelMgt,EmployeeStatisticalBuffer,StatisticalLines);
+
+                   IF EmployeeStatisticalBuffer.GET(StatisticalLines + 1) THEN
+                     ExcelMgt.FillCell('BC28',FORMAT(EmployeeStatisticalBuffer.Quantity));
+
+                   // Avg. Amount for all employees
+                   ExcelMgt.FillCell('BC29',FORMAT(ROUND(AverageListQuantity,1)));
+
+                   // Total Salary Amount (excluding external workers)
+                   ExcelMgt.FillCell('BC30',FORMAT(GetTotalSalaryAmount));
+
+                   // ReportDate
+                   ExcelMgt.FillCell('DC40',FORMAT(ReportDate,0,'<Day,2>'));
+                   ExcelMgt.FillCell('DJ40',FORMAT(LocalisationMgt.Month2Text(ReportDate)));
+                   ExcelMgt.FillCell('DZ40',FORMAT(ReportDate,0,'<Year,2>'));
+
+                   // ResponsibleEmployee
+                   ExcelMgt.FillCell('AV37',ResponsibleEmployee."Job Title");
+                   ExcelMgt.FillCell('CE37',EmployeeFullName);
+                   ExcelMgt.FillCell('AV40',ResponsibleEmployee."Phone No.");
+                   ExcelMgt.FillCell('CD40',ResponsibleEmployee."E-Mail");
+
+                   IF FileNameSilent <> '' THEN BEGIN
+                     ExcelMgt.SaveWrkBook(FileNameSilent);
+                     ExcelMgt.CloseBook(FALSE);
+                   END ELSE
+                     ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Report Date;
+                             RUS=Дата отчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportDate }
+
+      { 1210006;2;Field     ;
+                  Name=StartDate;
+                  CaptionML=[ENU=Start Date;
+                             RUS=Дата начала];
+                  ToolTipML=[ENU=Specifies the starting date for the report.;
+                             RUS=Определяет дату начала для отчета.];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=StartDate }
+
+      { 1210004;2;Field     ;
+                  Name=EndDate;
+                  CaptionML=[ENU=End Date;
+                             RUS=Дата окончания];
+                  ToolTipML=[ENU=Specifies the ending date for the report.;
+                             RUS=Определяет дату окончания для отчета.];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=EndDate }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Responsible Employee;
+                             RUS=Материально ответственное лицо];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=EmployeeFullName;
+                  OnLookup=BEGIN
+                             ResponsibleEmployee.RESET;
+                             IF PAGE.RUNMODAL(PAGE::"Employee List",ResponsibleEmployee) = ACTION::LookupOK THEN
+                               EmployeeFullName := ResponsibleEmployee.FullName;
+                           END;
+                            }
+
+      { 1210001;2;Group     ;
+                  CaptionML=[ENU=Employees to strike off;
+                             RUS=Освобождаемые сотрудники];
+                  GroupType=Group }
+
+      { 1210011;3;Field     ;
+                  CaptionML=[ENU=Hired After;
+                             RUS=Нанят после];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=HiredDate }
+
+      { 1210010;3;Field     ;
+                  CaptionML=[ENU=Dismissed Before;
+                             RUS=Освобожден перед];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=FiredDate }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ReportDate@1210000 : Date;
+      StartDate@1210001 : Date;
+      EndDate@1210002 : Date;
+      EmployeeFullName@1210004 : Text[100];
+      ResponsibleEmployee@1210006 : Record 5200;
+      HiredDate@1210007 : Date;
+      FiredDate@1210008 : Date;
+      EmployeeStatisticalBuffer@1210009 : TEMPORARY Record 5803;
+      StatisticalLines@1210010 : Integer;
+      WageAmount@1210011 : Decimal;
+      FileNameSilent@1210003 : Text;
+      IsSilentEmpStatisticalBuffer@1210005 : Boolean;
+
+    PROCEDURE FillStatisticalBuffer@1210004();
+    VAR
+      Employee@1210000 : Record 5200;
+    BEGIN
+      Employee.RESET;
+
+      IF Employee.FINDSET THEN
+        REPEAT
+          IF ValidEmployee(Employee,StartDate,EndDate,HiredDate,FiredDate) THEN
+            SaveSummaryAmountInfo(ROUND(GetEmployeeSalaryAmount(StartDate,Employee."No."),0.1),EmployeeStatisticalBuffer);
+        UNTIL Employee.NEXT = 0;
+    END;
+
+    PROCEDURE ValidEmployee@1210020(Employee@1210000 : Record 5200;StartDate@1210002 : Date;EndDate@1210003 : Date;HireDate@1210005 : Date;DismissalDate@1210006 : Date) Result : Boolean;
+    VAR
+      Limit@1210004 : Integer;
+      LaborContract@1210001 : Record 17360;
+    BEGIN
+      WITH Employee DO BEGIN
+        IF NOT IsEmployed(HireDate) THEN
+          EXIT(FALSE);
+        IF IsTerminated(DismissalDate) THEN
+          EXIT(FALSE);
+
+        IF NOT LaborContract.GET("Contract No.") THEN
+          EXIT(FALSE);
+        IF (LaborContract."Work Mode" = LaborContract."Work Mode"::"Internal Co-work") OR // internal - ?
+           (LaborContract."Work Mode" = LaborContract."Work Mode"::"External Co-work")
+        THEN
+          EXIT(FALSE);
+
+        IF LaborContract."Contract Type" = LaborContract."Contract Type"::"Civil Contract" THEN
+          EXIT(FALSE);
+
+        IF SickLeave("No.",StartDate,EndDate) THEN
+          EXIT(FALSE);
+
+        // Exlude empl. with >40h absence
+        Limit := 40;
+        Limit := Limit - (GetPlannedHours("No.",StartDate,EndDate) - GetActualHours("No.",StartDate,EndDate));
+
+        EXIT(Limit >= 0);
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SickLeave@1210003(EmployeeNo@1210001 : Code[20];StartDate@1210002 : Date;EndDate@1210003 : Date) : Boolean;
+    VAR
+      PostedAbsenceHeader@1210000 : Record 17387;
+    BEGIN
+      WITH PostedAbsenceHeader DO BEGIN
+        // Exclude sick entries
+        SETRANGE("Employee No.",EmployeeNo);
+        SETFILTER("Start Date",'<=%1',EndDate);
+        SETFILTER("End Date",'>=%1',StartDate);
+        SETRANGE("Document Type","Document Type"::"Sick Leave");
+        IF FINDFIRST THEN
+          EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE SaveSummaryAmountInfo@1210024(SummaryAmount@1210003 : Decimal;VAR EmployeeStatisticalBuffer@1210000 : TEMPORARY Record 5803);
+    BEGIN
+      FillSalaryRange(SummaryAmount,EmployeeStatisticalBuffer);
+
+      UpdateStatisticalLine(21,SummaryAmount,EmployeeStatisticalBuffer);
+
+      IF SummaryAmount < WageAmount THEN
+        UpdateStatisticalLine(22,SummaryAmount,EmployeeStatisticalBuffer);
+    END;
+
+    PROCEDURE GetEmployeeSalaryAmount@1210019(AtDate@1210002 : Date;EmployeeNo@1210003 : Code[20]) SalaryAmount : Decimal;
+    VAR
+      PayrollPeriod@1210000 : Record 17426;
+      Employee@1210004 : Record 5200;
+      DetailedPayrollLedgerEntry@1210005 : Record 17419;
+    BEGIN
+      PayrollPeriod.GET(PayrollPeriod.PeriodByDate(AtDate));
+
+      Employee.SETRANGE("Employee No. Filter",EmployeeNo);
+      Employee.SETFILTER("Element Type Filter",'%1',DetailedPayrollLedgerEntry."Element Type"::Wage);
+      Employee.SETRANGE("Wage Period Filter",PayrollPeriod.Code);
+      Employee.CALCFIELDS("Payroll Amount");
+
+      SalaryAmount := Employee."Payroll Amount";
+      Employee.SETFILTER("Element Type Filter",'%1',DetailedPayrollLedgerEntry."Element Type"::Bonus);
+      Employee.CALCFIELDS("Payroll Amount");
+      SalaryAmount += Employee."Payroll Amount";
+    END;
+
+    PROCEDURE FillExcelStatisticalSheet@1210023(ExcelMgt@1210000 : Codeunit 12416;VAR EmployeeStatisticalBuffer@1210003 : TEMPORARY Record 5803;StatisticalLines@1210001 : Integer);
+    VAR
+      StartLine@1210002 : Integer;
+      PeopleQtyColumn@1210004 : Text[2];
+      SummColumn@1210005 : Text[2];
+      I@1210006 : Integer;
+    BEGIN
+      StartLine := 4;
+      PeopleQtyColumn := 'AV';
+      SummColumn := 'CB';
+
+      FOR I := StartLine TO StatisticalLines + StartLine DO BEGIN
+        EmployeeStatisticalBuffer.GET(I - StartLine);
+        ExcelMgt.FillCell(PeopleQtyColumn + FORMAT(I),FORMAT(EmployeeStatisticalBuffer.Quantity));
+        ExcelMgt.FillCell(SummColumn + FORMAT(I),FORMAT(EmployeeStatisticalBuffer."Inventory Value (Calculated)"));
+      END;
+    END;
+
+    PROCEDURE InitialiseStatisticalBuffer@1210025(VAR EmployeeStatisticalBuffer@1210000 : TEMPORARY Record 5803;Lines@1210002 : Integer);
+    VAR
+      I@1210001 : Integer;
+    BEGIN
+      EmployeeStatisticalBuffer.RESET;
+      EmployeeStatisticalBuffer.DELETEALL;
+
+      // Line No. | Range
+      // 0     | Salary < 5965
+      // 1     | 5965 < Salary < 7400
+      // 2     | 7400 < Salary < 9000
+      // 3     | 9000 < Salary < 10600
+      // 4     | 10600 < Salary < 12200
+      // 5     | 12200 < Salary < 13800
+      // 6     | 13800 < Salary < 15400
+      // 7     | 15400 < Salary < 17000
+      // 8     | 17000 < Salary < 18600
+      // 9     | 18600 < Salary < 21800
+      // 10    | 21800 < Salary < 25000
+      // 11    | 25000 < Salary < 30000
+      // 12    | 30000 < Salary < 35000
+      // 13    | 35000 < Salary < 40000
+      // 14    | 40000 < Salary < 50000
+      // 15    | 50000 < Salary < 75000
+      // 16    | 75000 < Salary < 100000
+      // 17    | 100000 < Salary < 250000
+      // 18    | 250000 < Salary < 500000
+      // 19    | 500000 < Salary < 1000000
+      // 20    | 1000000 < Salary
+      // 21    | employee total
+      // 22    | EXCEPTION: Qty of employee with salary less then minimum
+
+      FOR I := 0 TO Lines + 1 DO BEGIN
+        EmployeeStatisticalBuffer.INIT;
+        EmployeeStatisticalBuffer."Line No." := I;
+        EmployeeStatisticalBuffer.INSERT;
+      END;
+    END;
+
+    PROCEDURE UpdateStatisticalLine@1210037(LineId@1210000 : Integer;Amount@1210001 : Decimal;VAR EmployeeStatisticalBuffer@1210002 : TEMPORARY Record 5803);
+    BEGIN
+      WITH EmployeeStatisticalBuffer DO BEGIN
+        GET(LineId);
+        "Inventory Value (Calculated)" := "Inventory Value (Calculated)" + Amount;
+        Quantity := Quantity + 1;
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE GetLatestMinimumWageAmount@1210000(ToDate@1210002 : Date) : Decimal;
+    VAR
+      PayrollLimit@1210004 : Record 17397;
+      PayrollPeriod@1210005 : Record 17426;
+      PayrollDocumentCalculate@1210000 : Codeunit 17404;
+    BEGIN
+      EXIT(PayrollDocumentCalculate.GetFSILimit(PayrollPeriod.PeriodByDate(ToDate),PayrollLimit.Type::MROT));
+    END;
+
+    PROCEDURE AverageListQuantity@1210001() AverageList : Decimal;
+    VAR
+      LaborContract@1210002 : Record 17360;
+      Employee@1210000 : Record 5200;
+      AverageHeadcountCalculation@1210001 : Codeunit 17351;
+    BEGIN
+      IF Employee.FINDSET THEN
+        REPEAT
+          IF LaborContract.GET(Employee."Contract No.") THEN
+            IF (LaborContract."Work Mode" <> LaborContract."Work Mode"::"External Co-work") AND
+               (LaborContract."Contract Type" = LaborContract."Contract Type"::"Labor Contract")
+            THEN
+              AverageList += AverageHeadcountCalculation.CalcAvgCount(Employee."No.",EndDate);
+        UNTIL Employee.NEXT = 0;
+    END;
+
+    PROCEDURE GetTotalSalaryAmount@1210005() TotalSalaryAmount : Decimal;
+    BEGIN
+      TotalSalaryAmount := CalcSalaryAmount(StartDate,EndDate,0,FALSE);
+      TotalSalaryAmount += CalcBonusAmount(StartDate,EndDate);
+    END;
+
+    PROCEDURE MinDate@1470000(Date1@1470000 : Date;Date2@1470001 : Date) ResDate : Date;
+    BEGIN
+      IF Date1 < Date2 THEN
+        EXIT(Date1);
+
+      EXIT(Date2);
+    END;
+
+    PROCEDURE MaxDate@1470001(Date1@1470001 : Date;Date2@1470000 : Date) ResDate : Date;
+    BEGIN
+      IF Date1 > Date2 THEN
+        EXIT(Date1);
+
+      EXIT(Date2);
+    END;
+
+    PROCEDURE CalcSalaryAmount@1210026(StartingDate@1210003 : Date;EndingDate@1210002 : Date;WorkMode@1210001 : Integer;IsCivilContract@1210006 : Boolean) Salary : Decimal;
+    VAR
+      PayrollDocCalc@1210000 : Codeunit 17404;
+      LaborContracts@1210005 : Record 17360;
+      HumResSetup@1210004 : Record 5218;
+    BEGIN
+      HumResSetup.GET;
+
+      WITH LaborContracts DO BEGIN
+        SETFILTER(Status,'<>%1',Status::Open);
+
+        IF IsCivilContract THEN
+          SETRANGE("Contract Type","Contract Type"::"Civil Contract")
+        ELSE
+          SETRANGE("Contract Type","Contract Type"::"Labor Contract");
+
+        IF WorkMode >= 0 THEN
+          SETRANGE("Work Mode",WorkMode);
+
+        IF FINDSET THEN
+          REPEAT
+            Salary += PayrollDocCalc.CalcElementByPostedEntries(HumResSetup."FSN-1 Salary Element Code","Employee No.",
+                StartingDate,EndingDate,'');
+          UNTIL NEXT = 0;
+      END;
+
+      EXIT(Salary);
+    END;
+
+    PROCEDURE CalcBonusAmount@1210002(StartingDate@1210003 : Date;EndingDate@1210002 : Date) Salary : Decimal;
+    VAR
+      PayrollDocCalc@1210000 : Codeunit 17404;
+      LaborContracts@1210005 : Record 17360;
+      HumResSetup@1210004 : Record 5218;
+    BEGIN
+      HumResSetup.GET;
+
+      WITH LaborContracts DO BEGIN
+        SETFILTER(Status,'<>%1',Status::Open);
+
+        IF FINDSET THEN
+          REPEAT
+            Salary += PayrollDocCalc.CalcElementByPostedEntries(HumResSetup."FSN-1 Bonus Element Code","Employee No.",
+                StartingDate,EndingDate,'');
+          UNTIL NEXT = 0;
+      END;
+
+      EXIT(Salary);
+    END;
+
+    [Test]
+    PROCEDURE GetSalaryRange@1210016(RangeNo@1210000 : Integer) : Decimal;
+    BEGIN
+      CASE RangeNo OF
+        0:
+          EXIT(5965.1);
+        1:
+          EXIT(7400.1);
+        2:
+          EXIT(9000.1);
+        3:
+          EXIT(10600.1);
+        4:
+          EXIT(12200.1);
+        5:
+          EXIT(13800.1);
+        6:
+          EXIT(15400.1);
+        7:
+          EXIT(17000.1);
+        8:
+          EXIT(18600.1);
+        9:
+          EXIT(21800.1);
+        10:
+          EXIT(25000.1);
+        11:
+          EXIT(30000.1);
+        12:
+          EXIT(35000.1);
+        13:
+          EXIT(40000.1);
+        14:
+          EXIT(50000.1);
+        15:
+          EXIT(75000.1);
+        16:
+          EXIT(100000.1);
+        17:
+          EXIT(250000.1);
+        18:
+          EXIT(500000.1);
+        19:
+          EXIT(1000000.1);
+      END;
+    END;
+
+    PROCEDURE FillSalaryRange@1210006(SummaryAmount@1210000 : Decimal;VAR EmployeeStatisticalBuffer@1210002 : TEMPORARY Record 5803);
+    VAR
+      I@1210001 : Integer;
+    BEGIN
+      I := 0;
+      REPEAT
+        IF SummaryAmount < GetSalaryRange(I) THEN BEGIN
+          UpdateStatisticalLine(I,SummaryAmount,EmployeeStatisticalBuffer);
+          EXIT;
+        END;
+
+        I += 1;
+      UNTIL I > 19;
+
+      UpdateStatisticalLine(20,SummaryAmount,EmployeeStatisticalBuffer);
+    END;
+
+    PROCEDURE GetPlannedHours@1210008(EmployeeNo@1210004 : Code[20];StartDate@1210002 : Date;EndDate@1210003 : Date) : Decimal;
+    VAR
+      TimesheetMgt@1210000 : Codeunit 17440;
+      HRSetup@1210001 : Record 5218;
+    BEGIN
+      HRSetup.GET;
+      EXIT(
+        TimesheetMgt.GetTimesheetInfo(
+          EmployeeNo,HRSetup."FSN-1 Work Time Group Code",StartDate,EndDate,1));
+    END;
+
+    PROCEDURE GetActualHours@1210014(EmployeeNo@1210004 : Code[20];StartDate@1210002 : Date;EndDate@1210003 : Date) : Decimal;
+    VAR
+      TimesheetMgt@1210000 : Codeunit 17440;
+      HRSetup@1210001 : Record 5218;
+    BEGIN
+      HRSetup.GET;
+      EXIT(
+        TimesheetMgt.GetTimesheetInfo(
+          EmployeeNo,HRSetup."FSN-1 Work Time Group Code",StartDate,EndDate,3));
+    END;
+
+    PROCEDURE SetSilentResponsibleEmployee@1210007(Employee@1210000 : Record 5200);
+    BEGIN
+      // Function used for testing purposes
+
+      ResponsibleEmployee := Employee;
+      EmployeeFullName := ResponsibleEmployee."First Name" + ' ' + ResponsibleEmployee."Middle Name" + ' ' +
+        ResponsibleEmployee."Last Name";
+    END;
+
+    PROCEDURE SetSilentFilename@1210011(Filename@1210000 : Text);
+    BEGIN
+      // Function used for testing purposes
+
+      FileNameSilent := Filename;
+    END;
+
+    PROCEDURE SetSilentEmployeeStatisticalBuffer@1210009(VAR TempItemJournalBufferValue@1210000 : TEMPORARY Record 5803);
+    VAR
+      I@1210001 : Integer;
+      StatisticalLines@1210002 : Integer;
+    BEGIN
+      // Function used for testing purposes
+
+      IsSilentEmpStatisticalBuffer := TRUE;
+      StatisticalLines := 21;
+
+      EmployeeStatisticalBuffer.RESET;
+      EmployeeStatisticalBuffer.DELETEALL;
+      FOR I := 0 TO StatisticalLines + 1 DO BEGIN
+        TempItemJournalBufferValue.GET(I);
+        EmployeeStatisticalBuffer.INIT;
+        EmployeeStatisticalBuffer.TRANSFERFIELDS(TempItemJournalBufferValue);
+        EmployeeStatisticalBuffer.INSERT;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

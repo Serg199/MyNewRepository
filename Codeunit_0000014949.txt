@@ -1,0 +1,557 @@
+OBJECT Codeunit 14949 TORG-29 Helper
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ExcelReportBuilderManager@1210000 : Codeunit 14930;
+      StdRepMgt@1210001 : Codeunit 12401;
+      LocMgt@1210007 : Codeunit 12400;
+      EntryType@1210002 : ' ,Shipment,Receipt';
+      ReceiptsDetailing@1210006 : 'Document,Item,Operation';
+      ShipmentDetailing@1210005 : 'Sum,Document,Item,Operation';
+      AmountType@1210004 : 'Cost,Price';
+      NoPriceFoundErr@1210008 : TextConst 'ENU=No price found;RUS=Цена не найдена';
+      SeveralPricesFoundErr@1210009 : TextConst 'ENU=Several records in price list found;RUS=Найдено несколько записей в прайс-листе';
+      AdjmtTxt@1210010 : TextConst 'ENU=Adj.;RUS=Корр.';
+
+    PROCEDURE CreateTempReceipts@1210035(VAR TempValueEntryReceipts@1210016 : Record 5802;VAR ErrorBuffer@1210025 : Record 5802;VAR EntriesCount@1210013 : Integer;VAR ErrorsCount@1210014 : Integer;VAR ResidOnstart@1210020 : Decimal;StartDate@1210017 : Date;EndDate@1210026 : Date;LocationCode@1210018 : Code[10];PassedAmountType@1210021 : Option;PassedReceiptsDetailing@1210028 : Option;PassedSalesType@1210031 : Option;SalesCode@1210024 : Code[20];ShowCostReceipts@1210027 : Boolean);
+    VAR
+      Vendor@1210009 : Record 23;
+      Customer@1210008 : Record 18;
+      Location@1210019 : Record 14;
+      Item@1210022 : Record 27;
+      GLItemRelation@1210029 : Record 5823;
+      GLEntry@1210030 : Record 17;
+      ValueEntryReceipts@1210015 : Record 5802;
+      ItemLedgEntry@1210000 : Record 32;
+      UpdateFlag@1210007 : Boolean;
+      LastKeyString@1210006 : Text[255];
+      CurrentKeyString@1210005 : Text[255];
+      SourceName@1210010 : Text[255];
+      AdjustmentText@1210011 : Text[30];
+      CurrentCostAmount@1210004 : Decimal;
+      CurrentSalesAmount@1210003 : Decimal;
+    BEGIN
+      UpdateFlag := FALSE;
+      LastKeyString := '';
+      CurrentKeyString := '';
+      CurrentSalesAmount := 0;
+      CurrentCostAmount := 0;
+      EntriesCount := 0;
+      ErrorsCount := 0;
+      ResidOnstart := 0;
+      Location.GET(LocationCode);
+
+      ResidOnstart :=
+        CalcRcptResidOnStart(ErrorBuffer,ErrorsCount,StartDate,LocationCode,PassedAmountType,PassedSalesType,SalesCode);
+
+      CASE PassedReceiptsDetailing OF
+        ReceiptsDetailing::Document:
+          ValueEntryReceipts.SETCURRENTKEY("Posting Date","Document No.","Document Type");
+        ReceiptsDetailing::Item:
+          ValueEntryReceipts.SETCURRENTKEY("Posting Date","Item No.");
+        ReceiptsDetailing::Operation:
+          ValueEntryReceipts.SETCURRENTKEY("Posting Date","Item No.");
+      END;
+
+      ValueEntryReceipts.SETRANGE("Posting Date",StartDate,EndDate);
+      ValueEntryReceipts.SETRANGE("Location Code",LocationCode);
+
+      IF ValueEntryReceipts.FINDSET THEN
+        REPEAT
+          IF ValueEntryReceipts.IsDebit THEN BEGIN
+            CASE PassedReceiptsDetailing OF
+              ReceiptsDetailing::Document:
+                CurrentKeyString := STRSUBSTNO('%1|%2|%3',
+                    ValueEntryReceipts."Document No.",
+                    ValueEntryReceipts."Document Type",
+                    ValueEntryReceipts."Posting Date");
+              ReceiptsDetailing::Item:
+                CurrentKeyString := STRSUBSTNO('%1|%2',
+                    ValueEntryReceipts."Posting Date",
+                    ValueEntryReceipts."Item No.");
+              ReceiptsDetailing::Operation:
+                CurrentKeyString := STRSUBSTNO('%1',
+                    ValueEntryReceipts."Entry No.");
+            END;
+
+            IF LastKeyString = CurrentKeyString THEN
+              UpdateFlag := TRUE
+            ELSE BEGIN
+              UpdateFlag := FALSE;
+              TempValueEntryReceipts.INIT;
+              EntriesCount := EntriesCount + 1;
+              LastKeyString := CurrentKeyString;
+              CurrentSalesAmount := 0;
+              CurrentCostAmount := 0;
+            END;
+
+            IF PassedAmountType = AmountType::Price THEN
+              CurrentSalesAmount +=
+                CalcAmountFromSalesPrice(ErrorBuffer,ErrorsCount,ValueEntryReceipts,PassedSalesType,SalesCode,UpdateFlag);
+            IF (PassedAmountType = AmountType::Cost) OR ShowCostReceipts THEN BEGIN
+              CurrentCostAmount := CurrentCostAmount + ROUND(ValueEntryReceipts."Cost Amount (Actual)");
+              TempValueEntryReceipts."Valued Quantity" := CurrentCostAmount;
+            END ELSE
+              TempValueEntryReceipts."Valued Quantity" := CurrentSalesAmount;
+
+            IF (PassedAmountType = AmountType::Cost) AND (PassedReceiptsDetailing = ReceiptsDetailing::Operation) THEN BEGIN
+              GLItemRelation.SETRANGE("Value Entry No.",ValueEntryReceipts."Entry No.");
+              IF GLItemRelation.FINDSET THEN
+                REPEAT
+                  IF GLEntry.GET(GLItemRelation."G/L Entry No.") THEN
+                    IF (GLEntry.Amount > 0) XOR ((GLEntry."Debit Amount" < 0) OR (GLEntry."Credit Amount" < 0)) THEN
+                      TempValueEntryReceipts."Job No." := GLEntry."G/L Account No."
+                    ELSE
+                      TempValueEntryReceipts."Job Task No." := GLEntry."G/L Account No."
+                UNTIL GLItemRelation.NEXT = 0;
+            END;
+            TempValueEntryReceipts."Posting Date" := ValueEntryReceipts."Posting Date";
+            TempValueEntryReceipts."Sales Amount (Actual)" := CurrentSalesAmount;
+            TempValueEntryReceipts."Cost Amount (Actual)" := CurrentCostAmount;
+            TempValueEntryReceipts."Entry No." := EntriesCount;
+            TempValueEntryReceipts."Item Ledger Entry Quantity" :=
+              TempValueEntryReceipts."Item Ledger Entry Quantity" + ValueEntryReceipts."Item Ledger Entry Quantity";
+            CASE PassedReceiptsDetailing OF
+              ReceiptsDetailing::Document:
+                BEGIN
+                  SourceName := '';
+                  AdjustmentText := '';
+                  IF ValueEntryReceipts."Source Type" = ValueEntryReceipts."Source Type"::" " THEN BEGIN
+                    ItemLedgEntry.GET(ValueEntryReceipts."Item Ledger Entry No.");
+                    ValueEntryReceipts."Source Type" := ItemLedgEntry."Source Type";
+                    ValueEntryReceipts."Source No." := ItemLedgEntry."Source No.";
+                  END;
+                  CASE ValueEntryReceipts."Source Type" OF
+                    ValueEntryReceipts."Source Type"::Vendor:
+                      BEGIN
+                        Vendor.GET(ValueEntryReceipts."Source No.");
+                        SourceName := Vendor."Search Name";
+                      END;
+                    ValueEntryReceipts."Source Type"::Customer:
+                      BEGIN
+                        Customer.GET(ValueEntryReceipts."Source No.");
+                        SourceName := Customer."Search Name";
+                      END;
+                  END;
+                  IF (PassedAmountType = AmountType::Cost) AND (TempValueEntryReceipts."Item Ledger Entry Quantity" = 0) THEN
+                    AdjustmentText := AdjmtTxt;
+
+                  TempValueEntryReceipts.Description := STRSUBSTNO('%1 %2 %3 %4',
+                      FORMAT(ValueEntryReceipts."Item Ledger Entry Type"),
+                      AdjustmentText,
+                      ValueEntryReceipts."Source No.",
+                      SourceName);
+                  TempValueEntryReceipts."Document No." := ValueEntryReceipts."Document No.";
+                END;
+              ReceiptsDetailing::Item:
+                IF Item.GET(ValueEntryReceipts."Item No.") THEN
+                  TempValueEntryReceipts.Description := Item.Description;
+              ReceiptsDetailing::Operation:
+                BEGIN
+                  Item.GET(ValueEntryReceipts."Item No.");
+                  TempValueEntryReceipts."Document No." := ValueEntryReceipts."Document No.";
+                  TempValueEntryReceipts.Description := STRSUBSTNO('%1 %2',
+                      FORMAT(ValueEntryReceipts."Item Ledger Entry Type"),
+                      Item.Description);
+                END;
+            END;
+            IF UpdateFlag THEN
+              TempValueEntryReceipts.MODIFY
+            ELSE
+              TempValueEntryReceipts.INSERT;
+          END;
+        UNTIL ValueEntryReceipts.NEXT = 0;
+      ValueEntryReceipts.RESET;
+      TempValueEntryReceipts.RESET;
+    END;
+
+    PROCEDURE CreateTempShipment@1210036(VAR TempValueEntryShipment@1210022 : Record 5802;VAR ErrorBuffer@1210021 : Record 5802;VAR EntriesCount@1210019 : Integer;VAR ErrorsCount@1210018 : Integer;StartDate@1210016 : Date;EndDate@1210015 : Date;LocationCode@1210014 : Code[10];PassedAmountType@1210013 : Option;PassedShipmentDetailing@1210012 : Option;PassedSalesType@1210010 : Option;SalesCode@1210009 : Code[20];ShowCostShipment@1210002 : Boolean);
+    VAR
+      Item@1210017 : Record 27;
+      Vendor@1210001 : Record 23;
+      Customer@1210000 : Record 18;
+      GLItemRelation@1210026 : Record 5823;
+      GLEntry@1210027 : Record 17;
+      ValueEntryShipment@1210023 : Record 5802;
+      UpdateFlag@1210007 : Boolean;
+      LastKeyString@1210006 : Text[255];
+      CurrentKeyString@1210005 : Text[255];
+      SourceName@1210008 : Text[255];
+      AdjustmentText@1210011 : Text[30];
+      CurrentCostAmount@1210004 : Decimal;
+      CurrentSalesAmount@1210003 : Decimal;
+    BEGIN
+      UpdateFlag := FALSE;
+      LastKeyString := '';
+      CurrentKeyString := '';
+      CurrentSalesAmount := 0;
+      CurrentCostAmount := 0;
+      EntriesCount := 0;
+
+      CASE PassedShipmentDetailing OF
+        ShipmentDetailing::Document:
+          ValueEntryShipment.SETCURRENTKEY("Posting Date","Document No.","Document Type");
+        ShipmentDetailing::Item:
+          ValueEntryShipment.SETCURRENTKEY("Posting Date","Item No.");
+        ShipmentDetailing::Operation:
+          ValueEntryShipment.SETCURRENTKEY("Posting Date","Item No.");
+        ShipmentDetailing::Sum:
+          ValueEntryShipment.SETCURRENTKEY("Item No.");
+      END;
+
+      ValueEntryShipment.SETRANGE("Posting Date",StartDate,EndDate);
+      ValueEntryShipment.SETRANGE("Location Code",LocationCode);
+      IF ValueEntryShipment.FINDSET THEN
+        REPEAT
+          IF NOT ValueEntryShipment.IsDebit THEN BEGIN
+            CASE PassedShipmentDetailing OF
+              ShipmentDetailing::Document:
+                CurrentKeyString := STRSUBSTNO('%1|%2|%3',
+                    ValueEntryShipment."Document No.",
+                    ValueEntryShipment."Document Type",
+                    ValueEntryShipment."Posting Date");
+              ShipmentDetailing::Item:
+                CurrentKeyString := STRSUBSTNO('%1|%2',
+                    ValueEntryShipment."Posting Date",
+                    ValueEntryShipment."Item No.");
+              ShipmentDetailing::Operation:
+                CurrentKeyString := STRSUBSTNO('%1',
+                    ValueEntryShipment."Entry No.");
+              ShipmentDetailing::Sum:
+                CurrentKeyString := STRSUBSTNO('1',
+                    ValueEntryShipment."Entry No.");
+            END;
+
+            IF LastKeyString = CurrentKeyString THEN
+              UpdateFlag := TRUE
+            ELSE BEGIN
+              UpdateFlag := FALSE;
+              TempValueEntryShipment.INIT;
+              EntriesCount := EntriesCount + 1;
+              LastKeyString := CurrentKeyString;
+              CurrentSalesAmount := 0;
+              CurrentCostAmount := 0;
+            END;
+
+            IF PassedAmountType = AmountType::Price THEN
+              CurrentSalesAmount +=
+                CalcAmountFromSalesPrice(ErrorBuffer,ErrorsCount,ValueEntryShipment,PassedSalesType,SalesCode,UpdateFlag);
+            IF (PassedAmountType = AmountType::Cost) OR ShowCostShipment THEN BEGIN
+              CurrentCostAmount := CurrentCostAmount + ROUND(ValueEntryShipment."Cost Amount (Actual)");
+              TempValueEntryShipment."Valued Quantity" := -CurrentCostAmount;
+            END ELSE
+              TempValueEntryShipment."Valued Quantity" := -CurrentSalesAmount;
+
+            IF (PassedAmountType = AmountType::Cost) AND (PassedShipmentDetailing = ShipmentDetailing::Operation) THEN BEGIN
+              GLItemRelation.SETRANGE("Value Entry No.",ValueEntryShipment."Entry No.");
+              IF GLItemRelation.FINDSET THEN
+                REPEAT
+                  IF GLEntry.GET(GLItemRelation."G/L Entry No.") THEN
+                    IF (GLEntry.Amount > 0) XOR ((GLEntry."Debit Amount" < 0) OR (GLEntry."Credit Amount" < 0)) THEN
+                      TempValueEntryShipment."Job No." := GLEntry."G/L Account No."
+                    ELSE
+                      TempValueEntryShipment."Job Task No." := GLEntry."G/L Account No.";
+                UNTIL GLItemRelation.NEXT = 0;
+            END;
+
+            TempValueEntryShipment."Posting Date" := ValueEntryShipment."Posting Date";
+            TempValueEntryShipment."Sales Amount (Actual)" := CurrentSalesAmount;
+            TempValueEntryShipment."Cost Amount (Actual)" := CurrentCostAmount;
+            TempValueEntryShipment."Entry No." := EntriesCount;
+            TempValueEntryShipment."Item Ledger Entry Quantity" :=
+              TempValueEntryShipment."Item Ledger Entry Quantity" + ValueEntryShipment."Item Ledger Entry Quantity";
+            CASE PassedShipmentDetailing OF
+              ShipmentDetailing::Document:
+                BEGIN
+                  SourceName := '';
+                  AdjustmentText := '';
+                  CASE ValueEntryShipment."Source Type" OF
+                    ValueEntryShipment."Source Type"::Vendor:
+                      BEGIN
+                        Vendor.GET(ValueEntryShipment."Source No.");
+                        SourceName := Vendor."Search Name";
+                      END;
+                    ValueEntryShipment."Source Type"::Customer:
+                      BEGIN
+                        Customer.GET(ValueEntryShipment."Source No.");
+                        SourceName := Customer."Search Name";
+                      END;
+                  END;
+
+                  IF (PassedAmountType = AmountType::Cost) AND (TempValueEntryShipment."Item Ledger Entry Quantity" = 0) THEN
+                    AdjustmentText := AdjmtTxt;
+
+                  TempValueEntryShipment.Description := STRSUBSTNO('%1 %2 %3 %4',
+                      FORMAT(ValueEntryShipment."Item Ledger Entry Type"),
+                      AdjustmentText,
+                      ValueEntryShipment."Source No.",
+                      SourceName);
+                  TempValueEntryShipment."Document No." := ValueEntryShipment."Document No.";
+                END;
+              ShipmentDetailing::Item:
+                BEGIN
+                  Item.GET(ValueEntryShipment."Item No.");
+                  TempValueEntryShipment.Description := Item.Description;
+                END;
+              ShipmentDetailing::Operation:
+                BEGIN
+                  Item.GET(ValueEntryShipment."Item No.");
+                  TempValueEntryShipment."Document No." := ValueEntryShipment."Document No.";
+                  TempValueEntryShipment.Description := STRSUBSTNO('%1 %2',
+                      FORMAT(ValueEntryShipment."Item Ledger Entry Type"),
+                      Item.Description);
+                END;
+              ShipmentDetailing::Sum:
+                TempValueEntryShipment.Description := '';
+            END;
+            IF UpdateFlag THEN
+              TempValueEntryShipment.MODIFY
+            ELSE
+              TempValueEntryShipment.INSERT;
+          END;
+        UNTIL ValueEntryShipment.NEXT = 0;
+      ValueEntryShipment.RESET;
+    END;
+
+    LOCAL PROCEDURE CalcAmountFromSalesPrice@1210023(VAR ErrorBuffer@1210001 : Record 5802;VAR ErrorsCount@1210000 : Integer;ValueEntry@1210003 : Record 5802;SalesType@1210005 : Option;SalesCode@1210004 : Code[20];UpdateFlag@1210006 : Boolean) : Decimal;
+    VAR
+      SalesPrice@1210002 : Record 7002;
+    BEGIN
+      FilterSalesPrice(SalesPrice,ValueEntry,SalesType,SalesCode);
+      IF SalesPrice.FINDFIRST AND (SalesPrice.COUNT = 1) THEN
+        EXIT(ROUND(SalesPrice."Unit Price" * ValueEntry."Item Ledger Entry Quantity"));
+      IF NOT UpdateFlag THEN BEGIN
+        ErrorsCount := ErrorsCount + 1;
+        ErrorBuffer.INIT;
+        ErrorBuffer."Item No." := ValueEntry."Item No.";
+        ErrorBuffer."Posting Date" := ValueEntry."Posting Date";
+        IF SalesPrice.COUNT = 0 THEN
+          ErrorBuffer.Description := NoPriceFoundErr
+        ELSE
+          ErrorBuffer.Description := SeveralPricesFoundErr;
+        ErrorBuffer."Entry No." := ErrorsCount;
+        ErrorBuffer.INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcRcptResidOnStart@1210015(VAR ErrorBuffer@1210011 : Record 5802;VAR ErrorsCount@1210009 : Integer;StartDate@1210007 : Date;LocationCode@1210005 : Code[10];PassedAmountType@1210004 : Option;PassedSalesType@1210002 : Option;SalesCode@1210001 : Code[20]) ResidOnstart : Decimal;
+    VAR
+      Item@1210008 : Record 27;
+      ValueEntryReceipts@1210006 : Record 5802;
+      CurItemCode@1210003 : Code[30];
+      LastItemCode@1210000 : Code[30];
+    BEGIN
+      LastItemCode := '';
+      WITH ValueEntryReceipts DO BEGIN
+        SETCURRENTKEY("Item No.","Posting Date");
+        SETFILTER("Posting Date",'<%1',StartDate);
+        SETFILTER("Location Code",LocationCode);
+        IF FINDSET THEN
+          REPEAT
+            IF IsDebit THEN
+              IF PassedAmountType = AmountType::Cost THEN
+                ResidOnstart := ResidOnstart + ROUND("Cost Amount (Actual)")
+              ELSE BEGIN
+                CurItemCode := "Item No.";
+                IF CurItemCode <> LastItemCode THEN BEGIN
+                  Item.GET(CurItemCode);
+                  LastItemCode := CurItemCode;
+                END;
+                ResidOnstart +=
+                  CalcAmountFromSalesPrice(ErrorBuffer,ErrorsCount,ValueEntryReceipts,PassedSalesType,SalesCode,FALSE);
+              END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE FilterSalesPrice@1210020(VAR SalesPrice@1210000 : Record 7002;ValueEntry@1210001 : Record 5802;SalesType@1210003 : Option;SalesCode@1210004 : Code[20]);
+    VAR
+      Item@1210002 : Record 27;
+    BEGIN
+      WITH SalesPrice DO BEGIN
+        SETRANGE("Item No.",ValueEntry."Item No.");
+        SETRANGE("Currency Code",'');
+        SETRANGE("Minimum Quantity",0);
+        Item.GET(ValueEntry."Item No.");
+        SETRANGE("Unit of Measure Code",Item."Base Unit of Measure");
+        SETRANGE("Sales Code",SalesCode);
+        SETRANGE("Sales Type",SalesType + 1);
+        SETFILTER("Starting Date",'<=%1',ValueEntry."Posting Date");
+        SETFILTER("Ending Date",'>=%1|''''',ValueEntry."Posting Date");
+      END;
+    END;
+
+    PROCEDURE InitReportTemplate@1210001();
+    VAR
+      InventorySetup@1210000 : Record 313;
+    BEGIN
+      InventorySetup.GET;
+      ExcelReportBuilderManager.InitTemplate(InventorySetup."TORG-29 Template Code");
+    END;
+
+    PROCEDURE SetMainSheet@1210011();
+    BEGIN
+      ExcelReportBuilderManager.SetSheet('Sheet1');
+    END;
+
+    PROCEDURE SetErrorsSheet@1210013();
+    BEGIN
+      ExcelReportBuilderManager.SetSheet('Sheet2');
+    END;
+
+    PROCEDURE FillHeader@1210000(DepartmentName@1210003 : Text;OperationType@1210000 : Text;ReportNo@1210002 : Text;ReportDate@1210004 : Text;StartDate@1210005 : Date;EndDate@1210006 : Text;RespName@1210007 : Text;RespNo@1210008 : Text;ResidOnstart@1210009 : Text);
+    VAR
+      CompanyInfo@1210001 : Record 79;
+    BEGIN
+      CompanyInfo.GET;
+      ExcelReportBuilderManager.AddSection('REPORTHEADER');
+      ExcelReportBuilderManager.AddDataToSection(
+        'CompanyName',StdRepMgt.GetCompanyName);
+      ExcelReportBuilderManager.AddDataToSection(
+        'DepartmentName',DepartmentName);
+      ExcelReportBuilderManager.AddDataToSection(
+        'OKPO',CompanyInfo."OKPO Code");
+
+      ExcelReportBuilderManager.AddDataToSection('OperationType',OperationType);
+      ExcelReportBuilderManager.AddDataToSection('DocumentNumber',ReportNo);
+      ExcelReportBuilderManager.AddDataToSection('DocumentDate',ReportDate);
+      ExcelReportBuilderManager.AddDataToSection('PeriodDateBegin',FORMAT(StartDate));
+      ExcelReportBuilderManager.AddDataToSection('PeriodDateEnd',EndDate);
+      ExcelReportBuilderManager.AddDataToSection('MatResPerson',RespName);
+      ExcelReportBuilderManager.AddDataToSection('TabNumber',RespNo);
+      ExcelReportBuilderManager.AddDataToSection(
+        'BalanceDateBegin',FORMAT(DATE2DMY(StartDate,1)) + ' ' + LocMgt.Month2Text(StartDate));
+      ExcelReportBuilderManager.AddDataToSection('BalanceDateBeginYear',FORMAT(DATE2DMY(StartDate,3)));
+      ExcelReportBuilderManager.AddDataToSection('GoodsBalanceBegin',ResidOnstart);
+    END;
+
+    PROCEDURE FillPageHeader@1210004(LineEntryType@1210000 : Option);
+    BEGIN
+      CASE LineEntryType OF
+        EntryType::Receipt:
+          ExcelReportBuilderManager.AddSection('RECEIPTPAGEHEADER');
+        EntryType::Shipment:
+          ExcelReportBuilderManager.AddSection('ISSUEPAGEHEADER');
+      END;
+    END;
+
+    PROCEDURE FillErrorReportHeader@1210014();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('ERRORHEADER');
+    END;
+
+    PROCEDURE FillLine@1210003(Name@1210000 : Text;DocDate@1210001 : Text;DocNo@1210002 : Text;Qty@1210003 : Text;JobNo@1210004 : Text;JobTaskNo@1210005 : Text;LineEntryType@1210006 : Option);
+    BEGIN
+      IF NOT ExcelReportBuilderManager.TryAddSectionWithPlaceForFooter('BODY',GetFooterSectionName(LineEntryType)) THEN BEGIN
+        ExcelReportBuilderManager.AddPagebreak;
+        FillPageHeader(LineEntryType);
+        ExcelReportBuilderManager.AddSection('BODY');
+      END;
+
+      ExcelReportBuilderManager.AddDataToSection('LineName',Name);
+      ExcelReportBuilderManager.AddDataToSection('LineDocDate',DocDate);
+      ExcelReportBuilderManager.AddDataToSection('LineDocNum',DocNo);
+      ExcelReportBuilderManager.AddDataToSection('LineAmount',Qty);
+      ExcelReportBuilderManager.AddDataToSection('JobNo',JobNo);
+      ExcelReportBuilderManager.AddDataToSection('JobTaskNo',JobTaskNo);
+    END;
+
+    PROCEDURE FillErrorLine@1210017(Date@1210000 : Text;ItemNo@1210001 : Text;Description@1210002 : Text);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('ERRORBODY');
+      ExcelReportBuilderManager.AddDataToSection('ErrorDate',Date);
+      ExcelReportBuilderManager.AddDataToSection('ErrorItemNo',ItemNo);
+      ExcelReportBuilderManager.AddDataToSection('ErrorDescription',Description);
+    END;
+
+    PROCEDURE FillRcptPageFooter@1210012(ReceiptsTotal@1210000 : Text;ReceiptsWithCostsTotal@1210001 : Text;ReceiptsWithResidTotal@1210002 : Text);
+    BEGIN
+      ExcelReportBuilderManager.AddSection(GetFooterSectionName(EntryType::Receipt));
+      ExcelReportBuilderManager.AddDataToSection('ReceiptGoodsSum',ReceiptsTotal);
+      ExcelReportBuilderManager.AddDataToSection('ReceiptPlusCostsGoodsSum',ReceiptsWithCostsTotal);
+      ExcelReportBuilderManager.AddDataToSection('ReceiptPlusBalanceGoodsSum',ReceiptsWithResidTotal);
+    END;
+
+    PROCEDURE FillShptPageFooter@1210007(EndDate@1210006 : Date;ShipmentTotal@1210007 : Text;Total@1210000 : Text;Attaches@1210001 : Text;AcceptorJobTitle@1210002 : Text;AcceptorName@1210003 : Text;ResponsibleJobTitle@1210005 : Text;ResponsibleName@1210004 : Text);
+    BEGIN
+      ExcelReportBuilderManager.AddSection(GetFooterSectionName(EntryType::Shipment));
+      ExcelReportBuilderManager.AddDataToSection(
+        'BalanceDateEnd',FORMAT(DATE2DMY(EndDate,1)) + ' ' + LocMgt.Month2Text(EndDate));
+      ExcelReportBuilderManager.AddDataToSection('BalanceDateEndYear',FORMAT(DATE2DMY(EndDate,3)));
+      ExcelReportBuilderManager.AddDataToSection('IssueGoodsSum',ShipmentTotal);
+      ExcelReportBuilderManager.AddDataToSection('GoodsBalanceEnd',Total);
+      ExcelReportBuilderManager.AddDataToSection('AttachesNo',Attaches);
+      ExcelReportBuilderManager.AddDataToSection('AccountantTitle',AcceptorJobTitle);
+      ExcelReportBuilderManager.AddDataToSection('AccountantName',AcceptorName);
+      ExcelReportBuilderManager.AddDataToSection('MatResPersonTitle',ResponsibleJobTitle);
+      ExcelReportBuilderManager.AddDataToSection('MatResPersonName',ResponsibleName);
+    END;
+
+    PROCEDURE FillIssueHeader@1210006(ShipmentTotal@1210000 : Text);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('ISSUEHEADER');
+      ExcelReportBuilderManager.AddDataToSection('ShipmentTotal',ShipmentTotal);
+    END;
+
+    PROCEDURE ExportData@1210002();
+    BEGIN
+      ExcelReportBuilderManager.ExportData;
+    END;
+
+    PROCEDURE ExportDataFile@1210010(FileName@1210000 : Text);
+    BEGIN
+      ExcelReportBuilderManager.ExportDataToClientFile(FileName);
+    END;
+
+    PROCEDURE CheckSignature@1470002(VAR DocSign@1470000 : Record 12420;ActNo@1210001 : Code[20];EmpType@1470001 : Integer);
+    VAR
+      DocSignMgt@1210000 : Codeunit 12420;
+    BEGIN
+      DocSignMgt.GetDocSign(
+        DocSign,DATABASE::"Invent. Act Header",
+        0,ActNo,EmpType,TRUE);
+    END;
+
+    PROCEDURE NewPage@1210005();
+    BEGIN
+      ExcelReportBuilderManager.AddPagebreak;
+    END;
+
+    PROCEDURE GetRcptType@1210008() : Integer;
+    BEGIN
+      EXIT(EntryType::Receipt);
+    END;
+
+    PROCEDURE GetShptType@1210009() : Integer;
+    BEGIN
+      EXIT(EntryType::Shipment);
+    END;
+
+    LOCAL PROCEDURE GetFooterSectionName@1210016(LineEntryType@1210000 : Option) : Text;
+    BEGIN
+      CASE LineEntryType OF
+        EntryType::Receipt:
+          EXIT('RECEIPTFOOTER');
+        EntryType::Shipment:
+          EXIT('REPORTFOOTER');
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,278 @@
+OBJECT Report 50052 Copy G/L Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:03;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Copy G/L Entry;
+               RUS=Копировать Фин. Книга Операций];
+    ShowPrintStatus=Yes;
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   IsReverseAmount := TRUE;
+                   IsCorrection    := TRUE;
+                   IsUsePostFix    := TRUE;
+                   DocNoExample    := '000000.NR';
+                 END;
+
+    UseRequestPage=Yes;
+  }
+  DATASET
+  {
+    { 7069;    ;DataItem;                    ;
+               DataItemTable=Table17;
+               OnPreDataItem=BEGIN
+                               IF (Template_Name = '') OR
+                                  (Batch_Name = '') THEN ERROR(Text000);
+
+                               IF "G/L Entry".GETFILTERS = '' THEN ERROR(Text001);
+
+                               GenJnlLine.SETRANGE("Journal Template Name", Template_Name);
+                               GenJnlLine.SETRANGE("Journal Batch Name"   , Batch_Name);
+                               IF GenJnlLine.FIND('+') THEN BEGIN
+                                                         iLineNo := GenJnlLine."Line No." + 10000;
+                                                         IF GenJnlLine."Document No." <> '' THEN
+                                                              cNextDocNo := INCSTR(GenJnlLine."Document No.");
+                                                        END
+                                                       ELSE
+                                                         iLineNo := 10000;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF SkipRecord("G/L Entry") THEN
+                                    CurrReport.SKIP;
+
+                                  GenJnlLine.INIT;
+                                  GenJnlLine."Journal Template Name" := Template_Name;
+                                  GenJnlLine."Journal Batch Name"    := Batch_Name;
+                                  GenJnlLine."Line No."              := iLineNo;
+
+                                  GenJnlTemplate.GET(Template_Name);
+                                  GenJnlBatch.GET(Template_Name,Batch_Name);
+                                  GenJnlLine."Source Code" := GenJnlTemplate."Source Code";
+                                  GenJnlLine."Reason Code" := GenJnlBatch."Reason Code";
+                                  GenJnlLine."Posting No. Series" := GenJnlBatch."Posting No. Series";
+                                  GenJnlLine."Bal. Account Type" := GenJnlBatch."Bal. Account Type";
+
+                                  IF (("Source Type"<>0) AND (("Source Type"<>"Source Type"::Customer) OR ("Gen. Posting Type"=0)))
+                                  THEN BEGIN
+                                    GenJnlLine."Account Type"          := "Source Type";
+                                    GenJnlLine."Account No."           := "Source No.";
+                                  END ELSE BEGIN
+                                    GenJnlLine."Account Type"          := GenJnlLine."Account Type"::"G/L Account";
+                                    GenJnlLine."Account No."           := "G/L Account No.";
+                                  END;
+
+                                  //Подстановка учетной группы
+                                  IF (GenJnlLine."Account Type"=GenJnlLine."Account Type"::Customer) THEN BEGIN
+                                    CustLE.RESET;
+                                    CustLE.SETRANGE("Transaction No.","Transaction No.");
+                                    CustLE.SETRANGE("Customer No.","Source No.");
+                                    IF CustLE.FIND('-') THEN
+                                      GenJnlLine."Posting Group":=CustLE."Customer Posting Group";
+                                  END;
+
+                                  IF (GenJnlLine."Account Type"=GenJnlLine."Account Type"::Vendor) THEN BEGIN
+                                    VendLE.RESET;
+                                    VendLE.SETRANGE("Transaction No.","Transaction No.");
+                                    VendLE.SETRANGE("Vendor No.","Source No.");
+                                    IF VendLE.FIND('-') THEN
+                                      GenJnlLine."Posting Group":=VendLE."Vendor Posting Group";
+                                  END;
+
+
+                                  GenJnlLine."Posting Date"          := "Posting Date";
+                                  GenJnlLine."Document Type"         := "Document Type";
+                                  IF IsUsePostFix THEN
+                                       GenJnlLine."Document No."          := COPYSTR("Document No." + COPYSTR(DocNoExample, 7, STRLEN(DocNoExample)-6),1,20)
+                                   ELSE
+                                       BEGIN
+                                        GenJnlBatch.GET(Template_Name,Batch_Name);
+                                        IF GenJnlBatch."No. Series" <> '' THEN BEGIN
+                                             CLEAR(NoSeriesMgt);
+                                             IF  cNextDocNo = '' THEN
+                                                  GenJnlLine."Document No." := NoSeriesMgt.TryGetNextNo(GenJnlBatch."No. Series","Posting Date")
+                                              ELSE
+                                                  GenJnlLine."Document No." := cNextDocNo;
+                                            END;
+                                       END;
+                                  GenJnlLine.Description             := Description;
+
+                                  //Для непустого общего типа учета прибавляем к сумме НДС
+                                  IF ("G/L Entry"."Gen. Posting Type"<>0) OR ("Source Type"="Source Type"::Customer) THEN
+                                    GenJnlLine.Amount                  := Amount+"VAT Amount"
+                                  ELSE
+                                    GenJnlLine.Amount                  := Amount;
+
+                                  GenJnlLine."Amount (LCY)"          := Amount;
+
+                                  GenJnlLine."VAT Amount"            := "VAT Amount";
+                                  GenJnlLine."VAT Base Amount"       := Amount - "VAT Amount";
+                                  IF IsReverseAmount THEN BEGIN
+                                    GenJnlLine.Amount := -GenJnlLine.Amount;
+
+                                    GenJnlLine."Amount (LCY)"          := -GenJnlLine."Amount (LCY)";
+
+                                    GenJnlLine."VAT Amount" := -GenJnlLine."VAT Amount";
+                                    GenJnlLine."VAT Base Amount" := -GenJnlLine."VAT Base Amount";
+                                    END;
+                                  GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+                                  GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+
+                                  GenJnlLine."System-Created Entry"  := FALSE;
+
+                                  GenJnlLine."Business Unit Code"    := "Business Unit Code";
+                                  GenJnlLine."Reason Code"           := "Reason Code";
+                                  GenJnlLine."Gen. Posting Type"     := "Gen. Posting Type";
+                                  GenJnlLine.Correction              := ("Debit Amount" < 0) OR ("Credit Amount" < 0);
+                                  IF IsCorrection THEN
+                                    GenJnlLine.Correction := NOT GenJnlLine.Correction;
+
+                                  GenJnlLine.VALIDATE(Correction);
+                                  IF IsCorrection AND IsReverseAmount THEN BEGIN
+                                    IF "Document Type"="Document Type"::Invoice THEN
+                                      GenJnlLine."Document Type":=GenJnlLine."Document Type"::"Credit Memo";
+                                    IF "Document Type"="Document Type"::"Credit Memo" THEN
+                                      GenJnlLine."Document Type":=GenJnlLine."Document Type"::Payment;
+                                    IF "Document Type"="Document Type"::"Credit Memo" THEN
+                                      GenJnlLine."Document Type":=0;
+                                  END;
+
+                                  IF GenJnlLine."Document Type"=GenJnlLine."Document Type"::Refund THEN
+                                     GenJnlLine.Prepayment:=(GenJnlLine."Account Type" = GenJnlLine."Account Type"::Customer) OR
+                                                            (GenJnlLine."Account Type" = GenJnlLine."Account Type"::Vendor);
+
+                                  GenJnlLine."Document Date"         := "Document Date";
+                                  IF IsUsePostFix THEN
+                                       GenJnlLine."External Document No." := "External Document No."
+                                   ELSE
+                                       GenJnlLine."External Document No." := "Document No.";
+                                  GenJnlLine."Source Type"           := "Source Type";
+                                  GenJnlLine."Source No."            := "Source No.";
+                                  GenJnlLine."Tax Area Code"         := "Tax Area Code";
+                                  GenJnlLine."Tax Liable"            := "Tax Liable";
+                                  GenJnlLine."Tax Group Code"        := "Tax Group Code";
+                                  GenJnlLine."Use Tax"               := "Use Tax";
+
+                                  GenJnlLine."Agreement No." := "Agreement No.";
+
+                                  IF "Gen. Posting Type"<>0 THEN BEGIN
+                                    GenJnlLine."VAT Bus. Posting Group" := "VAT Bus. Posting Group";
+                                    GenJnlLine."VAT Prod. Posting Group" := "VAT Prod. Posting Group";
+                                    GenJnlLine."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+                                    GenJnlLine."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+
+                                  END;
+
+                                  //Для непустого общего типа учета прибавляем к сумме НДС
+                                  IF ("Gen. Posting Type"<>0) AND ("VAT Prod. Posting Group"<>'') THEN
+                                    GenJnlLine.VALIDATE("VAT Prod. Posting Group");
+
+                                  GenJnlLine.INSERT;
+
+                                  LdgEntryDim.SETRANGE("Table ID", DATABASE::"G/L Entry");
+                                  LdgEntryDim.SETRANGE("Entry No.", "Entry No.");
+                                  DimMgmt.MoveLedgEntryDimToJnlLineDim(LdgEntryDim, JnlLineDim, DATABASE::"Gen. Journal Line",
+                                                                       GenJnlLine."Journal Template Name",
+                                                                       GenJnlLine."Journal Batch Name",
+                                                                       GenJnlLine."Line No.", 0);
+
+                                  iLineNo := iLineNo + 10000;
+                                  COMMIT;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT IsUsePostFix THEN
+                                     GenJnlLine."Document No." := NoSeriesMgt.GetNextNo(GenJnlBatch."No. Series","Posting Date",FALSE);
+                              END;
+
+               ReqFilterFields=Entry No.,Document Type,Document No.,Posting Date,G/L Account No.,Global Dimension 1 Code,Global Dimension 2 Code,Description }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      IsReverseAmount@1210000 : Boolean;
+      IsCorrection@1210001 : Boolean;
+      Template_Name@1210002 : Code[10];
+      Batch_Name@1210003 : Code[10];
+      DimMgmt@1210004 : Codeunit 408;
+      GenJnlLine@1210005 : Record 81;
+      JnlLineDim@1210006 : Record 356;
+      LdgEntryDim@1210008 : Record 355;
+      iLineNo@1210007 : Integer;
+      Text000@1210009 : TextConst 'ENU=Gen. Journal Templatet and Gen. Journal Batch are required;RUS=Фин. Журнал Шаблон и Фин. Журнал Раздел не указаны';
+      Text001@1210010 : TextConst 'ENU=G/L Entry Filter is not set;RUS=Фин. Книга Операций Фильтр не установлен';
+      DocNoExample@1210011 : Code[20];
+      IsUsePostFix@1000000000 : Boolean;
+      GenJnlBatch@1000000001 : Record 232;
+      GenJnlTemplate@1000000007 : Record 80;
+      NoSeriesMgt@1000000002 : Codeunit 396;
+      iLineNoS@1000000003 : Integer;
+      cNextDocNo@1000000004 : Code[20];
+      CustLE@1000000005 : Record 21;
+      VendLE@1000000006 : Record 25;
+
+    PROCEDURE SetJnlParam@1210001(TemplateName@1210002 : Code[10];BatchName@1210003 : Code[10]);
+    VAR
+      GenJnlBatch@1210000 : Record 232;
+      GenJnlTemplate@1210001 : Record 80;
+    BEGIN
+      GenJnlTemplate.GET(TemplateName);
+      GenJnlBatch.GET(TemplateName, BatchName);
+
+      Template_Name := TemplateName;
+      Batch_Name    := BatchName;
+    END;
+
+    PROCEDURE SkipRecord@1000000000(Rec@1000000000 : Record 17) : Boolean;
+    VAR
+      VATEntry@1000000001 : Record 254;
+    BEGIN
+      WITH Rec DO BEGIN
+        VATEntry.RESET;
+        VATEntry.SETRANGE("Transaction No.","Transaction No.");
+        VATEntry.SETRANGE("Document No.","Document No.");
+        VATEntry.SETRANGE(Amount,Amount);
+        IF VATEntry.FIND('-') THEN
+           EXIT(TRUE);
+        VATEntry.SETRANGE(Amount,-Amount);
+        IF VATEntry.FIND('-') THEN
+           EXIT(TRUE);
+        VATEntry.SETRANGE(Amount);
+        VATEntry.SETRANGE("Unrealized Amount",Amount);
+        IF VATEntry.FIND('-') THEN
+           EXIT(TRUE);
+        VATEntry.SETRANGE("Unrealized Amount",-Amount);
+        IF VATEntry.FIND('-') THEN
+           EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

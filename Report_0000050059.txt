@@ -1,0 +1,1251 @@
+OBJECT Report 50059 Loans - Interest Calculation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12.07.17;
+    Time=16:19:18;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Loans - Interest Calculation;
+               RUS=Кредиты/Займы - Расчет Процентов];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   StandParam.RESET;
+                   StandParam.SETRANGE("Report ID",REPORT::"Loans - Interest Post");
+                   IF StandParam.FINDFIRST THEN BEGIN
+                     IF (StandParam."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                       Periodical := Periodical::Day;
+                       IsRecalc := TRUE;
+                       IF NOT IsPlanning THEN BEGIN
+                         DateStart:=CALCDATE(StandParam."Posting Date",WORKDATE);
+                         DateEnd :=DateStart;
+                       END;
+                       IsCreateJournalLine:=TRUE;
+                   END ELSE
+                     IF GUIALLOWED THEN
+                       ERROR(Text50002+StandParam.TABLECAPTION);
+                 END;
+
+    OnPreReport=BEGIN
+                  IF NOT CurrReport.USEREQUESTPAGE THEN BEGIN
+                    StandParam.RESET;
+                    StandParam.SETRANGE("Report ID",REPORT::"Loans - Interest Post");
+                    IF StandParam.FINDFIRST THEN BEGIN
+                      IF (StandParam."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                        Periodical := Periodical::Day;
+                        IF NOT IsPlanning THEN BEGIN
+                          DateStart:=CALCDATE(StandParam."Posting Date",WORKDATE);
+                          DateEnd :=DateStart;
+                        END;
+                        IsCreateJournalLine:=TRUE;
+                    END ELSE
+                      IF GUIALLOWED THEN
+                        ERROR(Text50002+StandParam.TABLECAPTION);
+                  END;
+                  IF GUIALLOWED THEN
+                    Window.OPEN(Text003+Text004);
+                  CLEAR(InterestPost);
+                END;
+
+    OnPostReport=BEGIN
+                   IF GUIALLOWED THEN
+                     Window.CLOSE;
+                 END;
+
+  }
+  DATASET
+  {
+    { 1101495000;;DataItem;Agreement Details ;
+               DataItemTable=Table50096;
+               OnPreDataItem=BEGIN
+                               GLSetup.GET;
+                               GLSetup.TESTFIELD("Loan Calc. First Date");
+                               SETCURRENTKEY("Source Type","Source No.","Agreement No.","Action Date");
+                               SETRANGE("Condition Type","Condition Type"::New);
+                               SETRANGE("Interest Calc. Periodicity",Periodical);
+                               SETRANGE(Blocked,FALSE);
+                               AgreementDetail1.COPYFILTERS("Agreement Details");
+                               tmpCustLE.DELETEALL;
+                               tmpVendLE.DELETEALL;
+
+                               //NC >>
+                               //NC NOS-26 > SPA
+                               {
+                               IF ExcelOutput THEN BEGIN
+                                 CLEAR(xlApp);
+                                 CREATE(xlApp);
+                                 xlApp.Application.Visible(FALSE);
+                                 xlApp.Workbooks.Add;
+                                 tab[1]:=9;
+                                 intIndicatorCounter :=0;
+                               END;
+                               }
+                               //NC NOS-26 > SPA
+                               //NC <<
+
+                               //NC NCS-1051.3 > DP
+                               IF CustLE.FINDLAST THEN
+                                 CustNextEntryNo := CustLE."Entry No.";
+                               IF VendLE.FINDLAST THEN
+                                 VendNextEntryNo := VendLE."Entry No.";
+                               //NC NCS-1051.3 < DP
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  PostedAmt@1101495000 : Decimal;
+                                BEGIN
+                                  IF GUIALLOWED THEN
+                                    Window.UPDATE(1,STRSUBSTNO(Text002,FORMAT("Agreement Details"."Source Type"),
+                                                   "Agreement Details"."Source No.",
+                                                   "Agreement Details"."Agreement No.",
+                                                   "Agreement Details"."Condition No."));
+
+                                  //NC NCS-1085 > DP
+                                  IF NOT IsActiveAgreement THEN
+                                    CurrReport.SKIP;
+                                  //NC NCS-1085 < DP
+
+                                  //NC APCOC-56 > DP
+                                  PostedAmt := 0;
+                                  IF Periodical = Periodical::Day THEN BEGIN
+
+                                    //NC NCS-1069 > DP
+                                    IF "Finish Date" < DateStart THEN
+                                      CurrReport.SKIP;
+                                    //NC NCS-1069 > DP
+
+                                    DatePeriodStart := GetFirstInterestDate;
+                                    PostedAmt := CalcPostInterest("Agreement Details"."Source Type",DatePeriodStart,DateEnd,"Agreement Details");
+                                    LastPostInterestDate := GetLastPostInterestDate;
+                                    IF DatePeriodStart = 0D THEN
+                                      DatePeriodStart := DateStart;
+                                  END ELSE
+                                  //NC APCOC-56 < DP
+                                    DatePeriodStart := DateStart;
+
+                                  DatePeriodEnd := DateEnd;
+                                  InterestAmt :=0;
+                                  NoInterestDays := 0;
+
+                                  IsNeedCalcMain1 := CheckCalcMain;
+
+                                  ChangedAgreementDetails.RESET;
+                                  ChangedAgreementDetails.SETCURRENTKEY("Source Type","Source No.","Agreement No.","Action Date");
+                                  ChangedAgreementDetails.SETRANGE("Source Type","Source Type");
+                                  ChangedAgreementDetails.SETRANGE("Source No.","Source No.");
+                                  ChangedAgreementDetails.SETRANGE("Agreement No.","Agreement No.");
+                                  ChangedAgreementDetails.SETRANGE("Condition Type",ChangedAgreementDetails."Condition Type"::Change);
+                                  ChangedAgreementDetails.SETRANGE("Changed Condition No.","Condition No.");
+                                  ChangedAgreementDetails.SETRANGE(Blocked,FALSE);
+                                  IF ChangedAgreementDetails.FINDSET THEN
+                                    REPEAT
+                                      ProcessAgreementDetail(ChangedAgreementDetails,DatePeriodStart,DatePeriodEnd);
+                                    UNTIL ChangedAgreementDetails.NEXT=0;
+
+                                  ProcessAgreementDetail("Agreement Details",DatePeriodStart,DatePeriodEnd);
+
+                                  IF ROUND((InterestAmt-PostedAmt),GLSetup."Amount Rounding Precision")<>0 THEN BEGIN
+                                    AgreementAcrualSchedule.INIT;
+                                    AgreementAcrualSchedule."Source Type" := "Agreement Details"."Source Type";
+                                    AgreementAcrualSchedule."Source No." := "Agreement Details"."Source No.";
+                                    AgreementAcrualSchedule."Agreement No." := "Agreement Details"."Agreement No.";
+                                    AgreementAcrualSchedule."Agreement Condition No." := "Agreement Details"."Condition No.";
+                                    AgreementAcrualSchedule.Type := AgreementAcrualSchedule.Type::Accrual;
+                                    IF Periodical=Periodical::Day THEN
+                                      AgreementAcrualSchedule.Date := DateEnd
+                                    ELSE
+                                    AgreementAcrualSchedule.Date := DatePeriodEnd;
+                                    AgreementAcrualSchedule."Currency Code" := "Agreement Details"."Currency Code";
+                                    AgreementAcrualSchedule.Amount := ROUND((InterestAmt-PostedAmt),GLSetup."Amount Rounding Precision");
+
+                                    AgreementAcrualSchedule."Period Start" := DateStart;
+                                    AgreementAcrualSchedule."Period End" := DateEnd;
+                                    //NC APCOC-56 > DP
+                                    {
+                                    AgreementAcrualSchedule."Interest Calc. No. of Days" := NoInterestDays;
+                                    }
+                                    IF LastPostInterestDate<>0D THEN
+                                      AgreementAcrualSchedule."Interest Calc. No. of Days" := DatePeriodEnd - LastPostInterestDate
+                                    ELSE
+                                      AgreementAcrualSchedule."Interest Calc. No. of Days" := DatePeriodEnd - GetFirstInterestDate+1;
+                                    //NC APCOC-56 < DP
+                                    //NC NCS-1268 > DP
+                                    {
+                                    IF "Agreement Details"."Currency Code"<>'' THEN
+                                    }
+                                    IF ("Agreement Details"."Currency Code"<>'') AND ("Agreement Details"."Currency Code"<>GLSetup."LCY Code") THEN
+                                    //NC NCS-1268 < DP
+                                      AgreementAcrualSchedule."Amount (LCY)" :=
+                                      ROUND(CurrencyExchangeRate.ExchangeAmtFCYToLCY(DatePeriodEnd,"Agreement Details"."Currency Code",AgreementAcrualSchedule.Amount,
+                                          CurrencyExchangeRate.ExchangeRate(DatePeriodEnd,"Agreement Details"."Currency Code")),GLSetup."Amount Rounding Precision")
+                                    ELSE
+                                      AgreementAcrualSchedule."Amount (LCY)" :=ROUND(AgreementAcrualSchedule.Amount,GLSetup."Amount Rounding Precision");
+                                    IF NOT IsRecalc AND (AgreementAcrualSchedule.Amount<>0) THEN BEGIN
+                                      AgreementAcrualSchedule.INSERT;
+                                      LineNo := LineNo +1;
+                                      IF GUIALLOWED THEN
+                                        Window.UPDATE(2,LineNo);
+                                    END ELSE
+                                      IF NOT AgreementAcrualSchedule.INSERT THEN
+                                        IF NOT AgreementAcrualSchedule.Posted THEN BEGIN
+                                          AgreementAcrualSchedule.MODIFY;
+                                          LineNo := LineNo +1;
+                                          IF GUIALLOWED THEN
+                                            Window.UPDATE(2,LineNo);
+                                        END;
+                                     "Interest Last Date" := DatePeriodEnd;
+                                     MODIFY;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                //NC >>
+                                //NC NOS-26 > SPA
+                                IF ExcelOutput THEN
+                                  ExcelBuffer.CreateBookAndOpenExcel('',ExcelFileSheetTxt,'',COMPANYNAME,USERID);
+                                {
+                                IF ExcelOutput THEN BEGIN
+                                  xlApp.Visible(TRUE);
+                                  CLEAR(xlApp);
+                                END;
+                                }
+                                //NC NOS-26 < SPA
+                                //NC <<
+
+                                IF IsCreateJournalLine THEN BEGIN
+                                  InterestPost.SetParameters(DateStart,
+                                                             DateEnd);
+                                  InterestPost.SETTABLEVIEW(AgreementDetail1);
+                                  InterestPost.USEREQUESTPAGE(FALSE);
+                                  InterestPost.RUN;
+                                END;
+                              END;
+
+               ReqFilterFields=Source Type,Source No.,Agreement No.,Condition No. }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Field  ;
+                  CaptionML=[ENU=Calc at Date;
+                             RUS=Расчет на Дату];
+                  SourceExpr=DateStart;
+                  OnValidate=BEGIN
+                               DateEnd := DateStart;
+                             END;
+                              }
+
+      { 1101495002;1;Field  ;
+                  CaptionML=[ENU=Recalculation;
+                             RUS=Пересчет];
+                  SourceExpr=IsRecalc }
+
+      { 1101495003;1;Field  ;
+                  CaptionML=[ENU=Create Gen. Journal Line;
+                             RUS=Создать Фин. Журнал Строки];
+                  SourceExpr=IsCreateJournalLine }
+
+      { 1101495004;1;Field  ;
+                  CaptionML=[ENU=Excel Output;
+                             RUS=Детали в Excel];
+                  SourceExpr=ExcelOutput }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CustLE@1101495046 : Record 21;
+      VendLE@1101495045 : Record 25;
+      CustDtldLE@1101495044 : Record 379;
+      VendDtldLE@1101495043 : Record 380;
+      GLSetup@1101495037 : Record 98;
+      AgreementAcrualSchedule@1101495036 : Record 50097;
+      CurrencyExchangeRate@1101495017 : Record 330;
+      AgreementDetail1@1101495014 : Record 50096;
+      ChangedAgreementDetails@1101495013 : Record 50096;
+      tmpCustLE@1101495010 : TEMPORARY Record 21;
+      tmpVendLE@1101495009 : TEMPORARY Record 25;
+      StandParam@1101495004 : Record 50076;
+      ExcelBuffer@1101495028 : TEMPORARY Record 370;
+      ChangeDate@1101495031 : Page 12445;
+      InterestPost@1101495053 : Report 50063;
+      DateStart@1101495042 : Date;
+      DateEnd@1101495041 : Date;
+      DatePeriodStart@1101495040 : Date;
+      DatePeriodEnd@1101495039 : Date;
+      OldDatePeriodEnd@1101495015 : Date;
+      CalcDate@1101495005 : Date;
+      LastPostInterestDate@1101495002 : Date;
+      OldLEDate@1101495011 : Date;
+      InterestAmt@1101495035 : Decimal;
+      GlobalPrincipalAmount@1101495025 : Decimal;
+      GlobalInterestAmount@1101495024 : Decimal;
+      IsRecalc@1101495034 : Boolean;
+      TermFilter@1101495023 : Text[1024];
+      tab@1101495008 : Text[1];
+      IsNeedCalc@1101495022 : Boolean;
+      CalculateTillDate@1101495021 : Boolean INDATASET;
+      IsCreateJournalLine@1101495018 : Boolean;
+      IsNeedCalcMain1@1101495012 : Boolean;
+      ExcelOutput@1101495006 : Boolean;
+      IsPlanning@1101495003 : Boolean;
+      IsBaseRecalculated@1101495026 : Boolean;
+      Periodical@1101495027 : 'Day,Month,Quarter,Year';
+      LineNo@1101495020 : Integer;
+      NoInterestDays@1101495016 : Integer;
+      intIndicatorCounter@1101495007 : Integer;
+      CustNextEntryNo@1101495001 : Integer;
+      VendNextEntryNo@1101495000 : Integer;
+      Window@1101495019 : Dialog;
+      Text001@1101495052 : TextConst 'ENU=Interest was posted and can''t be changed;RUS=Начисление уже учтено и не может быть изменено';
+      Text002@1101495051 : TextConst 'RUS=%1 %2 %3 %4';
+      Text003@1101495050 : TextConst 'ENU=Agreement Detail Processing  #1##########\;RUS=Обработка Условий Договоров  #1##########\';
+      Text004@1101495049 : TextConst 'ENU=Inserting Shedule lines            #2##########;RUS=Вставка строк Графика              #2##########';
+      Text005@1101495048 : TextConst 'ENU=Interest Rate %1 at %2 wasn''t found.;RUS=Не найдена процентная ставка для %1 на %2.';
+      Text50001@1101495047 : TextConst 'ENU=<0D>;RUS=<0D>';
+      Text50002@1101495038 : TextConst 'ENU=Please set in;RUS="Не заполнены настройки в "';
+      ExcelFileSheetTxt@1101495030 : TextConst 'RUS=Sheet1';
+
+    PROCEDURE ProcessAgreementDetail@1000000009(CalcAgreementDetail@1000000000 : Record 50096;DateStartCalc@1000000001 : Date;DateEndCalc@1000000002 : Date);
+    VAR
+      DatePeriodStart1@1000000004 : Date;
+      DatePeriodEnd1@1000000003 : Date;
+      CurrInterestAmt@1000000005 : Decimal;
+      i@1101495000 : Integer;
+      YearStart@1101495001 : Integer;
+      YearEnd@1101495002 : Integer;
+      DatePeriodStart2@1101495003 : Date;
+      DatePeriodEnd2@1101495004 : Date;
+    BEGIN
+      DatePeriodStart1 := DateStartCalc;
+      DatePeriodEnd1 := DateEndCalc;
+
+      IF (CalcAgreementDetail."Interest Calc. Starting Date">DatePeriodStart) AND
+       (CalcAgreementDetail."Interest Calc. Starting Date"<=DatePeriodEnd) THEN
+       DatePeriodStart1 := CalcAgreementDetail."Interest Calc. Starting Date";
+
+      IF (CalcAgreementDetail."Finish Date">=DatePeriodStart) AND
+       (CalcAgreementDetail."Finish Date"<=DatePeriodEnd) THEN
+       DatePeriodEnd1 := CalcAgreementDetail."Finish Date";
+
+      IF CalcAgreementDetail."Finish Date"< DatePeriodStart THEN EXIT;
+
+      CASE CalcAgreementDetail."Source Type" OF
+        CalcAgreementDetail."Source Type"::Customer:
+        BEGIN
+
+          //NC NCS-1051.3 > DP
+          YearStart := DATE2DMY(DatePeriodStart1,3);
+          YearEnd := DATE2DMY(DatePeriodEnd1,3);
+          IF (YearStart<>YearEnd) AND
+           (CalcAgreementDetail."Quant.Days in Year"=CalcAgreementDetail."Quant.Days in Year"::Fact) THEN BEGIN
+            FOR i:= YearStart TO YearEnd DO BEGIN
+               IF i=YearStart THEN BEGIN
+                 DatePeriodStart2 := DatePeriodStart1;
+                 DatePeriodEnd2 := DMY2DATE(31,12,YearStart);
+                 tmpCustLE.INIT;
+                 CustNextEntryNo :=CustNextEntryNo+1;
+                 tmpCustLE."Entry No." := CustNextEntryNo;
+                 tmpCustLE."Customer No." := CalcAgreementDetail."Source No.";
+                 tmpCustLE."Agreement No." := CalcAgreementDetail."Agreement No.";
+                 tmpCustLE."Agreement Condition No." := CalcAgreementDetail."Condition No.";
+                 tmpCustLE."Posting Date" := DatePeriodEnd2;
+                 tmpCustLE.INSERT;
+               END ELSE
+                 IF i=YearEnd THEN BEGIN
+                   DatePeriodStart2 := DMY2DATE(1,1,YearEnd);
+                   DatePeriodEnd2 := DatePeriodEnd1;
+                 END ELSE BEGIN
+                   DatePeriodStart2 := DMY2DATE(1,1,i);
+                   DatePeriodEnd2 := DMY2DATE(31,12,i);
+                   tmpCustLE.INIT;
+                   CustNextEntryNo :=CustNextEntryNo+1;
+                   tmpCustLE."Entry No." := CustNextEntryNo;
+                   tmpCustLE."Customer No." := CalcAgreementDetail."Source No.";
+                   tmpCustLE."Agreement No." := CalcAgreementDetail."Agreement No.";
+                   tmpCustLE."Agreement Condition No." := CalcAgreementDetail."Condition No.";
+                   tmpCustLE."Posting Date" := DatePeriodEnd2;
+                   tmpCustLE.INSERT;
+
+                 END;
+              FilltmpLE(CalcAgreementDetail,DatePeriodStart2,DatePeriodEnd2);
+            END;
+          END ELSE
+          //NC NCS-1051.3 < DP
+
+          FilltmpLE(CalcAgreementDetail,DatePeriodStart1,DatePeriodEnd1);
+          tmpCustLE.RESET;
+          tmpCustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.");
+
+          //NC NCS-2374 > DP
+          tmpCustLE.SETRANGE("Customer No.", "Agreement Details"."Source No.");
+          //NC NCS-2374 < DP
+
+          tmpCustLE.SETRANGE("Agreement No.","Agreement Details"."Agreement No.");
+          tmpCustLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+          tmpCustLE.SETFILTER("Posting Date",'%1..%2',DatePeriodStart1,DatePeriodEnd1);
+          tmpCustLE.SETRANGE(Reversed,FALSE);
+          IF tmpCustLE.FINDSET THEN
+            REPEAT
+
+              OldDatePeriodEnd :=DatePeriodEnd1;
+              IF tmpCustLE."Posting Date">=DatePeriodStart1 THEN BEGIN
+                DatePeriodEnd1 := tmpCustLE."Posting Date";
+              END;
+              IsNeedCalc := IsNeedCalcMain1;
+              CurrInterestAmt :=0;
+              IF IsNeedCalc THEN BEGIN
+                CurrInterestAmt := CalcInterest(0,DatePeriodStart1,DatePeriodEnd1,CalcAgreementDetail);
+                InterestAmt +=CurrInterestAmt;
+                //NC MLN09.6 > DP
+                IF CurrInterestAmt<>0 THEN
+                //NC MLN09.6 < DP
+
+                //NC MLN09.7 > DP
+                  IF tmpCustLE."Posting Date"<>OldLEDate THEN
+                //NC MLN09.7 < DP
+                  NoInterestDays += DatePeriodEnd1 - DatePeriodStart1+1;
+              END;
+              DatePeriodStart1 := tmpCustLE."Posting Date"+1;
+              DatePeriodEnd1 :=OldDatePeriodEnd;
+              OldLEDate :=  tmpCustLE."Posting Date";
+            UNTIL tmpCustLE.NEXT=0;
+          IsNeedCalc := IsNeedCalcMain1;
+          CurrInterestAmt :=0;
+          IF IsNeedCalc THEN BEGIN
+            CurrInterestAmt := CalcInterest(0,DatePeriodStart1,DatePeriodEnd1,CalcAgreementDetail);
+            InterestAmt +=CurrInterestAmt;
+            //NC MLN09.6 > DP
+            IF CurrInterestAmt<>0 THEN
+
+            //NC MLN09.6 < DP
+              NoInterestDays += DatePeriodEnd1 - DatePeriodStart1+1;
+          END;
+        END;
+        CalcAgreementDetail."Source Type"::Vendor:
+        BEGIN
+
+          //NC NCS-1051.3 > DP
+          YearStart := DATE2DMY(DatePeriodStart1,3);
+          YearEnd := DATE2DMY(DatePeriodEnd1,3);
+          IF (YearStart<>YearEnd) AND
+           (CalcAgreementDetail."Quant.Days in Year"=CalcAgreementDetail."Quant.Days in Year"::Fact) THEN BEGIN
+            FOR i:= YearStart TO YearEnd DO BEGIN
+               IF i=YearStart THEN BEGIN
+                 DatePeriodStart2 := DatePeriodStart1;
+                 DatePeriodEnd2 := DMY2DATE(31,12,YearStart);
+                 tmpVendLE.INIT;
+                 VendNextEntryNo :=VendNextEntryNo+1;
+                 tmpVendLE."Entry No." := VendNextEntryNo;
+                 tmpVendLE."Vendor No." := CalcAgreementDetail."Source No.";
+                 tmpVendLE."Agreement No." := CalcAgreementDetail."Agreement No.";
+                 tmpVendLE."Agreement Condition No." := CalcAgreementDetail."Condition No.";
+                 tmpVendLE."Posting Date" := DatePeriodEnd2;
+                 tmpVendLE.INSERT;
+               END ELSE
+                 IF i=YearEnd THEN BEGIN
+                   DatePeriodStart2 := DMY2DATE(1,1,YearEnd);
+                   DatePeriodEnd2 := DatePeriodEnd1;
+                 END ELSE BEGIN
+                   DatePeriodStart2 := DMY2DATE(1,1,i);
+                   DatePeriodEnd2 := DMY2DATE(31,12,i);
+                   tmpVendLE.INIT;
+                   VendNextEntryNo :=VendNextEntryNo+1;
+                   tmpVendLE."Entry No." := VendNextEntryNo;
+                   tmpVendLE."Vendor No." := CalcAgreementDetail."Source No.";
+                   tmpVendLE."Agreement No." := CalcAgreementDetail."Agreement No.";
+                   tmpVendLE."Agreement Condition No." := CalcAgreementDetail."Condition No.";
+                   tmpVendLE."Posting Date" := DatePeriodEnd2;
+                   tmpVendLE.INSERT;
+                 END;
+              FilltmpLE(CalcAgreementDetail,DatePeriodStart2,DatePeriodEnd2);
+            END;
+          END ELSE
+          //NC NCS-1051.3 < DP
+
+          FilltmpLE(CalcAgreementDetail,DatePeriodStart1,DatePeriodEnd1);
+          tmpVendLE.RESET;
+          tmpVendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.");
+
+          //NC NCS-2374 > DP
+          tmpVendLE.SETRANGE("Vendor No.", "Agreement Details"."Source No.");
+          //NC NCS-2374 < DP
+
+          tmpVendLE.SETRANGE("Agreement No.","Agreement Details"."Agreement No.");
+          tmpVendLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+          tmpVendLE.SETFILTER("Posting Date",'%1..%2',DatePeriodStart1,DatePeriodEnd1);
+          tmpVendLE.SETRANGE(Reversed,FALSE);
+
+          IF tmpVendLE.FINDSET THEN
+            REPEAT
+              IsNeedCalc := IsNeedCalcMain1;
+              OldDatePeriodEnd :=DatePeriodEnd1;
+              IF tmpVendLE."Posting Date">=DatePeriodStart1 THEN BEGIN
+                DatePeriodEnd1 := tmpVendLE."Posting Date";
+              END;
+              CurrInterestAmt :=0;
+              IF IsNeedCalc THEN BEGIN
+                CurrInterestAmt :=CalcInterest(1,DatePeriodStart1,DatePeriodEnd1,CalcAgreementDetail);
+                InterestAmt +=CurrInterestAmt;
+                //NC MLN09.6 > DP
+                IF CurrInterestAmt<>0 THEN
+                //NC MLN09.6 < DP
+
+                //NC MLN09.7 > DP
+                  IF tmpVendLE."Posting Date"<>OldLEDate THEN
+                //NC MLN09.7 < DP
+
+                  NoInterestDays += DatePeriodEnd1 - DatePeriodStart1+1;
+              END;
+              DatePeriodStart1 := tmpVendLE."Posting Date"+1;
+              DatePeriodEnd1 :=OldDatePeriodEnd;
+              OldLEDate :=  tmpVendLE."Posting Date";
+            UNTIL tmpVendLE.NEXT=0;
+          IsNeedCalc := IsNeedCalcMain1;
+          CurrInterestAmt :=0;
+          IF IsNeedCalc THEN BEGIN
+            CurrInterestAmt :=CalcInterest(1,DatePeriodStart1,DatePeriodEnd1,CalcAgreementDetail);
+            InterestAmt += CurrInterestAmt;
+            //NC MLN09.6 > DP
+            IF CurrInterestAmt<>0 THEN
+            //NC MLN09.6 < DP
+              NoInterestDays += DatePeriodEnd1 - DatePeriodStart1+1;
+          END;
+        END;
+      END;
+      DateStartCalc := DatePeriodEnd1+1;
+    END;
+
+    PROCEDURE CalcInterest@1000000000(Type@1000000000 : 'Customer,Vendor';DateCalcBeg@1000000002 : Date;DateCalcEnd@1000000001 : Date;CalcAgreementDetail@1101495000 : Record 50096) : Decimal;
+    VAR
+      PrincipalAmount@1000000004 : Decimal;
+      InterestAmount@1000000005 : Decimal;
+      IntrestAmtCalc@1000000006 : Decimal;
+      CustAgr@1101495001 : Record 14902;
+      VendAgr@1101495002 : Record 14901;
+    BEGIN
+      IntrestAmtCalc := 0;
+      CASE Type OF
+        Type::Customer:
+
+        BEGIN
+          IF IsBaseRecalculated THEN BEGIN
+            PrincipalAmount := GlobalPrincipalAmount;
+            InterestAmount := GlobalInterestAmount;
+          END ELSE BEGIN
+
+            CustDtldLE.RESET;
+            CustDtldLE.SETCURRENTKEY("Customer No.","Agreement No.","Agreement Condition No.",
+            "Amount Type","Entry Type","Interest Accrual","Posting Date");
+
+            //NC NCS-2374 > DP
+            CustDtldLE.SETRANGE("Customer No.", "Agreement Details"."Source No.");
+            //NC NCS-2374 < DP
+
+            CustDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+            CustDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+            CustDtldLE.SETRANGE("Amount Type",CustDtldLE."Amount Type"::Principal);
+            {
+            IF CustAgr.GET("Agreement Details"."Source No.","Agreement Details"."Agreement No.") THEN
+              IF CustAgr."Customer Posting Group"<>'' THEN
+                CustDtldLE.SETRANGE("Customer Posting Group",CustAgr."Customer Posting Group");
+            }
+            CustDtldLE.SETRANGE("Entry Type",CustDtldLE."Entry Type"::"Initial Entry");
+            CustDtldLE.SETFILTER("Posting Date",'..%1', DateCalcEnd-1);
+            CustDtldLE.CALCSUMS(Amount,"Amount (LCY)");
+            PrincipalAmount :=  CustDtldLE.Amount;
+            CustDtldLE.SETFILTER("Posting Date",'..%1', DateCalcBeg-1);
+            CustDtldLE.SETRANGE("Amount Type",CustDtldLE."Amount Type"::Interest);
+            InterestAmount :=  CustDtldLE.Amount;
+
+          END;
+
+          //NC NCS-1032 > DP
+          IF PrincipalAmount<0 THEN
+            IntrestAmtCalc :=0
+          ELSE
+          //NC NCS-1032 < DP
+
+          CASE "Agreement Details"."Interest Rate Type" OF
+            "Agreement Details"."Interest Rate Type"::Simple:
+                BEGIN
+                IntrestAmtCalc := CalcInterestSimple(DateCalcBeg,DateCalcEnd,PrincipalAmount,CalcAgreementDetail."Interest Rate");
+                END;
+            "Agreement Details"."Interest Rate Type"::"Fix.Ext.+Simple":
+                BEGIN
+                  IntrestAmtCalc := CalcInterestFix(DateCalcBeg,DateCalcEnd,PrincipalAmount,CalcAgreementDetail);
+                END;
+            "Agreement Details"."Interest Rate Type"::"Variable Ext.":
+                BEGIN
+                  IntrestAmtCalc := CalcInterestVar(DateCalcBeg,DateCalcEnd,PrincipalAmount,CalcAgreementDetail);
+                END;
+            "Agreement Details"."Interest Rate Type"::Complex:
+                BEGIN
+                IntrestAmtCalc := CalcInterestComplex(DateCalcBeg,DateCalcEnd,PrincipalAmount,InterestAmount,CalcAgreementDetail);
+                END;
+          END;
+        END;
+        Type::Vendor:
+
+        BEGIN
+          IF IsBaseRecalculated THEN BEGIN
+            PrincipalAmount := GlobalPrincipalAmount;
+            InterestAmount := GlobalInterestAmount;
+          END ELSE BEGIN
+            VendDtldLE.RESET;
+            VendDtldLE.SETCURRENTKEY("Vendor No.","Agreement No.","Agreement Condition No.",
+            "Amount Type","Entry Type","Interest Accrual","Posting Date");
+
+            //NC NCS-2374 > DP
+            VendDtldLE.SETRANGE("Vendor No.", "Agreement Details"."Source No.");
+            //NC NCS-2374 < DP
+
+            VendDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+            VendDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+            {
+            IF VendAgr.GET("Agreement Details"."Source No.","Agreement Details"."Agreement No.") THEN
+              IF VendAgr."Vendor Posting Group"<>'' THEN
+                VendDtldLE.SETRANGE("Vendor Posting Group",VendAgr."Vendor Posting Group");
+            }
+            VendDtldLE.SETRANGE("Amount Type",VendDtldLE."Amount Type"::Principal);
+            VendDtldLE.SETRANGE("Entry Type",VendDtldLE."Entry Type"::"Initial Entry");
+            VendDtldLE.SETFILTER("Posting Date",'..%1', DateCalcEnd-1);
+            VendDtldLE.CALCSUMS(Amount,"Amount (LCY)");
+            PrincipalAmount :=  VendDtldLE.Amount;
+            VendDtldLE.SETFILTER("Posting Date",'..%1', DateCalcBeg-1);
+            VendDtldLE.SETRANGE("Amount Type",VendDtldLE."Amount Type"::Interest);
+            InterestAmount :=  VendDtldLE.Amount;
+          END;
+
+          //NC NCS-1032 > DP
+          IF PrincipalAmount>0 THEN
+            IntrestAmtCalc :=0
+          ELSE
+          //NC NCS-1032 < DP
+
+          CASE "Agreement Details"."Interest Rate Type" OF
+            "Agreement Details"."Interest Rate Type"::Simple:
+                BEGIN
+                IntrestAmtCalc := CalcInterestSimple(DateCalcBeg,DateCalcEnd,PrincipalAmount,CalcAgreementDetail."Interest Rate");
+                END;
+            "Agreement Details"."Interest Rate Type"::"Fix.Ext.+Simple":
+                BEGIN
+                  IntrestAmtCalc := CalcInterestFix(DateCalcBeg,DateCalcEnd,PrincipalAmount,CalcAgreementDetail);
+                END;
+            "Agreement Details"."Interest Rate Type"::"Variable Ext.":
+                BEGIN
+                  IntrestAmtCalc := CalcInterestVar(DateCalcBeg,DateCalcEnd,PrincipalAmount,CalcAgreementDetail);
+                END;
+            "Agreement Details"."Interest Rate Type"::Complex:
+                BEGIN
+                IntrestAmtCalc := CalcInterestComplex(DateCalcBeg,DateCalcEnd,PrincipalAmount,InterestAmount,CalcAgreementDetail);
+                END;
+          END;
+        END;
+      END;
+
+      //NC >>
+      //NC NOS-26 > SPA
+      IF ExcelOutput THEN BEGIN
+        ExcelBuffer.NewRow;
+        ExcelBuffer.AddColumn(DateCalcBeg,FALSE,'',FALSE,FALSE,FALSE,'@',ExcelBuffer."Cell Type"::Text);
+        ExcelBuffer.AddColumn(PrincipalAmount,FALSE,'',FALSE,FALSE,FALSE,'@',ExcelBuffer."Cell Type"::Number);
+        ExcelBuffer.AddColumn(DateCalcEnd - DateCalcBeg + 1,FALSE,'',FALSE,FALSE,FALSE,'@',ExcelBuffer."Cell Type"::Text);
+        ExcelBuffer.AddColumn(IntrestAmtCalc,FALSE,'',FALSE,FALSE,FALSE,'@',ExcelBuffer."Cell Type"::Number);
+      END;
+      {
+      IF ExcelOutput THEN BEGIN
+      intIndicatorCounter +=1;
+      xlApp.Range('A'+ FORMAT(intIndicatorCounter)).Value:= FORMAT(DateCalcBeg)       + tab +
+                                                            FORMAT(PrincipalAmount)       + tab +
+                                                            FORMAT((DateCalcEnd-DateCalcBeg+1)) + tab +
+                                                            FORMAT(IntrestAmtCalc);
+      xlApp.Range('A' + FORMAT(intIndicatorCounter)).TextToColumns(xlApp.Range('A' + FORMAT(intIndicatorCounter)), 1, 1, FALSE, TRUE);
+      END;
+      }
+      //NC NOS-26 < SPA
+      //NC <<
+
+      EXIT(IntrestAmtCalc);
+    END;
+
+    PROCEDURE CalcInterestSimple@1000000001(DateCalcBeg@1000000001 : Date;DateCalcEnd@1000000000 : Date;Base@1000000003 : Decimal;InterestRate@1000000002 : Decimal) : Decimal;
+    VAR
+      Result@1000000004 : Decimal;
+    BEGIN
+      //NC NCS-1051 > DP
+      {
+      Result := (DateCalcEnd-DateCalcBeg+1)*Base*InterestRate/100/CalcYearDays;
+      }
+      Result := (DateCalcEnd-DateCalcBeg+1)*Base*InterestRate/100/CalcYearDays(DateCalcEnd);
+      //NC NCS-1051 > DP
+
+      EXIT(Result);
+    END;
+
+    PROCEDURE CalcInterestFix@1000000004(DateCalcBeg@1000000003 : Date;DateCalcEnd@1000000002 : Date;Base@1000000004 : Decimal;AgreementDetails@1000000001 : Record 50096) : Decimal;
+    VAR
+      ExtRate@1000000000 : Decimal;
+      Result@1000000005 : Decimal;
+    BEGIN
+      ExtRate := 0;
+      IF AgreementDetails."Ext. Interest Rate Code"<>'' THEN
+        ExtRate := GetExternalRate(AgreementDetails."Ext. Interest Rate Code",AgreementDetails."Fix Ext. Interest Rate Date");
+      Result := CalcInterestSimple(DateCalcBeg,DateCalcEnd,Base,AgreementDetails."Interest Rate"+ExtRate);
+      EXIT(Result);
+    END;
+
+    PROCEDURE CalcInterestVar@1000000005(DateCalcBeg@1000000003 : Date;DateCalcEnd@1000000002 : Date;Base@1000000004 : Decimal;AgreementDetails@1000000001 : Record 50096) : Decimal;
+    VAR
+      ExtRate@1000000000 : Decimal;
+      Result@1000000005 : Decimal;
+      DaysInPeriod@1000000006 : Integer;
+      i@1000000007 : Integer;
+    BEGIN
+      Result := 0;
+      ExtRate := 0;
+      DaysInPeriod :=DateCalcEnd- DateCalcBeg;
+      FOR i :=0 TO DaysInPeriod DO BEGIN
+        IF AgreementDetails."Ext. Interest Rate Code"<>'' THEN
+          ExtRate := GetExternalRate(AgreementDetails."Ext. Interest Rate Code",DateCalcBeg+i);
+        Result += CalcInterestSimple(DateCalcBeg+i,DateCalcBeg+i,Base,AgreementDetails."Interest Rate"+ExtRate);
+      END;
+      EXIT(Result);
+    END;
+
+    PROCEDURE CalcInterestComplex@1000000007(DateCalcBeg@1000000003 : Date;DateCalcEnd@1000000002 : Date;Base@1000000004 : Decimal;Interest@1000000008 : Decimal;AgreementDetails@1000000001 : Record 50096) : Decimal;
+    VAR
+      ExtRate@1000000000 : Decimal;
+      Result@1000000005 : Decimal;
+      DaysInPeriod@1000000006 : Integer;
+      i@1000000007 : Integer;
+    BEGIN
+      Result := 0;
+      ExtRate := 0;
+      DaysInPeriod :=DateCalcEnd- DateCalcBeg;
+      FOR i :=0 TO DaysInPeriod DO BEGIN
+        IF AgreementDetails."Ext. Interest Rate Code"<>'' THEN
+          ExtRate := GetExternalRate(AgreementDetails."Ext. Interest Rate Code",DateCalcBeg+i);
+        Result += CalcInterestSimple(DateCalcBeg+i,DateCalcBeg+i,Base+Interest,AgreementDetails."Interest Rate"+ExtRate);
+      END;
+      EXIT(Result);
+    END;
+
+    PROCEDURE CalcYearDays@1000000002(DateCalcEnd@1101495000 : Date) : Integer;
+    VAR
+      YearDays@1000000000 : Integer;
+    BEGIN
+      YearDays := 360;
+      CASE "Agreement Details"."Quant.Days in Year" OF
+        "Agreement Details"."Quant.Days in Year"::"360":
+           YearDays := 360;
+        "Agreement Details"."Quant.Days in Year"::"365":
+           YearDays := 365;
+        "Agreement Details"."Quant.Days in Year"::Fact:
+           //NC NCS-1051 > DP
+           {
+           YearDays := DMY2DATE(31,12,DATE2DMY(DateEnd,3))-DMY2DATE(1,1,DATE2DMY(DateEnd,3))+1
+           }
+           YearDays := DMY2DATE(31,12,DATE2DMY(DateCalcEnd,3))-DMY2DATE(1,1,DATE2DMY(DateCalcEnd,3))+1
+           //NC NCS-1051 > DP
+      END;
+      EXIT(YearDays);
+    END;
+
+    PROCEDURE GetExternalRate@1000000003(RateCode@1000000002 : Code[10];RateDate@1000000000 : Date) : Decimal;
+    VAR
+      Result@1000000001 : Decimal;
+      FIRates@1000000003 : Record 50058;
+    BEGIN
+      Result :=0;
+      FIRates.RESET;
+      FIRates.SETRANGE("No.",RateCode);
+      FIRates.SETFILTER("Date Rate",'..%1',RateDate);
+      IF FIRates.FINDLAST THEN
+        Result :=FIRates."Quoting Ask"
+      ELSE
+        IF GUIALLOWED THEN
+          ERROR(Text005,RateCode,RateDate);
+      EXIT(Result);
+    END;
+
+    PROCEDURE SetParameters@1000000006(NewDateStart@1000000000 : Date;NewDateEnd@1000000001 : Date;NewPeriodical@1000000002 : Integer;NewRecalcAmt@1000000003 : Boolean;NewPrincAmt@1000000004 : Decimal;NewInterAmt@1000000005 : Decimal);
+    BEGIN
+      DateStart := NewDateStart;
+      DateEnd := NewDateEnd;
+      Periodical :=NewPeriodical;
+      IsBaseRecalculated := NewRecalcAmt;
+      GlobalPrincipalAmount := NewPrincAmt;
+      GlobalInterestAmount := NewInterAmt;
+    END;
+
+    PROCEDURE CheckPrevIntCalc@1000000010(AgreementDetail@1000000001 : Record 50096;VAR DateBeg@1000000000 : Date) : Boolean;
+    VAR
+      AgreementSchedule@1000000003 : Record 50097;
+      IsPrevIntCalc@1000000002 : Boolean;
+    BEGIN
+      IsPrevIntCalc := FALSE;
+      IF AgreementDetail."Interest Calc. Starting Date"=DateBeg THEN BEGIN
+        IsPrevIntCalc := TRUE;
+      END ELSE BEGIN
+        AgreementSchedule.RESET;
+        AgreementSchedule.SETRANGE("Source Type",AgreementDetail."Source Type");
+        AgreementSchedule.SETRANGE("Source No.",AgreementDetail."Source No.");
+        AgreementSchedule.SETRANGE("Agreement No.",AgreementDetail."Agreement No.");
+        AgreementSchedule.SETRANGE("Agreement Condition No.",AgreementDetail."Condition No.");
+        AgreementSchedule.SETRANGE(Type,AgreementSchedule.Type::Accrual);
+        AgreementSchedule.SETFILTER(Date,'%1..%2',AgreementDetail."Interest Calc. Starting Date",DateBeg-1);
+        AgreementSchedule.SETRANGE(Posted,TRUE);
+        IF AgreementSchedule.FINDLAST THEN BEGIN
+          IsPrevIntCalc := TRUE;
+          IF CalculateTillDate THEN
+            DateBeg := AgreementSchedule.Date+1;
+        END ELSE
+          IF CalculateTillDate THEN BEGIN
+            DateBeg := AgreementDetail."Interest Calc. Starting Date";
+            IsPrevIntCalc := TRUE;
+          END;
+      END;
+      EXIT(IsPrevIntCalc);
+    END;
+
+    PROCEDURE CheckNextIntCalc@1000000008(AgreementDetail@1000000000 : Record 50096;DateEnd@1000000002 : Date) : Boolean;
+    VAR
+      AgreementSchedule@1000000001 : Record 50097;
+      IsNextIntCalc@1000000003 : Boolean;
+    BEGIN
+      IsNextIntCalc := FALSE;
+      AgreementSchedule.RESET;
+      AgreementSchedule.SETRANGE("Source Type",AgreementDetail."Source Type");
+      AgreementSchedule.SETRANGE("Source No.",AgreementDetail."Source No.");
+      AgreementSchedule.SETRANGE("Agreement No.",AgreementDetail."Agreement No.");
+      AgreementSchedule.SETRANGE("Agreement Condition No.",AgreementDetail."Condition No.");
+      AgreementSchedule.SETRANGE(Type,AgreementSchedule.Type::Accrual);
+      AgreementSchedule.SETRANGE(Blocked,FALSE);
+      AgreementSchedule.SETFILTER(Date,'%1..',DateEnd+1);
+      IF AgreementSchedule.FINDFIRST THEN
+        IsNextIntCalc := TRUE;
+      EXIT(IsNextIntCalc);
+    END;
+
+    PROCEDURE CheckCurrIntCalc@1000000011(AgreementDetail@1000000000 : Record 50096;DateBeg@1000000004 : Date;DateEnd@1000000002 : Date) : Boolean;
+    VAR
+      AgreementSchedule@1000000001 : Record 50097;
+      IsNextCurrCalc@1000000003 : Boolean;
+    BEGIN
+      IsNextCurrCalc := FALSE;
+      AgreementSchedule.RESET;
+      AgreementSchedule.SETRANGE("Source Type",AgreementDetail."Source Type");
+      AgreementSchedule.SETRANGE("Source No.",AgreementDetail."Source No.");
+      AgreementSchedule.SETRANGE("Agreement No.",AgreementDetail."Agreement No.");
+      AgreementSchedule.SETRANGE("Agreement Condition No.",AgreementDetail."Condition No.");
+      AgreementSchedule.SETRANGE(Type,AgreementSchedule.Type::Accrual);
+      AgreementSchedule.SETFILTER(Date,'%1..%2',DateBeg, DateEnd);
+      IF AgreementSchedule.FINDLAST THEN
+        IsNextCurrCalc := TRUE;
+      IF IsNextCurrCalc AND IsRecalc THEN
+        IsNextCurrCalc := FALSE;
+
+      //NC OAM47 > DP
+      IF AgreementSchedule.Posted AND NOT AgreementSchedule.Blocked THEN
+        IsNextCurrCalc := FALSE;
+      //NC OAM47 < DP
+
+      EXIT(IsNextCurrCalc);
+    END;
+
+    PROCEDURE CheckCalcMain@1000000012() : Boolean;
+    VAR
+      IsNeedCalcMain@1000000001 : Boolean;
+      DatePeriodStart2@1000000002 : Date;
+      DatePeriodEnd2@1000000000 : Date;
+    BEGIN
+      //NC NCS-808 > DP
+      IF Periodical =Periodical::Day THEN
+        EXIT(TRUE);
+      //NC NCS-808 < DP
+
+      {
+      IF Periodical =Periodical::Day THEN BEGIN
+        DatePeriodStart2 := GetLastInterestDate("Agreement Details",DateEnd);
+        IF DatePeriodStart2=0D THEN
+          DatePeriodStart2 := DateStart;
+      END ELSE
+      }
+        DatePeriodStart2 := DateStart;
+      DatePeriodEnd2 := DateEnd;
+
+      ChangedAgreementDetails.RESET;
+      ChangedAgreementDetails.SETCURRENTKEY("Source Type","Source No.","Agreement No.","Action Date");
+      ChangedAgreementDetails.SETRANGE("Source Type","Agreement Details"."Source Type");
+      ChangedAgreementDetails.SETRANGE("Source No.","Agreement Details"."Source No.");
+      ChangedAgreementDetails.SETRANGE("Agreement No.","Agreement Details"."Agreement No.");
+      ChangedAgreementDetails.SETRANGE("Changed Condition No.","Agreement Details"."Condition No.");
+      ChangedAgreementDetails.SETFILTER("Action Date",'%1..', DateStart);
+      IF ChangedAgreementDetails.FINDFIRST THEN
+        DatePeriodStart2 := "Agreement Details"."Interest Calc. Starting Date";
+
+
+      IF ("Agreement Details"."Interest Calc. Starting Date">DatePeriodStart2) AND
+       ("Agreement Details"."Interest Calc. Starting Date"<=DatePeriodEnd2) AND (DatePeriodStart2=DateStart)
+       THEN
+       DatePeriodStart2 := "Agreement Details"."Interest Calc. Starting Date";
+
+
+      IF ("Agreement Details"."Finish Date">DatePeriodStart2) AND
+       ("Agreement Details"."Finish Date"<=DatePeriodEnd2) THEN
+       DatePeriodEnd2 := "Agreement Details"."Finish Date";
+
+      IsNeedCalcMain := TRUE;
+      IsNeedCalcMain :=IsNeedCalcMain AND NOT CheckNextIntCalc("Agreement Details",DatePeriodEnd2);
+      //IsNeedCalcMain :=IsNeedCalcMain AND CheckPrevIntCalc("Agreement Details",DatePeriodStart2);
+      IsNeedCalcMain :=IsNeedCalcMain AND NOT CheckCurrIntCalc("Agreement Details",DatePeriodStart2,DatePeriodEnd2);
+
+      EXIT(IsNeedCalcMain);
+    END;
+
+    PROCEDURE FilltmpLE@1101495000(CalcAgreementDetail1@1101495000 : Record 50096;DatePeriodStart1@1101495001 : Date;DatePeriodEnd1@1101495002 : Date);
+    BEGIN
+      CASE CalcAgreementDetail1."Source Type" OF
+        CalcAgreementDetail1."Source Type"::Customer:
+        BEGIN
+          CustLE.RESET;
+          CustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.");
+
+          //NC NCS-2374 > DP
+          CustLE.SETRANGE("Customer No.", CalcAgreementDetail1."Source No.");
+          //NC NCS-2374 < DP
+
+          CustLE.SETRANGE("Agreement No.",CalcAgreementDetail1."Agreement No.");
+          CustLE.SETRANGE("Agreement Condition No.",CalcAgreementDetail1."Condition No.");
+          CustLE.SETFILTER("Posting Date",'%1..%2',DatePeriodStart1,DatePeriodEnd1);
+          //CustLE.SETFILTER("Posting Date",'%1..%2',DatePeriodStart1+1,DatePeriodEnd1);
+          CustLE.SETRANGE("Interest Accrual",FALSE);
+          CustLE.SETRANGE(Reversed,FALSE);
+          IF CustLE.FINDSET THEN
+            REPEAT
+              tmpCustLE.RESET;
+              tmpCustLE.SETRANGE("Agreement No.",CustLE."Agreement No.");
+              tmpCustLE.SETRANGE("Agreement Condition No.",CustLE."Agreement Condition No.");
+              tmpCustLE.SETRANGE("Posting Date",CustLE."Posting Date");
+              IF NOT tmpCustLE.FINDFIRST THEN BEGIN
+                tmpCustLE.INIT;
+                tmpCustLE.TRANSFERFIELDS(CustLE);
+                tmpCustLE.INSERT;
+              END;
+            UNTIL CustLE.NEXT=0;
+
+        END;
+        CalcAgreementDetail1."Source Type"::Vendor:
+        BEGIN
+          VendLE.RESET;
+          VendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.");
+
+          //NC NCS-2374 > DP
+          VendLE.SETRANGE("Vendor No.", CalcAgreementDetail1."Source No.");
+          //NC NCS-2374 < DP
+
+          VendLE.SETRANGE("Agreement No.",CalcAgreementDetail1."Agreement No.");
+          VendLE.SETRANGE("Agreement Condition No.",CalcAgreementDetail1."Condition No.");
+          //VendLE.SETFILTER("Posting Date",'%1..%2',DatePeriodStart1+1,DatePeriodEnd1);
+          VendLE.SETFILTER("Posting Date",'%1..%2',DatePeriodStart1,DatePeriodEnd1);
+          VendLE.SETRANGE("Interest Accrual",FALSE);
+          VendLE.SETRANGE(Reversed,FALSE);
+          IF VendLE.FINDSET THEN
+            REPEAT
+              tmpVendLE.RESET;
+              tmpVendLE.SETRANGE("Agreement No.",VendLE."Agreement No.");
+              tmpVendLE.SETRANGE("Agreement Condition No.",VendLE."Agreement Condition No.");
+              tmpVendLE.SETRANGE("Posting Date",VendLE."Posting Date");
+              IF NOT tmpVendLE.FINDFIRST THEN BEGIN
+                tmpVendLE.INIT;
+                tmpVendLE.TRANSFERFIELDS(VendLE);
+                tmpVendLE.INSERT;
+              END;
+            UNTIL VendLE.NEXT=0;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetLastInterestDate@1101495001(CalcAgreementDetail1@1101495000 : Record 50096;CalcDate@1101495002 : Date) : Date;
+    VAR
+      LastInterestDate@1101495001 : Date;
+    BEGIN
+      //NC APCOC-56 > DP
+      LastInterestDate := 0D;
+      CASE CalcAgreementDetail1."Source Type" OF
+        CalcAgreementDetail1."Source Type"::Customer:
+        BEGIN
+          CustLE.RESET;
+          CustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.");
+          CustLE.SETRANGE("Customer No.",CalcAgreementDetail1."Source No.");
+          CustLE.SETRANGE("Agreement No.",CalcAgreementDetail1."Agreement No.");
+          CustLE.SETRANGE("Agreement Condition No.",CalcAgreementDetail1."Condition No.");
+          CustLE.SETRANGE("Amount Type",CustLE."Amount Type"::Interest);
+          CustLE.SETFILTER("Posting Date",'..%1',CalcDate);
+          CustLE.SETFILTER("Interest Calc. No. of Days",'<>%1',0);
+          CustLE.SETRANGE(Reversed,FALSE);
+          IF CustLE.FINDLAST THEN
+            LastInterestDate := CustLE."Posting Date"+1;
+        END;
+        CalcAgreementDetail1."Source Type"::Vendor:
+        BEGIN
+          VendLE.RESET;
+          VendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.");
+          VendLE.SETRANGE("Vendor No.",CalcAgreementDetail1."Source No.");
+          VendLE.SETRANGE("Agreement No.",CalcAgreementDetail1."Agreement No.");
+          VendLE.SETRANGE("Agreement Condition No.",CalcAgreementDetail1."Condition No.");
+          VendLE.SETRANGE("Amount Type",CustLE."Amount Type"::Interest);
+          VendLE.SETFILTER("Posting Date",'..%1',CalcDate);
+          VendLE.SETFILTER("Interest Calc. No. of Days",'<>%1',0);
+          VendLE.SETRANGE(Reversed,FALSE);
+          IF VendLE.FINDLAST THEN
+            LastInterestDate := VendLE."Posting Date"+1;
+        END;
+      END;
+      EXIT(LastInterestDate);
+      //NC APCOC-56 < DP
+    END;
+
+    PROCEDURE SetParameter@1101495002(NewCalcDate@1101495000 : Date);
+    BEGIN
+      //NC APCOC-56 > DP
+      SetParameters(NewCalcDate,NewCalcDate,0,FALSE,0,0);
+      IsCreateJournalLine:=TRUE;
+      IsPlanning := TRUE;
+      IsRecalc := TRUE;
+      //NC APCOC-56 < DP
+    END;
+
+    PROCEDURE CalcPostInterest@1000000013(Type@1000000000 : 'Customer,Vendor';DateCalcStart@1000000002 : Date;DateCalcEnd@1000000001 : Date;CalcAgreementDetail@1101495000 : Record 50096) : Decimal;
+    VAR
+      InterestPostedAmt@1000000004 : Decimal;
+    BEGIN
+      //NC APCOC-56 > DP
+      InterestPostedAmt := 0;
+      CASE Type OF
+        Type::Customer:
+        BEGIN
+          IF IsBaseRecalculated THEN BEGIN
+            InterestPostedAmt := GlobalInterestAmount;
+          END ELSE BEGIN
+            CustDtldLE.RESET;
+            CustDtldLE.SETCURRENTKEY("Customer No.","Agreement No.","Agreement Condition No.",
+            "Amount Type","Entry Type","Interest Accrual","Posting Date");
+            CustDtldLE.SETRANGE("Customer No.","Agreement Details"."Source No.");
+            CustDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+            CustDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+            CustDtldLE.SETRANGE("Entry Type",CustDtldLE."Entry Type"::"Initial Entry");
+            CustDtldLE.SETRANGE("Amount Type",CustDtldLE."Amount Type"::Interest);
+            CustDtldLE.SETRANGE("Interest Accrual",TRUE);
+            CustDtldLE.SETFILTER("Posting Date",'%1..%2',DateCalcStart, DateCalcEnd);
+            CustDtldLE.CALCSUMS(Amount);
+            InterestPostedAmt :=  CustDtldLE.Amount;
+          END;
+        END;
+        Type::Vendor:
+
+        BEGIN
+          IF IsBaseRecalculated THEN BEGIN
+            InterestPostedAmt := GlobalInterestAmount;
+          END ELSE BEGIN
+            VendDtldLE.RESET;
+            VendDtldLE.SETCURRENTKEY("Vendor No.","Agreement No.","Agreement Condition No.",
+            "Amount Type","Entry Type","Interest Accrual","Posting Date");
+            VendDtldLE.SETRANGE("Vendor No.","Agreement Details"."Source No.");
+            VendDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+            VendDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+            VendDtldLE.SETRANGE("Entry Type",VendDtldLE."Entry Type"::"Initial Entry");
+            VendDtldLE.SETRANGE("Amount Type",VendDtldLE."Amount Type"::Interest);
+            VendDtldLE.SETRANGE("Interest Accrual",TRUE);
+            VendDtldLE.SETFILTER("Posting Date",'%1..%2',DateCalcStart, DateCalcEnd);
+            VendDtldLE.CALCSUMS(Amount);
+            InterestPostedAmt :=  VendDtldLE.Amount;
+          END;
+        END;
+      END;
+      EXIT(InterestPostedAmt);
+      //NC APCOC-56 < DP
+    END;
+
+    PROCEDURE GetFirstInterestDate@1000000014() : Date;
+    VAR
+      FirstInterestDate@1000000000 : Date;
+    BEGIN
+      //NC APCOC-56 > DP
+      FirstInterestDate := "Agreement Details"."Interest Calc. Starting Date";
+
+
+      ChangedAgreementDetails.RESET;
+      ChangedAgreementDetails.SETCURRENTKEY("Source Type","Source No.","Agreement No.","Action Date");
+      ChangedAgreementDetails.SETRANGE("Source Type","Agreement Details"."Source Type");
+      ChangedAgreementDetails.SETRANGE("Source No.","Agreement Details"."Source No.");
+      ChangedAgreementDetails.SETRANGE("Agreement No.","Agreement Details"."Agreement No.");
+      ChangedAgreementDetails.SETRANGE("Condition Type",ChangedAgreementDetails."Condition Type"::Change);
+      ChangedAgreementDetails.SETRANGE("Changed Condition No.","Agreement Details"."Condition No.");
+      IF ChangedAgreementDetails.FINDSET THEN
+        REPEAT
+          //NC NCS-2375 > DP
+          IF ChangedAgreementDetails."Interest Calc. Starting Date"<>0D THEN
+          //NC NCS-2375 < DP
+          IF FirstInterestDate>ChangedAgreementDetails."Interest Calc. Starting Date" THEN
+            FirstInterestDate := ChangedAgreementDetails."Interest Calc. Starting Date";
+        UNTIL ChangedAgreementDetails.NEXT=0;
+
+      {
+      CASE "Agreement Details"."Source Type" OF
+        "Agreement Details"."Source Type"::Customer:
+        BEGIN
+          CustDtldLE.RESET;
+          CustDtldLE.SETCURRENTKEY("Customer No.","Agreement No.","Agreement Condition No.",
+          "Amount Type","Entry Type","Interest Accrual","Posting Date");
+          CustDtldLE.SETRANGE("Customer No.","Agreement Details"."Source No.");
+          CustDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+          CustDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+          CustDtldLE.SETRANGE("Entry Type",CustDtldLE."Entry Type"::"Initial Entry");
+          CustDtldLE.SETRANGE("Amount Type",CustDtldLE."Amount Type"::Interest);
+          CustDtldLE.SETRANGE("Interest Accrual",TRUE);
+          IF CustDtldLE.FINDFIRST THEN
+            IF FirstInterestDate>CustDtldLE."Posting Date" THEN
+              FirstInterestDate := CustDtldLE."Posting Date";
+        END;
+        "Agreement Details"."Source Type"::Vendor:
+        BEGIN
+          VendDtldLE.RESET;
+          VendDtldLE.SETCURRENTKEY("Vendor No.","Agreement No.","Agreement Condition No.",
+          "Amount Type","Entry Type","Interest Accrual","Posting Date");
+          VendDtldLE.SETRANGE("Vendor No.","Agreement Details"."Source No.");
+          VendDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+          VendDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+          VendDtldLE.SETRANGE("Entry Type",VendDtldLE."Entry Type"::"Initial Entry");
+          VendDtldLE.SETRANGE("Amount Type",VendDtldLE."Amount Type"::Interest);
+          VendDtldLE.SETRANGE("Interest Accrual",TRUE);
+          IF VendDtldLE.FINDFIRST THEN
+            IF FirstInterestDate>VendDtldLE."Posting Date" THEN
+              FirstInterestDate := VendDtldLE."Posting Date";
+
+        END;
+      END;
+      }
+      GLSetup.GET;
+      IF GLSetup."Loan Calc. First Date"<>0D THEN
+        IF FirstInterestDate <GLSetup."Loan Calc. First Date" THEN
+        BEGIN
+          FirstInterestDate := GLSetup."Loan Calc. First Date";
+        END;
+
+      EXIT(FirstInterestDate);
+      //NC APCOC-56 < DP
+    END;
+
+    PROCEDURE GetLastPostInterestDate@1000000015() : Date;
+    VAR
+      LastInterestDate@1000000000 : Date;
+    BEGIN
+      //NC APCOC-56 > DP
+      LastInterestDate := 0D;
+      CASE "Agreement Details"."Source Type" OF
+        "Agreement Details"."Source Type"::Customer:
+        BEGIN
+          CustDtldLE.RESET;
+          CustDtldLE.SETCURRENTKEY("Customer No.","Agreement No.","Agreement Condition No.",
+          "Amount Type","Entry Type","Interest Accrual","Posting Date");
+          CustDtldLE.SETRANGE("Customer No.","Agreement Details"."Source No.");
+          CustDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+          CustDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+          CustDtldLE.SETRANGE("Entry Type",CustDtldLE."Entry Type"::"Initial Entry");
+          CustDtldLE.SETRANGE("Amount Type",CustDtldLE."Amount Type"::Interest);
+          CustDtldLE.SETRANGE("Interest Accrual",TRUE);
+          CustDtldLE.SETFILTER("Posting Date",'..%1',DateEnd-1);
+          IF CustDtldLE.FINDLAST THEN
+            LastInterestDate := CustDtldLE."Posting Date";
+        END;
+        "Agreement Details"."Source Type"::Vendor:
+        BEGIN
+          VendDtldLE.RESET;
+          VendDtldLE.SETCURRENTKEY("Vendor No.","Agreement No.","Agreement Condition No.",
+          "Amount Type","Entry Type","Interest Accrual","Posting Date");
+          VendDtldLE.SETRANGE("Vendor No.","Agreement Details"."Source No.");
+          VendDtldLE.SETRANGE("Agreement No.", "Agreement Details"."Agreement No.");
+          VendDtldLE.SETRANGE("Agreement Condition No.","Agreement Details"."Condition No.");
+          VendDtldLE.SETRANGE("Entry Type",VendDtldLE."Entry Type"::"Initial Entry");
+          VendDtldLE.SETRANGE("Amount Type",VendDtldLE."Amount Type"::Interest);
+          VendDtldLE.SETRANGE("Interest Accrual",TRUE);
+          VendDtldLE.SETFILTER("Posting Date",'..%1',DateEnd-1);
+          IF VendDtldLE.FINDLAST THEN
+            LastInterestDate := VendDtldLE."Posting Date";
+
+        END;
+      END;
+      EXIT(LastInterestDate);
+      //NC APCOC-56 < DP
+    END;
+
+    PROCEDURE IsActiveAgreement@1101495003() : Boolean;
+    VAR
+      CustAgreement@1101495000 : Record 14902;
+      VendAgreement@1101495001 : Record 14901;
+      IsActive@1101495002 : Boolean;
+    BEGIN
+      //NC NCS-1085 > DP
+      IsActive := FALSE;
+      CASE "Agreement Details"."Source Type" OF
+        "Agreement Details"."Source Type"::Customer:
+        BEGIN
+          IF CustAgreement.GET("Agreement Details"."Source No.","Agreement Details"."Agreement No.") THEN
+            IsActive := CustAgreement.Active;
+        END;
+        "Agreement Details"."Source Type"::Vendor:
+        BEGIN
+          IF VendAgreement.GET("Agreement Details"."Source No.","Agreement Details"."Agreement No.") THEN
+            IsActive := VendAgreement.Active;
+        END;
+      END;
+      EXIT(IsActive);
+      //NC NCS-1085 < DP
+    END;
+
+    BEGIN
+    {
+      NC MLN06 DP Создано задание по начислению процентов
+      NC MLN09.1 DP Изменен фильтр DataItem
+      NC MLN09.4 DP Расчет от даты "Interest Calc. Starting Date"
+      NC MLN09.4 DP Расчет до даты в параметрах задания
+      NC MLN09.6 DP Количество дней 0, если сумма нач. процентов 0
+      NC OAM47 DP Исключение расчета процентов для периода с уже учтенными процентами
+      NC NCS-808 DP Обязательнй расчет при подневной схеме
+      NC NCS-1032 DP Исключение расчета процентов при переплате по телу кредита
+      NC NCS-1051 DP Корректный расчет дней в году
+      NC NCS-1085 DP Расчет процентов только по активным договорам
+      NC NCS-1051.3 DP Корректный расчет дней в году, если расчет ведется сразу за несколько лет
+      --------------------------------
+      NC NCBLD001 DP Создан билд по модификациям NCMLN06,MLN09.6,OAM47,APCOC-56,NCS-808,NCS-1032,NCS-1051,NCS-1085,NCS-1051.3
+      NC NCS-1069 DP Исключение условий из расчета по дате окончания
+      NC NCS-1268 DP Корректировка, если валюта равна валюте баланса
+      NC NCS-2374 DP Изменены триггеры ProcessAgreementDetail,CalcInterest,FilltmpLE
+      NC NCS-2375 DP Изменены триггер GetFirstInterestDate
+      -----------------
+      NC NOS-26 SPA Изменен механизм вывода в Excel
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

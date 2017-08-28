@@ -1,0 +1,2551 @@
+OBJECT Codeunit 50048 Trans. One Operation Fact
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02.02.11;
+    Time=14:59:10;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            EntryType@1000000000 : 'Remove,Repost';
+          BEGIN
+            GLSetup.GET;
+            MovingDataSetup.GET;
+            SourceCodeSetup.GET;
+            //NC MTF01 > AKU
+            SalesSetup.GET;
+            PurchSetup.GET;
+            //NC MTF01 < AKU
+
+            isOK := TRUE;
+            RecID := "Record ID";
+            IF RecID.TABLENO = 0 THEN
+              ERROR(Text001);
+
+            RecRef.OPEN(RecID.TABLENO,FALSE,"Company No.");
+            RecRef.GET("Record ID");
+            RecRef.SETTABLE(Buffer);
+            RecRef.CLOSE;
+
+            ConsSource.GET(Processor);
+
+            {
+            IF PreBuffer."Time Creation" = CREATEDATETIME(0D,0T) THEN BEGIN
+              ErrorJournal.AddErrorPreBuferFact("Company No.",ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                Processor,"Cons. Register",
+                                                'EDB02',STRSUBSTNO(TextEDB02,PreBuffer.FIELDCAPTION("Time Creation")),COMPANYNAME,PreBuffer,
+                                                "Line No.");
+              isOK := FALSE;
+            END;
+            IF PreBuffer."Document ID" = '' THEN BEGIN
+              ErrorJournal.AddErrorPreBuferFact("Company No.",ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                Processor,"Cons. Register",
+                                                'EDB02',STRSUBSTNO(TextEDB02,PreBuffer.FIELDCAPTION("Document ID")),COMPANYNAME,PreBuffer,
+                                                "Line No.");
+              isOK := FALSE;
+            END;
+            }
+
+            IF NOT isOK THEN BEGIN
+              Buffer."Error in Import" := TRUE;
+              Buffer.MODIFY;
+              EXIT;
+            END;
+
+
+            IF NOT Buffer."Not Translate" THEN BEGIN
+                IF Buffer."Source Operation No." = 0 THEN BEGIN  // новый
+
+                  isOK := NewOperation(Buffer,Rec);
+
+                END ELSE BEGIN
+                  IF Buffer.Removed THEN BEGIN  // Удаление
+
+                    isOK := DeleteOperation(EntryType::Remove,Buffer,Rec);
+
+                  END ELSE BEGIN  // изменение
+
+                    isOK := NewOperation(Buffer,Rec);
+
+                    IF isOK THEN
+                      isOK := DeleteOperation(EntryType::Repost,Buffer,Rec);
+
+                  END;
+                END;
+            END ELSE BEGIN
+              isOK := TRUE;
+            END;
+
+
+            IF isOK THEN BEGIN
+
+              Buffer."Export Consolidation Register" := "Cons. Register";
+              Buffer.MODIFY;
+            END ELSE BEGIN
+
+              Buffer."Error in Import" := TRUE;
+              Buffer.MODIFY;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      MovingDataSetup@1101495020 : Record 50064;
+      GLSetup@1000000001 : Record 98;
+      SourceCodeSetup@1000000035 : Record 242;
+      ConsSource@1101495023 : Record 50001;
+      RecID@1101495000 : RecordID;
+      RecRef@1101495001 : RecordRef;
+      Buffer@1101495002 : Record 50082;
+      Text001@1101495003 : TextConst 'ENU=Wrong identifier to record;RUS=Неправильный идентификатор записи';
+      Text002@1000000048 : TextConst 'ENU=For the removal/modification of documents are not found;RUS=По операции удаления/изменения не найдены документы.';
+      Text003@1000000049 : TextConst 'ENU=For the removal / modification should be one document.;RUS=По операции удаления/изменения должен быть один документ.';
+      Text004@1000000050 : TextConst 'ENU=Operation is not poised on %1;RUS=Операция не балансирует на %1';
+      TextEDB01@1000000006 : TextConst 'ENU=In the process of implementation %1 unclassified error occurred. %2 Processing stopped.;RUS=В процессе выполнения %1 возникла ошибка. %2 Обработка прекращена.';
+      TextEDB02@1101495015 : TextConst 'ENU=In the Buffer of Proc. %1 submitted incomplete data. Please enter %2. Record not processed.;RUS=В Буфере Обработки Операций переданы не полные данные. Не заполнено поле %1. Запись не обработана.';
+      TextEDB03@1101495014 : TextConst 'ENU=In the Buffer of Proc. operations handed treatment of type %1 for the operation. In NAV is an operation with the UID. Record not processed.;RUS=В Буфере Обработки операций передан тип обработки %1 для операции. В NAV есть операция с таким UID. Действие было пропущено.';
+      TextEDB04@1101495013 : TextConst 'ENU="In the Buffer of Proc. directory %1 handed treatment of type %2 for the directory %3 Code = %4. Record not processed.";RUS="В Буфере Обработки справочника %1 передан тип обработки %2 для справочника %3 Код=%4. Действие было пропущено. "';
+      TextEDB05@1101495012 : TextConst 'ENU=In the Buffer of Proc. operations zero-quantity and zero-sum transaction in foreign currency accounting system.;RUS=В Буфере Обработки операций нулевые количество и сумма операции в учетной валюте внешней системы.';
+      TextEDB06@1101495011 : TextConst 'ENU=In the Buffer of Proc. operations zero-sum in the original currency.;RUS=В Буфере Обработки операций нулевая сумма в оригинальной валюте.';
+      TextEDB07@1101495010 : TextConst 'ENU=In the Buffer of Proc. of operations the Debit or the Credit fin. account is not set.;RUS=В Буфере Обработки операций не задан Дебет или Кредит фин. счет.';
+      TextEDB08@1101495009 : TextConst 'ENU=Warning. In the Buffer of Proc. of operations the type of processing %1 for operation. In NAV there is no operation with such UID.;RUS=Предупреждение. В Буфере Обработки операций передан тип обработки %1 для операции. В NAV нет операции с таким UID.';
+      TextEDB09@1101495008 : TextConst 'ENU="Warning. In the Buffer of Proc. directory %1 handed treatment of type %2 for the directory %3 Code = %4. In NAV is an element of the directory with this code.";RUS="Предупреждение. В Буфере Обработки справочника %1 передан тип обработки %2 для справочника %3 Код=%4. В NAV есть элемент справочника с таким кодом."';
+      TextEDB10@1101495007 : TextConst 'ENU=In the Buffer of Proc. operations handed treatment of type %1 for the operation. In NAV no operation with the UID.;RUS=В Буфере Обработки операций передан тип обработки %1 для операции. В NAV нет операции с таким UID.';
+      TextEDB11@1101495006 : TextConst 'ENU="Warning. In the Buffer of Proc. directory %1 handed treatment of type %2 for the directory %3 Code = %4. In NAV is no element with such a code book.";RUS="Предупреждение. В Буфере Обработки справочника %1 передан тип обработки %2 для справочника %3 Код=%4. В NAV нет элемента справочника с таким кодом."';
+      TextEDB12@1101495005 : TextConst 'ENU="In the Buffer of Proc. directory %1 handed treatment of type %2 for the directory %3 Code = %4. In NAV is an element of the directory with this code. Record not processed.";RUS="В Буфере Обработки справочника %1 передан тип обработки %2 для справочника %3 Код=%4. В NAV есть элемент справочника с таким кодом. Действие было пропущено. "';
+      TextEDB13@1101495004 : TextConst 'ENU="In the Buffer of Proc. directory %1 handed treatment of type %2 for the directory %3 Code = %4. In NAV is no element with such a code book. Record not processed.";RUS="В Буфере Обработки справочника %1 передан тип обработки %2 для справочника %3 Код=%4. В NAV нет элемента справочника с таким кодом. Действие было пропущено. "';
+      Buffer2@1000000007 : Record 50082;
+      Buffer3@1000000008 : Record 50082;
+      CodeError@1000000005 : Code[10];
+      TextError@1101495021 : Text[250];
+      ErrorJournal@1101495017 : Record 50023;
+      isFind@1101495019 : Boolean;
+      TextEDB14@1000000000 : TextConst 'ENU=In the Buffer of Proc. operations is not zero sum in the original currency in the wiring on the exchange rate differences.;RUS=В Буфере Обработки операций не нулевая сумма в оригинальной валюте в проводке по курсовой разнице.';
+      CurrConsCode@1000000002 : Code[10];
+      Currency@1000000003 : Record 4;
+      TextEDB19@1000000004 : TextConst 'ENU=In the Buffer of Proc. operations the value of field %1 must be equal to the value of field %2.;RUS=В Буфере Обработки операций величина в поле %1 должна быть равна величине в поле %2.';
+      TextEDB20@1000000009 : TextConst 'ENU=In the Buffer of Proc. operations the value have different signs.;RUS=В Буфер Обработки суммы разных знаков.';
+      TransFactOperHeader@1000000010 : Record 50112;
+      LedgerEntryDimTMP@1000000011 : TEMPORARY Record 355;
+      LinkedDim@1000000012 : Record 50016;
+      DimMappingSel@1000000013 : Record 50031;
+      TextEDTC06@1000000016 : TextConst 'ENU=Dimension %1 value %2 does no exist in NAV.;RUS=Для измерения %1 нет значения %2 в справочнике NAV.';
+      TextEDTC07@1000000015 : TextConst 'ENU=Dimension %1 value %2  is blocked in NAV.;RUS=Измерение %1 значение %2 блокировано в справочнике NAV.';
+      TextEDTC09@1000000017 : TextConst 'ENU=For value %1 of Dimension %2 Value Type must be Standart.;RUS=Для значения %1 измерения %2 Тип Значения должен быть Стандартный.';
+      TextEDTC10@1101495028 : TextConst 'ENU=Agreement No. is not defined. %1 %2;RUS=Ошибка при определении номера договора. %1 %2';
+      TextEDTC16@1000000014 : TextConst 'ENU=Dimension %1 is blocked in NAV.;RUS=Измерение %1 блокировано в NAV.';
+      TextEDTC16_@1000000018 : TextConst 'ENU=Dimension %1 does not exist in NAV.;RUS=Измерение %1 не существует в NAV.';
+      TextEDTC18@1000000019 : TextConst 'ENU=To consolidate the source %1 not found mapping to date %2;RUS=Для источника консолидации %1 не найден мэппинг на дату %2';
+      TextEDTC19@1000000020 : TextConst 'ENU=Unable to find mapping for the Type Deal: %1 Operation Code: %2 Event Code %3.;RUS=Не найден мэппинг для Тип Сделки: %1 Код Операции: %2 Код События %3.';
+      TextEDTC20@1000000021 : TextConst 'ENU=The operation found mapping %1 %2. Rows mapping missing.;RUS=Для операции найден маппинг %1 %2. Строки мэппинга отсутствуют.';
+      TextEDTC21@1000000022 : TextConst 'ENU=Can not find an element of the directory %1 with code %2.;RUS=Не найден элемент справочника %1 с кодом %2.';
+      TextEDTC22@1000000023 : TextConst 'ENU=The operation found mapping %1 %2. %3 should be defined.;RUS=Для операции найден маппинг %1 %2. %3 должно быть определено.';
+      FI@1000000027 : Record 50021;
+      FIType@1000000026 : Record 50051;
+      BankAcc@1000000025 : Record 270;
+      Vendor@1000000024 : Record 23;
+      Customer@1000000028 : Record 18;
+      GenJournalLineTemp@1000000029 : TEMPORARY Record 81;
+      LineNo@1000000030 : Integer;
+      JournalLineDimTemp@1000000031 : TEMPORARY Record 356;
+      DimensionMgt@1000000032 : Codeunit 408;
+      ConsMgt@1000000033 : Codeunit 50000;
+      NoSerManag@1000000034 : Codeunit 396;
+      SalesHeaderTemp@1000000036 : TEMPORARY Record 36;
+      SalesLineTemp@1000000037 : TEMPORARY Record 37;
+      PurchHeaderTemp@1000000039 : TEMPORARY Record 38;
+      PurchLineTemp@1000000038 : TEMPORARY Record 39;
+      DocumentDimTemp@1000000040 : TEMPORARY Record 357;
+      TextEDTC23@1000000041 : TextConst 'ENU=Document type must be Invoice or Credit Memo;RUS=Тип документа должен быть Счет или Кредит Нота';
+      TextEDTC24@1000000042 : TextConst 'ENU=There should be one line mapping with the type of Customer or Vendor;RUS=Должна быть одна строка мэппинга с типом Клиент или Поставщик';
+      TextEDTC25@1000000043 : TextConst 'ENU=To document the type of account must be G/L Account;RUS=Для документов тип счета должен быть Фин. Счет';
+      TextEDTC26@1000000044 : TextConst 'ENU=To document the type of account must be G/L Account;RUS=Для документов поле %1 должно быть определено';
+      TextEDTC27@1000000045 : TextConst 'ENU=In %1 value %2 should be ''%3''.;RUS=В %1 величина %2 должна быть ''%3''.';
+      GenJnlCheckLine@1000000046 : Codeunit 11;
+      TextEDTC28@1000000047 : TextConst 'ENU=For the removal/change %1 not found the original operation.;RUS=Для операции удаления/изменения %1 не найдена исходная операция.';
+      TextEDTC29@1000000051 : TextConst 'ENU=When processing operation is a conflict of dimensions. %1;RUS=При обработке операции есть конфликт измерений. %1';
+      Log@1101495016 : Codeunit 50014;
+      TextEDTC30@1101495018 : TextConst 'ENU=In the directory %1 does not define the field %2.;RUS=В справочнике %1 не определено поле %2.';
+      TextEDTC31@1101495022 : TextConst 'ENU=In the buffer Operation Processing is not defined dimension %1.;RUS=В буфере Обработки Операций не определена аналитика %1.';
+      VendorAgreement@1101495025 : Record 14901;
+      CustomerAgreement@1101495024 : Record 14902;
+      SalesSetup@1101495026 : Record 311;
+      PurchSetup@1101495027 : Record 312;
+      EmptyText@1101495029 : TextConst 'RUS=''''';
+
+    PROCEDURE GetMappingCode@1000000011(BufferLocal@1000000001 : Record 50082;JobProcStatus@1000000000 : Record 50063) MappingCode : Code[20];
+    VAR
+      Mapping@1000000002 : Record 50022;
+      isFind@1000000003 : Boolean;
+    BEGIN
+      ConsSource.GET(JobProcStatus.Processor);
+      Mapping.GET(ConsSource."Mapping Code");
+      REPEAT
+        IF (Mapping."Expiration Date" = 0D) OR
+           (BufferLocal."Operation Date" <= Mapping."Expiration Date") THEN
+          isFind := TRUE;
+
+      UNTIL (NOT Mapping.GET(Mapping."New Mapping Code")) OR isFind;
+      IF isFind THEN
+        MappingCode := Mapping.Code;
+    END;
+
+    PROCEDURE GetMapping@1000000000(VAR MappingCode@1000000004 : Code[20];VAR TransFactOperHeaderLocal@1000000000 : Record 50112;VAR BufferLocal@1000000001 : Record 50082;VAR LedgerEntryDimTMPLocal@1000000002 : TEMPORARY Record 355;VAR JobProcStatus@1000000003 : Record 50063) retOK : Boolean;
+    VAR
+      CountLEDim@1000000005 : Integer;
+      lDim1Exist@1000000006 : Boolean;
+      lDim2Exist@1000000007 : Boolean;
+      lDim3Exist@1000000008 : Boolean;
+      Rating@1000000009 : Integer;
+    BEGIN
+      retOK := FALSE;
+
+      TransFactOperHeaderLocal.RESET;
+      TransFactOperHeaderLocal.SETCURRENTKEY("Company Name","Operation Type","Type Deal","Operation Code","Event Code",
+                                             "Rating Transformation");
+      TransFactOperHeaderLocal.ASCENDING(FALSE);
+      TransFactOperHeaderLocal.SETRANGE("Operation Type",BufferLocal."Operation Type");
+      TransFactOperHeaderLocal.SETFILTER("Type Deal",'%1|%2','',BufferLocal."Type Deal");
+      TransFactOperHeaderLocal.SETRANGE("Operation Code",BufferLocal."Operation Code");
+      TransFactOperHeaderLocal.SETRANGE("Event Code",BufferLocal."Event Code");
+      TransFactOperHeaderLocal.SETFILTER("Company Name",'%1|%2','',COMPANYNAME);
+      //NC > PCH  Решили что нужно обрабатывать все: сначала с заполненной компанией, потом пустые
+      {
+      CASE TransFactOperHeaderLocal.COUNT OF
+        0 : EXIT(FALSE);
+        1 : BEGIN
+          TransFactOperHeaderLocal.FINDFIRST;
+          EXIT(TRUE);
+        END;
+      END;
+
+      TransFactOperHeaderLocal.SETRANGE("Company Name",COMPANYNAME);
+      }
+      //NC < PCH
+      CountLEDim := LedgerEntryDimTMPLocal.COUNT;
+      IF TransFactOperHeaderLocal.FIND('-') THEN REPEAT
+        //Проверка на соответствие до 3-х измерений
+        lDim1Exist := TRUE;
+        lDim2Exist := TRUE;
+        lDim3Exist := TRUE;
+        Rating := 0;
+        WITH LedgerEntryDimTMPLocal DO BEGIN
+          IF (TransFactOperHeaderLocal."Source Dimension Code 1" <> '') AND
+             (TransFactOperHeaderLocal."Source Dimension Value Code 1" <> '') THEN BEGIN
+                SETRANGE("Dimension Code", TransFactOperHeaderLocal."Source Dimension Code 1");
+                SETFILTER("Dimension Value Code", TransFactOperHeaderLocal."Source Dimension Value Code 1");
+            lDim1Exist := NOT ISEMPTY;
+            IF lDim1Exist THEN
+              Rating -= 1;
+          END;
+
+          IF (TransFactOperHeaderLocal."Source Dimension Code 2" <> '') AND
+             (TransFactOperHeaderLocal."Source Dimension Value Code 2" <> '') THEN BEGIN
+                SETRANGE("Dimension Code", TransFactOperHeaderLocal."Source Dimension Code 2");
+                SETFILTER("Dimension Value Code", TransFactOperHeaderLocal."Source Dimension Value Code 2");
+            lDim2Exist := NOT ISEMPTY;
+            IF lDim2Exist THEN
+              Rating -= 1;
+          END;
+
+          IF (TransFactOperHeaderLocal."Source Dimension Code 3" <> '') AND
+             (TransFactOperHeaderLocal."Source Dimension Value Code 3" <> '') THEN BEGIN
+                SETRANGE("Dimension Code", TransFactOperHeaderLocal."Source Dimension Code 3");
+                SETFILTER("Dimension Value Code", TransFactOperHeaderLocal."Source Dimension Value Code 3");
+            lDim3Exist := NOT ISEMPTY;
+            IF lDim3Exist THEN
+              Rating -= 1;
+          END;
+        END;
+
+        IF TransFactOperHeaderLocal."Rating Transformation" = Rating THEN
+           retOK := TRUE;
+
+      UNTIL (TransFactOperHeaderLocal.NEXT = 0) OR (retOK);
+    END;
+
+    PROCEDURE CreateDimBuffer@1000000018(VAR LedgerEntryDimTMP@1000000000 : TEMPORARY Record 355;DimCode@1000000003 : Code[20];DimValue@1000000004 : Code[20];BufferLocal@1000000006 : Record 50082;MappingCode@1000000002 : Code[20];JobProcStatus@1000000001 : Record 50063;UseCheck@1000000007 : Boolean) retOK : Boolean;
+    VAR
+      LinkedDim@1000000005 : Record 50016;
+    BEGIN
+      retOK := TRUE;
+      IF DimValue = '' THEN
+        EXIT;
+      IF UseCheck THEN
+        retOK := retOK AND CheckDimensions(DimCode, DimValue, BufferLocal,MappingCode,JobProcStatus);
+      LedgerEntryDimTMP.INIT;
+      LedgerEntryDimTMP."Dimension Code" := DimCode;
+      LedgerEntryDimTMP."Dimension Value Code" := DimValue;
+      IF LedgerEntryDimTMP.INSERT THEN BEGIN
+        LinkedDim.RESET;
+        LinkedDim.SETRANGE("Dimension Code",DimCode);
+        LinkedDim.SETRANGE("Dimension Value",DimValue);
+        IF LinkedDim.FINDSET THEN
+          REPEAT
+            LedgerEntryDimTMP.INIT;
+            LedgerEntryDimTMP."Dimension Code" := LinkedDim."Linked Dimension Code";
+            LedgerEntryDimTMP."Dimension Value Code" := LinkedDim."Linked Dimension Value";
+            IF NOT LedgerEntryDimTMP.INSERT THEN
+              LedgerEntryDimTMP.MODIFY;
+          UNTIL LinkedDim.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckDimensions@1210003(DimCode@1210001 : Code[20];DimValueCode@1210000 : Code[20];BufferLocal@1000000007 : Record 50082;MappingCode@1000000010 : Code[20];JobProcStatus@1000000011 : Record 50063) retOK : Boolean;
+    VAR
+      DimensionValue@1210003 : Record 349;
+      Dimension@1210004 : Record 348;
+      tmp@1000000003 : Integer;
+      ConsSource@1000000006 : Record 50001;
+      NeedMapping@1000000008 : Boolean;
+      DimMappingSel@1000000009 : Record 50031;
+    BEGIN
+      retOK := TRUE;
+      IF DimValueCode = '' THEN
+        EXIT;
+      IF Dimension.GET(DimCode) THEN BEGIN
+        IF Dimension.Blocked THEN BEGIN
+          retOK := retOK AND FALSE;
+          ErrorJournal.AddErrorBuferFactDim(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                     'EDTC16',STRSUBSTNO(TextEDTC16,DimCode),
+                                     COMPANYNAME,BufferLocal,Dimension,JobProcStatus."Line No.");
+        END;
+        IF NOT DimensionValue.GET(DimCode, DimValueCode) THEN BEGIN
+          NeedMapping := DimMappingSel.GET(MappingCode,DimCode);
+          IF (NOT NeedMapping) OR (NeedMapping AND DimMappingSel."Save when Mapping") THEN BEGIN
+            retOK := retOK AND FALSE;
+            ErrorJournal.AddErrorBuferFactDim(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC06',STRSUBSTNO(TextEDTC06,DimCode,DimValueCode),
+                                       COMPANYNAME,BufferLocal,Dimension,JobProcStatus."Line No.");
+          END;
+        END ELSE BEGIN
+          IF DimensionValue.Blocked THEN BEGIN
+            retOK := retOK AND FALSE;
+            ErrorJournal.AddErrorBuferFactDimValue(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC07',STRSUBSTNO(TextEDTC07,DimCode,DimValueCode),
+                                       COMPANYNAME,BufferLocal,DimensionValue,JobProcStatus."Line No.");
+          END;
+          IF DimensionValue."Dimension Value Type" <> DimensionValue."Dimension Value Type"::Standard THEN BEGIN
+            retOK := retOK AND FALSE;
+            ErrorJournal.AddErrorBuferFactDimValue(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC09',STRSUBSTNO(TextEDTC09,DimCode,DimValueCode),
+                                       COMPANYNAME,BufferLocal,DimensionValue,JobProcStatus."Line No.");
+          END;
+
+        END;
+      END ELSE BEGIN
+        retOK := retOK AND FALSE;
+        ErrorJournal.AddErrorBuferFactDim(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                   JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                   'EDTC16',STRSUBSTNO(TextEDTC16_,DimCode),
+                                   COMPANYNAME,BufferLocal,Dimension,JobProcStatus."Line No.");
+      END;
+    END;
+
+    PROCEDURE CreateDimBufferForOperation@1000000028(VAR LedgerEntryDimTmp@1000000003 : TEMPORARY Record 355;BufferLocal@1000000002 : Record 50082;MappingCode@1000000001 : Code[20];JobProcStatus@1000000000 : Record 50063;UseCheck@1000000004 : Boolean) retOK : Boolean;
+    BEGIN
+      retOK := TRUE;
+
+      IF (BufferLocal."Dimension 1 Code" <> '') AND
+         (BufferLocal."Dimension 1 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 1 Code",BufferLocal."Dimension 1 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 2 Code" <> '') AND
+         (BufferLocal."Dimension 2 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 2 Code",BufferLocal."Dimension 2 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 3 Code" <> '') AND
+         (BufferLocal."Dimension 3 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 3 Code",BufferLocal."Dimension 3 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 4 Code" <> '') AND
+         (BufferLocal."Dimension 4 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 4 Code",BufferLocal."Dimension 4 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 5 Code" <> '') AND
+         (BufferLocal."Dimension 5 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 5 Code",BufferLocal."Dimension 5 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 6 Code" <> '') AND
+         (BufferLocal."Dimension 6 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 6 Code",BufferLocal."Dimension 6 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 7 Code" <> '') AND
+         (BufferLocal."Dimension 7 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 7 Code",BufferLocal."Dimension 7 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 8 Code" <> '') AND
+         (BufferLocal."Dimension 8 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 8 Code",BufferLocal."Dimension 8 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 9 Code" <> '') AND
+         (BufferLocal."Dimension 9 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 9 Code",BufferLocal."Dimension 9 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 10 Code" <> '') AND
+         (BufferLocal."Dimension 10 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 10 Code",BufferLocal."Dimension 10 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 11 Code" <> '') AND
+         (BufferLocal."Dimension 11 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 11 Code",BufferLocal."Dimension 11 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 12 Code" <> '') AND
+         (BufferLocal."Dimension 12 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 12 Code",BufferLocal."Dimension 12 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 13 Code" <> '') AND
+         (BufferLocal."Dimension 13 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 13 Code",BufferLocal."Dimension 13 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 14 Code" <> '') AND
+         (BufferLocal."Dimension 14 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 14 Code",BufferLocal."Dimension 14 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 15 Code" <> '') AND
+         (BufferLocal."Dimension 15 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 15 Code",BufferLocal."Dimension 15 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 16 Code" <> '') AND
+         (BufferLocal."Dimension 16 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 16 Code",BufferLocal."Dimension 16 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 17 Code" <> '') AND
+         (BufferLocal."Dimension 17 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 17 Code",BufferLocal."Dimension 17 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 18 Code" <> '') AND
+         (BufferLocal."Dimension 18 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 18 Code",BufferLocal."Dimension 18 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 19 Code" <> '') AND
+         (BufferLocal."Dimension 19 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 19 Code",BufferLocal."Dimension 19 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+
+      IF (BufferLocal."Dimension 20 Code" <> '') AND
+         (BufferLocal."Dimension 20 Value Code" <> '')
+      THEN
+        retOK := retOK AND CreateDimBuffer(LedgerEntryDimTmp,
+                                           BufferLocal."Dimension 20 Code",BufferLocal."Dimension 20 Value Code",
+                                           BufferLocal,MappingCode,JobProcStatus,UseCheck);
+    END;
+
+    PROCEDURE NewOperation@1000000021(VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      MappingCode@1000000002 : Code[20];
+      TransFactOperLine@1000000006 : Record 50113;
+      CustomerNo@1000000010 : Code[20];
+      FINo@1000000009 : Code[20];
+      BankAccNo@1000000008 : Code[20];
+      VendorNo@1000000007 : Code[20];
+      TransFactOperHeaderRecRef@1101495000 : RecordRef;
+      NeedMapping@1101495001 : Boolean;
+    BEGIN
+      // проверить: дата операции
+      //            "Operation Type","Type Deal","Operation Code","Event Code"
+      retOK := TRUE;
+
+      MappingCode := GetMappingCode(BufferLocal,JobProcStatus);
+      IF MappingCode = '' THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC18',STRSUBSTNO(TextEDTC18,JobProcStatus.Processor,BufferLocal."Operation Date"),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+
+      Log.StartCounter(-6); // CreteDim
+      IF NOT CreateDimBufferForOperation(LedgerEntryDimTMP,BufferLocal,MappingCode,JobProcStatus,TRUE) THEN BEGIN
+        Log.StartCounter(6);
+        EXIT(FALSE);
+      END;
+      Log.StartCounter(6);
+
+      Log.StartCounter(-7); // GetMapping
+      IF NOT GetMapping(MappingCode,TransFactOperHeader,Buffer,LedgerEntryDimTMP,JobProcStatus) THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                   JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                   'EDTC19',STRSUBSTNO(TextEDTC19,BufferLocal."Type Deal",
+                                                                  BufferLocal."Operation Code",
+                                                                  BufferLocal."Event Code"),
+                                   COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        Log.StartCounter(7);
+        EXIT(FALSE);
+      END;
+      Log.StartCounter(7);
+
+      TransFactOperHeaderRecRef.GETTABLE(TransFactOperHeader);
+      BufferLocal."Operation Mapping ID" := TransFactOperHeaderRecRef.RECORDID;
+
+      IF TransFactOperHeader."Do Not Process" THEN BEGIN
+        BufferLocal."Not Translate" := TRUE;
+        EXIT(TRUE);
+      END;
+
+      IF TransFactOperHeader."Check Amount" THEN BEGIN
+        IF BufferLocal.Amount = 0 THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDB02',STRSUBSTNO(TextEDB02,BufferLocal.FIELDCAPTION(Amount)),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        //NC MTF01 > AKU
+        { Отключил проверку на основную сумму.
+        IF BufferLocal."Principal Amount" = 0 THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDB02',STRSUBSTNO(TextEDB02,BufferLocal.FIELDCAPTION("Principal Amount")),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        }
+        //NC MTF01 < AKU
+
+        //NC MTF01 > AKU
+        { Изменена проверка на суммы
+        IF BufferLocal.Amount <> BufferLocal."Principal Amount" + BufferLocal."Interest Amount" THEN BEGIN
+        }
+        IF (BufferLocal."Principal Amount" + BufferLocal."Interest Amount" <> 0) AND
+           (BufferLocal.Amount <> BufferLocal."Principal Amount" + BufferLocal."Interest Amount") THEN BEGIN
+        //NC MTF01 < AKU
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDB19',STRSUBSTNO(TextEDB19,BufferLocal.FIELDCAPTION(Amount),
+                                                                      BufferLocal.FIELDCAPTION("Principal Amount") + '+' +
+                                                                      BufferLocal.FIELDCAPTION("Interest Amount")),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+      END;
+
+      IF TransFactOperHeader."Check Quantity" THEN BEGIN
+        IF BufferLocal.Quantity = 0 THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDB02',STRSUBSTNO(TextEDB02,BufferLocal.FIELDCAPTION(Quantity)),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+      END;
+
+      IF NOT retOK THEN
+        EXIT(FALSE);
+
+      TransFactOperLine.RESET;
+      TransFactOperLine.SETRANGE("Mapping Code",TransFactOperHeader."Mapping Code");
+      TransFactOperLine.SETRANGE("Header Line No.",TransFactOperHeader."Line No.");
+      IF TransFactOperLine.ISEMPTY THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC20',STRSUBSTNO(TextEDTC20,TransFactOperHeader."Mapping Code",
+                                                                      TransFactOperHeader."Line No."),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+      //NC MTF01 > AKU
+      // - Переопределение аналитик по мэппингу
+      IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Customer Dimension Code") THEN
+        ChangeDimByMapping(TransFactOperHeader."Mapping Code", LedgerEntryDimTMP);
+      IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Bank Account Dimension Code") THEN
+        ChangeDimByMapping(TransFactOperHeader."Mapping Code", LedgerEntryDimTMP);
+      IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."FI Dimension Code") THEN
+        ChangeDimByMapping(TransFactOperHeader."Mapping Code", LedgerEntryDimTMP);
+
+      TransFactOperLine.FINDSET;
+      REPEAT
+        IF TransFactOperLine."Source Value Account No." <> TransFactOperLine."Source Value Account No."::User THEN BEGIN
+        //NC MTF01 < AKU
+          IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Customer Dimension Code") THEN BEGIN
+            //NC MTF01 > AKU
+            //Переопределяем COUNTERPARTY на эмитента
+            IF TransFactOperLine."Source Value Account No." = TransFactOperLine."Source Value Account No."::Issuer THEN BEGIN
+              IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."FI Dimension Code") THEN
+                IF FI.GET(LedgerEntryDimTMP."Dimension Value Code") THEN BEGIN
+                  LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Customer Dimension Code");
+                  LedgerEntryDimTMP."Dimension Value Code" := FI."Customer No.";
+                  LedgerEntryDimTMP.MODIFY;
+                END;
+              LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Customer Dimension Code");
+            END;
+            //NC MTF01 < AKU
+            retOK := retOK AND CorrectAccount(GenJournalLineTemp."Account Type"::Customer,CustomerNo,
+                                    LedgerEntryDimTMP."Dimension Value Code",
+                                    TransFactOperLine."Source Value Account No.",
+                                    BufferLocal,TransFactOperLine,JobProcStatus);
+          END;
+          IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Bank Account Dimension Code") THEN BEGIN
+            retOK := retOK AND CorrectAccount(GenJournalLineTemp."Account Type"::"Bank Account",BankAccNo,
+                                    LedgerEntryDimTMP."Dimension Value Code",
+                                    TransFactOperLine."Source Value Account No.",
+                                    BufferLocal,TransFactOperLine,JobProcStatus);
+          END;
+          IF LedgerEntryDimTMP.GET(0,0,MovingDataSetup."FI Dimension Code") THEN BEGIN
+            retOK := retOK AND CorrectAccount(GenJournalLineTemp."Account Type"::FI,FINo,
+                                    LedgerEntryDimTMP."Dimension Value Code",
+                                    TransFactOperLine."Source Value Account No.",
+                                    BufferLocal,TransFactOperLine,JobProcStatus);
+        END;
+        //NC MTF01 > AKU
+        END;
+      UNTIL TransFactOperLine.NEXT = 0;
+      //NC MTF01 < AKU
+
+      IF NOT retOK THEN
+        EXIT(FALSE);
+
+      Log.StartCounter(-8); // FillTempDoc
+      CASE TransFactOperHeader."Processing Effect" OF
+        TransFactOperHeader."Processing Effect"::"Gen. Journal" :
+          retOK := retOK AND CreateGenJournalTemp(TransFactOperHeader,BufferLocal,JobProcStatus);
+        TransFactOperHeader."Processing Effect"::Document :
+          retOK := retOK AND CreateDocumentTemp(TransFactOperHeader,BufferLocal,JobProcStatus);
+      END;
+      Log.StartCounter(8);
+
+      IF NOT retOK THEN
+        EXIT(FALSE);
+
+      Log.StartCounter(-9); // SaveDoc
+      CASE TransFactOperHeader."Processing Effect" OF
+        TransFactOperHeader."Processing Effect"::"Gen. Journal" : BEGIN
+          retOK := retOK AND CreateGenJournal(TransFactOperHeader,BufferLocal,JobProcStatus);
+          BufferLocal."Journal Template Name" := TransFactOperHeader."Journal Template Name";
+          BufferLocal."Journal Batch Name" := TransFactOperHeader."Journal Batch Name";
+        END;
+        TransFactOperHeader."Processing Effect"::Document :
+          retOK := retOK AND CreateDocument(TransFactOperHeader,BufferLocal,JobProcStatus);
+      END;
+      Log.StartCounter(9);
+
+      BufferLocal."Processing Effect" := TransFactOperHeader."Processing Effect";
+    END;
+
+    PROCEDURE CreateGenJournalTemp@1000000014(VAR TransFactOperHeader@1000000002 : Record 50112;VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      TransFactOperLine@1000000003 : Record 50113;
+      GenJournalLine@1000000004 : Record 81;
+    BEGIN
+      retOK := TRUE;
+
+      LineNo := 0;
+      GenJournalLineTemp.DELETEALL;
+      JournalLineDimTemp.DELETEALL;
+
+      TransFactOperLine.RESET;
+      TransFactOperLine.SETRANGE("Mapping Code",TransFactOperHeader."Mapping Code");
+      TransFactOperLine.SETRANGE("Header Line No.",TransFactOperHeader."Line No.");
+      IF TransFactOperLine.FINDSET THEN REPEAT
+
+        IF TransFactOperHeader."Check Amount" THEN BEGIN
+          CASE TransFactOperLine."Amount Type" OF
+            TransFactOperLine."Amount Type"::"Amount of Entry" :
+              IF BufferLocal.Amount <> 0 THEN
+                retOK := retOK AND CreateGenJournalLineTemp(BufferLocal.Amount,
+                                              TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+            TransFactOperLine."Amount Type"::"Principal Amount" :
+              IF BufferLocal."Principal Amount" <> 0 THEN
+                retOK := retOK AND CreateGenJournalLineTemp(BufferLocal."Principal Amount",
+                                              TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+            TransFactOperLine."Amount Type"::"Interest Income" :
+              IF BufferLocal."Interest Amount" <> 0 THEN
+              retOK := retOK AND CreateGenJournalLineTemp(BufferLocal."Interest Amount",
+                                            TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+          END;
+        //NC MTF01 > AKU
+        {
+        END ELSE IF (TransFactOperLine."Account Type" = TransFactOperLine."Account Type"::FI) OR
+                (TransFactOperLine."Bal. Account Type" = TransFactOperLine."Bal. Account Type"::FI) THEN BEGIN
+          CASE TransFactOperLine."Amount Type" OF
+            TransFactOperLine."Amount Type"::"Amount of Entry",
+            TransFactOperLine."Amount Type"::"Principal Amount" :
+              retOK := retOK AND CreateGenJournalLineTemp(0,TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+            TransFactOperLine."Amount Type"::"Interest Income" :
+              IF FIType."Calc NKD" THEN
+                retOK := retOK AND CreateGenJournalLineTemp(0,TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+          END;
+
+        END;
+        }
+        END ELSE BEGIN
+          CASE TransFactOperLine."Amount Type" OF
+            TransFactOperLine."Amount Type"::"Amount of Entry" :
+                retOK := retOK AND CreateGenJournalLineTemp(BufferLocal.Amount,
+                                              TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+            TransFactOperLine."Amount Type"::"Principal Amount" :
+                retOK := retOK AND CreateGenJournalLineTemp(BufferLocal."Principal Amount",
+                                              TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+            TransFactOperLine."Amount Type"::"Interest Income" :
+              IF FIType."Calc NKD" THEN
+                retOK := retOK AND CreateGenJournalLineTemp(BufferLocal."Interest Amount",
+                                              TransFactOperHeader,TransFactOperLine,BufferLocal,JobProcStatus);
+          END;
+        END;
+        //NC MTF01 < AKU
+
+        IF NOT retOK THEN
+          EXIT(FALSE);
+
+      UNTIL TransFactOperLine.NEXT = 0;
+    END;
+
+    PROCEDURE CreateGenJournalLineTemp@1000000035(Amount@1000000004 : Decimal;VAR TransFactOperHeader@1000000002 : Record 50112;VAR TransFactOperLine@1000000003 : Record 50113;VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      Sign@1000000007 : Decimal;
+    ;
+    BEGIN
+      retOK := TRUE;
+      IF TransFactOperHeader."Journal Template Name" = '' THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC22',STRSUBSTNO(TextEDTC22,TransFactOperHeader."Mapping Code",
+                                                                      TransFactOperHeader."Line No.",
+                                                                      TransFactOperHeader.FIELDCAPTION("Journal Template Name")),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+      IF TransFactOperHeader."Journal Batch Name" = '' THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC22',STRSUBSTNO(TextEDTC22,TransFactOperHeader."Mapping Code",
+                                                                      TransFactOperHeader."Line No.",
+                                                                      TransFactOperHeader.FIELDCAPTION("Journal Batch Name")),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+
+      LineNo += 10000;
+
+      IF TransFactOperLine."Account Type" IN [TransFactOperLine."Account Type"::Customer,
+                                              TransFactOperLine."Account Type"::Vendor,
+                                              TransFactOperLine."Account Type"::"Bank Account"] THEN BEGIN
+        IF TransFactOperLine."Gen. Bus. Posting Group" <> '' THEN BEGIN
+          ErrorJournal.AddErrorTransFactOperLine(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                 'EDTC27',STRSUBSTNO(TextEDTC27,TransFactOperLine.TABLECAPTION,
+                                                                     TransFactOperLine.FIELDCAPTION("Gen. Bus. Posting Group"),
+                                                                     ''),
+                                                 COMPANYNAME,TransFactOperLine,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        IF TransFactOperLine."Gen. Prod. Posting Group" <> '' THEN BEGIN
+          ErrorJournal.AddErrorTransFactOperLine(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                 'EDTC27',STRSUBSTNO(TextEDTC27,TransFactOperLine.TABLECAPTION,
+                                                                    TransFactOperLine.FIELDCAPTION("Gen. Prod. Posting Group"),
+                                                                    ''),
+                                                 COMPANYNAME,TransFactOperLine,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        IF TransFactOperLine."VAT Bus. Posting Group" <> '' THEN BEGIN
+          ErrorJournal.AddErrorTransFactOperLine(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                 'EDTC27',STRSUBSTNO(TextEDTC27,TransFactOperLine.TABLECAPTION,
+                                                                     TransFactOperLine.FIELDCAPTION("VAT Bus. Posting Group"),
+                                                                     ''),
+                                                 COMPANYNAME,TransFactOperLine,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        IF TransFactOperLine."VAT Prod. Posting Group" <> '' THEN BEGIN
+          ErrorJournal.AddErrorTransFactOperLine(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                 'EDTC27',STRSUBSTNO(TextEDTC27,TransFactOperLine.TABLECAPTION,
+                                                                     TransFactOperLine.FIELDCAPTION("VAT Prod. Posting Group"),
+                                                                     ''),
+                                                 COMPANYNAME,TransFactOperLine,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+      END;
+
+      IF NOT retOK THEN
+        EXIT(FALSE);
+
+      IF TransFactOperLine."Reverse Amount Value" THEN
+        Sign := -1
+      ELSE
+        Sign := 1;
+
+      GenJournalLineTemp.INIT;
+      GenJournalLineTemp."Journal Template Name" := TransFactOperHeader."Journal Template Name";
+      GenJournalLineTemp."Journal Batch Name" := TransFactOperHeader."Journal Batch Name";
+      GenJournalLineTemp."Line No." := LineNo;
+
+      GenJournalLineTemp."Source Code" := SourceCodeSetup.Transformation;
+
+      GenJournalLineTemp."Posting Date" := BufferLocal."Operation Date";
+      GenJournalLineTemp."Document Date" := BufferLocal."Operation Date";
+      GenJournalLineTemp."Source Historical Date" := 0D;
+
+      IF GenJournalLineTemp."Posting Date" < GLSetup."Allow Posting From" THEN
+        GenJournalLineTemp."Posting Date" := GLSetup."Allow Posting From";
+
+      IF GenJournalLineTemp."Posting Date" < GLSetup."Allow Transformation From" THEN
+        GenJournalLineTemp."Posting Date" := GLSetup."Allow Transformation From";
+
+      GenJournalLineTemp."Document Type" := GenJournalLineTemp."Document Type"::" ";
+      GenJournalLineTemp."Document No." := '';
+      GenJournalLineTemp."External Document No." := BufferLocal."External Operation Code";
+
+      GenJournalLineTemp."Account Type" := TransFactOperLine."Account Type";
+      GenJournalLineTemp."Account No." := TransFactOperLine."Account No.";
+      retOK := retOK AND CorrectAccount(GenJournalLineTemp."Account Type",GenJournalLineTemp."Account No.",'',
+                                        TransFactOperLine."Source Value Account No.",
+                                        BufferLocal,TransFactOperLine,JobProcStatus);
+      IF (GenJournalLineTemp."Account Type" = GenJournalLineTemp."Account Type"::FI) AND
+         FI.GET(GenJournalLineTemp."Account No.") THEN BEGIN
+        FIType.GET(FI."Type FI");
+
+        IF FIType."FI Posting Group" = '' THEN BEGIN
+          ErrorJournal.AddErrorFIType(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                      JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                      'EDTC30',STRSUBSTNO(TextEDTC30,FIType.TABLECAPTION,
+                                                          FIType.FIELDCAPTION("FI Posting Group")),
+                                      COMPANYNAME,FIType,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        IF FIType."Gen. Prod. Posting Group" = '' THEN BEGIN
+          ErrorJournal.AddErrorFIType(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                      JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                      'EDTC30',STRSUBSTNO(TextEDTC30,FIType.TABLECAPTION,
+                                                          FIType.FIELDCAPTION("Gen. Prod. Posting Group")),
+                                      COMPANYNAME,FIType,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        IF FIType."VAT Prod. Posting Group" = '' THEN BEGIN
+          ErrorJournal.AddErrorFIType(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                      JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                      'EDTC30',STRSUBSTNO(TextEDTC30,FIType.TABLECAPTION,
+                                                          FIType.FIELDCAPTION("VAT Prod. Posting Group")),
+                                      COMPANYNAME,FIType,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+        GenJournalLineTemp."FI Posting Group" := FIType."FI Posting Group";
+        GenJournalLineTemp."Gen. Prod. Posting Group" := FIType."Gen. Prod. Posting Group";
+        GenJournalLineTemp."VAT Prod. Posting Group" := FIType."VAT Prod. Posting Group";
+
+      END;
+
+      GenJournalLineTemp.Description := BufferLocal.Description;
+      GenJournalLineTemp."Description 2" := BufferLocal."Description 2";
+
+      IF TransFactOperLine."Posting Group" <> '' THEN
+        GenJournalLineTemp."Posting Group" := TransFactOperLine."Posting Group";
+      IF TransFactOperLine."Gen. Posting Type" <> 0 THEN
+        GenJournalLineTemp."Gen. Posting Type" := TransFactOperLine."Gen. Posting Type";
+      IF TransFactOperLine."Gen. Bus. Posting Group" <> '' THEN
+        GenJournalLineTemp."Gen. Bus. Posting Group" := TransFactOperLine."Gen. Bus. Posting Group";
+      IF TransFactOperLine."Gen. Prod. Posting Group" <> '' THEN
+        GenJournalLineTemp."Gen. Prod. Posting Group" := TransFactOperLine."Gen. Prod. Posting Group";
+      IF TransFactOperLine."VAT Bus. Posting Group" <> '' THEN
+        GenJournalLineTemp."VAT Bus. Posting Group" := TransFactOperLine."VAT Bus. Posting Group";
+      IF TransFactOperLine."VAT Prod. Posting Group" <> '' THEN
+        GenJournalLineTemp."VAT Prod. Posting Group" := TransFactOperLine."VAT Prod. Posting Group";
+
+      IF ConsSource."Business Unit Code" <> '' THEN
+        GenJournalLineTemp."Business Unit Code" := ConsSource."Business Unit Code";
+
+      GenJournalLineTemp."Currency Code" := ConvertCurrencyCode(BufferLocal."Currency Code");
+      IF GenJournalLineTemp."Currency Code" = 'ERROR' THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC21',STRSUBSTNO(TextEDTC21,Currency.TABLECAPTION,BufferLocal."Currency Code"),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        retOK := retOK AND FALSE;
+      END;
+      GenJournalLineTemp.Amount := Sign * Amount;
+
+      GenJournalLineTemp."Bal. Account Type" := TransFactOperLine."Bal. Account Type";
+      GenJournalLineTemp."Bal. Account No." := TransFactOperLine."Bal. Account No.";
+      retOK := retOK AND CorrectAccount(GenJournalLineTemp."Bal. Account Type",GenJournalLineTemp."Bal. Account No.",'',
+                              TransFactOperLine."Bal. Source Value Account No.",
+                              BufferLocal,TransFactOperLine,JobProcStatus);
+
+      GenJournalLineTemp."Agreement No." := TransFactOperLine."Agreement No.";
+
+      {
+      BufferLocalTemp."Operation Type"
+      BufferLocalTemp."Type Deal"
+      BufferLocalTemp."Operation Code"
+      BufferLocalTemp."Event Code"
+      }
+
+      GenJournalLineTemp."Export Cons. Source Code" := JobProcStatus.Processor;
+      GenJournalLineTemp."Buffer Entry No." := BufferLocal."Entry No.";
+      GenJournalLineTemp."Export Register No." := JobProcStatus."Cons. Register";
+      GenJournalLineTemp."Source Entry No." := 0;
+      //GenJournalLineTemp."External Document Type" := GLEntry."External Document Type";
+      GenJournalLineTemp."External Document ID" := BufferLocal."Document ID";
+      //GenJournalLineTemp."External Document Date" := ;
+      GenJournalLineTemp."External Operation No" := BufferLocal."External Operation ID";
+      GenJournalLineTemp."External Document No." := FORMAT(BufferLocal."External Operation ID");
+      GenJournalLineTemp."External System ID" := BufferLocal."Id External System";
+      GenJournalLineTemp.Removed := BufferLocal.Removed;
+      GenJournalLineTemp.Reposted := BufferLocal.Reposted;
+      GenJournalLineTemp."Cons. Source Code" := BufferLocal."Cons. Source Code";
+      GenJournalLineTemp."Register No." := BufferLocal."Consolidation Register";
+      GenJournalLineTemp."Transaction Type" := GenJournalLineTemp."Transaction Type"::Automatic;
+
+      GenJournalLineTemp."Amount Type" := TransFactOperLine."Amount Type in Gen. Journal";
+      GenJournalLineTemp."FI EntryType" := TransFactOperLine."FI Entry Type";
+      GenJournalLineTemp.Conversation := TransFactOperLine.Conversation;
+      GenJournalLineTemp."Conversation ID" := BufferLocal."Convers Operation ID";
+
+      GenJournalLineTemp.Quantity := Sign * BufferLocal.Quantity;
+      GenJournalLineTemp."Due Date" := BufferLocal."Due Date";
+
+
+      GenJournalLineTemp.Correction := TransFactOperHeader.Correction;
+      GenJournalLineTemp."FI Portfolio" := TransFactOperLine."FI Portfolio";
+      GenJournalLineTemp."FI Posting Book" := TransFactOperLine."FI Posting Book";
+      GenJournalLineTemp."Short Position" := TransFactOperLine."Short Position";
+
+      GenJournalLineTemp.INSERT;
+
+      retOK := retOK AND FillDimLineTemp(DATABASE::"Gen. Journal Line",
+                               GenJournalLineTemp."Journal Template Name",GenJournalLineTemp."Journal Batch Name",
+                               GenJournalLineTemp."Line No.",
+                               TransFactOperLine,BufferLocal,JobProcStatus);
+      IF NOT retOK THEN
+        EXIT(FALSE);
+
+      //NC MTF01 > AKU
+      //Проверка договора
+      IF GenJournalLineTemp."Account Type" IN
+        [GenJournalLineTemp."Account Type"::Customer, GenJournalLineTemp."Account Type"::Vendor] THEN BEGIN
+        retOK := retOK AND CheckAgreement(GenJournalLineTemp, BufferLocal,JobProcStatus);
+
+        IF NOT retOK THEN
+          EXIT(FALSE)
+        ELSE
+          IF GenJournalLineTemp."Agreement No." <> '' THEN
+            GenJournalLineTemp.MODIFY;  //В функции проставился код договора
+      END;
+      //NC MTF01 < AKU
+      //NC MTF01.1 > AKU
+      IF TransFactOperHeader."Not Check Posting" = FALSE THEN BEGIN
+      //NC MTF01.1 < AKU
+      IF NOT CheckJnlLineDimValuePosting(DATABASE::"Gen. Journal Line",GenJournalLineTemp."Account Type",
+                                         GenJournalLineTemp."Account No.",
+                                         GenJournalLineTemp,BufferLocal,JobProcStatus) THEN
+        EXIT(FALSE);
+
+      IF NOT CheckJnlLineDimValuePosting(DATABASE::"Gen. Journal Line",GenJournalLineTemp."Bal. Account Type",
+                                         GenJournalLineTemp."Account No.",
+                                         GenJournalLineTemp,BufferLocal,JobProcStatus) THEN
+        EXIT(FALSE);
+      //NC MTF01.1 > AKU
+      END;
+      //NC MTF01.1 < AKU
+    END;
+
+    PROCEDURE CheckJnlLineDimValuePosting@1000000009(TableIDLocal@1000000017 : Integer;AccountType@1000000000 : Option;AccountNo@1000000001 : Code[20];VAR GenJnlLineLocal@1000000008 : Record 81;VAR BufferLocal@1000000003 : Record 50082;VAR JobProcStatus@1000000002 : Record 50063) retOK : Boolean;
+    VAR
+      TableID@1000000007 : ARRAY [10] OF Integer;
+      AccNo@1000000006 : ARRAY [10] OF Code[20];
+      CustPostingGroup@1000000005 : Record 92;
+      VendPostingGroup@1000000004 : Record 93;
+      BankAccount@1000000009 : Record 270;
+      BankAccountPostingGroup@1000000010 : Record 277;
+      FIPostingGroup@1000000011 : Record 50103;
+      MakeFILedgEntry@1000000012 : Codeunit 50038;
+      FILedgEntryTemp@1000000013 : TEMPORARY Record 50106;
+      FIValueEntryTemp@1000000014 : TEMPORARY Record 50107;
+      FIGetGLAccountNo@1000000016 : Codeunit 50037;
+      AmountFI@1000000015 : Decimal;
+    BEGIN
+      retOK := TRUE;
+      JournalLineDimTemp.RESET;
+      JournalLineDimTemp.SETRANGE("Table ID",TableIDLocal);
+      JournalLineDimTemp.SETRANGE("Journal Template Name",GenJnlLineLocal."Journal Template Name");
+      JournalLineDimTemp.SETRANGE("Journal Batch Name",GenJnlLineLocal."Journal Batch Name");
+      JournalLineDimTemp.SETRANGE("Journal Line No.",GenJnlLineLocal."Line No.");
+
+      TableID[1] := DimensionMgt.TypeToTableID1(AccountType);
+      AccNo[1] := AccountNo;
+      IF (TableID[1] <> 0) AND (AccNo[1] <> '') THEN
+        IF NOT DimensionMgt.CheckJnlLineDimValuePosting(JournalLineDimTemp,TableID,AccNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC29',STRSUBSTNO(TextEDTC29,DimensionMgt.GetDimValuePostingErr),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+      TableID[1] := 0;
+      AccNo[1] := '';
+      IF AccountNo <> '' THEN
+        CASE AccountType OF
+          GenJnlLineLocal."Account Type"::Customer :
+            BEGIN
+              CustPostingGroup.GET(GenJnlLineLocal."Posting Group");
+              TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+              AccNo[1] := CustPostingGroup."Receivables Account";
+            END;
+          GenJnlLineLocal."Account Type"::Vendor :
+            BEGIN
+              VendPostingGroup.GET(GenJnlLineLocal."Posting Group");
+              TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+              AccNo[1] := VendPostingGroup."Payables Account";
+            END;
+          GenJnlLineLocal."Account Type"::"Bank Account" : BEGIN
+            BankAccount.GET(AccountNo);
+            BankAccountPostingGroup.GET(BankAccount."Bank Acc. Posting Group");
+            TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+            AccNo[1] := BankAccountPostingGroup."G/L Bank Account No.";
+          END;
+          GenJnlLineLocal."Account Type"::FI : BEGIN
+            TableID[1] := DimensionMgt.TypeToTableID1(GenJnlLineLocal."Account Type"::"G/L Account");
+            AmountFI := 0;
+            MakeFILedgEntry.CopyFromGenJnlLine(FILedgEntryTemp,GenJnlLineLocal,AmountFI,FIValueEntryTemp);
+            AccNo[1] := FIGetGLAccountNo.GetAccNo(FILedgEntryTemp);
+          END;
+        END;
+      IF (TableID[1] <> 0) AND (AccNo[1] <> '') THEN
+        IF NOT DimensionMgt.CheckJnlLineDimValuePosting(JournalLineDimTemp,TableID,AccNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC29',STRSUBSTNO(TextEDTC29,DimensionMgt.GetDimValuePostingErr),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          retOK := retOK AND FALSE;
+        END;
+    END;
+
+    PROCEDURE FillDimLineTemp@1000000044(TableID@1000000000 : Integer;JournalTemplateName@1000000001 : Code[20];JournalBatchName@1000000002 : Code[20];JournalLineNo@1000000003 : Integer;VAR TransFactOperLine@1000000007 : Record 50113;VAR BufferLocal@1000000006 : Record 50082;VAR JobProcStatus@1000000005 : Record 50063) retOK : Boolean;
+    VAR
+      NeedMapping@1000000004 : Boolean;
+      DefDimDoc@1000000008 : Record 50114;
+      Company@1000000009 : Record 2000000006;
+      DefDim@1000000010 : Record 352;
+    BEGIN
+      retOK := TRUE;
+      LedgerEntryDimTMP.RESET;
+      IF LedgerEntryDimTMP.FINDSET THEN REPEAT
+
+        JournalLineDimTemp.RESET;
+        JournalLineDimTemp.INIT;
+        JournalLineDimTemp."Table ID" := TableID;
+        JournalLineDimTemp."Journal Template Name" := JournalTemplateName;
+        JournalLineDimTemp."Journal Batch Name" := JournalBatchName;
+        JournalLineDimTemp."Journal Line No." := JournalLineNo;
+
+        JournalLineDimTemp."Dimension Code" := LedgerEntryDimTMP."Dimension Code";
+        JournalLineDimTemp."Dimension Value Code" := LedgerEntryDimTMP."Dimension Value Code";
+
+        NeedMapping := DimMappingSel.GET(TransFactOperHeader."Mapping Code",LedgerEntryDimTMP."Dimension Code");
+        IF NeedMapping THEN
+          MappingDim(TransFactOperHeader."Mapping Code",JournalLineDimTemp,GenJournalLineTemp,JournalLineDimTemp,
+                     DimMappingSel."Save when Mapping",JobProcStatus);
+        IF NOT JournalLineDimTemp.INSERT THEN
+          JournalLineDimTemp.MODIFY;
+
+      UNTIL LedgerEntryDimTMP.NEXT = 0;
+
+      DefDimDoc.RESET;
+      DefDimDoc.SETRANGE("Table ID",DATABASE::"Transform. Fact Oper. Line");
+      DefDimDoc.SETRANGE("No.",TransFactOperLine."Mapping Code");
+      DefDimDoc.SETRANGE("Line No.",TransFactOperLine."Header Line No.");
+      DefDimDoc.SETRANGE("Sub Line No.",TransFactOperLine."Line No.");
+      IF DefDimDoc.FINDSET THEN REPEAT
+        retOK := retOK AND CheckDimensions(DefDimDoc."Dimension Code",DefDimDoc."Dimension Value Code",BufferLocal,
+                                           TransFactOperLine."Mapping Code",JobProcStatus);
+
+        JournalLineDimTemp.RESET;
+        JournalLineDimTemp.INIT;
+        JournalLineDimTemp."Table ID" := TableID;
+        JournalLineDimTemp."Journal Template Name" := JournalTemplateName;
+        JournalLineDimTemp."Journal Batch Name" := JournalBatchName;
+        JournalLineDimTemp."Journal Line No." := JournalLineNo;
+
+        JournalLineDimTemp."Dimension Code" := DefDimDoc."Dimension Code";
+        JournalLineDimTemp."Dimension Value Code" := DefDimDoc."Dimension Value Code";
+        IF NOT JournalLineDimTemp.INSERT THEN
+          JournalLineDimTemp.MODIFY;
+      UNTIL DefDimDoc.NEXT = 0;
+
+      Company.GET(COMPANYNAME);
+      DefDim.RESET;
+      DefDim.SETRANGE("Table ID",DATABASE::"Legal Entity Type");
+      DefDim.SETRANGE("No.",Company."Legal Entity Type");
+      DefDim.SETFILTER("Dimension Code",'<>%1','');
+      DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+      IF DefDim.FINDSET THEN REPEAT
+        JournalLineDimTemp.RESET;
+        JournalLineDimTemp.INIT;
+        JournalLineDimTemp."Table ID" := TableID;
+        JournalLineDimTemp."Journal Template Name" := JournalTemplateName;
+        JournalLineDimTemp."Journal Batch Name" := JournalBatchName;
+        JournalLineDimTemp."Journal Line No." := JournalLineNo;
+
+        JournalLineDimTemp."Dimension Code" := DefDim."Dimension Code";
+        JournalLineDimTemp."Dimension Value Code" := DefDim."Dimension Value Code";
+        IF NOT JournalLineDimTemp.INSERT THEN
+          JournalLineDimTemp.MODIFY;
+      UNTIL DefDim.NEXT = 0;
+    END;
+
+    PROCEDURE CopyDimLineTemp@1101495000(FromTableID@1000000000 : Integer;FromJournalTemplateName@1000000001 : Code[20];FromJournalBatchName@1000000002 : Code[20];FromJournalLineNo@1000000003 : Integer;ToTableID@1101495003 : Integer;ToJournalTemplateName@1101495002 : Code[20];ToJournalBatchName@1101495001 : Code[20];ToJournalLineNo@1101495000 : Integer) retOK : Boolean;
+    VAR
+      JournalLineDimLocalTemp@1101495004 : TEMPORARY Record 356;
+    BEGIN
+      JournalLineDimTemp.RESET;
+      JournalLineDimTemp.SETRANGE("Table ID",FromTableID);
+      JournalLineDimTemp.SETRANGE("Journal Template Name",FromJournalTemplateName);
+      JournalLineDimTemp.SETRANGE("Journal Batch Name",FromJournalBatchName);
+      JournalLineDimTemp.SETRANGE("Journal Line No.",FromJournalLineNo);
+      IF JournalLineDimTemp.FINDSET THEN REPEAT
+        JournalLineDimLocalTemp := JournalLineDimTemp;
+
+        JournalLineDimTemp.INIT;
+        JournalLineDimTemp."Table ID" := ToTableID;
+        JournalLineDimTemp."Journal Template Name" := ToJournalTemplateName;
+        JournalLineDimTemp."Journal Batch Name" := ToJournalBatchName;
+        JournalLineDimTemp."Journal Line No." := ToJournalLineNo;
+
+        JournalLineDimTemp."Dimension Code" := JournalLineDimLocalTemp."Dimension Code";
+        JournalLineDimTemp."Dimension Value Code" := JournalLineDimLocalTemp."Dimension Value Code";
+        JournalLineDimTemp.INSERT;
+
+        JournalLineDimTemp := JournalLineDimLocalTemp;
+      UNTIL JournalLineDimTemp.NEXT = 0;
+    END;
+
+    PROCEDURE CreateGenJournal@1000000041(VAR TransFactOperHeader@1000000002 : Record 50112;VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      DocumentNo@1000000003 : Code[20];
+      GenJournalLine@1000000004 : Record 81;
+      JournalLineDim@1000000005 : Record 356;
+      CurrentBalance@1000000006 : Decimal;
+    BEGIN
+      retOK := TRUE;
+      CurrentBalance := 0;
+      IF GenJournalLineTemp.FINDSET THEN BEGIN
+        DocumentNo := NoSerManag.GetNextNo(ConsSource."Source  No. Series",BufferLocal."Operation Date",TRUE);
+        REPEAT
+        GenJournalLine := GenJournalLineTemp;
+        GenJournalLine."Line No." := ConsMgt.GetNextLineNo(GenJournalLine."Journal Template Name",GenJournalLine."Journal Batch Name");
+        GenJournalLine."Document No." := DocumentNo;
+        GenJournalLine.VALIDATE("Account No.");
+
+        IF GenJournalLineTemp."Posting Group" <> '' THEN
+          GenJournalLine.VALIDATE("Posting Group",GenJournalLineTemp."Posting Group");
+
+        IF GenJournalLineTemp."Gen. Posting Type" <> 0 THEN
+          GenJournalLine."Gen. Posting Type" := GenJournalLineTemp."Gen. Posting Type";
+        IF GenJournalLineTemp."Gen. Bus. Posting Group" <> '' THEN
+          GenJournalLine."Gen. Bus. Posting Group" := GenJournalLineTemp."Gen. Bus. Posting Group";
+        IF GenJournalLineTemp."Gen. Prod. Posting Group" <> '' THEN
+          GenJournalLine."Gen. Prod. Posting Group" := GenJournalLineTemp."Gen. Prod. Posting Group";
+        IF GenJournalLineTemp."VAT Bus. Posting Group" <> '' THEN
+          GenJournalLine."VAT Bus. Posting Group" := GenJournalLineTemp."VAT Bus. Posting Group";
+        IF GenJournalLineTemp."VAT Prod. Posting Group" <> '' THEN
+          GenJournalLine."VAT Prod. Posting Group" := GenJournalLineTemp."VAT Prod. Posting Group";
+
+        //NC MTF01 > AKU
+        {
+        GenJournalLine.VALIDATE("Currency Code",GenJournalLineTemp."Currency Code");
+        }
+        //NC MTF01 < AKU
+        IF GenJournalLineTemp."Agreement No." <> '' THEN
+          GenJournalLine.VALIDATE("Agreement No.",GenJournalLineTemp."Agreement No.");
+        //NC MTF01 > AKU
+        GenJournalLine.VALIDATE("Currency Code",GenJournalLineTemp."Currency Code");
+        IF GenJournalLineTemp."Posting Group" <> '' THEN
+          GenJournalLine.VALIDATE("Posting Group",GenJournalLineTemp."Posting Group");
+        //NC MTF01 < AKU
+        GenJournalLine.Description := GenJournalLineTemp.Description;
+        GenJournalLine."Description 2" := GenJournalLineTemp."Description 2";
+
+        IF NOT TransFactOperHeader."Amounts Incl. VAT" THEN
+          GenJournalLine.VALIDATE("VAT Base Amount",GenJournalLine.Amount)
+        ELSE
+          GenJournalLine.VALIDATE(Quantity);
+
+        //GenJournalLine.VALIDATE(Correction);
+        //GenJournalLine.INSERT(TRUE);
+        GenJournalLine.INSERT;
+
+        CurrentBalance := CurrentBalance + GenJournalLine."Balance (LCY)";
+
+        JournalLineDimTemp.RESET;
+        JournalLineDimTemp.SETRANGE("Table ID",81);
+        JournalLineDimTemp.SETRANGE("Journal Template Name",GenJournalLineTemp."Journal Template Name");
+        JournalLineDimTemp.SETRANGE("Journal Batch Name",GenJournalLineTemp."Journal Batch Name");
+        JournalLineDimTemp.SETRANGE("Journal Line No.",GenJournalLineTemp."Line No.");
+        IF JournalLineDimTemp.FINDSET THEN REPEAT
+          IF NOT JournalLineDim.GET(JournalLineDimTemp."Table ID",
+                                    JournalLineDimTemp."Journal Template Name",JournalLineDimTemp."Journal Batch Name",
+                                    GenJournalLine."Line No.",0,JournalLineDimTemp."Dimension Code") THEN BEGIN
+            JournalLineDim := JournalLineDimTemp;
+            JournalLineDim."Journal Line No." := GenJournalLine."Line No.";
+            JournalLineDim.INSERT;
+          END ELSE IF JournalLineDim."Dimension Value Code" = '' THEN BEGIN
+            JournalLineDim."Dimension Value Code" := JournalLineDimTemp."Dimension Value Code";
+            JournalLineDim.MODIFY;
+          END;
+          IF GLSetup."Global Dimension 1 Code" = JournalLineDim."Dimension Code" THEN
+            GenJournalLine."Shortcut Dimension 1 Code" := JournalLineDim."Dimension Value Code";
+          IF GLSetup."Global Dimension 2 Code" = JournalLineDim."Dimension Code" THEN
+            GenJournalLine."Shortcut Dimension 2 Code" := JournalLineDim."Dimension Value Code";
+          //NC MTF01 > AKU
+          IF MovingDataSetup."FI Dimension Code" = JournalLineDim."Dimension Code" THEN
+            GenJournalLine."Financial Instrument No." := JournalLineDim."Dimension Value Code";
+          //NC MTF01 < AKU
+        UNTIL JournalLineDimTemp.NEXT = 0;
+
+        GenJournalLine.MODIFY;
+
+        //NC MTF01 > AKU
+        GenJournalLine."Allow Zero-Amount Posting" := NOT TransFactOperHeader."Check Amount";
+        //NC MTF01 < AKU
+        IF GenJournalLine."Account No." <> '' THEN
+         //NC MTF01.1 > AKU
+         IF TransFactOperHeader."Not Check Posting" = FALSE THEN
+         //NC MTF01.1 < AKU
+          GenJnlCheckLine.RUN(GenJournalLine);
+
+        //NC MTF01 > AKU
+        GenJournalLine."Allow Zero-Amount Posting" := FALSE;
+        //NC MTF01 < AKU
+        UNTIL GenJournalLineTemp.NEXT = 0;
+      END;
+      //NC MTF01 > AKU
+      IF TransFactOperHeader."Check Amount" THEN
+      //NC MTF01 < AKU
+      IF CurrentBalance <> 0 THEN
+        ERROR(Text004,CurrentBalance);
+    END;
+
+    PROCEDURE DeleteOperation@1000000003(EntryType@1000000004 : 'Remove,Repost';VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      BufferLocalOld@1000000003 : Record 50082;
+    BEGIN
+      retOK := TRUE;
+      IF NOT BufferLocalOld.GET(BufferLocal."Cons. Source Code",BufferLocal."Source Operation No.") THEN BEGIN
+        ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                       'EDTC28',STRSUBSTNO(TextEDTC28,BufferLocal."Document ID"),
+                                       COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+
+      CASE BufferLocalOld."Processing Effect" OF
+        BufferLocalOld."Processing Effect"::"Gen. Journal" :
+          retOK := retOK AND CreateCorrectionJnlLines(EntryType,BufferLocal,BufferLocalOld,ConsSource,JobProcStatus);
+        BufferLocalOld."Processing Effect"::Document :
+          retOK := retOK AND CreateCorrectionDoc(EntryType,BufferLocal,BufferLocalOld,ConsSource,JobProcStatus);
+      END;
+    END;
+
+    PROCEDURE CreateCorrectionJnlLines@1210017(EntryType@1000000003 : 'Remove,Repost';VAR BufferLocal@1210000 : Record 50082;BufferLocalOld@1000000002 : Record 50082;ConsolidationSource@1210005 : Record 50001;VAR JobProcStatus@1000000005 : Record 50063) retOK : Boolean;
+    VAR
+      GLEntry@1210001 : Record 17;
+      GLEntry2@1000000000 : Record 17;
+      GenJnlLineDel@1101495002 : Record 81;
+      GenJnlLineDel2@1101495003 : Record 81;
+      ChangeLogMgt@1101495004 : Codeunit 423;
+      RecRef@1101495005 : RecordRef;
+      GenJnlLineDimDel@1101495006 : Record 356;
+      GenJnlLineDimDel2@1101495007 : Record 356;
+      GLBuff2Correct@1000000001 : Record 50082;
+      DocumentNo@1000000004 : Code[20];
+      CorrTemplate@1000000007 : Code[10];
+      CorrBatch@1000000006 : Code[10];
+    BEGIN
+      retOK := TRUE;
+      CorrTemplate := BufferLocalOld."Journal Template Name";
+      CorrBatch := BufferLocalOld."Journal Batch Name";
+      GenJnlLineDel.RESET;
+      //GenJnlLineDel.SETRANGE("Journal Template Name",CorrTemplate);
+      //GenJnlLineDel.SETRANGE("Journal Batch Name",CorrBatch);
+      GenJnlLineDel.SETRANGE("External Document ID",BufferLocal."Document ID");
+      //GenJnlLineDel.SETRANGE("External Operation No",BufferLocal."Operation No.");
+      GenJnlLineDel.SETFILTER("Buffer Entry No.",'<>%1',BufferLocal."Entry No.");  // кроме тех которые созданы для текущего события
+      ChangeLogMgt.ClearTempChangeLogSetupTable;
+      IF GenJnlLineDel.FINDSET THEN REPEAT
+        GenJnlLineDel2.GET(GenJnlLineDel."Journal Template Name",GenJnlLineDel."Journal Batch Name",GenJnlLineDel."Line No.");
+        RecRef.GETTABLE(GenJnlLineDel2);
+        ChangeLogMgt.LogDeletion(RecRef);
+        GenJnlLineDel2.DELETE;
+        GenJnlLineDimDel.RESET;
+        GenJnlLineDimDel.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+        GenJnlLineDimDel.SETRANGE("Journal Template Name",GenJnlLineDel."Journal Template Name");
+        GenJnlLineDimDel.SETRANGE("Journal Batch Name",GenJnlLineDel."Journal Batch Name");
+        GenJnlLineDimDel.SETRANGE("Journal Line No.",GenJnlLineDel."Line No.");
+        IF GenJnlLineDimDel.FINDSET THEN REPEAT
+          //NC MTF01 > AKU
+          {
+          GenJnlLineDimDel2.GET(81,CorrTemplate,GenJnlLineDel."Journal Batch Name",GenJnlLineDel."Line No.",
+          }
+          GenJnlLineDimDel2.GET(81, GenJnlLineDel."Journal Template Name", GenJnlLineDel."Journal Batch Name", GenJnlLineDel."Line No.",
+          //NC MTF01 < AKU
+                               GenJnlLineDimDel."Allocation Line No.",
+                               GenJnlLineDimDel."Dimension Code");
+          RecRef.GETTABLE(GenJnlLineDimDel2);
+          ChangeLogMgt.LogDeletion(RecRef);
+          GenJnlLineDimDel2.DELETE;
+        UNTIL GenJnlLineDimDel.NEXT = 0;
+
+        IF GLBuff2Correct.GET(GenJnlLineDel2."Cons. Source Code",GenJnlLineDel2."Buffer Entry No.") AND
+           (NOT GLBuff2Correct."Deleted from Gen. Journal") THEN BEGIN
+          GLBuff2Correct."Deleted from Gen. Journal" := TRUE;
+          GLBuff2Correct.MODIFY;
+        END;
+        IF NOT BufferLocal."Deleting from Gen. Journal" THEN
+          BufferLocal."Deleting from Gen. Journal" := TRUE;
+
+      UNTIL GenJnlLineDel.NEXT = 0;
+      GLEntry.SETRANGE("External Document ID",BufferLocal."Document ID");
+      //GLEntry.SETRANGE("External Operation No",BufferLocal."Operation No.");
+      GLEntry.SETRANGE(Reposted,FALSE);
+      GLEntry.SETRANGE(Removed,FALSE);
+      GLEntry.SETRANGE(Reversed,FALSE);
+
+      IF GLEntry.FINDSET THEN REPEAT
+        IF DocumentNo = '' THEN
+          DocumentNo := NoSerManag.GetNextNo(ConsSource."Source  No. Series",BufferLocal."Operation Date",TRUE);
+        ConsMgt.CreateCorrectionLine(GLEntry, JobProcStatus."Cons. Register",ConsolidationSource,
+                                     DocumentNo,CorrTemplate,CorrBatch, EntryType,BufferLocal."Entry No.");
+      UNTIL GLEntry.NEXT = 0;
+    END;
+
+    PROCEDURE CreateCorrectionDoc@1000000030(EntryType@1000000003 : 'Remove,Repost';VAR BufferLocal@1210000 : Record 50082;BufferLocalOld@1000000002 : Record 50082;ConsolidationSource@1210005 : Record 50001;VAR JobProcStatus@1000000005 : Record 50063) retOK : Boolean;
+    VAR
+      ChangeLogMgt@1101495004 : Codeunit 423;
+      CopyDocMgt@1000000012 : Codeunit 6620;
+      RecRef@1101495005 : RecordRef;
+      DocumentNo@1000000004 : Code[20];
+      SalesHeader@1000000011 : Record 36;
+      SalesHeaderDel@1000000000 : Record 36;
+      SalesLineDel@1000000001 : Record 37;
+      PurchHeader@1000000016 : Record 38;
+      PurchHeaderDel@1000000006 : Record 38;
+      PurchLineDel@1000000007 : Record 39;
+      DocumentDimDel@1000000008 : Record 357;
+      GLBuff2Correct@1000000009 : Record 50082;
+      SalesInvHeader@1000000010 : Record 112;
+      SalesCrMemoHeader@1000000013 : Record 114;
+      PurchInvHeader@1000000015 : Record 122;
+      PurchCrMemoHeader@1000000014 : Record 124;
+      DocCount@1000000017 : Integer;
+    BEGIN
+      retOK := TRUE;
+      DocCount := 0;
+      SalesHeaderDel.RESET;
+      SalesHeaderDel.SETRANGE("External Document ID",BufferLocal."Document ID");
+      SalesHeaderDel.SETFILTER("Buffer Entry No.",'<>%1',BufferLocal."Entry No.");  // кроме тех которые созданы для текущего события
+      ChangeLogMgt.ClearTempChangeLogSetupTable;
+      IF SalesHeaderDel.FINDSET THEN REPEAT
+        DocCount += 1;
+        RecRef.GETTABLE(SalesHeaderDel);
+        ChangeLogMgt.LogDeletion(RecRef);
+        SalesHeaderDel.DELETE;
+        SalesLineDel.RESET;
+        SalesLineDel.SETRANGE("Document Type",SalesHeaderDel."Document Type");
+        SalesLineDel.SETRANGE("Document No.",SalesHeaderDel."No.");
+        IF SalesLineDel.FINDSET THEN REPEAT
+          RecRef.GETTABLE(SalesLineDel);
+          ChangeLogMgt.LogDeletion(RecRef);
+          SalesLineDel.DELETE;
+        UNTIL SalesLineDel.NEXT = 0;
+
+        DocumentDimDel.RESET;
+        DocumentDimDel.SETFILTER("Table ID",'%1|%2',DATABASE::"Sales Header",DATABASE::"Sales Line");
+        DocumentDimDel.SETRANGE("Document Type",SalesHeaderDel."Document Type");
+        DocumentDimDel.SETRANGE("Document No.",SalesHeaderDel."No.");
+        IF DocumentDimDel.FINDSET THEN REPEAT
+          RecRef.GETTABLE(DocumentDimDel);
+          ChangeLogMgt.LogDeletion(RecRef);
+          DocumentDimDel.DELETE;
+        UNTIL DocumentDimDel.NEXT = 0;
+
+        IF GLBuff2Correct.GET(SalesHeaderDel."Cons. Source Code",SalesHeaderDel."Buffer Entry No.") AND
+           (NOT GLBuff2Correct."Deleted from Gen. Journal") THEN BEGIN
+          GLBuff2Correct."Deleted from Gen. Journal" := TRUE;
+          GLBuff2Correct.MODIFY;
+        END;
+        IF NOT BufferLocal."Deleting from Gen. Journal" THEN
+          BufferLocal."Deleting from Gen. Journal" := TRUE;
+
+      UNTIL SalesHeaderDel.NEXT = 0;
+
+      SalesInvHeader.RESET;
+      SalesInvHeader.SETRANGE("External Document ID",BufferLocal."Document ID");
+      SalesInvHeader.SETRANGE(Reposted, FALSE);
+      SalesInvHeader.SETRANGE(Removed, FALSE);
+      IF SalesInvHeader.FINDSET THEN REPEAT
+        DocCount += 1;
+        SalesHeader.RESET;
+        SalesHeader."Document Type" := SalesHeader."Document Type"::"Credit Memo";
+        SalesHeader."Posting Date" := SalesInvHeader."Posting Date";
+        SalesHeader."Document Date" := SalesInvHeader."Document Date";
+        SalesHeader.INSERT(TRUE);
+        SalesHeader.SetAutoCreateDocument(TRUE);
+        CLEAR(CopyDocMgt);
+        CopyDocMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+        CopyDocMgt.CopySalesDoc(SalesHeader."Linked Document Type"::"Posted Invoice",SalesInvHeader."No.",SalesHeader);
+        IF EntryType = EntryType::Repost THEN BEGIN
+          SalesHeader.Reposted := TRUE;
+        END ELSE BEGIN
+          SalesHeader.Removed := TRUE;
+        END;
+        SalesHeader."Linked Document Type" := SalesHeader."Linked Document Type"::"Posted Invoice";
+        SalesHeader."Linked Document No." := SalesInvHeader."No.";
+        SalesHeader.Correction := NOT SalesInvHeader.Correction;
+        IF SalesHeader."Posting Date" < GLSetup."Allow Posting From" THEN
+          SalesHeader."Posting Date" := GLSetup."Allow Posting From";
+        IF SalesHeader."Posting Date" < GLSetup."Allow Transformation From" THEN
+          SalesHeader."Posting Date" := GLSetup."Allow Transformation From";
+        IF SalesHeader."Posting Date" <> SalesInvHeader."Posting Date" THEN BEGIN
+          SalesHeader.VALIDATE("Posting Date");
+          SalesHeader."Document Date" := SalesInvHeader."Document Date";
+        END;
+        SalesHeader.MODIFY;
+      UNTIL SalesInvHeader.NEXT = 0;
+
+      SalesCrMemoHeader.RESET;
+      SalesCrMemoHeader.SETRANGE("External Document ID",BufferLocal."Document ID");
+      SalesCrMemoHeader.SETRANGE(Reposted, FALSE);
+      SalesCrMemoHeader.SETRANGE(Removed, FALSE);
+      IF SalesCrMemoHeader.FINDSET THEN REPEAT
+        DocCount += 1;
+        SalesHeader.RESET;
+        SalesHeader."Document Type" := SalesHeader."Document Type"::Invoice;
+        SalesHeader."Posting Date" := SalesInvHeader."Posting Date";
+        SalesHeader."Document Date" := SalesInvHeader."Document Date";
+        SalesHeader.INSERT(TRUE);
+        SalesHeader.SetAutoCreateDocument(TRUE);
+        CLEAR(CopyDocMgt);
+        CopyDocMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+        CopyDocMgt.CopySalesDoc(SalesHeader."Linked Document Type"::"Posted Credit Memo",SalesCrMemoHeader."No.",SalesHeader);
+        IF EntryType = EntryType::Repost THEN BEGIN
+          SalesHeader.Reposted := TRUE;
+        END ELSE BEGIN
+          SalesHeader.Removed := TRUE;
+        END;
+        SalesHeader."Linked Document Type" := SalesHeader."Linked Document Type"::"Posted Credit Memo";
+        SalesHeader."Linked Document No." := SalesCrMemoHeader."No.";
+        SalesHeader.Correction := NOT SalesCrMemoHeader.Correction;
+        IF SalesHeader."Posting Date" < GLSetup."Allow Posting From" THEN
+          SalesHeader."Posting Date" := GLSetup."Allow Posting From";
+        IF SalesHeader."Posting Date" < GLSetup."Allow Transformation From" THEN
+          SalesHeader."Posting Date" := GLSetup."Allow Transformation From";
+        IF SalesHeader."Posting Date" <> SalesCrMemoHeader."Posting Date" THEN BEGIN
+          SalesHeader.VALIDATE("Posting Date");
+          SalesHeader."Document Date" := SalesCrMemoHeader."Document Date";
+        END;
+        SalesHeader.MODIFY;
+      UNTIL SalesCrMemoHeader.NEXT = 0;
+
+      PurchHeaderDel.RESET;
+      PurchHeaderDel.SETRANGE("External Document ID",BufferLocal."Document ID");
+      PurchHeaderDel.SETFILTER("Buffer Entry No.",'<>%1',BufferLocal."Entry No.");  // кроме тех которые созданы для текущего события
+      ChangeLogMgt.ClearTempChangeLogSetupTable;
+      IF PurchHeaderDel.FINDSET THEN REPEAT
+        DocCount += 1;
+        RecRef.GETTABLE(PurchHeaderDel);
+        ChangeLogMgt.LogDeletion(RecRef);
+        PurchHeaderDel.DELETE;
+        PurchLineDel.RESET;
+        PurchLineDel.SETRANGE("Document Type",PurchHeaderDel."Document Type");
+        PurchLineDel.SETRANGE("Document No.",PurchHeaderDel."No.");
+        IF PurchLineDel.FINDSET THEN REPEAT
+          RecRef.GETTABLE(PurchLineDel);
+          ChangeLogMgt.LogDeletion(RecRef);
+          PurchLineDel.DELETE;
+        UNTIL PurchLineDel.NEXT = 0;
+
+        DocumentDimDel.RESET;
+        DocumentDimDel.SETFILTER("Table ID",'%1|%2',DATABASE::"Purchase Header",DATABASE::"Purchase Line");
+        DocumentDimDel.SETRANGE("Document Type",PurchHeaderDel."Document Type");
+        DocumentDimDel.SETRANGE("Document No.",PurchHeaderDel."No.");
+        IF DocumentDimDel.FINDSET THEN REPEAT
+          RecRef.GETTABLE(DocumentDimDel);
+          ChangeLogMgt.LogDeletion(RecRef);
+          DocumentDimDel.DELETE;
+        UNTIL DocumentDimDel.NEXT = 0;
+
+        IF GLBuff2Correct.GET(PurchHeaderDel."Cons. Source Code",PurchHeaderDel."Buffer Entry No.") AND
+           (NOT GLBuff2Correct."Deleted from Gen. Journal") THEN BEGIN
+          GLBuff2Correct."Deleted from Gen. Journal" := TRUE;
+          GLBuff2Correct.MODIFY;
+        END;
+        IF NOT BufferLocal."Deleting from Gen. Journal" THEN
+          BufferLocal."Deleting from Gen. Journal" := TRUE;
+
+      UNTIL PurchHeaderDel.NEXT = 0;
+
+      PurchInvHeader.RESET;
+      PurchInvHeader.SETRANGE("External Document ID",BufferLocal."Document ID");
+      PurchInvHeader.SETRANGE(Reposted, FALSE);
+      PurchInvHeader.SETRANGE(Removed, FALSE);
+      IF PurchInvHeader.FINDSET THEN REPEAT
+        DocCount += 1;
+        PurchHeader.RESET;
+        PurchHeader."Document Type" := PurchHeader."Document Type"::"Credit Memo";
+        PurchHeader."Posting Date" := PurchInvHeader."Posting Date";
+        PurchHeader."Document Date" := PurchInvHeader."Document Date";
+        PurchHeader.INSERT(TRUE);
+        PurchHeader.SetAutoCreateDocument(TRUE);
+        CLEAR(CopyDocMgt);
+        CopyDocMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+        CopyDocMgt.CopyPurchDoc(PurchHeader."Linked Document Type"::"Posted Invoice",PurchInvHeader."No.",PurchHeader);
+        IF EntryType = EntryType::Repost THEN BEGIN
+          PurchHeader.Reposted := TRUE;
+        END ELSE BEGIN
+          PurchHeader.Removed := TRUE;
+        END;
+        PurchHeader."Linked Document Type" := PurchHeader."Linked Document Type"::"Posted Invoice";
+        PurchHeader."Linked Document No." := PurchInvHeader."No.";
+        PurchHeader.Correction := NOT PurchInvHeader.Correction;
+        IF PurchHeader."Posting Date" < GLSetup."Allow Posting From" THEN
+          PurchHeader."Posting Date" := GLSetup."Allow Posting From";
+        IF PurchHeader."Posting Date" < GLSetup."Allow Transformation From" THEN
+          PurchHeader."Posting Date" := GLSetup."Allow Transformation From";
+        IF PurchHeader."Posting Date" <> PurchInvHeader."Posting Date" THEN BEGIN
+          PurchHeader.VALIDATE("Posting Date");
+          PurchHeader."Document Date" := PurchInvHeader."Document Date";
+        END;
+        PurchHeader.MODIFY;
+      UNTIL PurchInvHeader.NEXT = 0;
+
+      PurchCrMemoHeader.RESET;
+      PurchCrMemoHeader.SETRANGE("External Document ID",BufferLocal."Document ID");
+      PurchCrMemoHeader.SETRANGE(Reposted, FALSE);
+      PurchCrMemoHeader.SETRANGE(Removed, FALSE);
+      IF PurchCrMemoHeader.FINDSET THEN REPEAT
+        DocCount += 1;
+        PurchHeader.RESET;
+        PurchHeader."Document Type" := PurchHeader."Document Type"::Invoice;
+        PurchHeader."Posting Date" := PurchInvHeader."Posting Date";
+        PurchHeader."Document Date" := PurchInvHeader."Document Date";
+        PurchHeader.INSERT(TRUE);
+        PurchHeader.SetAutoCreateDocument(TRUE);
+        CLEAR(CopyDocMgt);
+        CopyDocMgt.SetProperties(TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE);
+        CopyDocMgt.CopyPurchDoc(PurchHeader."Linked Document Type"::"Posted Credit Memo",PurchCrMemoHeader."No.",PurchHeader);
+        IF EntryType = EntryType::Repost THEN BEGIN
+          PurchHeader.Reposted := TRUE;
+        END ELSE BEGIN
+          PurchHeader.Removed := TRUE;
+        END;
+        PurchHeader."Linked Document Type" := PurchHeader."Linked Document Type"::"Posted Credit Memo";
+        PurchHeader."Linked Document No." := PurchCrMemoHeader."No.";
+        PurchHeader.Correction := NOT PurchCrMemoHeader.Correction;
+        IF PurchHeader."Posting Date" < GLSetup."Allow Posting From" THEN
+          PurchHeader."Posting Date" := GLSetup."Allow Posting From";
+        IF PurchHeader."Posting Date" < GLSetup."Allow Transformation From" THEN
+          PurchHeader."Posting Date" := GLSetup."Allow Transformation From";
+        IF PurchHeader."Posting Date" <> PurchCrMemoHeader."Posting Date" THEN BEGIN
+          PurchHeader.VALIDATE("Posting Date");
+          PurchHeader."Document Date" := PurchCrMemoHeader."Document Date";
+        END;
+        PurchHeader.MODIFY;
+      UNTIL PurchCrMemoHeader.NEXT = 0;
+
+      IF DocCount = 0 THEN
+        ERROR(Text002);
+      IF DocCount <> 1 THEN
+        ERROR(Text003);
+    END;
+
+    PROCEDURE MappingDim@1000000037(MappingCode@1000000004 : Code[20];VAR GenJnlLineDim@1000000005 : Record 356;VAR GenJnlLineTemp@1000000003 : TEMPORARY Record 81;VAR GenJnlLineDimList@1000000002 : TEMPORARY Record 356;SaveWhenMapping@1000000009 : Boolean;VAR JobProcStatus@1000000001 : Record 50063);
+    VAR
+      ConvDimensions@1000000000 : Record 50003;
+      DimCode@1000000006 : Code[20];
+      DimVal@1000000007 : Code[20];
+      DefaultDim@1000000008 : Record 352;
+    BEGIN
+      DimCode := GenJnlLineDim."Dimension Code";
+      DimVal := GenJnlLineDim."Dimension Value Code";
+
+      ConvDimensions.SETCURRENTKEY("Company Name","Source Dimension Code","Source Dimension Value Code");
+      ConvDimensions.SETRANGE("Mapping Code",MappingCode);
+      ConvDimensions.SETRANGE("Company Name",COMPANYNAME);
+      ConvDimensions.SETRANGE("Source Dimension Code",DimCode);
+      ConvDimensions.SETRANGE("Source Dimension Value Code",DimVal);
+      IF ConvDimensions.FINDFIRST THEN BEGIN
+        IF NOT GenJnlLineDimList.GET(81, GenJnlLineTemp."Journal Template Name", GenJnlLineTemp."Journal Batch Name",
+          GenJnlLineTemp."Line No.", 0, ConvDimensions."Receiver Dimension Code")
+        THEN BEGIN
+          GenJnlLineDim."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+          GenJnlLineDim."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+          GenJnlLineDim."Dim in Source" := DimCode;
+          GenJnlLineDim."Dim Value Code in Source" := DimVal;
+          IF SaveWhenMapping THEN BEGIN
+            GenJnlLineDimList := GenJnlLineDim;
+            GenJnlLineDimList."Dimension Code" := DimCode;
+            GenJnlLineDimList."Dimension Value Code" := DimVal;
+            GenJnlLineDimList."Dim in Source" := '';
+            GenJnlLineDimList."Dim Value Code in Source" := '';
+            GenJnlLineDimList.INSERT;
+          END;
+        END ELSE BEGIN
+          IF DefaultDim.GET(DimensionMgt.TypeToTableID1(GenJnlLineTemp."Account Type"),GenJnlLineTemp."Account No.",DimCode) THEN BEGIN
+            GenJnlLineDim."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+            GenJnlLineDim."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+            GenJnlLineDim."Dim in Source" := DimCode;
+            GenJnlLineDim."Dim Value Code in Source" := DimVal;
+            IF SaveWhenMapping THEN BEGIN
+              GenJnlLineDimList := GenJnlLineDim;
+              GenJnlLineDimList."Dimension Code" := DimCode;
+              GenJnlLineDimList."Dimension Value Code" := DimVal;
+              GenJnlLineDimList."Dim in Source" := '';
+              GenJnlLineDimList."Dim Value Code in Source" := '';
+              GenJnlLineDimList.INSERT;
+            END;
+          END ELSE BEGIN
+            GenJnlLineDim."Dimension Code" := GenJnlLineDimList."Dimension Code";
+            GenJnlLineDim."Dimension Value Code" := GenJnlLineDimList."Dimension Value Code";
+            GenJnlLineDim."Dim in Source" := GenJnlLineDimList."Dim in Source";
+            GenJnlLineDim."Dim Value Code in Source" := GenJnlLineDimList."Dim Value Code in Source";
+          END;
+        END;
+      END ELSE BEGIN
+        ConvDimensions.SETRANGE("Company Name",'');
+        IF ConvDimensions.FINDFIRST THEN BEGIN
+          IF NOT GenJnlLineDimList.GET(81, GenJnlLineTemp."Journal Template Name", GenJnlLineTemp."Journal Batch Name",
+            GenJnlLineTemp."Line No.", 0, ConvDimensions."Receiver Dimension Code")
+          THEN BEGIN
+            GenJnlLineDim."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+            GenJnlLineDim."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+            GenJnlLineDim."Dim in Source" := DimCode;
+            GenJnlLineDim."Dim Value Code in Source" := DimVal;
+            IF SaveWhenMapping THEN BEGIN
+              GenJnlLineDimList := GenJnlLineDim;
+              GenJnlLineDimList."Dimension Code" := DimCode;
+              GenJnlLineDimList."Dimension Value Code" := DimVal;
+              GenJnlLineDimList."Dim in Source" := '';
+              GenJnlLineDimList."Dim Value Code in Source" := '';
+              GenJnlLineDimList.INSERT;
+            END;
+          END ELSE BEGIN
+            IF DefaultDim.GET(DimensionMgt.TypeToTableID1(GenJnlLineTemp."Account Type"),GenJnlLineTemp."Account No.",DimCode) THEN BEGIN
+              GenJnlLineDim."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+              GenJnlLineDim."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+              GenJnlLineDim."Dim in Source" := DimCode;
+              GenJnlLineDim."Dim Value Code in Source" := DimVal;
+              IF SaveWhenMapping THEN BEGIN
+                GenJnlLineDimList := GenJnlLineDim;
+                GenJnlLineDimList."Dimension Code" := DimCode;
+                GenJnlLineDimList."Dimension Value Code" := DimVal;
+                GenJnlLineDimList."Dim in Source" := '';
+                GenJnlLineDimList."Dim Value Code in Source" := '';
+                GenJnlLineDimList.INSERT;
+              END;
+            END ELSE BEGIN
+              GenJnlLineDim."Dimension Code" := GenJnlLineDimList."Dimension Code";
+              GenJnlLineDim."Dimension Value Code" := GenJnlLineDimList."Dimension Value Code";
+              GenJnlLineDim."Dim in Source" := GenJnlLineDimList."Dim in Source";
+              GenJnlLineDim."Dim Value Code in Source" := GenJnlLineDimList."Dim Value Code in Source";
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CorrectAccount@1000000056(AccountType@1000000000 : 'G/L Account,Customer,Vendor,Bank Account,Fixed Asset,IC Partner,FI';VAR AccountNo@1000000001 : Code[20];AccountNoDim@1000000004 : Code[20];SourceValueAccountNo@1101495000 : ' ,Issuer,User';VAR BufferLocal@1000000003 : Record 50082;VAR TransFactOperLine@1000000005 : Record 50113;VAR JobProcStatus@1000000002 : Record 50063) retOK : Boolean;
+    BEGIN
+      retOK := TRUE;
+      IF (AccountType = AccountType::FI) THEN BEGIN
+        IF (AccountNo = '') AND (AccountNoDim= '') AND
+           LedgerEntryDimTMP.GET(0,0,MovingDataSetup."FI Dimension Code") THEN
+          AccountNoDim := LedgerEntryDimTMP."Dimension Value Code";
+        IF AccountNo = '' THEN
+          AccountNo := AccountNoDim;
+        IF (AccountNo = '') AND (SourceValueAccountNo = SourceValueAccountNo::User) THEN
+           EXIT(TRUE);
+        IF NOT FI.GET(AccountNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC21',STRSUBSTNO(TextEDTC21,FI.TABLECAPTION,AccountNo),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          EXIT(FALSE);
+        END;
+        FIType.GET(FI."Type FI");
+      END;
+      IF (AccountType = AccountType::Customer) THEN BEGIN
+        IF (AccountNo = '') AND (AccountNoDim= '') AND
+           LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Customer Dimension Code") THEN
+          AccountNoDim := LedgerEntryDimTMP."Dimension Value Code";
+        IF AccountNo = '' THEN
+          AccountNo := AccountNoDim;
+        //NC MTF01 > AKU
+        IF (SourceValueAccountNo = SourceValueAccountNo::Issuer) AND
+           NOT LedgerEntryDimTMP.GET(0,0,MovingDataSetup."FI Dimension Code") THEN BEGIN
+          SourceValueAccountNo := SourceValueAccountNo::User;
+        END;
+        //NC MTF01 < AKU
+        IF SourceValueAccountNo = SourceValueAccountNo::Issuer THEN BEGIN
+          IF NOT LedgerEntryDimTMP.GET(0,0,MovingDataSetup."FI Dimension Code") THEN BEGIN
+            ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                           JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                           'EDTC31',STRSUBSTNO(TextEDTC31,MovingDataSetup."FI Dimension Code"),
+                                           COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+            EXIT(FALSE);
+          END;
+          IF NOT FI.GET(LedgerEntryDimTMP."Dimension Value Code") THEN BEGIN
+            ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                           JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                           'EDTC21',STRSUBSTNO(TextEDTC21,FI.TABLECAPTION,LedgerEntryDimTMP."Dimension Value Code"),
+                                           COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+            EXIT(FALSE);
+          END;
+          AccountNo := FI."Customer No.";
+        END;
+        IF (AccountNo = '') AND (SourceValueAccountNo = SourceValueAccountNo::User) THEN
+           EXIT(TRUE);
+        IF NOT Customer.GET(AccountNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC21',STRSUBSTNO(TextEDTC21,Customer.TABLECAPTION,AccountNo),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          EXIT(FALSE);
+        END;
+      END;
+      IF (AccountType = AccountType::"Bank Account") THEN BEGIN
+        IF (AccountNo = '') AND (AccountNoDim= '') AND
+           LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Bank Account Dimension Code") THEN
+          AccountNoDim := LedgerEntryDimTMP."Dimension Value Code";
+        IF AccountNo = '' THEN
+          AccountNo := AccountNoDim;
+        IF (AccountNo = '') AND (SourceValueAccountNo = SourceValueAccountNo::User) THEN
+           EXIT(TRUE);
+        IF NOT BankAcc.GET(AccountNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC21',STRSUBSTNO(TextEDTC21,BankAcc.TABLECAPTION,AccountNo),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          EXIT(FALSE);
+        END;
+      END;
+      IF (AccountType = AccountType::Vendor) THEN BEGIN
+        IF (AccountNo = '') AND (AccountNoDim= '') AND
+           LedgerEntryDimTMP.GET(0,0,MovingDataSetup."Customer Dimension Code") THEN
+          AccountNoDim := LedgerEntryDimTMP."Dimension Value Code";
+        IF AccountNo = '' THEN
+          AccountNo := AccountNoDim;
+        IF (AccountNo = '') AND (SourceValueAccountNo = SourceValueAccountNo::User) THEN
+           EXIT(TRUE);
+        IF NOT Customer.GET(AccountNo) THEN BEGIN
+          ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                         'EDTC21',STRSUBSTNO(TextEDTC21,Customer.TABLECAPTION,AccountNo),
+                                         COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+          EXIT(FALSE);
+        END;
+        IF NOT Vendor.GET(AccountNo) THEN BEGIN
+          Vendor.INIT;
+          Vendor."No." := AccountNo;
+          Vendor.CreateFromCustomer(Customer);
+          Vendor.INSERT(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateDocumentTemp@1000000015(VAR TransFactOperHeader@1000000002 : Record 50112;VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      TransFactOperLine@1000000003 : Record 50113;
+      TransFactOperLine2@1000000004 : Record 50113;
+      NeedMapping@1000000005 : Boolean;
+      GenJnlLineLocal@1000000006 : TEMPORARY Record 81;
+    BEGIN
+      retOK := TRUE;
+
+      IF NOT (TransFactOperHeader."Document Type" IN [TransFactOperHeader."Document Type"::Invoice,
+                                                      TransFactOperHeader."Document Type"::"Credit Memo"]) THEN BEGIN
+        ErrorJournal.AddErrorTransFactOperHeader(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                 'EDTC23',TextEDTC23,
+                                                 COMPANYNAME,TransFactOperHeader,JobProcStatus."Line No.");
+        EXIT(FALSE)
+      END;
+
+      LineNo := 0;
+      SalesHeaderTemp.DELETEALL;
+      SalesLineTemp.DELETEALL;
+      PurchHeaderTemp.DELETEALL;
+      PurchLineTemp.DELETEALL;
+      DocumentDimTemp.DELETEALL;
+
+      TransFactOperLine.RESET;
+      TransFactOperLine.SETRANGE("Mapping Code",TransFactOperHeader."Mapping Code");
+      TransFactOperLine.SETRANGE("Header Line No.",TransFactOperHeader."Line No.");
+      TransFactOperLine.SETFILTER("Account Type",'%1|%2',TransFactOperLine."Account Type"::Customer,
+                                                         TransFactOperLine."Account Type"::Vendor);
+
+      IF TransFactOperLine.COUNT <> 1 THEN BEGIN
+        ErrorJournal.AddErrorTransFactOperHeader(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                 'EDTC24',TextEDTC24,
+                                                 COMPANYNAME,TransFactOperHeader,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+
+
+      IF TransFactOperLine.FINDSET THEN BEGIN
+        retOK := retOK AND CorrectAccount(TransFactOperLine."Account Type",TransFactOperLine."Account No.",'',
+                                          TransFactOperLine."Source Value Account No.",
+                                          BufferLocal,TransFactOperLine,JobProcStatus);
+        CASE TransFactOperLine."Account Type" OF
+          TransFactOperLine."Account Type"::Customer :
+            BEGIN
+              SalesHeaderTemp.INIT;
+              CASE TransFactOperHeader."Document Type" OF
+                TransFactOperHeader."Document Type"::Invoice :
+                  SalesHeaderTemp."Document Type" := SalesHeaderTemp."Document Type"::Invoice;
+                TransFactOperHeader."Document Type"::"Credit Memo" :
+                  SalesHeaderTemp."Document Type" := SalesHeaderTemp."Document Type"::"Credit Memo";
+              END;
+              SalesHeaderTemp."No." := 'TEMP-01';
+              SalesHeaderTemp.INSERT;
+              SalesHeaderTemp."Sell-to Customer No." := TransFactOperLine."Account No.";
+              SalesHeaderTemp."Posting Date" := BufferLocal."Operation Date";
+              SalesHeaderTemp."Document Date" := BufferLocal."Operation Date";
+              IF SalesHeaderTemp."Posting Date" < GLSetup."Allow Posting From" THEN
+                SalesHeaderTemp."Posting Date" := GLSetup."Allow Posting From";
+
+              IF SalesHeaderTemp."Posting Date" < GLSetup."Allow Transformation From" THEN
+                SalesHeaderTemp."Posting Date" := GLSetup."Allow Transformation From";
+
+              SalesHeaderTemp."Posting Description" := BufferLocal.Description;
+              //NC MTF01 > AKU
+              SalesHeaderTemp."Posting Description" := COPYSTR(
+                                                          STRSUBSTNO('%1 %2 %3',
+                                                            SalesHeaderTemp."Sell-to Customer No.",
+                                                            BufferLocal.Description,
+                                                            BufferLocal."Description 2"),
+                                                          1, MAXSTRLEN(SalesHeaderTemp."Posting Description"));
+              //NC MTF01 < AKU
+              SalesHeaderTemp."External Document No." := FORMAT(BufferLocal."External Operation ID");
+              SalesHeaderTemp."Currency Code" := ConvertCurrencyCode(BufferLocal."Currency Code");
+              IF SalesHeaderTemp."Currency Code" = 'ERROR' THEN BEGIN
+                ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                               JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                               'EDTC21',STRSUBSTNO(TextEDTC21,Currency.TABLECAPTION,BufferLocal."Currency Code"),
+                                               COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+                retOK := retOK AND FALSE;
+              END;
+              SalesHeaderTemp."Customer Posting Group" := TransFactOperLine."Posting Group";
+              SalesHeaderTemp."Gen. Bus. Posting Group" := TransFactOperLine."Gen. Bus. Posting Group";
+              SalesHeaderTemp."VAT Bus. Posting Group" := TransFactOperLine."VAT Bus. Posting Group";
+              SalesHeaderTemp."Prices Including VAT" := TransFactOperHeader."Amounts Incl. VAT";
+              SalesHeaderTemp."Due Date" := BufferLocal."Due Date";
+              SalesHeaderTemp."Agreement No." := TransFactOperLine."Agreement No.";
+              SalesHeaderTemp.Correction := TransFactOperHeader.Correction;
+
+              SalesHeaderTemp."Description 2" := BufferLocal."Description 2";
+              SalesHeaderTemp."Business Unit Code" := ConsSource."Business Unit Code";
+              SalesHeaderTemp."External Document ID" := BufferLocal."Document ID";
+              SalesHeaderTemp."Export Cons. Source Code" := JobProcStatus.Processor;
+              SalesHeaderTemp."Export Register No." := JobProcStatus."Cons. Register";
+              SalesHeaderTemp."Cons. Source Code" := BufferLocal."Cons. Source Code";
+              SalesHeaderTemp."Register No." := BufferLocal."Consolidation Register";
+              SalesHeaderTemp."Buffer Entry No." := BufferLocal."Entry No.";
+              SalesHeaderTemp."Source Entry No." := 0;
+              SalesHeaderTemp."External Operation No" := BufferLocal."External Operation ID";
+              SalesHeaderTemp."External System ID" := BufferLocal."Id External System";
+              SalesHeaderTemp."Transaction Type in Gen. Jrnl." := SalesHeaderTemp."Transaction Type in Gen. Jrnl."::Automatic;
+              SalesHeaderTemp.Removed := BufferLocal.Removed;
+              SalesHeaderTemp.Reposted := BufferLocal.Reposted;
+              SalesHeaderTemp.MODIFY;
+            END;
+          TransFactOperLine."Account Type"::Vendor :
+            BEGIN
+              PurchHeaderTemp.INIT;
+              CASE TransFactOperHeader."Document Type" OF
+                TransFactOperHeader."Document Type"::Invoice :
+                  PurchHeaderTemp."Document Type" := PurchHeaderTemp."Document Type"::Invoice;
+                TransFactOperHeader."Document Type"::"Credit Memo" :
+                  PurchHeaderTemp."Document Type" := PurchHeaderTemp."Document Type"::"Credit Memo";
+              END;
+              PurchHeaderTemp."No." := 'TEMP-01';
+              PurchHeaderTemp.INSERT;
+              PurchHeaderTemp."Buy-from Vendor No." := TransFactOperLine."Account No.";
+              PurchHeaderTemp."Posting Date" := BufferLocal."Operation Date";
+              PurchHeaderTemp."Document Date" := BufferLocal."Operation Date";
+              IF PurchHeaderTemp."Posting Date" < GLSetup."Allow Posting From" THEN
+                PurchHeaderTemp."Posting Date" := GLSetup."Allow Posting From";
+
+              IF PurchHeaderTemp."Posting Date" < GLSetup."Allow Transformation From" THEN
+                PurchHeaderTemp."Posting Date" := GLSetup."Allow Transformation From";
+
+              PurchHeaderTemp."Posting Description" := BufferLocal.Description;
+
+              PurchHeaderTemp."Posting Description" := BufferLocal.Description;
+              PurchHeaderTemp."Vendor Invoice No." := FORMAT(BufferLocal."External Operation ID");
+              PurchHeaderTemp."Currency Code" := BufferLocal."Currency Code";
+              IF PurchHeaderTemp."Currency Code" = 'ERROR' THEN BEGIN
+                ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                               JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                               'EDTC21',STRSUBSTNO(TextEDTC21,Currency.TABLECAPTION,BufferLocal."Currency Code"),
+                                               COMPANYNAME,BufferLocal,JobProcStatus."Line No.");
+                retOK := retOK AND FALSE;
+              END;
+              PurchHeaderTemp."Vendor Posting Group" := TransFactOperLine."Posting Group";
+              PurchHeaderTemp."Gen. Bus. Posting Group" := TransFactOperLine."Gen. Bus. Posting Group";
+              PurchHeaderTemp."VAT Bus. Posting Group" := TransFactOperLine."VAT Bus. Posting Group";
+              PurchHeaderTemp."Prices Including VAT" := TransFactOperHeader."Amounts Incl. VAT";
+              PurchHeaderTemp."Due Date" := BufferLocal."Due Date";
+              PurchHeaderTemp."Agreement No." := TransFactOperLine."Agreement No.";
+              PurchHeaderTemp.Correction := TransFactOperHeader.Correction;
+
+              PurchHeaderTemp."Description 2" := BufferLocal."Description 2";
+              PurchHeaderTemp."Business Unit Code" := ConsSource."Business Unit Code";
+              PurchHeaderTemp."External Document ID" := BufferLocal."Document ID";
+              PurchHeaderTemp."Export Cons. Source Code" := JobProcStatus.Processor;
+              PurchHeaderTemp."Export Register No." := JobProcStatus."Cons. Register";
+              PurchHeaderTemp."Cons. Source Code" := BufferLocal."Cons. Source Code";
+              PurchHeaderTemp."Register No." := BufferLocal."Consolidation Register";
+              PurchHeaderTemp."Buffer Entry No." := BufferLocal."Entry No.";
+              PurchHeaderTemp."Source Entry No." := 0;
+              PurchHeaderTemp."External Operation No" := BufferLocal."External Operation ID";
+              PurchHeaderTemp."External System ID" := BufferLocal."Id External System";
+              PurchHeaderTemp."Transaction Type in Gen. Jrnl." := PurchHeaderTemp."Transaction Type in Gen. Jrnl."::Automatic;
+              PurchHeaderTemp.Removed := BufferLocal.Removed;
+              PurchHeaderTemp.Reposted := BufferLocal.Reposted;
+              PurchHeaderTemp.MODIFY;
+            END;
+        END;
+
+        CASE TransFactOperLine."Account Type" OF
+          TransFactOperLine."Account Type"::Customer : BEGIN
+            FillDimLineTemp(DATABASE::"Sales Header",
+                            SalesHeaderTemp."No.",'',
+                            0,
+                            TransFactOperLine,BufferLocal,JobProcStatus);
+
+            GenJnlLineLocal."Journal Template Name" := SalesHeaderTemp."No.";
+            GenJnlLineLocal."Journal Batch Name" := '';
+            GenJnlLineLocal."Line No." := 0;
+            GenJnlLineLocal."Posting Group" := SalesHeaderTemp."Customer Posting Group";
+            retOK := retOK AND CheckJnlLineDimValuePosting(DATABASE::"Sales Header",TransFactOperLine."Account Type",
+                                                           TransFactOperLine."Account No.",
+                                                           GenJnlLineLocal,BufferLocal,JobProcStatus);
+          END;
+          TransFactOperLine."Account Type"::Vendor : BEGIN
+            FillDimLineTemp(DATABASE::"Purchase Header",
+                            PurchHeaderTemp."No.",'',
+                            0,
+                            TransFactOperLine,BufferLocal,JobProcStatus);
+
+            GenJnlLineLocal."Journal Template Name" := PurchHeaderTemp."No.";
+            GenJnlLineLocal."Journal Batch Name" := '';
+            GenJnlLineLocal."Line No." := 0;
+            GenJnlLineLocal."Posting Group" := PurchHeaderTemp."Vendor Posting Group";
+            retOK := retOK AND CheckJnlLineDimValuePosting(DATABASE::"Purchase Header",TransFactOperLine."Account Type",
+                                                           TransFactOperLine."Account No.",
+                                                           GenJnlLineLocal,BufferLocal,JobProcStatus);
+          END;
+        END;
+
+        TransFactOperLine2.RESET;
+        TransFactOperLine2.SETRANGE("Mapping Code",TransFactOperHeader."Mapping Code");
+        TransFactOperLine2.SETRANGE("Header Line No.",TransFactOperHeader."Line No.");
+        TransFactOperLine2.SETFILTER("Line No.",'<>%1',TransFactOperLine."Line No.");
+        IF TransFactOperLine2.FINDSET THEN REPEAT
+
+          IF TransFactOperHeader."Check Amount" THEN BEGIN
+            CASE TransFactOperLine2."Amount Type" OF
+              TransFactOperLine2."Amount Type"::"Amount of Entry" :
+                IF BufferLocal.Amount <> 0 THEN
+                  retOK := retOK AND CreateDocumentLineTemp(BufferLocal.Amount,
+                                              TransFactOperHeader,TransFactOperLine,TransFactOperLine2,BufferLocal,JobProcStatus);
+              TransFactOperLine2."Amount Type"::"Principal Amount" :
+                IF BufferLocal."Principal Amount" <> 0 THEN
+                  retOK := retOK AND CreateDocumentLineTemp(BufferLocal."Principal Amount",
+                                              TransFactOperHeader,TransFactOperLine,TransFactOperLine2,BufferLocal,JobProcStatus);
+              TransFactOperLine2."Amount Type"::"Interest Income" :
+                IF BufferLocal."Interest Amount" <> 0 THEN
+                  retOK := retOK AND CreateDocumentLineTemp(BufferLocal."Interest Amount",
+                                              TransFactOperHeader,TransFactOperLine,TransFactOperLine2,BufferLocal,JobProcStatus);
+            END;
+          END ELSE BEGIN
+
+            CASE TransFactOperLine2."Amount Type" OF
+              TransFactOperLine2."Amount Type"::"Amount of Entry" :
+                retOK := retOK AND CreateDocumentLineTemp(BufferLocal.Amount,
+                                            TransFactOperHeader,TransFactOperLine,TransFactOperLine2,BufferLocal,JobProcStatus);
+              TransFactOperLine2."Amount Type"::"Principal Amount" :
+                retOK := retOK AND CreateDocumentLineTemp(BufferLocal."Principal Amount",
+                                            TransFactOperHeader,TransFactOperLine,TransFactOperLine2,BufferLocal,JobProcStatus);
+              TransFactOperLine2."Amount Type"::"Interest Income" :
+                retOK := retOK AND CreateDocumentLineTemp(BufferLocal."Interest Amount",
+                                            TransFactOperHeader,TransFactOperLine,TransFactOperLine2,BufferLocal,JobProcStatus);
+            END;
+
+          END;
+
+          IF NOT retOK THEN
+            EXIT(FALSE);
+
+        UNTIL TransFactOperLine2.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE CreateDocumentLineTemp@1000000057(Amount@1000000004 : Decimal;VAR TransFactOperHeader@1000000002 : Record 50112;VAR TransFactOperLine@1000000005 : Record 50113;VAR TransFactOperLine2@1000000003 : Record 50113;VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      Sign@1000000007 : Decimal;
+      NeedMapping@1000000006 : Boolean;
+      GenJnlLineLocal@1000000008 : TEMPORARY Record 81;
+    BEGIN
+      retOK := TRUE;
+      IF TransFactOperLine2."Account Type" <> TransFactOperLine2."Account Type"::"G/L Account" THEN BEGIN
+        ErrorJournal.AddErrorTransFactOperLine(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                              JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                              'EDTC25',TextEDTC25,
+                                              COMPANYNAME,TransFactOperLine2,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+      IF TransFactOperLine2."Account No." = '' THEN BEGIN
+        ErrorJournal.AddErrorTransFactOperLine(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                               JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                               'EDTC26',STRSUBSTNO(TextEDTC26,TransFactOperLine2.FIELDCAPTION("Account No.")),
+                                               COMPANYNAME,TransFactOperLine2,JobProcStatus."Line No.");
+        EXIT(FALSE);
+      END;
+
+      LineNo += 10000;
+
+      IF TransFactOperLine."Reverse Amount Value" THEN
+        Sign := -1
+      ELSE
+        Sign := 1;
+
+      CASE TransFactOperLine."Account Type" OF
+        TransFactOperLine."Account Type"::Customer :
+          BEGIN
+            SalesLineTemp.INIT;
+            SalesLineTemp."Document Type" := SalesHeaderTemp."Document Type";
+            SalesLineTemp."Document No." := SalesHeaderTemp."No.";
+            SalesLineTemp."Line No." := LineNo;
+            SalesLineTemp.Type := SalesLineTemp.Type::"G/L Account";
+            SalesLineTemp."No." := TransFactOperLine2."Account No.";
+            SalesLineTemp."Gen. Prod. Posting Group" := TransFactOperLine2."Gen. Prod. Posting Group";
+            SalesLineTemp."VAT Prod. Posting Group" := TransFactOperLine2."VAT Prod. Posting Group";
+            IF BufferLocal.Quantity = 0 THEN
+              SalesLineTemp.Quantity := Sign
+            ELSE
+              SalesLineTemp.Quantity := Sign * BufferLocal.Quantity;
+            SalesLineTemp."Unit Price" := ROUND(Amount / SalesLineTemp.Quantity);
+            SalesLineTemp."Line Amount" := Sign * Amount;
+            //NC MTF01 > AKU
+            SalesLineTemp.Description := COPYSTR(
+                                                STRSUBSTNO('%1 %2',
+                                                  BufferLocal.Description,
+                                                  BufferLocal."Description 2"),
+                                                1, MAXSTRLEN(SalesLineTemp.Description));
+            //NC MTF01 < AKU
+
+            SalesLineTemp.INSERT;
+          END;
+        TransFactOperLine."Account Type"::Vendor :
+          BEGIN
+            PurchLineTemp.INIT;
+            PurchLineTemp."Document Type" := PurchHeaderTemp."Document Type";
+            PurchLineTemp."Document No." := PurchHeaderTemp."No.";
+            PurchLineTemp."Line No." := LineNo;
+            PurchLineTemp.Type := PurchLineTemp.Type::"G/L Account";
+            PurchLineTemp."No." := TransFactOperLine2."Account No.";
+            PurchLineTemp."Gen. Prod. Posting Group" := TransFactOperLine2."Gen. Prod. Posting Group";
+            PurchLineTemp."VAT Prod. Posting Group" := TransFactOperLine2."VAT Prod. Posting Group";
+            IF BufferLocal.Quantity = 0 THEN
+              PurchLineTemp.Quantity := Sign
+            ELSE
+              PurchLineTemp.Quantity := Sign * BufferLocal.Quantity;
+            PurchLineTemp."Direct Unit Cost" := ROUND(Amount / BufferLocal.Quantity);
+            PurchLineTemp."Line Amount" := Sign * Amount;
+
+            PurchLineTemp.INSERT;
+          END;
+      END;
+
+      CASE TransFactOperLine."Account Type" OF
+        TransFactOperLine."Account Type"::Customer : BEGIN
+          CopyDimLineTemp(DATABASE::"Sales Header",
+                          SalesHeaderTemp."No.",'',
+                          0,
+                          DATABASE::"Sales Line",
+                          SalesHeaderTemp."No.",'',
+                          LineNo);
+
+          FillDimLineTemp(DATABASE::"Sales Line",
+                          SalesHeaderTemp."No.",'',
+                          LineNo,
+                          TransFactOperLine2,BufferLocal,JobProcStatus);
+
+          GenJnlLineLocal."Journal Template Name" := SalesHeaderTemp."No.";
+          GenJnlLineLocal."Journal Batch Name" := '';
+          GenJnlLineLocal."Line No." := LineNo;
+          retOK := retOK AND CheckJnlLineDimValuePosting(DATABASE::"Sales Line",TransFactOperLine2."Account Type",
+                                                         TransFactOperLine2."Account No.",
+                                                         GenJnlLineLocal,BufferLocal,JobProcStatus);
+        END;
+        TransFactOperLine."Account Type"::Vendor : BEGIN
+          CopyDimLineTemp(DATABASE::"Purchase Header",
+                          PurchHeaderTemp."No.",'',
+                          0,
+                          DATABASE::"Purchase Line",
+                          PurchHeaderTemp."No.",'',
+                          LineNo);
+
+          FillDimLineTemp(DATABASE::"Purchase Line",
+                          PurchHeaderTemp."No.",'',
+                          LineNo,
+                          TransFactOperLine2,BufferLocal,JobProcStatus);
+
+          GenJnlLineLocal."Journal Template Name" := PurchHeaderTemp."No.";
+          GenJnlLineLocal."Journal Batch Name" := '';
+          GenJnlLineLocal."Line No." := LineNo;
+          retOK := retOK AND CheckJnlLineDimValuePosting(DATABASE::"Purchase Line",TransFactOperLine2."Account Type",
+                                                         TransFactOperLine2."Account No.",
+                                                         GenJnlLineLocal,BufferLocal,JobProcStatus);
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateDocument@1000000042(VAR TransFactOperHeader@1000000002 : Record 50112;VAR BufferLocal@1000000001 : Record 50082;VAR JobProcStatus@1000000000 : Record 50063) retOK : Boolean;
+    VAR
+      SalesHeader@1000000003 : Record 36;
+      SalesLine@1000000004 : Record 37;
+      PurchHeader@1000000005 : Record 38;
+      PurchLine@1000000006 : Record 39;
+    BEGIN
+      retOK := TRUE;
+      IF SalesHeaderTemp.FINDSET THEN REPEAT
+        SalesHeader.INIT;
+        SalesHeader := SalesHeaderTemp;
+        SalesHeader."No." := '';
+        SalesHeader.INSERT(TRUE);
+        SalesHeader.SetHideValidationDialog(TRUE);
+        SalesHeader.SetAutoCreateDocument(TRUE);
+
+        SalesHeader.VALIDATE("Sell-to Customer No.");
+        SalesHeader.VALIDATE("Posting Date");
+
+        SalesHeader."Document Date" := SalesHeaderTemp."Document Date";
+
+        IF SalesHeaderTemp."Customer Posting Group" <> '' THEN
+          SalesHeader."Customer Posting Group" := SalesHeaderTemp."Customer Posting Group";
+
+        IF SalesHeaderTemp."VAT Bus. Posting Group" <> '' THEN
+          SalesHeader."VAT Bus. Posting Group" := SalesHeaderTemp."VAT Bus. Posting Group";
+        IF SalesHeaderTemp."Gen. Bus. Posting Group" <> '' THEN
+          SalesHeader.VALIDATE("Gen. Bus. Posting Group",SalesHeaderTemp."Gen. Bus. Posting Group");
+
+        IF SalesHeader."Agreement No." <> '' THEN
+          SalesHeader.VALIDATE("Agreement No.");
+
+        JournalLineDimTemp.RESET;
+        JournalLineDimTemp.SETRANGE("Table ID",DATABASE::"Sales Header");
+        JournalLineDimTemp.SETRANGE("Journal Template Name",SalesHeaderTemp."No.");
+        JournalLineDimTemp.SETRANGE("Journal Batch Name",'');
+        JournalLineDimTemp.SETRANGE("Journal Line No.",0);
+        FillDocDim(JournalLineDimTemp,DATABASE::"Sales Header",SalesHeader."Document Type",SalesHeader."No.",0,
+          SalesHeader."Shortcut Dimension 1 Code",SalesHeader."Shortcut Dimension 2 Code");
+
+        //NC MTF01 > AKU
+        SalesHeader."Posting Description" := SalesHeaderTemp."Posting Description";
+        SalesHeader."Description 2" := SalesHeaderTemp."Description 2";
+        SalesHeader.Correction := SalesHeaderTemp.Correction;
+        //NC MTF01 < AKU
+        SalesHeader.MODIFY;
+
+        SalesLine.SetAutoCreateDocument(TRUE);
+        SalesLineTemp.RESET;
+        SalesLineTemp.SETRANGE("Document Type",SalesHeaderTemp."Document Type");
+        SalesLineTemp.SETRANGE("Document No.",SalesHeaderTemp."No.");
+        IF SalesLineTemp.FINDSET THEN REPEAT
+          SalesLine.INIT;
+          SalesLine := SalesLineTemp;
+          SalesLine."Document No." := SalesHeader."No.";
+
+          SalesLine.VALIDATE("No.");
+          IF SalesLineTemp."VAT Prod. Posting Group" <> '' THEN
+            SalesLine."VAT Prod. Posting Group" := SalesLineTemp."VAT Prod. Posting Group";
+
+          IF SalesLineTemp."Gen. Prod. Posting Group" <> '' THEN
+            SalesLine.VALIDATE("Gen. Prod. Posting Group",SalesLineTemp."Gen. Prod. Posting Group");
+
+          IF SalesLineTemp."VAT Prod. Posting Group" <> '' THEN
+            SalesLine.VALIDATE("VAT Prod. Posting Group", SalesLineTemp."VAT Prod. Posting Group");
+
+          SalesLine.VALIDATE("Unit Price",SalesLineTemp."Unit Price");
+          SalesLine.VALIDATE(Quantity,SalesLineTemp.Quantity);
+          SalesLine.VALIDATE("Line Amount",SalesLineTemp."Line Amount");
+          //NC MTF01 > AKU
+          SalesLine.Description := SalesLineTemp.Description;
+          SalesLine."Description 2" := SalesLineTemp."Description 2";
+          //NC MTF01 < AKU
+          SalesLine.INSERT(TRUE);
+
+          JournalLineDimTemp.RESET;
+          JournalLineDimTemp.SETRANGE("Table ID",DATABASE::"Sales Line");
+          JournalLineDimTemp.SETRANGE("Journal Template Name",SalesLineTemp."Document No.");
+          JournalLineDimTemp.SETRANGE("Journal Batch Name",'');
+          JournalLineDimTemp.SETRANGE("Journal Line No.",SalesLineTemp."Line No.");
+          FillDocDim(JournalLineDimTemp,DATABASE::"Sales Line",SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.",
+            SalesLine."Shortcut Dimension 1 Code",SalesLine."Shortcut Dimension 2 Code");
+
+          SalesLine.MODIFY;
+
+        UNTIL SalesLineTemp.NEXT = 0;
+
+      UNTIL SalesHeaderTemp.NEXT = 0;
+
+      IF PurchHeaderTemp.FINDSET THEN REPEAT
+        PurchHeader.INIT;
+        PurchHeader := PurchHeaderTemp;
+        PurchHeader."No." := '';
+        PurchHeader.INSERT(TRUE);
+        PurchHeader.SetHideValidationDialog(TRUE);
+        PurchHeader.SetAutoCreateDocument(TRUE);
+
+        PurchHeader.VALIDATE("Buy-from Vendor No.");
+        PurchHeader.VALIDATE("Posting Date");
+        PurchHeader."Document Date" := PurchHeaderTemp."Document Date";
+
+        IF PurchHeaderTemp."Vendor Posting Group" <> '' THEN
+          PurchHeader."Vendor Posting Group" := PurchHeaderTemp."Vendor Posting Group";
+        IF PurchHeaderTemp."Gen. Bus. Posting Group" <> '' THEN
+          PurchHeader.VALIDATE("Gen. Bus. Posting Group",PurchHeaderTemp."Gen. Bus. Posting Group");
+        IF PurchHeaderTemp."VAT Bus. Posting Group" <> '' THEN
+          PurchHeader."VAT Bus. Posting Group" := PurchHeaderTemp."VAT Bus. Posting Group";
+
+        PurchHeader.VALIDATE("Agreement No.");
+
+        JournalLineDimTemp.RESET;
+        JournalLineDimTemp.SETRANGE("Table ID",DATABASE::"Purchase Header");
+        JournalLineDimTemp.SETRANGE("Journal Template Name",PurchHeaderTemp."No.");
+        JournalLineDimTemp.SETRANGE("Journal Batch Name",'');
+        JournalLineDimTemp.SETRANGE("Journal Line No.",0);
+        FillDocDim(JournalLineDimTemp,DATABASE::"Purchase Header",PurchHeader."Document Type",PurchHeader."No.",0,
+          PurchHeader."Shortcut Dimension 1 Code",PurchHeader."Shortcut Dimension 2 Code");
+
+        PurchHeader.MODIFY;
+
+        PurchLine.SetAutoCreateDocument(TRUE);
+        PurchLineTemp.RESET;
+        PurchLineTemp.SETRANGE("Document Type",PurchHeaderTemp."Document Type");
+        PurchLineTemp.SETRANGE("Document No.",PurchHeaderTemp."No.");
+        IF PurchLineTemp.FINDSET THEN REPEAT
+          PurchLine.INIT;
+          PurchLine := PurchLineTemp;
+          PurchLine."Document No." := PurchHeader."No.";
+
+          PurchLine.VALIDATE("No.");
+          IF PurchLineTemp."Gen. Prod. Posting Group" <> '' THEN
+            PurchLine.VALIDATE("Gen. Prod. Posting Group",PurchLineTemp."Gen. Prod. Posting Group");
+          IF PurchLineTemp."VAT Prod. Posting Group" <> '' THEN
+            PurchLine.VALIDATE("VAT Prod. Posting Group",PurchLineTemp."VAT Prod. Posting Group");
+
+          PurchLine.VALIDATE("Direct Unit Cost",PurchLineTemp."Direct Unit Cost");
+          PurchLine.VALIDATE(Quantity,SalesLineTemp.Quantity);
+          PurchLine.VALIDATE("Line Amount",PurchLine."Line Amount");
+
+          PurchLine.INSERT(TRUE);
+
+          JournalLineDimTemp.RESET;
+          JournalLineDimTemp.SETRANGE("Table ID",DATABASE::"Purchase Line");
+          JournalLineDimTemp.SETRANGE("Journal Template Name",PurchLineTemp."Document No.");
+          JournalLineDimTemp.SETRANGE("Journal Batch Name",'');
+          JournalLineDimTemp.SETRANGE("Journal Line No.",PurchLineTemp."Line No.");
+          FillDocDim(JournalLineDimTemp,DATABASE::"Purchase Line",PurchLine."Document Type",PurchLine."Document No.",PurchLine."Line No.",
+            PurchLine."Shortcut Dimension 1 Code",PurchLine."Shortcut Dimension 2 Code");
+
+          PurchLine.MODIFY;
+
+        UNTIL PurchLineTemp.NEXT = 0;
+
+      UNTIL PurchHeaderTemp.NEXT = 0;
+    END;
+
+    PROCEDURE FillDocDim@1000000016(VAR JournalLineDimTemp2@1000000006 : TEMPORARY Record 356;TableID@1000000000 : Integer;DocType@1000000002 : Option;DocNo@1000000001 : Code[20];LineNo@1000000003 : Integer;VAR ShortcutDimension1Code@1000000005 : Code[20];VAR ShortcutDimension2Code@1000000004 : Code[20]);
+    VAR
+      DocumentDim@1000000007 : Record 357;
+    BEGIN
+      IF JournalLineDimTemp2.FINDSET THEN REPEAT
+        IF NOT DocumentDim.GET(TableID,
+                               DocType,DocNo,
+                               LineNo,JournalLineDimTemp2."Dimension Code") THEN BEGIN
+          DocumentDim.INIT;
+          DocumentDim."Table ID" := TableID;
+          DocumentDim."Document Type" := DocType;
+          DocumentDim."Document No." := DocNo;
+          DocumentDim."Line No." := LineNo;
+          DocumentDim."Dimension Code" := JournalLineDimTemp2."Dimension Code";
+          DocumentDim."Dimension Value Code" := JournalLineDimTemp2."Dimension Value Code";
+          DocumentDim.INSERT;
+        END ELSE IF DocumentDim."Dimension Value Code" = '' THEN BEGIN
+            DocumentDim."Dimension Value Code" := JournalLineDimTemp2."Dimension Value Code";
+            DocumentDim.MODIFY;
+          END;
+        IF GLSetup."Global Dimension 1 Code" = DocumentDim."Dimension Code" THEN
+          ShortcutDimension1Code := DocumentDim."Dimension Value Code";
+        IF GLSetup."Global Dimension 2 Code" = DocumentDim."Dimension Code" THEN
+          ShortcutDimension2Code := DocumentDim."Dimension Value Code";
+      UNTIL JournalLineDimTemp2.NEXT = 0;
+    END;
+
+    PROCEDURE ConvertCurrencyCode@1101495007(BufferCode@1210000 : Code[10]) : Code[10];
+    VAR
+      Currency@1210001 : Record 4;
+    BEGIN
+      IF BufferCode='' THEN EXIT('');
+      GLSetup.GET;
+      IF GLSetup."LCY Code" = BufferCode THEN
+        EXIT('');
+      Currency.SETFILTER(Currency."Source Currency Code",'%1',BufferCode);
+      IF Currency.FINDFIRST THEN
+        EXIT(Currency.Code);
+      EXIT('ERROR');
+    END;
+
+    PROCEDURE InitLog@1101495001();
+    BEGIN
+      CLEAR(Log);
+      //Log.SetIsActive(TRUE);
+      Log.WriteLogFile('TransformOperation',TRUE,FALSE,1);
+    END;
+
+    PROCEDURE CloseLog@1101495003();
+    BEGIN
+
+      Log.WriteLogFile('Из них:',FALSE,FALSE,0);
+      Log.WriteLogFile('  CreteDim',FALSE,FALSE,6);
+      Log.WriteLogFile('  GetMapping',FALSE,FALSE,7);
+      Log.WriteLogFile('  FillTempDoc',FALSE,FALSE,8);
+      Log.WriteLogFile('  SaveDoc',FALSE,FALSE,9);
+
+
+      Log.WriteLogFile('ConsMonitor',FALSE,TRUE,1);
+    END;
+
+    PROCEDURE CheckAgreement@1101495002(VAR GenJnlLineLocal@1000000008 : Record 81;VAR BufferLocal@1000000003 : Record 50082;VAR JobProcStatus@1000000002 : Record 50063) retOK : Boolean;
+    VAR
+      DoCheck@1101495000 : Boolean;
+      AggrDimeCode1@1101495001 : Code[20];
+      AggrDimeCode2@1101495002 : Code[20];
+    BEGIN
+      //NC MTF01 > AKU
+      //Определение договора по значению аналитики
+      retOK := TRUE;
+      IF BufferLocal."Operation Type" <> BufferLocal."Operation Type"::Deal THEN
+      //Пока обрабатываем только сделки
+        EXIT(retOK);
+
+      WITH GenJnlLineLocal DO BEGIN
+        IF "Account No." <> '' THEN
+          CASE "Account Type" OF
+            "Account Type"::Customer :
+              BEGIN
+                IF Customer."No." <> "Account No." THEN
+                  Customer.GET("Account No.");
+
+                IF Customer."Agreement Posting" = Customer."Agreement Posting"::Mandatory THEN BEGIN
+                  DoCheck := TRUE;
+                  IF BufferLocal."Operation Type" = BufferLocal."Operation Type"::Deal THEN BEGIN
+                    AggrDimeCode2 := SalesSetup."Customer Agreement Dim. Code";
+                    AggrDimeCode1 := SalesSetup."Cust. Trade Agrmnt. Dim. Code";
+                  END ELSE BEGIN
+                    AggrDimeCode1 := SalesSetup."Customer Agreement Dim. Code";
+                    AggrDimeCode2 := SalesSetup."Cust. Trade Agrmnt. Dim. Code";
+                  END;
+                END;
+              END;
+
+            "Account Type"::Vendor :
+              BEGIN
+                IF Vendor."No." <> "Account No." THEN
+                  Vendor.GET("Account No.");
+
+                IF Vendor."Agreement Posting" = Vendor."Agreement Posting"::Mandatory THEN BEGIN
+                  DoCheck := TRUE;
+                  IF BufferLocal."Operation Type" = BufferLocal."Operation Type"::Deal THEN BEGIN
+                    AggrDimeCode2 := PurchSetup."Vendor Agreement Dim. Code";
+                    AggrDimeCode1 := PurchSetup."Vend. Trade Agrmnt. Dim. Code";
+                  END ELSE BEGIN
+                    AggrDimeCode1 := PurchSetup."Vendor Agreement Dim. Code";
+                    AggrDimeCode2 := PurchSetup."Vend. Trade Agrmnt. Dim. Code";
+                  END;
+                END;
+              END;
+            ELSE
+              EXIT(retOK)
+          END;
+
+        IF DoCheck AND ((AggrDimeCode1 <> '') OR (AggrDimeCode2 <> '')) THEN BEGIN
+          //Ищем договор в значениях аналитик
+          IF NOT JournalLineDimTemp.GET(DATABASE::"Gen. Journal Line", "Journal Template Name", "Journal Batch Name",
+                                        "Line No.", 0, AggrDimeCode1) THEN
+            IF NOT JournalLineDimTemp.GET(DATABASE::"Gen. Journal Line", "Journal Template Name", "Journal Batch Name",
+                                          "Line No.", 0, AggrDimeCode1) THEN BEGIN
+              ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation, ErrorJournal.Type::Error,
+                                             JobProcStatus.Processor, JobProcStatus."Cons. Register",
+                                             'EDTC10',STRSUBSTNO(TextEDTC10, FORMAT("Account Type"), "Account No."),
+                                             COMPANYNAME, BufferLocal, JobProcStatus."Line No.");
+              retOK := FALSE;
+              EXIT(retOK);
+            END;
+          IF JournalLineDimTemp."Dimension Value Code" = '' THEN BEGIN
+             ErrorJournal.AddErrorBuferFact(COMPANYNAME,ErrorJournal."Error Group"::Transformation, ErrorJournal.Type::Error,
+                                            JobProcStatus.Processor, JobProcStatus."Cons. Register",
+                                            'EDTC10',STRSUBSTNO(TextEDTC10, FORMAT("Account Type"), "Account No."),
+                                            COMPANYNAME, BufferLocal, JobProcStatus."Line No.");
+             retOK := FALSE;
+             EXIT(retOK);
+          END;
+          //Заполняем договор
+          GenJnlLineLocal."Agreement No." := JournalLineDimTemp."Dimension Value Code";
+        END; // IF DoCheck ...
+      END; // WITH GenJnlLineLocal
+      //NC MTF01 < AKU
+    END;
+
+    PROCEDURE ChangeDimByMapping@1101495005(MappingCode@1000000004 : Code[20];LEDim@1101495004 : Record 355);
+    VAR
+      ConvDimensions@1000000000 : Record 50003;
+      SaveLEDim@1101495000 : Record 355;
+      SaveWhenMapping@1101495001 : Boolean;
+      DimCode@1101495003 : Code[20];
+      DimVal@1101495002 : Code[20];
+    BEGIN
+      //NC MTF01 > AKU
+      DimCode := LEDim."Dimension Code";
+      DimVal := LEDim."Dimension Value Code";
+
+      IF NOT DimMappingSel.GET(MappingCode, DimCode) THEN
+        EXIT;
+
+      ConvDimensions.SETCURRENTKEY("Company Name","Source Dimension Code","Source Dimension Value Code");
+      ConvDimensions.SETRANGE("Mapping Code",MappingCode);
+      ConvDimensions.SETFILTER("Company Name",'%1|%2',EmptyText, COMPANYNAME);
+      ConvDimensions.SETRANGE("Source Dimension Code",DimCode);
+      ConvDimensions.SETRANGE("Source Dimension Value Code",DimVal);
+      IF ConvDimensions.FINDLAST THEN BEGIN
+
+        LedgerEntryDimTMP := LEDim;
+        LedgerEntryDimTMP.FIND;
+        LedgerEntryDimTMP."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+        LedgerEntryDimTMP."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+        LedgerEntryDimTMP."Dim in Source" := DimCode;
+        LedgerEntryDimTMP."Dim Value Code in Source" := DimVal;
+        LedgerEntryDimTMP.MODIFY;
+
+        IF (SaveWhenMapping) AND (ConvDimensions."Receiver Dimension Code" <> DimCode) THEN BEGIN
+          SaveLEDim := LedgerEntryDimTMP;
+          LedgerEntryDimTMP := LEDim;
+          LedgerEntryDimTMP."Dimension Code" := DimCode;
+          LedgerEntryDimTMP."Dimension Value Code" := DimVal;
+          LedgerEntryDimTMP."Dim in Source" := '';
+          LedgerEntryDimTMP."Dim Value Code in Source" := '';
+          IF LedgerEntryDimTMP.INSERT THEN;
+          LedgerEntryDimTMP := SaveLEDim;
+          LedgerEntryDimTMP.FIND;
+        END;
+      END;
+      //NC MTF01 < AKU
+    END;
+
+    BEGIN
+    {
+      NC MTF01 PCH Создан CU. Трансформация одной строки факта операций
+      ПАРАМЕТРЫ:
+        "Company No."
+        "Line No."
+        Blocked
+        Process
+        Description
+        "Auto Start"
+        Dependency
+        "Type Processing" - Ист. Консолидации
+        Processor - Код Ист. Консолидации
+        "Status Monitor" - 0 - Загрузка из Внеш. Системы
+        "Import Format" - 0 - Загрузка из Внеш. Системы
+        "External Source" - ID внешней системы
+        "Transaction No."
+        "Object No." - не используется
+        "Processing Mode" - Test - проверка наличия записей, Load - загрузка
+        "Record ID" - рекорд  ID буфера
+      ВОЗВРАТ:
+        isOK - ОК
+        "Cons. Register" - регистр в котором произошла загрузка
+        Status
+        "Time Status"
+        "Begin Entry No."
+        "Last Entry No."
+
+      NC MTF01 AKU Изменена обработка сумм в строке факта. Ошибки EDB02, EDB19. Изменена GetMapping (ошибка на FINDSET)
+      NC MTF01 AKU Изменено заполнение описания в документах (заголовок и строки)
+      NC MTF01.1 AKU Обработка флага "Not Check Posting"
+    }
+    END.
+  }
+}
+

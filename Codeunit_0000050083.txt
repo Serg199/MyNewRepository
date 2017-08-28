@@ -1,0 +1,565 @@
+OBJECT Codeunit 50083 Transf. One FI Operation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26.12.16;
+    Time=13:09:28;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            Buffer2@1101495002 : Record 50221;
+            Buffer@1101495003 : Record 50221;
+          BEGIN
+            RecID := "Record ID";
+            IF RecID.TABLENO = 0 THEN
+              ERROR(Text001);
+
+            RecRef.OPEN(RecID.TABLENO,FALSE,"Company No.");
+            RecRef.GET("Record ID");
+            RecRef.SETTABLE(Buffer2);
+
+            Buffer.GET(Buffer2."Entry No.");
+            JobProcStatus := Rec;
+
+            GLSetup.GET;
+            GLSetup.TESTFIELD("Allow Posting From");
+            GLSetup.TESTFIELD("Allow Posting To");
+            ConsolidationSetup.GET;
+            ConsolidationSetup.TESTFIELD("Remote Consolidation Source",FALSE);
+            ConsolidationSetup.TESTFIELD("FI Jnl. Template");
+            ConsolidationSetup.TESTFIELD("Counterparty Dim Code");
+
+            ConsolidationSource.GET(Processor);
+
+            ConsolidationSource.TESTFIELD("FI Journal Batch");
+            ConsolidationSource.TESTFIELD("Cancel FI Journal Batch");
+            ConsolidationSource.TESTFIELD("Correction FI Journal Batch");
+            ConsolidationSource.TESTFIELD("FI Journal No. Series");
+            ConsolidationSource.TESTFIELD("Cancel FI Jnl. No. Series");
+            ConsolidationSource.TESTFIELD("Correction FI Jnl. No. Series");
+
+            //MovingDataSetup.GET;
+            //ConsolidationMgt.SetGlobal;
+            SourceCodeSetup.GET;
+
+            IsError:= ReadFlag(Buffer);
+            IF NOT IsError THEN BEGIN
+              CASE CorrType OF
+                CorrType::" ":   IsError := NewOperation(Buffer);
+                CorrType::Cancel:IsError := CancelOperation(Buffer);
+                CorrType::Correction:  IsError := CorrOperation(Buffer);
+              END;
+            END;
+
+            IF IsError THEN BEGIN
+              Buffer2.GET(Buffer."Entry No.");
+              Buffer2."Error in Import" := TRUE;
+              Buffer2."Export Cons. Source Code" := '';
+              Buffer2."Export Consolidation Register" := 0;
+              Buffer2.MODIFY;
+            END ELSE BEGIN
+              Buffer2.GET(Buffer."Entry No.");
+              Buffer2.Status := Buffer2.Status::"Processing Complete";
+              Buffer2."Export Cons. Source Code" := Processor;
+              Buffer2."Export Consolidation Register" := "Cons. Register";
+              Buffer2."Time Complete" := CURRENTDATETIME;
+              Buffer2.MODIFY;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1101495000 : Record 98;
+      ConsolidationSetup@1101495001 : Record 50000;
+      ConsolidationSource@1101495002 : Record 50001;
+      SourceCodeSetup@1101495003 : Record 242;
+      JobProcStatus@1101495066 : Record 50063;
+      NoSeriesRec@1101495004 : Record 308;
+      NoSerManag@1101495005 : Codeunit 396;
+      NoSeriesLine1@1101495006 : Record 309;
+      ConsolidationMgt@1101495009 : Codeunit 50000;
+      RecID@1101495010 : RecordID;
+      RecRef@1101495011 : RecordRef;
+      Text001@1101495012 : TextConst 'ENU=Wrong identifier to record;RUS=Неправильный идентификатор записи';
+      Text010@1101495017 : TextConst 'ENU="There is no mapping for G/L Account ";RUS="Для счета "';
+      Text011@1101495016 : TextConst 'ENU=.;RUS=" не задан соответствующий счет в МСФО"';
+      Text012@1101495043 : TextConst 'ENU="There is no mapping for value ";RUS="Для значения "';
+      Text013@1101495042 : TextConst 'ENU=" of Dimension ";RUS=" измерения "';
+      Text014@1101495041 : TextConst 'ENU=.;RUS=" не задано преобразование."';
+      Text004@1101495060 : TextConst 'ENU=Operation is not poised on %1;RUS=Операция не балансирует на %1';
+      Text016@1101495022 : TextConst 'ENU="G/L Account ";RUS="Счет "';
+      Text017@1101495021 : TextConst 'ENU=" does not exist in the chart of accounts.";RUS=" отсутствует в плане счетов МСФО."';
+      Text019@1101495044 : TextConst 'ENU=" there is no required dimension ";RUS=" нет обязательного измерения "';
+      Text020@1101495037 : TextConst 'ENU="For Entry on G/L Account ";RUS="На операции по счету "';
+      IsGlobalError@1101495018 : Boolean;
+      IsError@1101495032 : Boolean;
+      ErrMessage@1101495019 : Text[250];
+      ErrorJournal@1101495020 : Record 50023;
+      Text021@1101495045 : TextConst 'ENU=" with value ";RUS=" со значением "';
+      Text022@1101495029 : TextConst 'ENU="Dimension ";RUS="Для измерения "';
+      Text023@1101495030 : TextConst 'ENU=" value ";RUS=" нет значения "';
+      Text024@1101495031 : TextConst 'ENU=" does no exist in NAV.";RUS=" в справочнике NAV."';
+      Text025@1101495028 : TextConst 'ENU="Dimension ";RUS="Измерение "';
+      Text026@1101495034 : TextConst 'RUS=" значение "';
+      Text027@1101495035 : TextConst 'ENU=" is blocked in NAV.";RUS=" блокировано в справочнике NAV."';
+      Text028@1101495048 : TextConst 'ENU=" Dimension ";RUS=" Измерение "';
+      Text029@1101495047 : TextConst 'ENU=" is not allowed for posting.";RUS=" не разрешено для учета."';
+      Text030@1101495015 : TextConst 'ENU=" in correspondence with account ";RUS=" в корреспонденции со счетом "';
+      Text032@1101495033 : TextConst 'ENU=" Value Type must be Standart.";RUS=" Тип Значения должен быть Стандартный."';
+      Text033@1101495046 : TextConst 'ENU="For G/L Account ";RUS="Для счета "';
+      Text034@1101495027 : TextConst 'ENU="For value ";RUS="Для значения "';
+      Text035@1101495023 : TextConst 'ENU=Account Type for G/L Account %1 must be Posting.;RUS=Тип Счета %1 должен быть Учетный.';
+      Text041@1101495024 : TextConst 'ENU=G/L Account %1 is blocked in NAV.;RUS=Фин. Счет %1 блокирован в NAV.';
+      Text042@1101495026 : TextConst 'ENU=Dimension %1 is blocked in NAV.;RUS=Измерение %1 блокировано в NAV.';
+      Text043@1101495025 : TextConst 'ENU=Dimension %1 does not exist in NAV.;RUS=Измерение %1 не существует в NAV.';
+      ConsType@1101495039 : 'Buffer,Navision';
+      OperType@1101495038 : 'Normal,Repost';
+      CloseOperation@1101495040 : Boolean;
+      CurrExchRate@1101495036 : Record 330;
+      Text044@1101495049 : TextConst 'ENU=On the operation did not state the Amount or Quantity.;RUS=По операции не указана Сумма или Количество.';
+      CountDim@1101495050 : Integer;
+      Text045@1101495054 : TextConst 'RUS=Документ %1 не балансирует на %2';
+      GLEntry@1101495053 : Record 17;
+      ChangeLogMgt@1101495052 : Codeunit 423;
+      CountGL@1101495051 : Integer;
+      TextEDTC02@1101495055 : TextConst 'ENU=In the Buffer NAV submitted incomplete data. Please enter %1. Record not processed.;RUS=В Буфере NAV переданы не полные данные. Не заполнено поле %1. Запись не обработана.';
+      GV@1101495013 : Codeunit 50033;
+      TextEDTC02_@1101495014 : TextConst 'ENU=For %1 %2, %3 %4, %5 %6, %7 %8 not defined template entries.;RUS=Для %1 %2, %3 %4, %5 %6, %7 %8 не задан шаблон проводок.';
+      TextEDTC18@1101495056 : TextConst 'ENU=For %1 %2 and %3 %4 previous event is not permitted %5 %6.;RUS=Для %1 %2 и %3 %4 не разрешено предыдущее событие %5 %6.';
+      TextEDTC19@1101495057 : TextConst 'ENU=Line %1 Goto statement does not exist.;RUS=Строка %1 инструкции Goto не существует.';
+      DimensionMgt@1101495058 : Codeunit 408;
+      TextEDTC20@1101495059 : TextConst 'ENU=When processing operation is a conflict of dimensions. %1;RUS=При обработке операции есть конфликт измерений. %1';
+      TextEDTC21@1101495061 : TextConst 'ENU=For the removal/change %1 not found the original operation.;RUS=Для операции удаления/изменения %1 не найдена исходная операция.';
+      MovingDataSetup@1101495062 : Record 50064;
+      Log@1101495063 : Codeunit 50014;
+      DealEvent2@1101495007 : Record 50169;
+      IsFutureReverse@1101495064 : Boolean;
+      DealEventCode2@1101495008 : Record 50139;
+      Text100@1101495065 : TextConst 'ENU=In input data buffer, the field %1 contains value: %2. It value is invalid.;RUS=Во входном буфере поле %1 имеет значение %2. Данное значение является недопустимым.';
+      Text101@1101495067 : TextConst 'ENU="Dimension %1 = %2 does not exist in NAV.";RUS="Измерение %1 = %2 не существует в NAV."';
+      Text102@1101495068 : TextConst 'ENU=%1, %2 does not exist in NAV.;RUS=%1, %2 не существует в NAV.';
+      CorrType@1101495069 : ' ,Cancel,Correction';
+      Text103@1101495070 : TextConst 'ENU="Does not exist Buffer FI for Deal ID = %1";RUS=Нет буфера ФИ для Сделки %1';
+      Text104@1101495071 : TextConst 'ENU=Deal %1 contain %2 records in buffer FI;RUS=Сделка %1 содержит %2 буферов ФИ';
+      Text105@1101495072 : TextConst 'ENU=FI %1 is invalid;RUS=Карточка ФИ %1 не настроена';
+      Text106@1101495073 : TextConst 'ENU=Rate not found for FI %1 on %2;RUS=Не найдена котировка ФИ %1 на дату %2';
+
+    PROCEDURE ReadFlag@1101495002(Buffer@1101495000 : Record 50221) : Boolean;
+    BEGIN
+      CASE UPPERCASE(Buffer.FLAG) OF
+        '':         CorrType := CorrType::" ";
+        'ОТМЕНА'   :CorrType := CorrType::Cancel;
+        'КОРРЕКЦИЯ':CorrType := CorrType::Correction;
+        ELSE BEGIN
+          ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                     ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                     STRSUBSTNO(Text100, Buffer.FIELDCAPTION(FLAG),Buffer.FLAG),
+                                     COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          EXIT(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE PumpFIJnlLine@1101495000(Buffer@1101495001 : Record 50221;VAR FIJnlLineBuf@1101495000 : Record 50220;VAR JnlLineDimTemp@1101495004 : TEMPORARY Record 356) isError : Boolean;
+    VAR
+      Deal@1101495002 : Record 50037;
+      FI@1101495003 : Record 50021;
+      Customer@1101495005 : Record 18;
+      Vendor@1101495006 : Record 23;
+      DimVal@1101495007 : Record 349;
+      FIType@1101495008 : Record 50051;
+      DEfDim@1101495009 : Record 352;
+      FIRate@1101495010 : Record 50058;
+      DateBegin@1101495011 : Date;
+      Amount2@1101495012 : Decimal;
+      CurrencyCode@1101495013 : Code[20];
+      CurrExchRate@1101495014 : Record 330;
+    BEGIN
+      WITH FIJnlLineBuf DO BEGIN
+        INIT;
+        //--- FI
+        IF FI.GET(Buffer."Security Code") THEN BEGIN
+          IF (FI."Type FI" = '') OR (NOT FIType.GET(FI."Type FI")) THEN BEGIN
+            ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                       STRSUBSTNO(Text105, Buffer."Security Code"),
+                                       COMPANYNAME,Buffer,JobProcStatus."Line No.");
+            EXIT(TRUE);
+          END ELSE BEGIN
+            VALIDATE("FI No.",Buffer."Security Code");
+          END;
+        END ELSE BEGIN
+          ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                     ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                     STRSUBSTNO(Text100, Buffer.FIELDCAPTION("Security Code"),Buffer."Security Code"),
+                                     COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          EXIT(TRUE);
+        END;
+        //--- Deal
+        IF Deal.GET(Buffer."First Deal ID") THEN BEGIN
+          VALIDATE("Deal ID",Deal."Deal ID");
+        END ELSE BEGIN
+          ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                     ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                     STRSUBSTNO(Text100, Buffer.FIELDCAPTION("First Deal ID"),Buffer."First Deal ID"),
+                                     COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          EXIT(TRUE);
+        END;
+        //--- Description
+        VALIDATE(Description,STRSUBSTNO('%1 - %2',Deal."Deal ID",FI."No."));
+        //--- DateTime
+        //VALIDATE("Posting Date",Buffer."Deal Date");
+        "Posting Date" := Buffer."Deal Date";
+        IF Buffer."Deal Time" <> '' THEN
+          IF NOT EVALUATE("Deal Time",Buffer."Deal Time") THEN BEGIN
+              ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                         STRSUBSTNO(Text100, Buffer.FIELDCAPTION("Deal Time"),Buffer."Deal Time"),
+                                         COMPANYNAME,Buffer,JobProcStatus."Line No.");
+              EXIT(TRUE);
+          END;
+        //--- SetUp
+        GLSetup.TESTFIELD("TAX FI Posting Book");
+        GLSetup.TESTFIELD("TAX FI Posting Portfolio");
+        VALIDATE("FI Posting Book",GLSetup."TAX FI Posting Book");
+        VALIDATE("FI Portfolio"   ,GLSetup."TAX FI Posting Portfolio");
+        //---------- "Deal Type"
+        CASE UPPERCASE(Buffer."Deal Type") OF
+          'BUY' :VALIDATE("FI Entry Type","FI Entry Type"::Purchase);
+          'SELL':VALIDATE("FI Entry Type","FI Entry Type"::Sale);
+          ELSE BEGIN
+            ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                       STRSUBSTNO(Text100, Buffer.FIELDCAPTION("Deal Type"),Buffer."Deal Type"),
+                                       COMPANYNAME,Buffer,JobProcStatus."Line No.");
+            EXIT(TRUE);
+          END;
+        END;
+        //---- Quantity
+        //VALIDATE(Quantity, Buffer.Quantity);
+        Quantity := Buffer.Quantity;
+        //---- Amount
+        DateBegin := 010115D;
+        IF "Posting Date" < DateBegin THEN BEGIN
+          FIRate.RESET;
+          FIRate.SETRANGE("No.","FI No.");
+          FIRate.SETFILTER("Date Rate",'..%1',DateBegin);
+          IF FIRate.FINDLAST THEN BEGIN
+            CASE "FI Entry Type" OF
+              "FI Entry Type"::Purchase:
+                BEGIN
+                  Amount2 := Quantity * FIRate."Quoting Bid";
+                  CurrencyCode := FIRate."Currency Bid";
+                END;
+              "FI Entry Type"::Sale:
+                BEGIN
+                  Amount2 := Quantity * FIRate."Quoting Ask";
+                  CurrencyCode := FIRate."Currency Ask";
+                END;
+            END;
+            IF  FI."Currency of Nominal" <> CurrencyCode THEN BEGIN
+              Amount2 := CurrExchRate.ExchangeAmtFCYToFCY(FIRate."Date Rate",CurrencyCode,FI."Currency of Nominal",Amount2);
+            END;
+
+            "Currency Code" := FI."Currency of Nominal";
+            VALIDATE(Amount,Amount2);
+
+          END ELSE BEGIN
+            ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                       STRSUBSTNO(Text106, "FI No.",DateBegin),
+                                       COMPANYNAME,Buffer,JobProcStatus."Line No.");
+
+            EXIT(TRUE);
+          END;
+        END ELSE BEGIN
+
+          IF GLSetup."LCY Code" <> Buffer."Currency Code" THEN
+            "Currency Code" := Buffer."Currency Code"
+            //VALIDATE("Currency Code",Buffer."Currency Code");
+          //NC AA 23.12.16 >>
+          ELSE
+            "Currency Code" := '';
+          //NC AA 23.12.16 <<
+          VALIDATE(Amount,Buffer."Total Amount");
+        END;
+
+        //VALIDATE("External System ID",Buffer."Extension System Code");
+        VALIDATE("External System ID",Buffer."Id External System");
+        VALIDATE("Export Cons. Source Code",ConsolidationSource.Code);
+        VALIDATE("Export Register No.",JobProcStatus."Cons. Register");
+        VALIDATE("Buffer Entry No.",Buffer."Entry No.");
+
+      END;
+
+      WITH JnlLineDimTemp DO BEGIN
+        RESET;
+        DELETEALL;
+
+        IF Buffer."Counterparty Code" <> '' THEN BEGIN
+          IF DimVal.GET(ConsolidationSetup."Counterparty Dim Code",Buffer."Counterparty Code") THEN BEGIN
+            CASE FIJnlLineBuf."FI Entry Type" OF
+              FIJnlLineBuf."FI Entry Type"::Purchase: BEGIN
+                IF Vendor.GET(Buffer."Counterparty Code") THEN BEGIN
+                  JnlLineDimTemp."Table ID" := DATABASE::"FI Journal Line";
+                  JnlLineDimTemp."Dimension Code" := ConsolidationSetup."Counterparty Dim Code";
+                  JnlLineDimTemp."Dimension Value Code" := Buffer."Counterparty Code";
+                  JnlLineDimTemp.INSERT;
+                END ELSE BEGIN
+                  ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                             ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                             STRSUBSTNO(Text102, Vendor.TABLECAPTION,Buffer."Counterparty Code"),
+                                             COMPANYNAME,Buffer,JobProcStatus."Line No.");
+
+                  EXIT(TRUE);
+                END;
+              END;
+              FIJnlLineBuf."FI Entry Type"::Sale: BEGIN
+                IF Customer.GET(Buffer."Counterparty Code") THEN BEGIN
+                  JnlLineDimTemp."Table ID" := DATABASE::"FI Journal Line";
+                  JnlLineDimTemp."Dimension Code" := ConsolidationSetup."Counterparty Dim Code";
+                  JnlLineDimTemp."Dimension Value Code" := Buffer."Counterparty Code";
+                  JnlLineDimTemp.INSERT;
+                END ELSE BEGIN
+                  ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                             ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                             STRSUBSTNO(Text102, Customer.TABLECAPTION,Buffer."Counterparty Code"),
+                                             COMPANYNAME,Buffer,JobProcStatus."Line No.");
+
+                  EXIT(TRUE);
+                END;
+              END;
+            END;
+          END ELSE BEGIN
+            ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                       STRSUBSTNO(Text101, ConsolidationSetup."Counterparty Dim Code",Buffer."Counterparty Code"),
+                                       COMPANYNAME,Buffer,JobProcStatus."Line No.");
+            EXIT(TRUE);
+          END;
+        END;
+        DEfDim.RESET;
+        DEfDim.SETRANGE("Table ID",DATABASE::"Financial Instrument");
+        DEfDim.SETRANGE("No.",FIJnlLineBuf."FI No.");
+        DEfDim.SETFILTER("Dimension Code",'<>%1','');
+        DEfDim.SETFILTER("Dimension Value Code",'<>%1','');
+        DEfDim.SETFILTER("Value Posting",'%1|%2',DEfDim."Value Posting"::"Code Mandatory",DEfDim."Value Posting"::"Same Code");
+        IF DEfDim.FINDSET THEN REPEAT
+          JnlLineDimTemp.INIT;
+          JnlLineDimTemp."Table ID" := DATABASE::"FI Journal Line";
+          JnlLineDimTemp."Dimension Code" := DEfDim."Dimension Code";
+          JnlLineDimTemp."Dimension Value Code" := DEfDim."Dimension Value Code";
+          JnlLineDimTemp.INSERT;
+        UNTIL DEfDim.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE NewOperation@1101495001(Buffer@1101495001 : Record 50221) : Boolean;
+    VAR
+      FIJnlLine@1101495002 : Record 50220;
+      JournalTemplateName@1101495003 : Code[20];
+      JournalBatchName@1101495004 : Code[20];
+      DocumentNo@1101495005 : Code[20];
+      LineNo@1101495006 : Integer;
+      JnlLineDim@1101495008 : Record 356;
+      FIJnlLineBuf@1101495007 : Record 50220;
+      JnlLineDimTemp@1101495000 : TEMPORARY Record 356;
+    BEGIN
+      IsError := PumpFIJnlLine(Buffer,FIJnlLineBuf,JnlLineDimTemp);
+      IF IsError THEN BEGIN
+        EXIT(TRUE);
+      END ELSE BEGIN
+
+        JournalTemplateName := ConsolidationSetup."FI Jnl. Template";
+        JournalBatchName := ConsolidationSource."FI Journal Batch";
+
+        LineNo := 0;
+        FIJnlLine.RESET;
+        FIJnlLine.SETRANGE("Journal Template Name",JournalTemplateName);
+        FIJnlLine.SETRANGE("Journal Batch Name",JournalBatchName);
+        IF FIJnlLine.FINDLAST THEN
+          LineNo := FIJnlLine."Line No.";
+
+        LineNo += 10;
+
+        DocumentNo := NoSerManag.GetNextNo(ConsolidationSource."FI Journal No. Series",WORKDATE,TRUE);
+
+        FIJnlLine.RESET;
+        FIJnlLine.INIT;
+        FIJnlLine := FIJnlLineBuf;
+
+        FIJnlLine."Journal Template Name" := JournalTemplateName;
+        FIJnlLine."Journal Batch Name"    := JournalBatchName;
+        FIJnlLine."Line No."              := LineNo;
+        FIJnlLine.VALIDATE("Document No.",DocumentNo);
+
+        //FIJnlLine.INSERT(TRUE);
+        FIJnlLine.INSERT(FALSE);
+
+        IF JnlLineDimTemp.FINDSET THEN REPEAT
+          JnlLineDim := JnlLineDimTemp;
+          JnlLineDim."Journal Template Name" := FIJnlLine."Journal Template Name";
+          JnlLineDim."Journal Batch Name"    := FIJnlLine."Journal Batch Name";
+          JnlLineDim."Journal Line No."      := FIJnlLine."Line No.";
+          JnlLineDim.INSERT(TRUE);
+        UNTIL JnlLineDimTemp.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CancelOperation@1101495009(Buffer@1101495001 : Record 50221) : Boolean;
+    VAR
+      FIJnlLine@1101495002 : Record 50220;
+      JournalTemplateName@1101495003 : Code[20];
+      JournalBatchName@1101495004 : Code[20];
+      DocumentNo@1101495005 : Code[20];
+      LineNo@1101495006 : Integer;
+      FIJnlLineBuf@1101495007 : Record 50220;
+      JnlLineDimTemp@1101495000 : TEMPORARY Record 356;
+      BufferOld@1101495008 : Record 50221;
+      JnlLineDim@1101495009 : Record 356;
+    BEGIN
+      BufferOld.SETCURRENTKEY("Id Legal Entity","Id External System",Status,"Deal ID from PD");
+      BufferOld.SETRANGE("Id Legal Entity",Buffer."Id Legal Entity");
+      BufferOld.SETRANGE("Id External System",Buffer."Id External System");
+      BufferOld.SETRANGE(Status,Buffer.Status::"Processing Complete");
+      BufferOld.SETRANGE("Deal ID from PD",Buffer."Cancel Deal ID");
+      //BufferOld.SETRANGE("First Deal ID",Buffer."First Deal ID");
+      IF BufferOld.FINDFIRST THEN BEGIN
+        IF BufferOld.COUNT = 1 THEN BEGIN
+          IsError := PumpFIJnlLine(BufferOld,FIJnlLineBuf,JnlLineDimTemp);
+          FIJnlLineBuf."Buffer Entry No." := Buffer."Entry No.";
+
+          IF IsError THEN
+            EXIT(TRUE);
+
+          JournalTemplateName := ConsolidationSetup."FI Jnl. Template";
+          JournalBatchName := ConsolidationSource."Cancel FI Journal Batch";
+
+          LineNo := 0;
+          FIJnlLine.RESET;
+          FIJnlLine.SETRANGE("Journal Template Name",JournalTemplateName);
+          FIJnlLine.SETRANGE("Journal Batch Name",JournalBatchName);
+          IF FIJnlLine.FINDLAST THEN
+            LineNo := FIJnlLine."Line No.";
+
+          LineNo += 10;
+
+          DocumentNo := NoSerManag.GetNextNo(ConsolidationSource."Cancel FI Jnl. No. Series",WORKDATE,TRUE);
+
+          FIJnlLine.RESET;
+          FIJnlLine.INIT;
+          FIJnlLine := FIJnlLineBuf;
+
+          FIJnlLine."Journal Template Name" := JournalTemplateName;
+          FIJnlLine."Journal Batch Name"    := JournalBatchName;
+          FIJnlLine."Line No."              := LineNo;
+          FIJnlLine.VALIDATE("Document No.",DocumentNo);
+          FIJnlLine.VALIDATE(Quantity,-FIJnlLine.Quantity);
+          FIJnlLine.VALIDATE(Amount,-FIJnlLine.Amount);
+          //FIJnlLine.INSERT(TRUE);
+          FIJnlLine.INSERT(FALSE);
+
+          IF JnlLineDimTemp.FINDSET THEN REPEAT
+            JnlLineDim := JnlLineDimTemp;
+            JnlLineDim."Journal Template Name" := FIJnlLine."Journal Template Name";
+            JnlLineDim."Journal Batch Name"    := FIJnlLine."Journal Batch Name";
+            JnlLineDim."Journal Line No."      := FIJnlLine."Line No.";
+            JnlLineDim.INSERT(TRUE);
+          UNTIL JnlLineDimTemp.NEXT = 0;
+
+        END ELSE BEGIN
+          ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                     ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                     STRSUBSTNO(Text104, Buffer."Cancel Deal ID",BufferOld.COUNT),
+                                     COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          EXIT(TRUE);
+        END;
+      END ELSE BEGIN
+        BufferOld.SETRANGE("Id Legal Entity");
+        IF BufferOld.FINDFIRST THEN BEGIN
+          IF BufferOld.COUNT = 1 THEN BEGIN
+            EXIT(NewOperation(Buffer));
+          END ELSE BEGIN
+            ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                       STRSUBSTNO(Text104, Buffer."Cancel Deal ID",BufferOld.COUNT),
+                                       COMPANYNAME,Buffer,JobProcStatus."Line No.");
+            EXIT(TRUE);
+          END;
+        END ELSE BEGIN
+          ErrorJournal.AddErrorBufferFIOper(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                     ConsolidationSource.Code,JobProcStatus."Cons. Register",'EDTC02',
+                                     STRSUBSTNO(Text103, Buffer."Cancel Deal ID"),
+                                     COMPANYNAME,Buffer,JobProcStatus."Line No.");
+          EXIT(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE CorrOperation@1101495007(Buffer@1101495001 : Record 50221) : Boolean;
+    VAR
+      FIJnlLine@1101495002 : Record 50220;
+      JournalTemplateName@1101495003 : Code[20];
+      JournalBatchName@1101495004 : Code[20];
+      DocumentNo@1101495005 : Code[20];
+      LineNo@1101495006 : Integer;
+      FIJnlLineBuf@1101495007 : Record 50220;
+      JnlLineDimTemp@1101495000 : TEMPORARY Record 356;
+      JnlLineDim@1101495009 : Record 356;
+    BEGIN
+      IsError := PumpFIJnlLine(Buffer,FIJnlLineBuf,JnlLineDimTemp);
+      IF IsError THEN BEGIN
+        EXIT(TRUE);
+      END ELSE BEGIN
+
+        JournalTemplateName := ConsolidationSetup."FI Jnl. Template";
+        JournalBatchName := ConsolidationSource."Correction FI Journal Batch";
+
+        LineNo := 0;
+        FIJnlLine.RESET;
+        FIJnlLine.SETRANGE("Journal Template Name",JournalTemplateName);
+        FIJnlLine.SETRANGE("Journal Batch Name",JournalBatchName);
+        IF FIJnlLine.FINDLAST THEN
+          LineNo := FIJnlLine."Line No.";
+
+        LineNo += 10;
+
+        DocumentNo := NoSerManag.GetNextNo(ConsolidationSource."Correction FI Jnl. No. Series",WORKDATE,TRUE);
+
+        FIJnlLine.RESET;
+        FIJnlLine.INIT;
+        FIJnlLine := FIJnlLineBuf;
+
+        FIJnlLine."Journal Template Name" := JournalTemplateName;
+        FIJnlLine."Journal Batch Name"    := JournalBatchName;
+        FIJnlLine."Line No."              := LineNo;
+        FIJnlLine.VALIDATE("Document No.",DocumentNo);
+
+        //FIJnlLine.INSERT(TRUE);
+        FIJnlLine.INSERT(FALSE);
+
+        IF JnlLineDimTemp.FINDSET THEN REPEAT
+          JnlLineDim := JnlLineDimTemp;
+          JnlLineDim."Journal Template Name" := FIJnlLine."Journal Template Name";
+          JnlLineDim."Journal Batch Name"    := FIJnlLine."Journal Batch Name";
+          JnlLineDim."Journal Line No."      := FIJnlLine."Line No.";
+          JnlLineDim.INSERT(TRUE);
+        UNTIL JnlLineDimTemp.NEXT = 0;
+      END;
+    END;
+
+    BEGIN
+    {
+      NCS-2360 AAP Created
+    }
+    END.
+  }
+}
+

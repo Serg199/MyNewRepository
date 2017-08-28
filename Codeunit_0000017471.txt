@@ -1,0 +1,660 @@
+OBJECT Codeunit 17471 RSV Excel Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210005 : Record 79;
+      HumanResourcesSetup@1210004 : Record 5218;
+      ExcelMgt@1210001 : Codeunit 12416;
+      ExcelExportProgressMsg@1210006 : TextConst 'ENU=Export data to Excel\ @1@@@@@@@@@@@@@;RUS=Экспорт данных в Excel\ @1@@@@@@@@@@@@@';
+      RSVCalculationMgt@1210000 : Codeunit 17470;
+      Window@1210002 : Dialog;
+      TotalSheetCount@1210003 : Integer;
+      SheetCounter@1210007 : Integer;
+
+    PROCEDURE ExportRSVToExcel@1210073(VAR Person@1210000 : Record 17350;StartDate@1210006 : Date;EndDate@1210005 : Date;InfoType@1210008 : 'Initial,Corrective,Cancel');
+    VAR
+      ExcelTemplate@1210002 : Record 14919;
+      TempDetailPayrollReportingBuffer@1210004 : TEMPORARY Record 17470;
+      TempPersonPayrollReportingBuffer@1210003 : TEMPORARY Record 17470;
+      TempTotalPaidPayrollReportingBuffer@1210007 : TEMPORARY Record 17470;
+      FileName@1210001 : Text[250];
+    BEGIN
+      IF Person.ISEMPTY THEN
+        EXIT;
+      CompanyInfo.GET;
+      HumanResourcesSetup.GET;
+      HumanResourcesSetup.TESTFIELD("RSV Template Code");
+
+      FileName := COPYSTR(ExcelTemplate.OpenTemplate(HumanResourcesSetup."RSV Template Code"),1,MAXSTRLEN(FileName));
+      ExcelMgt.OpenBook(FileName);
+      SheetCounter := 0;
+      Window.OPEN(ExcelExportProgressMsg);
+
+      RSVCalculationMgt.CalcDetailedBuffer(
+        TempDetailPayrollReportingBuffer,TempTotalPaidPayrollReportingBuffer,Person,StartDate,EndDate);
+      RSVCalculationMgt.CalcBeginBalanceBuffer(TempTotalPaidPayrollReportingBuffer,Person,StartDate);
+      RSVCalculationMgt.GetReportingPersonList(TempPersonPayrollReportingBuffer,TempDetailPayrollReportingBuffer);
+      TotalSheetCount :=
+        RSVCalculationMgt.GetReportingSheetCount(TempDetailPayrollReportingBuffer,TempPersonPayrollReportingBuffer);
+
+      CompanyInfo.TESTFIELD("Pension Fund Registration No.");
+      ExportCommonPart(
+        TempDetailPayrollReportingBuffer,
+        TempTotalPaidPayrollReportingBuffer,EndDate,TempPersonPayrollReportingBuffer.COUNT);
+      StartDate := CALCDATE('<-CM-2M>',EndDate);
+      ExportDetailedPart(TempDetailPayrollReportingBuffer,TempPersonPayrollReportingBuffer,StartDate,EndDate,InfoType);
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    LOCAL PROCEDURE ExportCommonPart@1210000(VAR DetailPayrollReportingBuffer@1210001 : Record 17470;VAR TotalPaidPayrollReportingBuffer@1210004 : Record 17470;EndDate@1210000 : Date;EmployeeQty@1210002 : Integer);
+    VAR
+      IsDisability@1210003 : Boolean;
+    BEGIN
+      Page1_Fill(EndDate,EmployeeQty);
+      Page2_Fill(DetailPayrollReportingBuffer,TotalPaidPayrollReportingBuffer);
+
+      DetailPayrollReportingBuffer.RESET;
+      DetailPayrollReportingBuffer.SETRANGE("Code 3",'03');
+      IsDisability := NOT DetailPayrollReportingBuffer.ISEMPTY;
+
+      // Fill Total Employee Info without Disability (TariffCode = 01)
+      DetailPayrollReportingBuffer.SETRANGE("Code 3",'01');
+      IF NOT (IsDisability AND DetailPayrollReportingBuffer.ISEMPTY) THEN
+        Page3_Fill(DetailPayrollReportingBuffer);
+
+      // Fill Total Employee Info with Disability (TariffCode = 03)
+      DetailPayrollReportingBuffer.SETRANGE("Code 3",'03');
+      Page3_Fill(DetailPayrollReportingBuffer);
+      DetailPayrollReportingBuffer.SETRANGE("Code 3");
+
+      Page6_Fill(DetailPayrollReportingBuffer);
+    END;
+
+    LOCAL PROCEDURE ExportDetailedPart@1210004(VAR PersonifiedPayrollReportingBuffer@1210000 : Record 17470;VAR ReportingPersonPayrollReportingBuffer@1210001 : Record 17470;StartDate@1210009 : Date;EndDate@1210004 : Date;InfoType@1210010 : 'Initial,Corrective,Cancel');
+    VAR
+      StartSheetNo@1210003 : Integer;
+      PersonCount@1210002 : Integer;
+      TemplateSheet11Name@1210005 : Text[30];
+      TemplateSheet12Name@1210006 : Text[30];
+      i@1210008 : Integer;
+    BEGIN
+      StartSheetNo := SheetCounter;
+
+      ExcelMgt.OpenSheetByNumber(StartSheetNo + 1);
+      TemplateSheet11Name := ExcelMgt.GetSheetName;
+      ExcelMgt.OpenSheetByNumber(StartSheetNo + 2);
+      TemplateSheet12Name := ExcelMgt.GetSheetName;
+
+      PersonCount := ReportingPersonPayrollReportingBuffer.COUNT;
+      PersonifiedPayrollReportingBuffer.RESET;
+      IF ReportingPersonPayrollReportingBuffer.FINDSET THEN
+        REPEAT
+          RSVCalculationMgt.FilterReportingBuffer(PersonifiedPayrollReportingBuffer,ReportingPersonPayrollReportingBuffer);
+          Page11_Fill(PersonifiedPayrollReportingBuffer,TemplateSheet11Name,PersonCount,StartSheetNo,StartDate,EndDate,InfoType);
+          Page12_Fill(PersonifiedPayrollReportingBuffer,TemplateSheet12Name,PersonCount,StartSheetNo,EndDate);
+          PersonCount -= 1;
+        UNTIL ReportingPersonPayrollReportingBuffer.NEXT = 0;
+
+      FOR i := 1 TO 2 DO BEGIN
+        ExcelMgt.OpenSheetByNumber(ExcelMgt.GetSheetsCount);
+        ExcelMgt.DeleteSheet(ExcelMgt.GetSheetName);
+      END;
+    END;
+
+    LOCAL PROCEDURE Page1_Fill@1210109(EndDate@1210001 : Date;EmployeeQty@1210000 : Integer);
+    VAR
+      PhoneNo@1210002 : Text[30];
+    BEGIN
+      PageX_New('AZ15','BL15','BX15','CV15');
+
+      Page1_FillCorrectionNo(0);
+      Page1_FillAccountingPeriod(GetAccountingPeriod(EndDate));
+      Page1_FillYear(DATE2DMY(EndDate,3));
+      Page1_FillCompanyName(CompanyInfo.Name);
+      Page1_FillINN(FORMAT(CompanyInfo."VAT Registration No."));
+      Page1_FillOKVED(CompanyInfo."OKVED Code");
+      Page1_FillKPP(CompanyInfo."KPP Code");
+      PhoneNo := DELCHR(CompanyInfo."Phone No.",'=',DELCHR(CompanyInfo."Phone No.",'=','0123456789'));
+      Page1_FillPhoneNumber(PhoneNo);
+      Page1_FillQuantityOfInsuredPersons(EmployeeQty);
+      Page1_FillAverageCount(EmployeeQty);
+      Page1_FillPageCount(TotalSheetCount);
+    END;
+
+    LOCAL PROCEDURE Page2_Fill@1210111(VAR DetailPayrollReportingBuffer@1210001 : Record 17470;VAR TotalPaidPayrollReportingBuffer@1210006 : Record 17470);
+    VAR
+      TempTotalChargeAmtPayrollReportingBuffer@1210011 : TEMPORARY Record 17470;
+      TempTotalAmt100PayrollReportingBuffer@1210002 : TEMPORARY Record 17470;
+      TempTotalAmt130PayrollReportingBuffer@1210003 : TEMPORARY Record 17470;
+      TempTotalAmt150PayrollReportingBuffer@1210004 : TEMPORARY Record 17470;
+    BEGIN
+      PageX_New('BD2','BP2','CB2','CZ2');
+
+      // Calculate Amounts
+      RSVCalculationMgt.CalcTotals110_113(DetailPayrollReportingBuffer,TempTotalChargeAmtPayrollReportingBuffer);
+      RSVCalculationMgt.CalcTotals100(TotalPaidPayrollReportingBuffer,TempTotalAmt100PayrollReportingBuffer);
+      RSVCalculationMgt.CalcTotalsSums(
+        TempTotalAmt130PayrollReportingBuffer,TempTotalAmt100PayrollReportingBuffer,TempTotalChargeAmtPayrollReportingBuffer,1);
+      RSVCalculationMgt.CalcTotalsSums(
+        TempTotalAmt150PayrollReportingBuffer,TempTotalAmt130PayrollReportingBuffer,TotalPaidPayrollReportingBuffer,-1);
+
+      // Fill Amount Values
+      Page2_FillPaymentInfo(TempTotalAmt100PayrollReportingBuffer,10);
+      Page2_FillPaymentInfo110_140(TempTotalChargeAmtPayrollReportingBuffer,11);
+      Page2_FillPaymentInfo110_140(TotalPaidPayrollReportingBuffer,19);
+      Page2_FillPaymentInfo(TempTotalAmt130PayrollReportingBuffer,18);
+      Page2_FillPaymentInfo(TempTotalAmt150PayrollReportingBuffer,24);
+
+      // Fill empty Values
+      TempTotalAmt100PayrollReportingBuffer.INIT;
+      Page2_FillPaymentInfo(TempTotalAmt100PayrollReportingBuffer,16);
+      Page2_FillPaymentInfo(TempTotalAmt100PayrollReportingBuffer,17);
+    END;
+
+    LOCAL PROCEDURE Page3_Fill@1210112(VAR PersonifiedPayrollReportingBuffer@1210000 : Record 17470);
+    VAR
+      TemplateSheetName@1210002 : Text[30];
+      i@1210004 : Integer;
+      Amount200@1210008 : ARRAY [4] OF Decimal;
+      Amount201@1210009 : ARRAY [4] OF Decimal;
+      Amount202@1210010 : ARRAY [4] OF Decimal;
+      Amount203@1210007 : ARRAY [4] OF Decimal;
+      Amount204@1210003 : ARRAY [4] OF Decimal;
+      Amount205@1210005 : ARRAY [4] OF Decimal;
+      Amount206@1210006 : ARRAY [4] OF Decimal;
+      Amount207@1210012 : ARRAY [4] OF Decimal;
+      Amount208@1210013 : ARRAY [4] OF Decimal;
+      Amount210@1210011 : ARRAY [4] OF Decimal;
+      Amount211@1210014 : ARRAY [4] OF Decimal;
+      Amount212@1210015 : ARRAY [4] OF Decimal;
+      Amount213@1210016 : ARRAY [4] OF Decimal;
+      Amount214@1210017 : ARRAY [4] OF Decimal;
+      Amount215@1210018 : ARRAY [4] OF Decimal;
+    BEGIN
+      IF (NOT PersonifiedPayrollReportingBuffer.FINDFIRST) AND (SheetCounter >= 3) THEN
+        EXIT;
+
+      IF SheetCounter >= 3 THEN BEGIN
+        ExcelMgt.OpenSheetByNumber(3);
+        TemplateSheetName := ExcelMgt.GetSheetName;
+        ExcelMgt.OpenSheetByNumber(4);
+        ExcelMgt.CopySheet(TemplateSheetName,ExcelMgt.GetSheetName,STRSUBSTNO('%1 (_2_)',TemplateSheetName));
+      END;
+
+      PageX_New('AZ2','BL2','BX2','CV2');
+      Page3_FillTariffCode(PersonifiedPayrollReportingBuffer."Code 3");
+
+      // Calculate Amounts
+      FOR i := 0 TO 3 DO BEGIN
+        PersonifiedPayrollReportingBuffer.SETRANGE("Code 2",FORMAT(i));
+        PersonifiedPayrollReportingBuffer.CALCSUMS("Amount 1","Amount 3","Amount 4","Amount 7","Amount 8","Amount 9");
+        Amount200[i + 1] := PersonifiedPayrollReportingBuffer."Amount 1";
+        Amount201[i + 1] := PersonifiedPayrollReportingBuffer."Amount 1" - PersonifiedPayrollReportingBuffer."Amount 7";
+        Amount202[i + 1] := 0;
+        Amount203[i + 1] := PersonifiedPayrollReportingBuffer."Amount 3";
+        Amount204[i + 1] := Amount200[i + 1] - Amount201[i + 1] - Amount202[i + 1] - Amount203[i + 1];
+        Amount205[i + 1] := -PersonifiedPayrollReportingBuffer."Amount 4";
+        Amount206[i + 1] := -(PersonifiedPayrollReportingBuffer."Amount 8" - PersonifiedPayrollReportingBuffer."Amount 4");
+
+        PersonifiedPayrollReportingBuffer.SETFILTER("Amount 7",'<>%1',0);
+        Amount207[i + 1] := PersonifiedPayrollReportingBuffer.COUNT;
+        PersonifiedPayrollReportingBuffer.SETRANGE("Amount 7");
+
+        PersonifiedPayrollReportingBuffer.SETFILTER("Amount 3",'<>%1',0);
+        Amount208[i + 1] := PersonifiedPayrollReportingBuffer.COUNT;
+        PersonifiedPayrollReportingBuffer.SETRANGE("Amount 3");
+
+        Amount210[i + 1] := Amount200[i + 1];
+        Amount211[i + 1] := Amount201[i + 1];
+        Amount212[i + 1] := 0;
+        Amount213[i + 1] := Amount210[i + 1] - Amount211[i + 1] - Amount212[i + 1];
+        Amount214[i + 1] := -PersonifiedPayrollReportingBuffer."Amount 9";
+
+        PersonifiedPayrollReportingBuffer.SETFILTER("Amount 9",'<>%1',0);
+        Amount215[i + 1] := PersonifiedPayrollReportingBuffer.COUNT;
+        PersonifiedPayrollReportingBuffer.SETRANGE("Amount 9");
+      END;
+
+      // Fill Amounts
+      Page3_FillPaymentInfo(Amount200,12);
+      Page3_FillPaymentInfo(Amount201,13);
+      Page3_FillPaymentInfo(Amount202,14);
+      Page3_FillPaymentInfo(Amount203,15);
+      Page3_FillPaymentInfo(Amount204,16);
+      Page3_FillPaymentInfo(Amount205,17);
+      Page3_FillPaymentInfo(Amount206,18);
+      Page3_FillPaymentInfo(Amount207,19);
+      Page3_FillPaymentInfo(Amount208,20);
+
+      Page3_FillPaymentInfo(Amount210,22);
+      Page3_FillPaymentInfo(Amount211,23);
+      Page3_FillPaymentInfo(Amount212,24);
+      Page3_FillPaymentInfo(Amount213,25);
+      Page3_FillPaymentInfo(Amount214,26);
+      Page3_FillPaymentInfo(Amount215,27);
+    END;
+
+    LOCAL PROCEDURE Page6_Fill@1210027(VAR PersonifiedPayrollReportingBuffer@1210000 : Record 17470);
+    BEGIN
+      PageX_New('AW2','BI2','BU2','CS2');
+      Page6_FillPackInfo(PersonifiedPayrollReportingBuffer);
+    END;
+
+    LOCAL PROCEDURE Page11_Fill@1210115(VAR PersonifiedPayrollReportingBuffer@1210001 : Record 17470;TemplateSheetName@1210006 : Text[30];EmployeeNo@1210004 : Integer;StartSheetNo@1210005 : Integer;StartDate@1210012 : Date;EndDate@1210000 : Date;InfoType@1210011 : 'Initial,Corrective,Cancel');
+    VAR
+      Person@1210003 : Record 17350;
+      TempPayrollReportingBuffer@1210010 : TEMPORARY Record 17470;
+      PeriodNo@1210008 : Integer;
+      RowNo@1210009 : Integer;
+      EmptyRowNo@1210002 : Integer;
+    BEGIN
+      IF NOT PersonifiedPayrollReportingBuffer.FINDFIRST THEN
+        EXIT;
+
+      Person.GET(PersonifiedPayrollReportingBuffer."Code 1");
+
+      ExcelMgt.OpenSheetByNumber(StartSheetNo + 1);
+      ExcelMgt.CopySheet(TemplateSheetName,ExcelMgt.GetSheetName,STRSUBSTNO('%1 (_%2_)',TemplateSheetName,EmployeeNo));
+      Page11_New(StartSheetNo + 1,StartSheetNo + 1 + (EmployeeNo - 1) * 2);
+
+      // Fill Page11 Header
+      Page11_FillInsuredPersonInfo(Person,StartDate,EndDate);
+      Page11_FillAccountingPeriod(GetAccountingPeriod(EndDate));
+      Page11_FillYear(DATE2DMY(EndDate,3));
+      Page11_FillInfoType(InfoType);
+
+      // Fill Table 6.4
+      IF PersonifiedPayrollReportingBuffer.GETFILTER("Code 3") = '01' THEN BEGIN
+        RowNo := 36;
+        EmptyRowNo := 40;
+      END ELSE BEGIN
+        RowNo := 40;
+        EmptyRowNo := 36;
+      END;
+      FOR PeriodNo := 0 TO 3 DO BEGIN
+        Page11_FillPaymentInfo(PersonifiedPayrollReportingBuffer,PeriodNo,RowNo);
+        Page11_FillPaymentInfo(TempPayrollReportingBuffer,PeriodNo,EmptyRowNo);
+      END;
+
+      // Fill Table 6.5
+      PersonifiedPayrollReportingBuffer.SETFILTER("Code 2",'<>%1','0');
+      PersonifiedPayrollReportingBuffer.CALCSUMS("Amount 4");
+      Page11_FillInsurancePaymentsInfo(-PersonifiedPayrollReportingBuffer."Amount 4");
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 2");
+    END;
+
+    LOCAL PROCEDURE Page12_Fill@1210116(VAR PersonifiedPayrollReportingBuffer@1210000 : Record 17470;TemplateSheetName@1210005 : Text[30];EmployeeNo@1210001 : Integer;StartSheetNo@1210002 : Integer;EndDate@1210007 : Date);
+    VAR
+      TempSpecialCodeListEmployee@1210004 : TEMPORARY Record 5200;
+      TempExperienceLaborContractLine@1210006 : TEMPORARY Record 17361;
+      PeriodNo@1210003 : Integer;
+      i@1210008 : Integer;
+      RowNo@1210009 : Integer;
+    BEGIN
+      IF NOT PersonifiedPayrollReportingBuffer.FINDFIRST THEN
+        EXIT;
+
+      ExcelMgt.OpenSheetByNumber(StartSheetNo + 2);
+      ExcelMgt.CopySheet(TemplateSheetName,ExcelMgt.GetSheetName,STRSUBSTNO('%1 (_%2_)',TemplateSheetName,EmployeeNo));
+
+      Page12_New(StartSheetNo + 2,StartSheetNo + 2 + (EmployeeNo - 1) * 2);
+
+      // Fill Table 6.7 "Special Condition Codes"
+      GetEmployeeSpecialCodeList(TempSpecialCodeListEmployee,PersonifiedPayrollReportingBuffer);
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 4");
+      IF TempSpecialCodeListEmployee.FINDSET THEN
+        REPEAT
+          PersonifiedPayrollReportingBuffer.SETRANGE("Code 4",TempSpecialCodeListEmployee."No.");
+          FOR PeriodNo := 0 TO 3 DO
+            Page12_FillPaymentInfo(PersonifiedPayrollReportingBuffer,PeriodNo);
+        UNTIL TempSpecialCodeListEmployee.NEXT = 0;
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 2");
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 4");
+
+      // Fill Table 6.8 Working Experience for the last 3 month
+      RSVCalculationMgt.CreatePersonExperienceBuffer(
+        TempExperienceLaborContractLine,PersonifiedPayrollReportingBuffer."Code 1",CALCDATE('<-CM-2M>',EndDate),EndDate);
+      RowNo := 27;
+      i := 0;
+      IF TempExperienceLaborContractLine.FINDSET THEN BEGIN
+        REPEAT
+          i += 1;
+          Page12_FillWorkingPeriods(i,RowNo,TempExperienceLaborContractLine);
+          RowNo += 1;
+          IF i < TempExperienceLaborContractLine.COUNT THEN
+            ExcelMgt.CopyRow(RowNo - 1);
+        UNTIL TempExperienceLaborContractLine.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE Page1_FillCorrectionNo@1210006(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('Z25',3,1,FORMAT(Value),'0',0);
+    END;
+
+    LOCAL PROCEDURE Page1_FillAccountingPeriod@1210007(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCell('BR25',FORMAT(Value));
+    END;
+
+    LOCAL PROCEDURE Page1_FillYear@1210008(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('DB25',4,1,FORMAT(Value),' ',1);
+    END;
+
+    LOCAL PROCEDURE Page1_FillCompanyName@1210025(Value@1210000 : Text[1024]);
+    BEGIN
+      ExcelMgt.FillCell('A30',Value);
+    END;
+
+    LOCAL PROCEDURE Page1_FillINN@1210013(Value@1210000 : Text[250]);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('K33',12,1,Value,'-',0);
+    END;
+
+    LOCAL PROCEDURE Page1_FillOKVED@1210014(Value@1210000 : Text[250]);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('BV33',2,1,Value,' ',1);
+      ExcelMgt.FillCellsGroup2('CE33',3,1,COPYSTR(Value,4,2),' ',1);
+      ExcelMgt.FillCellsGroup2('CN33',5,1,COPYSTR(Value,7,5),' ',1);
+    END;
+
+    LOCAL PROCEDURE Page1_FillKPP@1210015(Value@1210000 : Text[250]);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('K35',9,1,Value,' ',1);
+    END;
+
+    LOCAL PROCEDURE Page1_FillPhoneNumber@1210024(PhoneNumber@1210000 : Text[250]);
+    BEGIN
+      PhoneNumber := DELCHR(PhoneNumber,'=','(');
+      PhoneNumber := DELCHR(PhoneNumber,'=',')');
+      PhoneNumber := DELCHR(PhoneNumber,'=','-');
+      PhoneNumber := DELCHR(PhoneNumber,'=',' ');
+      ExcelMgt.FillCellsGroup2('BV35',14,1,PhoneNumber,' ',0);
+    END;
+
+    PROCEDURE Page1_FillQuantityOfInsuredPersons@1210016(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('AG37',6,1,FORMAT(Value),'0',0);
+    END;
+
+    PROCEDURE Page1_FillAverageCount@1210017(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('CT37',6,1,FORMAT(Value),'0',0);
+    END;
+
+    LOCAL PROCEDURE Page1_FillPageCount@1210018(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('F40',6,1,FORMAT(Value),'0',0);
+    END;
+
+    LOCAL PROCEDURE Page2_FillPaymentInfo110_140@1210042(VAR AmountsPayrollReportingBuffer@1210006 : Record 17470;RowNo@1210000 : Integer);
+    VAR
+      i@1210004 : Integer;
+    BEGIN
+      FOR i := 0 TO 3 DO
+        IF AmountsPayrollReportingBuffer.GET(i + 1) THEN
+          Page2_FillPaymentInfo(AmountsPayrollReportingBuffer,RowNo + i);
+
+      AmountsPayrollReportingBuffer.RESET;
+      AmountsPayrollReportingBuffer.SETRANGE("Entry No.",2,4);
+      AmountsPayrollReportingBuffer.CALCSUMS("Amount 1","Amount 2","Amount 3","Amount 4","Amount 5","Amount 6");
+      Page2_FillPaymentInfo(AmountsPayrollReportingBuffer,RowNo + 4);
+    END;
+
+    LOCAL PROCEDURE Page2_FillPaymentInfo@1210056(AmountsPayrollReportingBuffer@1210001 : Record 17470;RowNo@1210000 : Integer);
+    BEGIN
+      PrintDig('AR' + FORMAT(RowNo),AmountsPayrollReportingBuffer."Amount 1");
+      PrintDig('BD' + FORMAT(RowNo),AmountsPayrollReportingBuffer."Amount 2");
+      PrintDig('BO' + FORMAT(RowNo),AmountsPayrollReportingBuffer."Amount 3");
+      PrintDig('CB' + FORMAT(RowNo),AmountsPayrollReportingBuffer."Amount 4");
+      PrintDig('CU' + FORMAT(RowNo),AmountsPayrollReportingBuffer."Amount 5");
+      PrintDig('DN' + FORMAT(RowNo),AmountsPayrollReportingBuffer."Amount 6");
+    END;
+
+    LOCAL PROCEDURE Page3_FillTariffCode@1210102(Value@1210000 : Text[250]);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('DV4',2,1,Value,' ',2);
+    END;
+
+    LOCAL PROCEDURE Page3_FillPaymentInfo@1210071(Amounts@1210000 : ARRAY [4] OF Decimal;RowNo@1210005 : Integer);
+    BEGIN
+      PrintDig('BO' + FORMAT(RowNo),Amounts[1]);
+      PrintDig('CQ' + FORMAT(RowNo),Amounts[2]);
+      PrintDig('DD' + FORMAT(RowNo),Amounts[3]);
+      PrintDig('DQ' + FORMAT(RowNo),Amounts[4]);
+    END;
+
+    LOCAL PROCEDURE Page6_FillPackInfo@1210030(VAR PersonifiedPayrollReportingBuffer@1210000 : Record 17470);
+    VAR
+      Amount2@1210002 : Decimal;
+      Amount4@1210003 : Decimal;
+    BEGIN
+      PersonifiedPayrollReportingBuffer.SETFILTER("Code 2",'<>%1','0');
+      PersonifiedPayrollReportingBuffer.CALCSUMS("Amount 2","Amount 4");
+      Amount2 := PersonifiedPayrollReportingBuffer."Amount 2";
+      Amount4 := -PersonifiedPayrollReportingBuffer."Amount 4";
+
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 2",'0');
+
+      // Pack #1
+      PrintDig('A12',1);
+      PrintDig('H12',Amount2);
+      PrintDig('AX12',Amount4);
+      PrintDig('CD12',PersonifiedPayrollReportingBuffer.COUNT);
+      PrintDig('CU12',1);
+
+      // Total
+      PrintDig('H13',Amount2);
+      PrintDig('AX13',Amount4);
+      PrintDig('CD13',PersonifiedPayrollReportingBuffer.COUNT);
+    END;
+
+    LOCAL PROCEDURE Page11_New@1210100(OpenSheetNo@1210000 : Integer;PageNo@1210001 : Integer);
+    BEGIN
+      SheetCounter += 1;
+      ExcelMgt.OpenSheetByNumber(OpenSheetNo);
+      Window.UPDATE(1,ROUND(SheetCounter / TotalSheetCount * 10000,1));
+
+      PageX_FillPFRegistrationNo('AZ2','BL2','BX2');
+      PageX_FillPageNo(PageNo,'CV2');
+    END;
+
+    LOCAL PROCEDURE Page11_FillInsuredPersonInfo@1210020(Person@1210000 : Record 17350;StartDate@1210001 : Date;EndDate@1210002 : Date);
+    VAR
+      LaborContract@1170000000 : Record 17360;
+    BEGIN
+      ExcelMgt.FillCell('A10',Person."Last Name");
+      ExcelMgt.FillCell('AA10',Person."First Name");
+      ExcelMgt.FillCell('BA10',Person."Middle Name");
+      ExcelMgt.FillCell('BY10',Person."Social Security No.");
+
+      LaborContract.SETRANGE("Contract Type",LaborContract."Contract Type"::"Labor Contract");
+      LaborContract.SETRANGE("Person No.",Person."No.");
+      LaborContract.SETFILTER("Ending Date",'>=%1&<=%2',StartDate,EndDate);
+
+      IF LaborContract.FINDFIRST THEN
+        ExcelMgt.FillCell('AW12','X')
+    END;
+
+    LOCAL PROCEDURE Page11_FillAccountingPeriod@1210023(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCell('AA16',FORMAT(Value));
+    END;
+
+    LOCAL PROCEDURE Page11_FillYear@1210022(Value@1210000 : Integer);
+    BEGIN
+      ExcelMgt.FillCellsGroup2('CL16',4,1,FORMAT(Value),' ',1);
+    END;
+
+    LOCAL PROCEDURE Page11_FillInfoType@1170000006(InfoType@1170000000 : 'Initial,Corrective,Cancel');
+    BEGIN
+      CASE InfoType OF
+        InfoType::Initial:
+          ExcelMgt.FillCell('A21','X');
+        InfoType::Corrective:
+          ExcelMgt.FillCell('R21','X');
+        InfoType::Cancel:
+          ExcelMgt.FillCell('AP21','X');
+      END;
+    END;
+
+    LOCAL PROCEDURE Page11_FillPaymentInfo@1210028(VAR PersonifiedPayrollReportingBuffer@1210003 : Record 17470;PeriodNo@1210001 : Integer;RowNo@1210005 : Integer);
+    VAR
+      TempPrintPayrollReportingBuffer@1210002 : TEMPORARY Record 17470;
+    BEGIN
+      TempPrintPayrollReportingBuffer.INIT;
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 2",FORMAT(PeriodNo));
+      IF PersonifiedPayrollReportingBuffer.FINDFIRST THEN
+        TempPrintPayrollReportingBuffer := PersonifiedPayrollReportingBuffer;
+
+      PrintText('AF' + FORMAT(RowNo + PeriodNo),GetDisabilityCategoryName(TempPrintPayrollReportingBuffer."Code 3"));
+      PrintDig('AO' + FORMAT(RowNo + PeriodNo),TempPrintPayrollReportingBuffer."Amount 1");
+      PrintDig('BH' + FORMAT(RowNo + PeriodNo),TempPrintPayrollReportingBuffer."Amount 2");
+      PrintDig('CE' + FORMAT(RowNo + PeriodNo),0);
+      PrintDig('CZ' + FORMAT(RowNo + PeriodNo),TempPrintPayrollReportingBuffer."Amount 3");
+    END;
+
+    LOCAL PROCEDURE Page11_FillInsurancePaymentsInfo@1210033(Value@1210000 : Decimal);
+    BEGIN
+      PrintDig('AM49',Value DIV 1);
+      PrintDig('BS49',(100 * (Value MOD 1)) DIV 1);
+    END;
+
+    LOCAL PROCEDURE Page12_New@1210104(OpenSheetNo@1210000 : Integer;PageNo@1210001 : Integer);
+    BEGIN
+      SheetCounter += 1;
+      ExcelMgt.OpenSheetByNumber(OpenSheetNo);
+      Window.UPDATE(1,ROUND(SheetCounter / TotalSheetCount * 10000,1));
+
+      PageX_FillPFRegistrationNo('AU2','BG2','BS2');
+      PageX_FillPageNo(PageNo,'CQ2');
+    END;
+
+    LOCAL PROCEDURE Page12_FillPaymentInfo@1210046(VAR PersonifiedPayrollReportingBuffer@1210004 : Record 17470;PeriodNo@1210001 : Integer);
+    VAR
+      PrintPayrollReportingBuffer@1210002 : Record 17470;
+      RowNo@1210000 : Integer;
+    BEGIN
+      PrintPayrollReportingBuffer.INIT;
+      PersonifiedPayrollReportingBuffer.SETRANGE("Code 2",FORMAT(PeriodNo));
+      IF PersonifiedPayrollReportingBuffer.FINDFIRST THEN
+        PrintPayrollReportingBuffer := PersonifiedPayrollReportingBuffer;
+
+      RowNo := 12 + PeriodNo;
+      PrintText('AZ' + FORMAT(RowNo),PrintPayrollReportingBuffer."Code 4");
+      PrintDig('BI' + FORMAT(RowNo),PrintPayrollReportingBuffer."Amount 5");
+      PrintDig('CL' + FORMAT(RowNo),PrintPayrollReportingBuffer."Amount 6");
+    END;
+
+    LOCAL PROCEDURE Page12_FillWorkingPeriods@1210055(No@1210000 : Integer;RowNo@1210001 : Integer;ExperienceLaborContractLine@1210009 : Record 17361);
+    BEGIN
+      PrintDig(STRSUBSTNO('A%1',RowNo),No);
+      PrintText(STRSUBSTNO('E%1',RowNo),FORMAT(ExperienceLaborContractLine."Starting Date"));
+      PrintText(STRSUBSTNO('R%1',RowNo),FORMAT(ExperienceLaborContractLine."Ending Date"));
+      PrintText(STRSUBSTNO('AE%1',RowNo),FORMAT(ExperienceLaborContractLine."Territorial Conditions"));
+      PrintText(STRSUBSTNO('AS%1',RowNo),FORMAT(ExperienceLaborContractLine."Special Conditions"));
+      PrintText(STRSUBSTNO('BE%1',RowNo),FORMAT(ExperienceLaborContractLine."Record of Service Reason"));
+      PrintText(STRSUBSTNO('BS%1',RowNo),FORMAT(ExperienceLaborContractLine."Record of Service Additional"));
+      PrintText(STRSUBSTNO('CG%1',RowNo),FORMAT(ExperienceLaborContractLine."Service Years Reason"));
+      PrintText(STRSUBSTNO('CV%1',RowNo),FORMAT(ExperienceLaborContractLine."Service Years Additional"));
+    END;
+
+    LOCAL PROCEDURE PageX_New@1210150(Cell1@1210002 : Text[30];Cell2@1210001 : Text[30];Cell3@1210000 : Text[30];Cell4@1210003 : Text[30]);
+    BEGIN
+      SheetCounter += 1;
+      ExcelMgt.OpenSheetByNumber(SheetCounter);
+      Window.UPDATE(1,ROUND(SheetCounter / TotalSheetCount * 10000,1));
+
+      PageX_FillPFRegistrationNo(Cell1,Cell2,Cell3);
+      PageX_FillPageNo(SheetCounter,Cell4);
+    END;
+
+    LOCAL PROCEDURE PageX_FillPFRegistrationNo@1210124(Cell1@1210002 : Text[30];Cell2@1210003 : Text[30];Cell3@1210004 : Text[30]);
+    VAR
+      Value@1210000 : Text[250];
+    BEGIN
+      Value := FORMAT(CompanyInfo."Pension Fund Registration No.");
+      ExcelMgt.FillCellsGroup2(Cell1,3,1,Value,' ',1);
+      ExcelMgt.FillCellsGroup2(Cell2,3,1,COPYSTR(Value,5,3),' ',1);
+      ExcelMgt.FillCellsGroup2(Cell3,6,1,COPYSTR(Value,9,6),' ',1);
+    END;
+
+    LOCAL PROCEDURE PageX_FillPageNo@1210123(PageNo@1210000 : Integer;Cell@1210001 : Text[30]);
+    BEGIN
+      ExcelMgt.FillCellsGroup2(Cell,6,1,FORMAT(PageNo),'0',0);
+    END;
+
+    LOCAL PROCEDURE GetAccountingPeriod@1210128(EndDate@1210000 : Date) : Integer;
+    VAR
+      Month@1210001 : Integer;
+    BEGIN
+      Month := DATE2DMY(EndDate,2);
+      IF Month = 12 THEN
+        EXIT(0);
+      EXIT(Month);
+    END;
+
+    LOCAL PROCEDURE GetEmployeeSpecialCodeList@1210010(VAR SpecialCodeListEmployee@1210000 : Record 5200;VAR PersonifiedPayrollReportingBuffer@1210001 : Record 17470);
+    BEGIN
+      SpecialCodeListEmployee.DELETEALL;
+      PersonifiedPayrollReportingBuffer.SETFILTER("Code 4",'<>%1','');
+      IF PersonifiedPayrollReportingBuffer.FINDSET THEN
+        REPEAT
+          SpecialCodeListEmployee."No." := PersonifiedPayrollReportingBuffer."Code 4";
+          IF SpecialCodeListEmployee.INSERT THEN;
+        UNTIL PersonifiedPayrollReportingBuffer.NEXT = 0;
+
+      IF SpecialCodeListEmployee.ISEMPTY THEN BEGIN
+        SpecialCodeListEmployee."No." := 'ZZZZZZZZZZ';
+        SpecialCodeListEmployee.INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetDisabilityCategoryName@1210003(TariffNo@1210000 : Code[20]) : Text[250];
+    BEGIN
+      CASE TariffNo OF
+        '01':
+          EXIT('НР');
+        '03':
+          EXIT('ООИ');
+        ELSE
+          EXIT('-');
+      END;
+    END;
+
+    LOCAL PROCEDURE PrintDig@1210005(CellName@1210000 : Text[30];Value@1210001 : Decimal);
+    BEGIN
+      IF Value > 0 THEN
+        ExcelMgt.FillCell(CellName,FORMAT(Value))
+      ELSE
+        ExcelMgt.FillCell(CellName,'-');
+    END;
+
+    LOCAL PROCEDURE PrintText@1210021(CellName@1210001 : Text[30];Value@1210000 : Text[250]);
+    BEGIN
+      IF Value <> '' THEN
+        ExcelMgt.FillCell(CellName,Value)
+      ELSE
+        ExcelMgt.FillCell(CellName,'-');
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

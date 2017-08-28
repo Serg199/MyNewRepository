@@ -1,0 +1,340 @@
+OBJECT Report 14982 Sales FA Release FA-1
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.01.17;
+    Time=12:00:00;
+    Version List=NAVRU10.00.00.15052;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Sales FA Release FA-1;
+               RUS=Акт ввода в эксплуатацию ОС-1];
+    ProcessingOnly=Yes;
+    OnInitReport=VAR
+                   Employee@1470000 : Record 5200;
+                 BEGIN
+                   CompanyInfo.GET;
+                   IF Employee.GET(CompanyInfo."Director No.") THEN
+                     DirectorPosition := Employee.GetJobTitleName;
+                 END;
+
+    OnPreReport=BEGIN
+                  FA1Helper.InitReportTemplate;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName = '' THEN
+                     FA1Helper.ExportData
+                   ELSE
+                     FA1Helper.ExportDataFile(FileName);
+                 END;
+
+  }
+  DATASET
+  {
+    { 6640;    ;DataItem;                    ;
+               DataItemTable=Table36;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=FILTER(Invoice));
+               OnAfterGetRecord=BEGIN
+                                  FASetup.GET;
+
+                                  FA1Helper.CheckSignature(
+                                    ReleasedBy,DATABASE::"Sales Header","Document Type","No.",ReleasedBy."Employee Type"::ReleasedBy);
+                                  FA1Helper.CheckSignature(
+                                    Chairman,DATABASE::"Sales Header","Document Type","No.",Chairman."Employee Type"::Chairman);
+                                  FA1Helper.CheckSignature(
+                                    Member1,DATABASE::"Sales Header","Document Type","No.",Member1."Employee Type"::Member1);
+                                  FA1Helper.CheckSignature(
+                                    Member2,DATABASE::"Sales Header","Document Type","No.",Member2."Employee Type"::Member2);
+
+                                  IF NOT CurrReport.PREVIEW THEN BEGIN
+                                    IF ArchiveDocument THEN
+                                      ArchiveManagement.StoreSalesDocument("Sales Header",LogInteraction);
+
+                                    IF LogInteraction THEN BEGIN
+                                      CALCFIELDS("No. of Archived Versions");
+                                       IF "Bill-to Contact No." <> '' THEN
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Contact,"Bill-to Contact No."
+                                          ,"Salesperson Code","Campaign No.","Posting Description","Opportunity No.")
+                                      ELSE
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Customer,"Bill-to Customer No.",
+                                          "Salesperson Code","Campaign No.","Posting Description","Opportunity No.");
+                                    END;
+                                  END;
+
+                                  FA1Helper.SetReportHeaderSheet;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                FA1Helper.SetReportHeaderSheet;
+                              END;
+                               }
+
+    { 2844;1   ;DataItem;                    ;
+               DataItemTable=Table37;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.)
+                                 WHERE(Type=CONST(Fixed Asset));
+               OnPreDataItem=BEGIN
+                               IsHeaderPrinted := FALSE;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  TempFADocLine@1470000 : Record 12477;
+                                  OrgInfoArray@1210000 : ARRAY [9] OF Text;
+                                BEGIN
+                                  FA.GET("No.");
+                                  TESTFIELD("Depreciation Book Code");
+                                  TESTFIELD("Posting Group");
+
+                                  FADepreciationBook.GET("No.","Depreciation Book Code");
+                                  FAPostingGroup.GET(FADepreciationBook."FA Posting Group");
+
+                                  IF "Sales Header"."Currency Code" = '' THEN
+                                    SaleAmount := "Line Amount"
+                                  ELSE BEGIN
+                                    "Sales Header".TESTFIELD("Currency Factor");
+                                    SaleAmount := ROUND("Line Amount" / "Sales Header"."Currency Factor");
+                                  END;
+
+                                  TempFADocLine."Document No." := "Document No.";
+                                  TempFADocLine."Document Type" := FAComment."Document Type"::"Sales Invoice";
+                                  TempFADocLine.GetFAComments(Characteristics,FAComment.Type::Characteristics);
+                                  TempFADocLine.GetFAComments(ExtraWork,FAComment.Type::"Extra Work");
+                                  TempFADocLine.GetFAComments(Conclusion,FAComment.Type::Conclusion);
+                                  TempFADocLine.GetFAComments(Appendix,FAComment.Type::Appendix);
+                                  TempFADocLine.GetFAComments(Result,FAComment.Type::Result);
+                                  TempFADocLine.GetFAComments(Reason,FAComment.Type::Reason);
+
+                                  IF NOT IsHeaderPrinted THEN BEGIN
+                                    OrgInfoArray[1] := ReceiverDirectorPosition;
+                                    OrgInfoArray[2] := ReceiverDirectorName;
+                                    OrgInfoArray[3] := DirectorPosition;
+                                    OrgInfoArray[4] := ReleasedBy."Employee Org. Unit";
+                                    OrgInfoArray[5] := ReceiverName;
+                                    OrgInfoArray[6] := ReceiverAddress;
+                                    OrgInfoArray[7] := ReceiverBank;
+                                    OrgInfoArray[8] := ReceiverDepartment;
+                                    OrgInfoArray[9] := Reason[1];
+
+                                    FA1Helper.FillHeader(
+                                      OrgInfoArray,"Sales Header"."No.",
+                                      FORMAT("Sales Header"."Document Date"),
+                                      "Sales Header"."No.",FORMAT("Sales Header"."Posting Date"),FORMAT("Sales Header"."Posting Date"),
+                                      FORMAT(FADepreciationBook."Disposal Date"),FAPostingGroup."Acquisition Cost Account",FA."Depreciation Code",
+                                      FA."Depreciation Group",FA."Inventory Number",FA."Factory No.",
+                                      FA."No." + ' ' + FA.Description +' ' + FA."Description 2",
+                                      '',FA.Manufacturer,SupplementalInformation1,SupplementalInformation2);
+                                    IsHeaderPrinted := TRUE;
+                                  END;
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+    { 2285;2   ;DataItem;                    ;
+               DataItemTable=Table5612;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code);
+               OnPreDataItem=BEGIN
+                               FA1Helper.SetBodySectionSheet;
+                               FA1Helper.FillDataPageHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CALCFIELDS("Acquisition Cost",Depreciation,"Depreciated Cost","Initial Acquisition Cost");
+                                  ActualUse := FA1Helper.CalcActualUse("Sales Header"."Posting Date",FA."Initial Release Date");
+                                  NoOfDeprMonths := "No. of Depreciation Months";
+                                  IF "No. of Depreciation Months" = 0 THEN
+                                    "No. of Depreciation Months" := "No. of Depreciation Years" * 12;
+
+                                  FA1Helper.FillDataLine(
+                                    FA."Manufacturing Year",FORMAT(FA."Initial Release Date"),FORMAT("Last Maintenance Date"),ActualUse,
+                                    FORMAT(NoOfDeprMonths),Depreciation,"Book Value","Acquisition Cost",FORMAT("Initial Acquisition Cost"),
+                                    FORMAT("No. of Depreciation Months"),FORMAT("Depreciation Method"),
+                                    FORMAT(FA1Helper.CalcDepreciationRate("FA Depreciation Book")),TRUE);
+                                END;
+
+               DataItemLink=FA No.=FIELD(No.),
+                            Depreciation Book Code=FIELD(Depreciation Book Code) }
+
+    { 8951;2   ;DataItem;                    ;
+               DataItemTable=Table12474;
+               DataItemTableView=SORTING(Item Type);
+               OnPreDataItem=BEGIN
+                               FA1Helper.FillCharPageHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FA1Helper.FillCharLine(
+                                    Name,"Nomenclature No.","Unit of Measure Code",FORMAT(Quantity),FORMAT(Mass));
+                                END;
+
+               DataItemLink=No.=FIELD(No.) }
+
+    { 5444;2   ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               FA1Helper.FillCharPageFooter(Characteristics);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FA1Helper.SetFooterSectionSheet;
+                                  FA1Helper.FillReportFooter(
+                                    Result[1],Result[2],ExtraWork[1],ExtraWork[2],Conclusion[1],Conclusion[2],Appendix[1],Appendix[2],
+                                    Chairman."Employee Job Title",Chairman."Employee Name",
+                                    Member1."Employee Job Title",Member1."Employee Name",
+                                    Member2."Employee Job Title",Member2."Employee Name",
+                                    ReleasedBy."Employee Job Title",ReleasedBy."Employee Name",
+                                    '','');
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210022;2;Field     ;
+                  CaptionML=[ENU=Receiver Director Title;
+                             RUS=Получатель - обращ. к директору];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ReceiverDirectorPosition }
+
+      { 1210018;2;Field     ;
+                  CaptionML=[ENU=Receiver Director Full Name;
+                             RUS=Получатель - ФИО директора];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ReceiverDirectorName }
+
+      { 1210015;2;Field     ;
+                  CaptionML=[ENU=Receiver Organization;
+                             RUS=Организация-получатель];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ReceiverName }
+
+      { 1210011;2;Field     ;
+                  CaptionML=[ENU=Receiver Address;
+                             RUS=Адрес получателя];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ReceiverAddress }
+
+      { 1210007;2;Field     ;
+                  CaptionML=[ENU=Receiver Bank Information;
+                             RUS=Сведения о банке получателя];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ReceiverBank }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Receiver Org. Unit;
+                             RUS=Подразделение получателя];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ReceiverDepartment }
+
+      { 1470001;2;Field     ;
+                  CaptionML=[ENU=Owners of shared property;
+                             RUS=Владельцы совместной собственности];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=SupplementalInformation1 }
+
+      { 1470003;2;Field     ;
+                  CaptionML=[ENU=Foreign currency;
+                             RUS=Иностранная валюта];
+                  ApplicationArea=#Suite;
+                  SourceExpr=SupplementalInformation2 }
+
+      { 1470004;2;Field     ;
+                  CaptionML=[ENU=Save in Archive;
+                             RUS=Сохранить в архиве];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ArchiveDocument }
+
+      { 1470006;2;Field     ;
+                  CaptionML=[ENU=Log Interaction;
+                             RUS=Регистрировать взаимодействие];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=LogInteraction }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FASetup@1210006 : Record 5603;
+      CompanyInfo@1210005 : Record 79;
+      FADepreciationBook@1210007 : Record 5612;
+      FAPostingGroup@1210008 : Record 5606;
+      FA@1210001 : Record 5600;
+      FAComment@1470004 : Record 12478;
+      ReleasedBy@1470007 : Record 12420;
+      Chairman@1470005 : Record 12420;
+      Member1@1470003 : Record 12420;
+      Member2@1470000 : Record 12420;
+      DocSignMgt@1470002 : Codeunit 12420;
+      ArchiveManagement@1470011 : Codeunit 5063;
+      SegManagement@1470012 : Codeunit 5051;
+      FA1Helper@1210000 : Codeunit 14946;
+      Characteristics@1210049 : ARRAY [5] OF Text[80];
+      ExtraWork@1210050 : ARRAY [5] OF Text[80];
+      Conclusion@1210051 : ARRAY [5] OF Text[80];
+      Appendix@1210053 : ARRAY [5] OF Text[80];
+      Result@1470008 : ARRAY [5] OF Text[80];
+      Reason@1470009 : ARRAY [5] OF Text[80];
+      ActualUse@1101457000 : Text[30];
+      ReceiverName@1210030 : Text[100];
+      ReceiverAddress@1210029 : Text[100];
+      ReceiverBank@1210028 : Text[150];
+      ReceiverDepartment@1210027 : Text[100];
+      ReceiverDirectorPosition@1210026 : Text[100];
+      ReceiverDirectorName@1210025 : Text[100];
+      SupplementalInformation1@1210016 : Text[100];
+      SupplementalInformation2@1210015 : Text[100];
+      DirectorPosition@1470001 : Text[50];
+      FileName@1210002 : Text;
+      ArchiveDocument@1470006 : Boolean;
+      LogInteraction@1470010 : Boolean;
+      SaleAmount@1470013 : Decimal;
+      NoOfDeprMonths@1470015 : Decimal;
+      IsHeaderPrinted@1210003 : Boolean;
+
+    PROCEDURE CheckSignature@1470002(VAR DocSign@1470000 : Record 12420;EmpType@1470001 : Integer);
+    BEGIN
+      DocSignMgt.GetDocSign(
+        DocSign,DATABASE::"Sales Header",
+        "Sales Header"."Document Type","Sales Header"."No.",EmpType,TRUE);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210005(NewFileName@1210000 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

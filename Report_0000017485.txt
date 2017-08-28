@@ -1,0 +1,403 @@
+OBJECT Report 17485 Report FP to Excel
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Report FP to Excel;
+               RUS=Отчет ПФ в Excel];
+    ProcessingOnly=Yes;
+    OnPreReport=VAR
+                  ExcelTemplate@1210000 : Record 14919;
+                BEGIN
+                  HumanSetup.GET;
+                  HumanSetup.TESTFIELD("PF Report Template Code");
+
+                  FileName := ExcelTemplate.OpenTemplate(HumanSetup."PF Report Template Code");
+
+                  CompanyInfo.GET;
+                END;
+
+    OnPostReport=BEGIN
+                   ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7528;    ;DataItem;                    ;
+               DataItemTable=Table5200;
+               DataItemTableView=SORTING(Birth Date,Gender,Last Name,No.);
+               OnPreDataItem=VAR
+                               RepPeriod@1210001 : Integer;
+                               Sex@1470000 : ',Female,Male';
+                               i@1470001 : Integer;
+                             BEGIN
+                               ExcelMgt.OpenBook(FileName);
+                               ExcelMgt.OpenSheet('Лист1');
+
+                               HumanSetup.GET;
+                               CompanyInfo.GET;
+                               RoundFactor := 1;
+                               SetBDRanges(DMY2DATE(1,1,1870),DMY2DATE(31,12,1966),Sex::Female,1);
+                               SetBDRanges(DMY2DATE(1,1,1870),DMY2DATE(31,12,1966),Sex::Male,1);
+                               SetBDRanges(DMY2DATE(1,1,1967),DMY2DATE(31,12,2010),Sex::Female,2);
+                               SetBDRanges(DMY2DATE(1,1,1967),DMY2DATE(31,12,2010),Sex::Male,2);
+
+                               // fill title
+                               IF CompanyInfo."Pension Fund Registration No." <> '' THEN
+                                 ExcelMgt.FillCellsGroup('PFR',
+                                   COPYSTR(CompanyInfo."Pension Fund Registration No.",1,3) +
+                                   COPYSTR(CompanyInfo."Pension Fund Registration No.",5,3) +
+                                   COPYSTR(CompanyInfo."Pension Fund Registration No.",9,6),
+                                   12,0,'');
+
+                               RepPeriod := Quarter * 3 + 3;
+                               IF RepPeriod = 12 THEN BEGIN
+                                 RepPeriod := 0;
+                                 ExcelMgt.FillCellsGroup('RepPeriod',FORMAT(12),2,0,'');
+                               END ELSE
+                                 ExcelMgt.FillCellsGroup('RepPeriod','0' + FORMAT(RepPeriod),2,0,'');
+
+                               FOR i := 1 TO 3 DO
+                                 StartingDate[i] := DMY2DATE(1,i + 3 * Quarter,Year);
+
+                               ExcelMgt.FillCell('CompanyName',CompanyInfo.Name);
+                               ExcelMgt.FillCellsGroup('Year',FORMAT(Year),4,0,'');
+
+                               ExcelMgt.FillCellsGroup('TFMI',CompanyInfo."Medical Fund Registration No.",15,0,'');
+                               ExcelMgt.FillCellsGroup('KPP',CompanyInfo."KPP Code",9,0,'');
+                               ExcelMgt.FillCellsGroup('INN',CompanyInfo."VAT Registration No.",12,0,'0');
+                               ExcelMgt.FillCellsGroup('GSRN',CompanyInfo."OGRN Code",13,0,'');
+                               ExcelMgt.FillCellsGroup('PhoneNo',CompanyInfo."Phone No.",15,0,'0');
+                               ExcelMgt.FillCellsGroup('OKATO',CompanyInfo."OKATO Code",11,0,'');
+
+                               IF CompanyInfo."OKVED Code" <> '' THEN
+                                 ExcelMgt.FillCellsGroup('OKVED',
+                                   COPYSTR(CompanyInfo."OKVED Code",1,2) +
+                                   COPYSTR(CompanyInfo."OKVED Code",4,2) +
+                                   COPYSTR(CompanyInfo."OKVED Code",7,2),
+                                   6,1,'');
+
+                               ExcelMgt.FillCellsGroup('OKPO',CompanyInfo."OKPO Code",10,0,'');
+                               ExcelMgt.FillCellsGroup('OKOPF',CompanyInfo."OKOPF Code",2,0,'');
+                               ExcelMgt.FillCellsGroup('OKFS',CompanyInfo."OKFS Code",2,0,'');
+
+                               FillCompanyAddress;
+                               ExcelMgt.FillCellsGroup('AverageQty',FORMAT(ROUND(AverageListQuantity(Quarter * 3 + 3))),6,0,'0');
+                               ExcelMgt.FillCellsGroup('InsuranceQty',FORMAT(CalcInsurancedPeople),6,0,'0');
+                               FillLiabilityPerson;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  BDRangeNo@1470000 : Integer;
+                                BEGIN
+                                  BDRangeNo := CalcEmployeeBDRange("Birth Date",Gender);
+                                  IF BDRangeNo = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  CalcTaxAmounts("No.",2,StartingDate,AmtByBDRange[1,BDRangeNo]);
+
+                                  CalcTaxAmounts("No.",3,StartingDate,AmtByBDRange[2,BDRangeNo]);
+                                  CalcTaxAmounts("No.",4,StartingDate,AmtByBDRange[2,BDRangeNo]);
+                                  CalcTaxAmounts("No.",21,StartingDate,AmtByBDRange[3,1]);
+                                  CalcTaxAmounts("No.",22,StartingDate,AmtByBDRange[4,1]);
+                                  CalcTaxAmounts("No.",15,StartingDate,AmtByBDRange[5,1]);
+                                  CalcTaxAmounts("No.",16,StartingDate,AmtByBDRange[6,1]);
+
+                                  CalcExceededTaxAmounts("No.",7,StartingDate,2,AmtByBDRange[7,BDRangeNo]);
+                                END;
+
+               OnPostDataItem=VAR
+                                Totals@1470002 : ARRAY [2,4] OF Decimal;
+                                BDRangeNo@1470003 : Integer;
+                              BEGIN
+                                ExcelMgt.OpenSheet('Лист2');
+
+                                CLEAR(Totals);
+                                BRangeMax := 2;
+                                AmtRangeMax := 3;
+
+                                FOR BDRangeNo := 1 TO BRangeMax DO BEGIN
+                                  FillSection(FORMAT(200 + BDRangeNo),AmtByBDRange[1,BDRangeNo]);
+                                  FillSection(FORMAT(210 + BDRangeNo),AmtByBDRange[2,BDRangeNo]);
+                                  FillSection(FORMAT(216 + BDRangeNo),AmtByBDRange[7,BDRangeNo]);
+                                END;
+
+                                FillSection(FORMAT(241),AmtByBDRange[3,1]);
+                                FillSection(FORMAT(242),AmtByBDRange[4,1]);
+                                FillSection(FORMAT(243),AmtByBDRange[5,1]);
+                                FillSection(FORMAT(244),AmtByBDRange[6,1]);
+
+                                ExcelMgt.FillCell('CurrDate',FORMAT(ReportDate));
+                              END;
+
+               ReqFilterFields=No. }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   Year := DATE2DMY(WORKDATE,3);
+                   ReportDate := WORKDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210003;2;Field     ;
+                  CaptionML=[ENU=Year;
+                             RUS=Год];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Year }
+
+      { 1210000;2;Field     ;
+                  Name=QuarterControl;
+                  CaptionML=[ENU=Period;
+                             RUS=Период];
+                  OptionCaptionML=[ENU=1 quarter,1 half-year,9 months,year;
+                                   RUS=1 квартал,1 полугодие,9 месяцев,год];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Quarter }
+
+      { 1210005;2;Field     ;
+                  CaptionML=[ENU=Report Creation Date;
+                             RUS=Дата создания отчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportDate }
+
+      { 1470002;2;Field     ;
+                  CaptionML=[ENU=Agent;
+                             RUS=Агент];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AgentFlag;
+                  OnValidate=BEGIN
+                               AgentFlagOnAfterValidate;
+                             END;
+                              }
+
+      { 1470000;2;Field     ;
+                  Name=AgNameCont;
+                  CaptionML=[ENU=Agent Name;
+                             RUS=Имя агента];
+                  ApplicationArea=#All;
+                  SourceExpr=AgentName;
+                  Visible=AgNameContVisible;
+                  Editable=TRUE }
+
+      { 1470001;2;Field     ;
+                  Name=AgeDocCon;
+                  CaptionML=[ENU=Agent Document;
+                             RUS=Документ агента];
+                  ApplicationArea=#All;
+                  SourceExpr=AgentDoc;
+                  Visible=AgeDocConVisible;
+                  Editable=TRUE }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210038 : Record 79;
+      HumanSetup@1210031 : Record 5218;
+      ExcelMgt@1210001 : Codeunit 12416;
+      Quarter@1210021 : Option;
+      StartingDate@1210019 : ARRAY [3] OF Date;
+      ReportDate@1210055 : Date;
+      RoundFactor@1210065 : Decimal;
+      BDRange@1470001 : ARRAY [2,3,2] OF Date;
+      AmtByBDRange@1470002 : ARRAY [7,5,5] OF Decimal;
+      BRangeMax@1101457000 : Integer;
+      AmtRangeMax@1101457001 : Integer;
+      Year@1210002 : Integer;
+      AgentFlag@1470007 : Boolean;
+      AgentName@1470006 : Text[250];
+      AgentDoc@1470005 : Text[250];
+      FileName@1210000 : Text[250];
+      AgNameContVisible@19064650 : Boolean INDATASET;
+      AgeDocConVisible@19039266 : Boolean INDATASET;
+      AgeDocCon1Visible@19071830 : Boolean INDATASET;
+      AgNameCont1Visible@19045671 : Boolean INDATASET;
+
+    PROCEDURE CalcTaxAmounts@1470004(EmployeeNo@1470005 : Code[20];FieldNo@1470000 : Integer;Dates@1470004 : ARRAY [3] OF Date;VAR TaxAmounts@1470003 : ARRAY [5] OF Decimal);
+    BEGIN
+      {* TODO
+      SSTData.RESET;
+      SSTData.SETRANGE("Employee No.",EmployeeNo);
+      SSTData.SETRANGE(Year,DATE2DMY(Dates[3],3));
+      SSTData.SETFILTER("Month No.",'<%1',DATE2DMY(Dates[1],2));
+      SSTData.SETRANGE(Range,0);
+      TaxAmounts[5] += SSTData.GetValue(FieldNo,1);
+      TaxAmounts[4] := 0;
+      FOR i := 1 TO 3 DO BEGIN
+        SSTData.SETRANGE("Month No.",DATE2DMY(Dates[i],2));
+        Amount := SSTData.GetValue(FieldNo,1);
+        TaxAmounts[i] += Amount;
+        TaxAmounts[4] += Amount;
+      END;
+      TaxAmounts[5] += TaxAmounts[4];
+      }
+    END;
+
+    PROCEDURE CalcExceededTaxAmounts@1210008(EmployeeNo@1470005 : Code[20];FieldNo@1470000 : Integer;Dates@1470004 : ARRAY [3] OF Date;Range@1210000 : Integer;VAR TaxAmounts@1470003 : ARRAY [5] OF Decimal);
+    BEGIN
+      {* TODO
+      SSTData.RESET;
+      SSTData.SETRANGE("Employee No.",EmployeeNo);
+      SSTData.SETRANGE(Year,DATE2DMY(Dates[3],3));
+      SSTData.SETRANGE("Month No.",DATE2DMY(Dates[1],2) - 1);
+      SSTData.SETRANGE(Range,Range);
+      TaxAmounts[5] += SSTData.GetValue(FieldNo,1);
+      TaxAmounts[4] := 0;
+      Amount := 0;
+
+      SSTData.SETRANGE("Month No.",DATE2DMY(Dates[1],2) - 1);
+      PrevAmount := SSTData.GetValue(FieldNo,1);
+
+      FOR i := 1 TO 3 DO BEGIN
+        SSTData.SETRANGE("Month No.",DATE2DMY(Dates[i],2));
+        Amount := SSTData.GetValue(FieldNo,1);
+        IF Amount > 0 THEN BEGIN
+          TaxAmounts[i] += Amount - PrevAmount;
+          TaxAmounts[4] += Amount - PrevAmount;
+        END;
+        PrevAmount := Amount;
+      END;
+      TaxAmounts[5] += TaxAmounts[4];
+      *}
+    END;
+
+    PROCEDURE SetBDRanges@1470002(Date1@1470001 : Date;Date2@1470002 : Date;Sex@1470000 : Option;RangeNo@1470003 : Integer);
+    BEGIN
+      BDRange[Sex,RangeNo,1] := Date1;
+      BDRange[Sex,RangeNo,2] := Date2;
+    END;
+
+    PROCEDURE CalcEmployeeBDRange@1470003(BDate@1470000 : Date;Sex@1470001 : ',Female,Male') RangeNo : Integer;
+    BEGIN
+      IF (BDate = 0D) OR (Sex = 0) THEN
+        EXIT(0);
+      FOR RangeNo := 1 TO 3 DO
+        IF BDate IN [BDRange[Sex,RangeNo,1]..BDRange[Sex,RangeNo,2]] THEN
+          EXIT(RangeNo);
+    END;
+
+    PROCEDURE FillCompanyAddress@1470032();
+    VAR
+      CompanyAddress@1470000 : Record 12425;
+    BEGIN
+      CompanyAddress.SETRANGE("Address Type",CompanyAddress."Address Type"::"Pension Fund");
+      IF CompanyAddress.FINDFIRST THEN BEGIN
+        ExcelMgt.FillCell('PostCode',CompanyAddress."Post Code");
+        ExcelMgt.FillCell('Region',CompanyAddress."Region Name");
+        ExcelMgt.FillCell('Area',CompanyAddress.County);
+        ExcelMgt.FillCell('City',CompanyAddress.City);
+        ExcelMgt.FillCell('Settlement',CompanyAddress.Settlement);
+        ExcelMgt.FillCell('Street',CompanyAddress.Street);
+        ExcelMgt.FillCell('House',CompanyAddress.House);
+        ExcelMgt.FillCell('Building',CompanyAddress.Building);
+        ExcelMgt.FillCell('Flat',CompanyAddress.Apartment);
+      END;
+    END;
+
+    PROCEDURE AverageListQuantity@1210001(MonthStartQuarter@1470002 : Integer) AverageList : Decimal;
+    VAR
+      Employee@1210014 : Record 5200;
+      AverageHeadcountCalculation@1210000 : Codeunit 17351;
+      i@1210011 : Integer;
+      AvgAmount@1470000 : Decimal;
+    BEGIN
+      Employee.RESET;
+      IF Employee.FIND('-') THEN
+        REPEAT
+          AvgAmount := 0;
+          FOR i := 1 TO MonthStartQuarter DO
+            AvgAmount := AvgAmount + AverageHeadcountCalculation.CalcAvgCount(Employee."No.",DMY2DATE(1,i,Year));
+          AvgAmount := AvgAmount / MonthStartQuarter;
+
+          AverageList := AverageList + AvgAmount;
+        UNTIL Employee.NEXT = 0;
+    END;
+
+    PROCEDURE CalcInsurancedPeople@1470040() : Integer;
+    VAR
+      AllEmployees@1470000 : Record 5200;
+    BEGIN
+      AllEmployees.SETFILTER(Status,'<>%1',AllEmployees.Status::Terminated);
+      AllEmployees.SETFILTER("Social Security No.",'<>%1','');
+      AllEmployees.FINDFIRST;
+
+      EXIT(AllEmployees.COUNT)
+    END;
+
+    PROCEDURE FillSection@1470090(SectionCode@1470000 : Code[3];AmtByBDRange@1470003 : ARRAY [5] OF Decimal);
+    BEGIN
+      ExcelMgt.FillCell('Total' + SectionCode,FORMAT(ROUND(AmtByBDRange[5],RoundFactor)));
+      ExcelMgt.FillCell('FirstMonth' + SectionCode,FORMAT(ROUND(AmtByBDRange[1],RoundFactor)));
+      ExcelMgt.FillCell('SecondMonth' + SectionCode,FORMAT(ROUND(AmtByBDRange[2],RoundFactor)));
+      ExcelMgt.FillCell('ThirdMonth' + SectionCode,FORMAT(ROUND(AmtByBDRange[3],RoundFactor)));
+    END;
+
+    PROCEDURE FillLiabilityPerson@1470007();
+    VAR
+      Employee@1470001 : Record 5200;
+    BEGIN
+      IF ReportDate <> 0D THEN BEGIN
+        ExcelMgt.FillCellsGroup('CurrDay',FORMAT(DATE2DMY(ReportDate,1)),2,0,'0');
+        ExcelMgt.FillCellsGroup('CurrM',FORMAT(DATE2DMY(ReportDate,2)),2,0,'0');
+        ExcelMgt.FillCellsGroup('CurrY',FORMAT(DATE2DMY(ReportDate,3)),4,0,'0');
+      END;
+
+      IF AgentFlag THEN BEGIN
+        ExcelMgt.FillCell('Agent',AgentName);
+        ExcelMgt.FillCell('Agentdocument',AgentDoc);
+        ExcelMgt.FillCell('AgentFlag','2');
+      END ELSE
+        IF Employee.GET(CompanyInfo."Director No.") THEN BEGIN
+          ExcelMgt.FillCell('Agent',Employee."Last Name" + ' ' + Employee."First Name" + ' ' + Employee."Middle Name");
+          ExcelMgt.FillCell('AgentFlag','1');
+        END;
+    END;
+
+    LOCAL PROCEDURE AgentFlagOnAfterValidate@19016728();
+    BEGIN
+      IF AgentFlag THEN BEGIN
+        AgNameContVisible := TRUE;
+        AgeDocConVisible := TRUE;
+        AgeDocCon1Visible := TRUE;
+        AgNameCont1Visible := TRUE;
+        RequestOptionsPage.UPDATE;
+      END ELSE BEGIN
+        AgNameContVisible := FALSE;
+        AgeDocConVisible := FALSE;
+        AgeDocCon1Visible := FALSE;
+        AgNameCont1Visible := FALSE;
+        RequestOptionsPage.UPDATE;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

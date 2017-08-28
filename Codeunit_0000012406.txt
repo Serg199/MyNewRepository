@@ -1,0 +1,207 @@
+OBJECT Codeunit 12406 PeriodReportManagement
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=" <Year4>";RUS=" <Year4>"';
+      Text001@1001 : TextConst 'ENU=<Year4>;RUS=<Year4>';
+      PeriodsNames@1002 : Text[250];
+      Text002@1210000 : TextConst 'ENU=one month,two  month,three  month,four  month,five  month,six  month,;RUS=один месяц,два месяца,три месяца,четыре месяца,пять месяцев,шесть месяцев,';
+      Text003@1210001 : TextConst 'ENU="seven  month,eight  month,nine  month,ten  month,eleven  month ";RUS="семь месяцев,восемь месяцев,девять месяцев,десять месяцев,одиннадцать месяцев, "';
+      Text004@1210002 : TextConst 'ENU="first quarter,first half year,nine month, ";RUS="первый квартал,первое полугодие,девять месяцев, "';
+      Text005@1210003 : TextConst 'ENU=january,february,march,april,may,june,july,august,september,october,november,december;RUS=январь,февраль,март,апрель,май,июнь,июль,август,сентябрь,октябрь,ноябрь,декабрь';
+      Text006@1210004 : TextConst 'ENU=first quarter,second quarter,third quarter,forth quarter;RUS=первый квартал,второй квартал,третий квартал,четвертый квартал';
+
+    PROCEDURE CreatePeriodsNames@15(TotalAdding@1000 : Boolean;CalendarPeriod@1001 : Record 2000000007);
+    BEGIN
+      IF TotalAdding THEN BEGIN
+        CASE CalendarPeriod."Period Type" OF
+          CalendarPeriod."Period Type"::Month:
+            PeriodsNames := Text002 + Text003;
+          CalendarPeriod."Period Type"::Quarter:
+            PeriodsNames := Text004;
+          ELSE
+            PeriodsNames := '';
+        END;
+      END ELSE
+        CASE CalendarPeriod."Period Type" OF
+          CalendarPeriod."Period Type"::Month:
+            PeriodsNames := Text005;
+          CalendarPeriod."Period Type"::Quarter:
+            PeriodsNames := Text006;
+          ELSE
+            PeriodsNames := '';
+        END;
+    END;
+
+    PROCEDURE ParseCaptionPeriodName@100(VAR TextPeriodYear@1000 : Text[30];VAR CalendarPeriod@1001 : Record 2000000007;TotalAdding@1002 : Boolean) : Boolean;
+    VAR
+      LengthPeriodName@1003 : Integer;
+      PeriodSeqNo@1004 : Integer;
+      YearNo@1005 : Integer;
+      NumbPeriods@1006 : Integer;
+    BEGIN
+      CreatePeriodsNames(TotalAdding,CalendarPeriod);
+      TextPeriodYear := DELCHR(TextPeriodYear,'<>',' ');
+      NumbPeriods := STRLEN(PeriodsNames) - STRLEN(DELCHR(PeriodsNames,'=',',')) + 1;
+      IF PeriodsNames = '' THEN
+        PeriodSeqNo := NumbPeriods
+      ELSE
+        PeriodSeqNo := 0;
+      LengthPeriodName := 0;
+      WHILE (PeriodSeqNo < NumbPeriods) AND (LengthPeriodName = 0) DO BEGIN
+        PeriodSeqNo := PeriodSeqNo + 1;
+        IF STRPOS(TextPeriodYear,SELECTSTR(PeriodSeqNo,PeriodsNames)) = 1 THEN
+          LengthPeriodName := STRLEN(SELECTSTR(PeriodSeqNo,PeriodsNames)) + 1;
+      END;
+      IF LengthPeriodName = 0
+      THEN BEGIN
+        LengthPeriodName := 1;
+        PeriodSeqNo := NumbPeriods;
+      END;
+      IF LengthPeriodName > STRLEN(TextPeriodYear)
+      THEN
+        IF CalendarPeriod."Period End" = 0D THEN
+          YearNo := DATE2DMY(WORKDATE,3)
+        ELSE
+          YearNo := DATE2DMY(CalendarPeriod."Period End",3)
+      ELSE
+        IF NOT EVALUATE(YearNo,COPYSTR(TextPeriodYear,LengthPeriodName,5)) THEN
+          EXIT(FALSE);
+      IF YearNo < 50
+      THEN
+        YearNo := 2000 + YearNo
+      ELSE
+        IF YearNo < 100 THEN
+          YearNo := 1900 + YearNo;
+      CASE CalendarPeriod."Period Type" OF
+        CalendarPeriod."Period Type"::Month:
+          BEGIN
+            CalendarPeriod."Period Start" := DMY2DATE(1,PeriodSeqNo,YearNo);
+            CalendarPeriod."Period Start" := CALCDATE('<CM+1D-1M>',CalendarPeriod."Period Start");
+          END;
+        CalendarPeriod."Period Type"::Quarter:
+          BEGIN
+            CalendarPeriod."Period Start" := DMY2DATE(1,PeriodSeqNo * 3,YearNo);
+            CalendarPeriod."Period Start" := CALCDATE('<CQ+1D-1Q>',CalendarPeriod."Period Start");
+          END;
+        ELSE BEGIN
+          CalendarPeriod."Period Start" := DMY2DATE(1,1,YearNo);
+          CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Year;
+          PeriodsNames := '';
+        END
+      END;
+      CalendarPeriod.GET(CalendarPeriod."Period Type",CalendarPeriod."Period Start");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+      IF NOT (PeriodsNames = '')
+      THEN BEGIN
+        TextPeriodYear := SELECTSTR(PeriodSeqNo,PeriodsNames) +
+          FORMAT(CalendarPeriod."Period End",0,Text000);
+        IF NOT ((PeriodSeqNo = NumbPeriods) AND TotalAdding) THEN
+          TextPeriodYear := TextPeriodYear + 'а';
+      END ELSE
+        TextPeriodYear := FORMAT(CalendarPeriod."Period End",0,Text001);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetCaptionPeriodYear@12(VAR FiscalPeriod@1000 : Text[30];VAR CalendarPeriod@1001 : Record 2000000007;TotalAdding@1002 : Boolean) : Boolean;
+    VAR
+      PeriodSeqNo@1003 : Integer;
+    BEGIN
+      IF NOT (FiscalPeriod = '')
+      THEN
+        CASE CalendarPeriod."Period Type" OF
+          CalendarPeriod."Period Type"::Month,
+          CalendarPeriod."Period Type"::Quarter:
+            IF NOT ParseCaptionPeriodName(FiscalPeriod,CalendarPeriod,TotalAdding) THEN
+              FiscalPeriod := '';
+          ELSE
+            FiscalPeriod := '';
+        END;
+      IF FiscalPeriod = ''
+      THEN BEGIN
+        CreatePeriodsNames(TotalAdding,CalendarPeriod);
+        PeriodSeqNo := CalendarPeriod."Period No.";
+        IF PeriodSeqNo > (STRLEN(PeriodsNames) - STRLEN(DELCHR(PeriodsNames,'=',',')) + 1)
+        THEN
+          FiscalPeriod := FORMAT(CalendarPeriod."Period End",0,Text001)
+        ELSE BEGIN
+          FiscalPeriod := SELECTSTR(PeriodSeqNo,PeriodsNames) +
+            FORMAT(CalendarPeriod."Period End",0,Text000);
+          IF NOT (SELECTSTR(PeriodSeqNo,PeriodsNames) = ' ')
+          THEN
+            FiscalPeriod := FiscalPeriod + 'а';
+        END;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SelectPeriod@13(VAR Text@1000 : Text[250];VAR CalendarPeriod@1001 : Record 2000000007;TotalAdding@1002 : Boolean) : Boolean;
+    VAR
+      SelectDate@1003 : Page 12445;
+    BEGIN
+      CLEAR(SelectDate);
+      SelectDate.SETRECORD(CalendarPeriod);
+      IF SelectDate.RUNMODAL = ACTION::LookupOK THEN
+        SelectDate.GETRECORD(CalendarPeriod);
+      Text := '';
+      SetCaptionPeriodYear(Text,CalendarPeriod,TotalAdding);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE InitPeriod@14(VAR CalendarPeriod@1000 : Record 2000000007;Perodical@1001 : 'Month,Quarter,Year');
+    BEGIN
+      CASE Perodical OF
+        Perodical::Month:
+          BEGIN
+            CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Month;
+            CalendarPeriod."Period Start" := CALCDATE('<CM+1D-1M>',WORKDATE);
+            IF DATE2DMY(WORKDATE,2) = 1 THEN
+              CalendarPeriod."Period Start" := CALCDATE('<-1M>',CalendarPeriod."Period Start");
+          END;
+        Perodical::Year:
+          BEGIN
+            CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Year;
+            CalendarPeriod."Period Start" := CALCDATE('<CY+1D-1Y>',WORKDATE);
+            IF DATE2DMY(WORKDATE,2) = 1 THEN
+              CalendarPeriod."Period Start" := CALCDATE('<-1Y>',CalendarPeriod."Period Start");
+          END;
+        ELSE BEGIN
+          CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Quarter;
+          CalendarPeriod."Period Start" := CALCDATE('<CQ+1D-1Q>',WORKDATE);
+          IF DATE2DMY(WORKDATE,2) = 1 THEN
+            CalendarPeriod."Period Start" := CALCDATE('<-1Q>',CalendarPeriod."Period Start");
+        END;
+      END;
+      CalendarPeriod.GET(CalendarPeriod."Period Type",CalendarPeriod."Period Start");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+    END;
+
+    PROCEDURE PeriodSetup@16(VAR CalendarPeriod@1000 : Record 2000000007;TotalsAdding@1001 : Boolean);
+    BEGIN
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+      IF TotalsAdding THEN
+        CalendarPeriod."Period Start" := DMY2DATE(1,1,DATE2DMY(CalendarPeriod."Period End",3))
+      ELSE
+        CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

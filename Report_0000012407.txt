@@ -1,0 +1,474 @@
+OBJECT Report 12407 Order Item Shipment TORG-12
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Order Item Shipment TORG-12;
+               RUS=Товарная накладная ТОРГ-12];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF NOT CurrReport.USEREQUESTPAGE THEN
+                    CopiesNumber := 1;
+
+                  TORG12Helper.InitReportTemplate;
+                END;
+
+    OnPostReport=BEGIN
+                   IF ReportFileName = '' THEN
+                     TORG12Helper.ExportData
+                   ELSE
+                     TORG12Helper.ExportDataToClientFile(ReportFileName);
+                 END;
+
+  }
+  DATASET
+  {
+    { 7745;    ;DataItem;Header              ;
+               DataItemTable=Table36;
+               DataItemTableView=SORTING(Document Type,No.);
+               OnPreDataItem=BEGIN
+                               SalesSetup.GET;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TESTFIELD(Status);
+                                  CompanyInfo.GET;
+
+                                  Cust.GET("Bill-to Customer No.");
+
+                                  AmountInvoiceCurrent := AmountInvoiceDone;
+                                  IF "Currency Code" = '' THEN
+                                    AmountInvoiceCurrent := AmountInvoiceCurrent::LCY;
+
+                                  IF "Document Type" = "Document Type"::"Return Order" THEN
+                                    StdRepMgt.SetSalesHeaderTypeOffset(2);
+
+                                  SalesLine1.RESET;
+                                  SalesLine1.SETRANGE("Document Type","Document Type");
+                                  SalesLine1.SETRANGE("Document No.","No.");
+
+                                  CASE "Document Type" OF
+                                    "Document Type"::Order:
+                                      BEGIN
+                                        ReasonType := OrderTxt;
+                                        ReasonNo := "No.";
+                                        ReasonData := "Order Date";
+                                      END;
+                                    "Document Type"::Invoice:
+                                      BEGIN
+                                        ReasonType := InvoiceTxt;
+                                        ReasonNo := "No.";
+                                        ReasonData := "Posting Date";
+                                      END;
+                                    ELSE BEGIN
+                                      ReasonType := '';
+                                      ReasonNo := '';
+                                      ReasonData := 0D;
+                                    END;
+                                  END;
+
+                                  IF "Agreement No." <> '' THEN BEGIN
+                                    CustomerAgreement.GET("Bill-to Customer No.","Agreement No.");
+                                    ReasonType := AgreementTxt;
+                                    ReasonNo := CustomerAgreement."External Agreement No.";
+                                    ReasonData := CustomerAgreement."Agreement Date";
+                                  END;
+
+                                  IF AmountInvoiceCurrent = AmountInvoiceCurrent::LCY THEN BEGIN
+                                    ReportCurrCode := '';
+                                    AddCondition := '';
+                                    CurrencyText := CurrencyTxt;
+                                  END ELSE BEGIN
+                                    IF "Currency Code" = '' THEN
+                                      CurrencyText := CurrencyTxt
+                                    ELSE
+                                      CurrencyText := ForeignCurrencyTxt;
+                                    ReportCurrCode := "Currency Code";
+                                    IF Currency.GET("Currency Code") THEN
+                                      AddCondition :=
+                                        COPYSTR(
+                                          STRSUBSTNO(
+                                            Currency."Invoice Comment",
+                                            LOWERCASE(Currency.Description)),
+                                          1,MAXSTRLEN(AddCondition));
+                                  END;
+
+                                  IF NOT Preview THEN BEGIN
+                                    IF ArchiveDocument THEN
+                                      ArchiveManagement.StoreSalesDocument(Header,LogInteraction);
+
+                                    IF LogInteraction THEN BEGIN
+                                      CALCFIELDS("No. of Archived Versions");
+                                      IF "Bill-to Contact No." <> '' THEN
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Contact,"Bill-to Contact No."
+                                          ,"Salesperson Code","Campaign No.","Posting Description","Opportunity No.")
+                                      ELSE
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Customer,"Bill-to Customer No.",
+                                          "Salesperson Code","Campaign No.","Posting Description","Opportunity No.");
+                                    END;
+                                  END;
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 7804;1   ;DataItem;CopyCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               IF NOT SalesLine1.FIND('-') THEN
+                                 CurrReport.BREAK;
+
+                               IF Header."Shipping No." = '' THEN
+                                 IF (Header."Shipping No. Series" = '') OR (Header."Shipping No. Series" = Header."Posting No. Series") THEN
+                                   IF Header."Posting No." = '' THEN BEGIN
+                                     Header."Posting No." := NoSeriesManagement.GetNextNo(
+                                         Header."Posting No. Series",Header."Posting Date",NOT Preview);
+                                     Header."Shipping No." := Header."Posting No.";
+                                     IF NOT Preview THEN
+                                       Header.MODIFY;
+                                   END ELSE BEGIN
+                                     Header."Shipping No." := Header."Posting No.";
+                                     IF NOT Preview THEN
+                                       Header.MODIFY;
+                                   END ELSE BEGIN
+                                   CLEAR(NoSeriesManagement);
+                                   Header."Shipping No." := NoSeriesManagement.GetNextNo(
+                                       Header."Shipping No. Series",Header."Posting Date",NOT Preview);
+                                   IF NOT Preview THEN
+                                     Header.MODIFY;
+                                 END;
+                               DocumentNo := Header."Shipping No.";
+                               DocumentDate := Header."Posting Date";
+
+                               SETRANGE(Number,1,CopiesNumber);
+                             END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT Preview THEN
+                                  CODEUNIT.RUN(CODEUNIT::"Sales-Printed",Header);
+                              END;
+                               }
+
+    { 5739;2   ;DataItem;LineCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               IF (AmountInvoiceCurrent = AmountInvoiceCurrent::"Invoce Currency") AND (Header."Currency Code" <> '') THEN
+                                 Currency.GET(Header."Currency Code")
+                               ELSE
+                                 Currency.InitRoundingPrecision;
+
+                               SerialNumbers := 0;
+
+                               VATExemptTotal := TRUE;
+                               AtLeastOneLineExists := FALSE;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  AmountValues@1210000 : ARRAY [6] OF Decimal;
+                                BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT SalesLine1.FIND('-') THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF SalesLine1.NEXT(1) = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  IF SalesLine1.Type <> SalesLine1.Type::" " THEN BEGIN
+                                    IF SalesLine1."Qty. to Invoice" = 0 THEN
+                                      CurrReport.SKIP;
+                                    SerialNumbers += 1;
+                                    IF AmountInvoiceCurrent = AmountInvoiceCurrent::LCY THEN BEGIN
+                                      SalesLine1.Amount := SalesLine1."Amount (LCY)";
+                                      SalesLine1."Amount Including VAT" := SalesLine1."Amount Including VAT (LCY)";
+                                    END;
+                                    SalesLine1.Amount :=
+                                      ROUND(SalesLine1.Amount * SalesLine1."Qty. to Invoice" / SalesLine1.Quantity,Currency."Amount Rounding Precision");
+                                    SalesLine1."Amount Including VAT" :=
+                                      ROUND(SalesLine1."Amount Including VAT" * SalesLine1."Qty. to Invoice" / SalesLine1.Quantity,
+                                        Currency."Amount Rounding Precision");
+                                    SalesLine1."Unit Price" := ROUND(SalesLine1.Amount / SalesLine1."Qty. to Invoice",Currency."Unit-Amount Rounding Precision");
+
+                                    TransferAmounts(SalesLine1,AmountValues);
+
+                                    IF StdRepMgt.VATExemptLine(SalesLine1."VAT Bus. Posting Group",SalesLine1."VAT Prod. Posting Group") THEN
+                                      StdRepMgt.FormatVATExemptLine(LineVATText[1],LineVATText[2])
+                                    ELSE BEGIN
+                                      VATExemptTotal := FALSE;
+                                      LineVATText[1] := FORMAT(SalesLine1."VAT %");
+                                      LineVATText[2] :=
+                                        StdRepMgt.FormatReportValue(SalesLine1."Amount Including VAT" - SalesLine1.Amount,2);
+                                    END;
+
+                                    IF (SalesLine1.Type = SalesLine1.Type::Item) OR (SalesLine1.Type = SalesLine1.Type::"Fixed Asset") THEN
+                                      ObjectCode := SalesLine1."No."
+                                    ELSE
+                                      ObjectCode := '-';
+                                  END ELSE
+                                    SalesLine1."No." := '';
+
+                                  CurrentNo := SalesLine1."No.";
+
+                                  IF NOT AtLeastOneLineExists THEN BEGIN
+                                    AtLeastOneLineExists := TRUE;
+                                    TransferHeaderValues;
+                                    TORG12Helper.FillPageHeader(CurrencyText);
+                                  END;
+
+                                  TransferBodyValues(AmountValues);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                SerialNumbersText := LocMgt.Integer2Text(SerialNumbers,1,'','','');
+                                SerialNumbersText := LOWERCASE(COPYSTR(SerialNumbersText,1,1)) + COPYSTR(SerialNumbersText,2);
+
+                                IF AtLeastOneLineExists THEN
+                                  TransferFooterValues;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   IF CopiesNumber < 1 THEN
+                     CopiesNumber := 1;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=No. of Copies;
+                             RUS=Число копий];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CopiesNumber;
+                  OnValidate=BEGIN
+                               IF CopiesNumber < 1 THEN
+                                 CopiesNumber := 1;
+                             END;
+                              }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Currency;
+                             RUS=Валюта];
+                  OptionCaptionML=[ENU=Invoice Currency,LCY;
+                                   RUS=Валюта счета,руб.];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AmountInvoiceDone }
+
+      { 1470000;2;Field     ;
+                  CaptionML=[ENU=Save in Archive;
+                             RUS=Сохранить в архиве];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ArchiveDocument }
+
+      { 1470002;2;Field     ;
+                  CaptionML=[ENU=Log Interaction;
+                             RUS=Регистрировать взаимодействие];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=LogInteraction }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Print Weight Information;
+                             RUS=Печать сведений о весе];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PrintWeightInfo }
+
+      { 1210001;2;Field     ;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Preview }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210099 : Record 79;
+      Cust@1210098 : Record 18;
+      SalesLine1@1210097 : Record 37;
+      SalesSetup@1210094 : Record 311;
+      CustomerAgreement@1210011 : Record 14902;
+      Currency@1210008 : Record 4;
+      LocMgt@1210092 : Codeunit 12400;
+      StdRepMgt@1210091 : Codeunit 12401;
+      NoSeriesManagement@1210090 : Codeunit 396;
+      ArchiveManagement@1470000 : Codeunit 5063;
+      SegManagement@1470001 : Codeunit 5051;
+      TORG12Helper@1210009 : Codeunit 14934;
+      CopiesNumber@1210080 : Integer;
+      DocumentDate@1210074 : Date;
+      SerialNumbers@1210072 : Integer;
+      DocumentNo@1210071 : Code[20];
+      CurrentNo@1210067 : Code[20];
+      ReasonType@1210063 : Text[30];
+      ReasonNo@1210062 : Text[30];
+      ReasonData@1210061 : Date;
+      AddCondition@1210006 : Text[250];
+      AmountInvoiceDone@1210004 : 'Invoce Currency,LCY';
+      AmountInvoiceCurrent@1210003 : 'Invoce Currency,LCY';
+      ReportCurrCode@1210002 : Code[10];
+      OrderTxt@1210001 : TextConst 'ENU=Order;RUS=Заказ';
+      InvoiceTxt@1210007 : TextConst 'ENU=Bill;RUS=Счет';
+      ArchiveDocument@1470002 : Boolean;
+      LogInteraction@1470003 : Boolean;
+      PrintWeightInfo@1210005 : Boolean;
+      AgreementTxt@1210012 : TextConst 'ENU=Agreement;RUS=Договор';
+      LineVATText@1210015 : ARRAY [2] OF Text[50];
+      VATExemptTotal@1210013 : Boolean;
+      CurrencyTxt@1210016 : TextConst 'ENU=rub. kop.;RUS=руб. коп.';
+      ForeignCurrencyTxt@1210017 : TextConst 'ENU=u.e.;RUS=у. е.';
+      CurrencyText@1210018 : Text[30];
+      ObjectCode@1210019 : Code[20];
+      SerialNumbersText@1210010 : Text;
+      AtLeastOneLineExists@1210022 : Boolean;
+      Preview@1210023 : Boolean;
+      ReportFileName@1210000 : Text;
+
+    LOCAL PROCEDURE ShipmentDocNo@1210001() : Code[20];
+    BEGIN
+      IF Header."Consignor No." <> '' THEN
+        EXIT(DocumentNo);
+
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE ShipmentDate@1210002() : Date;
+    BEGIN
+      IF Header."Consignor No." <> '' THEN
+        EXIT(DocumentDate);
+
+      EXIT(0D);
+    END;
+
+    LOCAL PROCEDURE LineGrossWeight@1210003() : Text[30];
+    BEGIN
+      IF PrintWeightInfo THEN
+        EXIT(FORMAT(SalesLine1."Gross Weight" * SalesLine1."Qty. to Invoice"));
+
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE TransferHeaderValues@1210000();
+    VAR
+      HeaderDetails@1210000 : ARRAY [15] OF Text;
+    BEGIN
+      HeaderDetails[1] := DocumentNo;
+      HeaderDetails[2] := FORMAT(DocumentDate);
+      HeaderDetails[3] :=
+        StdRepMgt.GetConsignerInfo(Header."Consignor No.",Header."Responsibility Center");
+      HeaderDetails[4] :=
+        StdRepMgt.GetConsigneeInfo(Header."Document Type",Header."No.",Header."Sell-to Customer No.");
+      HeaderDetails[5] := StdRepMgt.GetCompanyName + ' ' + StdRepMgt.GetLegalAddress +
+        StdRepMgt.GetCompanyPhoneFax + StdRepMgt.GetCompanyBankAttrib;
+      HeaderDetails[6] :=
+        StdRepMgt.GetPayerInfo(
+          Header."Document Type",Header."No.",Header."Bill-to Customer No.",Header."Agreement No.");
+      HeaderDetails[7] := LOWERCASE(ReasonType);
+      HeaderDetails[8] := StdRepMgt.GetSalesConsignerOKPOCode(Header."Consignor No.");
+      HeaderDetails[9] := StdRepMgt.GetCustOKPOCode(Header."Sell-to Customer No.");
+      HeaderDetails[10] := CompanyInfo."OKPO Code";
+      HeaderDetails[11] := StdRepMgt.GetCustOKPOCode(Header."Bill-to Customer No.");
+      HeaderDetails[12] := ReasonNo;
+      HeaderDetails[13] := ShipmentDocNo;
+      HeaderDetails[14] := FORMAT(ShipmentDate);
+
+      HeaderDetails[15] := FORMAT(ReasonData);
+
+      TORG12Helper.FillHeader(HeaderDetails);
+    END;
+
+    LOCAL PROCEDURE TransferBodyValues@1210007(AmountValues@1210001 : ARRAY [6] OF Decimal);
+    VAR
+      BodyDetails@1210000 : ARRAY [14] OF Text;
+    BEGIN
+      IF CurrentNo <> '' THEN
+        BodyDetails[2] := CurrentNo + ' ';
+      BodyDetails[2] += SalesLine1.Description;
+
+      IF SalesLine1.Type <> SalesLine1.Type::" " THEN BEGIN
+        BodyDetails[1] := FORMAT(SerialNumbers);
+        BodyDetails[3] := ObjectCode;
+        BodyDetails[4] := SalesLine1."Unit of Measure";
+        BodyDetails[5] := StdRepMgt.GetOKEICode(SalesLine1."Unit of Measure Code");
+        BodyDetails[6] := LineGrossWeight;
+        BodyDetails[7] := FORMAT(SalesLine1."Qty. to Invoice");
+        BodyDetails[8] := StdRepMgt.FormatReportValue(SalesLine1."Unit Price",2);
+        BodyDetails[9] := StdRepMgt.FormatReportValue(SalesLine1.Amount,2);
+        BodyDetails[10] := LineVATText[1];
+        BodyDetails[11] := LineVATText[2];
+        BodyDetails[12] := StdRepMgt.FormatReportValue(SalesLine1."Amount Including VAT",2);
+      END;
+
+      TORG12Helper.FillLine(BodyDetails,AmountValues);
+    END;
+
+    LOCAL PROCEDURE TransferAmounts@1210014(SalesLine@1210000 : Record 37;VAR AmountValues@1210001 : ARRAY [6] OF Decimal);
+    BEGIN
+      WITH SalesLine DO BEGIN
+        AmountValues[1] := Amount;
+        AmountValues[2] := "Amount Including VAT" - Amount;
+        AmountValues[3] := "Amount Including VAT";
+        AmountValues[4] := "Qty. to Invoice";
+        AmountValues[5] := "Qty. to Invoice" * "Gross Weight";
+        AmountValues[6] := "Qty. to Invoice" * "Net Weight";
+      END;
+    END;
+
+    LOCAL PROCEDURE TransferFooterValues@1210004();
+    VAR
+      FooterDetails@1210000 : ARRAY [6] OF Text;
+    BEGIN
+      FooterDetails[1] := LOWERCASE(SerialNumbersText);
+      FooterDetails[2] := ReportCurrCode;
+
+      FooterDetails[3] :=
+        StdRepMgt.GetReleasedByName(FALSE,DATABASE::"Sales Header",Header."Document Type",Header."No.");
+      FooterDetails[4] :=
+        StdRepMgt.GetAccountantName(FALSE,DATABASE::"Sales Header",Header."Document Type",Header."No.");
+      FooterDetails[5] :=
+        StdRepMgt.GetPassedByName(FALSE,DATABASE::"Sales Header",Header."Document Type",Header."No.");
+      FooterDetails[6] := LocMgt.Date2Text(DocumentDate);
+
+      TORG12Helper.FinishDocument(FooterDetails,VATExemptTotal,PrintWeightInfo);
+    END;
+
+    PROCEDURE InitializeRequest@1210005(FileName@1210000 : Text;NewPreview@1210001 : Boolean);
+    BEGIN
+      ReportFileName := FileName;
+      Preview := NewPreview;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

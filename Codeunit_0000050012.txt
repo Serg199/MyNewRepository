@@ -1,0 +1,184 @@
+OBJECT Codeunit 50012 Load Reference
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.07.17;
+    Time=16:53:21;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            RecRefReference@1101495000 : ARRAY [2] OF RecordRef;
+            isFind@1101495004 : ARRAY [2] OF Boolean;
+            StrPrimaryKeyInfo@1101495001 : Text[250];
+            i@1101495002 : Integer;
+            isSkip@1101495003 : Boolean;
+            isErr@1000000000 : Boolean;
+          BEGIN
+            MovingDataSetup.GET;
+
+            recCompany.GET("Company No.");
+
+            RecRefBuf.OPEN("Object No.");
+
+            iFldStatus := TableCheckBlocked.GetFieldNo(RecRefBuf,'Status');
+            IF iFldStatus = 0 THEN
+              ERROR(Text001);
+            FldRefStatus := RecRefBuf.FIELD(iFldStatus);
+            FldRefStatus.SETRANGE(BufferDeal.Status::New);
+
+            iFldIdLegalEntity := TableCheckBlocked.GetFieldNo(RecRefBuf,'Id Legal Entity');
+            IF iFldIdLegalEntity <> 0 THEN BEGIN
+              IF (recCompany."Legal Entity Id" = '') AND
+                 ("Type Reference" IN ["Type Reference"::All, "Type Reference"::LE]) THEN BEGIN
+                isOK := FALSE;
+                EXIT;
+              END;
+              FldRefIdLegalEntity := RecRefBuf.FIELD(iFldIdLegalEntity);
+              FldRefIdLegalEntity.SETRANGE(recCompany."Legal Entity Id");
+            END;
+
+            IF ( ("Type Reference" = "Type Reference"::General) AND (iFldIdLegalEntity <> 0) OR
+                 ("Type Reference" = "Type Reference"::LE)      AND (iFldIdLegalEntity =  0) ) THEN BEGIN
+              isOK := FALSE;
+              EXIT;
+            END;
+
+            isOK := NOT RecRefBuf.ISEMPTY;
+
+            IF ("Processing Mode" = "Processing Mode"::Test) OR
+               (NOT isOK) THEN
+              EXIT;
+
+            IF "Company No." <> COMPANYNAME THEN
+              ERROR(Text002);
+
+            // "Company No." хранит имя компании в которой генерятся ошибки
+            JobProcStatusTemp := Rec;
+            IF iFldIdLegalEntity = 0 THEN
+              JobProcStatusTemp."Company No." := '';
+
+            IF NOT RecRefBuf.FIND('-') THEN BEGIN
+              isOK := FALSE;
+              EXIT;
+            END;
+            REPEAT
+              isSkip := FALSE;
+              isErr := FALSE;
+
+              JobProcStatusTemp."Record ID" := RecRefBuf.RECORDID;
+              IF NOT CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp) THEN
+                EXIT;
+
+              // Проверка на то что запись справочника не захвачена
+              RecRefBuf2 := RecRefBuf.DUPLICATE;
+              IF LoadElemRef.AddReference(RecRefBuf2,FALSE,RecRefReference,isFind,StrPrimaryKeyInfo,JobProcStatusTemp) THEN BEGIN
+                FOR i := 1 TO ARRAYLEN(RecRefReference) DO
+                  IF isFind[i] THEN BEGIN
+                    JobProcStatusTemp."Record ID" := RecRefReference[i].RECORDID;
+                    IF NOT CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp) THEN
+                      isSkip := TRUE;
+                  END;
+              END ELSE BEGIN
+                RecRefBuf2 := RecRefBuf.DUPLICATE;
+                RecRefBuf2.GET(RecRefBuf2.RECORDID);
+                FldRefStatus := RecRefBuf2.FIELD(iFldStatus);
+                FldRefStatus.VALIDATE(BufferDeal.Status::"Processing Canceled");
+                RecRefBuf2.MODIFY(TRUE);
+                isErr := TRUE;
+              END;
+
+              IF NOT isSkip AND NOT isErr THEN BEGIN
+                JobProcStatusTemp."Record ID" := RecRefBuf.RECORDID;
+                IF NOT CODEUNIT.RUN(CODEUNIT::"Load Element Reference",JobProcStatusTemp) THEN BEGIN
+                  RecRefBuf2 := RecRefBuf.DUPLICATE;
+                  RecRefBuf2.GET(RecRefBuf2.RECORDID);
+                  FldRefStatus := RecRefBuf2.FIELD(iFldStatus);
+                  FldRefStatus.VALIDATE(BufferDeal.Status::New);
+
+                  ErrorJournal.AddLastError1(JobProcStatusTemp."Company No.",ErrorJournal."Error Group"::Load,ErrorJournal.Type::Delay,
+                                             '',0,
+                                             RecRefBuf2.CAPTION,RecRefBuf2,"Line No.");
+
+                  iFldDelayTech := TableCheckBlocked.GetFieldNo(RecRefBuf2,'Delay (Tech.)');
+                  IF iFldDelayTech = 0 THEN
+                    ERROR(Text001);
+                  FldRefDelayTech := RecRefBuf2.FIELD(iFldDelayTech);
+                  FldRefDelayTech.VALUE(FALSE);
+
+                  iFldDelay := TableCheckBlocked.GetFieldNo(RecRefBuf2,'Delay');
+                  IF iFldDelay = 0 THEN
+                     ERROR(Text001);
+                  FldRefDelay := RecRefBuf2.FIELD(iFldDelay);
+                  FldRefDelay.VALUE(TRUE);
+
+                  iFldDelayErrorLineNo := TableCheckBlocked.GetFieldNo(RecRefBuf2,'Delay Error Line No.');
+                  IF iFldDelayErrorLineNo = 0 THEN
+                    ERROR(Text001);
+                  FldRefDelayErrorLineNo := RecRefBuf2.FIELD(iFldDelayErrorLineNo);
+                  //NC NOS-26 > SPA
+                  //FldRefDelayErrorLineNo.VALUE(ErrorJournal."Line No.");
+                  FldRefDelayErrorLineNo.VALUE(ErrorJournal."Entry No.");
+                  //NC NOS-26 < SPA
+
+                  RecRefBuf2.MODIFY(TRUE);
+
+                END;
+              END; { ELSE IF isSkip THEN BEGIN
+                RecRefBuf2 := RecRefBuf.DUPLICATE;
+                RecRefBuf2.GET(RecRefBuf2.RECORDID);
+                FldRefStatus := RecRefBuf2.FIELD(iFldStatus);
+                FldRefStatus.VALIDATE(BufferDeal.Status::New);
+                RecRefBuf2.MODIFY(TRUE);
+              END;
+              }
+              COMMIT;
+            UNTIL RecRefBuf.NEXT = 0;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TableCheckBlocked@1000000007 : Codeunit 50010;
+      LoadElemRef@1101495003 : Codeunit 50013;
+      RecRefBuf@1000000000 : RecordRef;
+      RecRefBuf2@1101495005 : RecordRef;
+      recCompany@1000000001 : Record 2000000006;
+      ConsSource@1000000002 : Record 50001;
+      BufferDeal@1000000009 : Record 50036;
+      iFldIdLegalEntity@1000000003 : Integer;
+      FldRefIdLegalEntity@1000000004 : FieldRef;
+      iFldStatus@1000000006 : Integer;
+      FldRefStatus@1000000005 : FieldRef;
+      Text001@1000000008 : TextConst 'ENU=Incorrect structure buffer;RUS=Неправильная структура буфера';
+      RecordLink@1000000010 : Record 2000000068;
+      ErrorJournal@1101495000 : Record 50023;
+      TextError@1101495001 : Text[250];
+      Text002@1101495004 : TextConst 'ENU=Processing must be run in your company;RUS=Обработка должна запускаться в своей фирме';
+      TextEDB01@1101495002 : TextConst 'ENU=In the process of implementation %1 error occurred. %2 Processing stopped.;RUS=В процессе выполнения %1 возникла ошибка. %2 Обработка прекращена.';
+      JobProcStatusTemp@1000000011 : TEMPORARY Record 50063;
+      MovingDataSetup@1000000012 : Record 50064;
+      iFldDelay@1000000016 : Integer;
+      FldRefDelay@1000000015 : FieldRef;
+      iFldDelayTech@1000000014 : Integer;
+      FldRefDelayTech@1000000013 : FieldRef;
+      iFldDelayErrorLineNo@1000000017 : Integer;
+      FldRefDelayErrorLineNo@1000000018 : FieldRef;
+
+    BEGIN
+    {
+      NC MDB03 PCH Создан CU
+      ПАРАМЕТРЫ:
+        "Processing Mode" - Test - проверка наличия записей, Load - загрузка
+        "Object No." - таблица буфера
+      ВОЗВРАТ:
+        isOK - ОК
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,422 @@
+OBJECT Codeunit 12452 Item Doc. Line-Reserve
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 337=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Codeunit is not initialized correctly.;RUS=Codeunit не был корректно инициализирован.';
+      Text001@1001 : TextConst 'ENU=Reserved quantity cannot be greater than %1.;RUS=Зарезервированное количество не может быть больше %1.';
+      Text002@1002 : TextConst 'ENU=must be filled in when a quantity is reserved;RUS=должно быть заполнено при наличии резервирования';
+      Text003@1003 : TextConst 'ENU=must not be changed when a quantity is reserved;RUS=не должно изменяться при резервировании количества';
+      ReservMgt@1005 : Codeunit 99000845;
+      CreateReservEntry@1006 : Codeunit 99000830;
+      ReservEngineMgt@1007 : Codeunit 99000831;
+      Blocked@1008 : Boolean;
+      SetFromType@1009 : ' ,Sales,Requisition Line,Purchase,Item Journal,BOM Journal,Item Ledger Entry';
+      SetFromSubtype@1010 : Integer;
+      SetFromID@1011 : Code[20];
+      SetFromBatchName@1012 : Code[10];
+      SetFromProdOrderLine@1013 : Integer;
+      SetFromRefNo@1014 : Integer;
+      SetFromVariantCode@1015 : Code[10];
+      SetFromLocationCode@1016 : Code[10];
+      SetFromSerialNo@1018 : Code[20];
+      SetFromLotNo@1019 : Code[20];
+      SetFromCDNo@1210000 : Code[30];
+      SetFromQtyPerUOM@1020 : Decimal;
+
+    PROCEDURE CreateReservation@4(VAR ItemDocLine@1000 : Record 12453;Description@1001 : Text[50];ExpectedReceiptDate@1002 : Date;Quantity@1003 : Decimal;QuantityBase@1007 : Decimal;ForSerialNo@1005 : Code[20];ForLotNo@1004 : Code[20];ForCDNo@1210000 : Code[30]);
+    VAR
+      ShipmentDate@1008 : Date;
+    BEGIN
+      IF SetFromType = 0 THEN
+        ERROR(Text000);
+
+      ItemDocLine.TESTFIELD("Item No.");
+      ItemDocLine.TESTFIELD("Variant Code",SetFromVariantCode);
+
+      CASE ItemDocLine."Document Type" OF
+        1: // Shipment
+          BEGIN
+            ItemDocLine.TESTFIELD("Document Date");
+            ItemDocLine.TESTFIELD("Location Code",SetFromLocationCode);
+            ItemDocLine.CALCFIELDS("Reserved Qty. Outbnd. (Base)");
+            IF ABS(ItemDocLine."Quantity (Base)") <
+               ABS(ItemDocLine."Reserved Qty. Outbnd. (Base)") + Quantity
+            THEN
+              ERROR(
+                Text001,
+                ABS(ItemDocLine."Quantity (Base)") - ABS(ItemDocLine."Reserved Qty. Outbnd. (Base)"));
+            ShipmentDate := ItemDocLine."Document Date";
+          END;
+        0: // Receipt
+          BEGIN
+            ItemDocLine.TESTFIELD("Document Date");
+            ItemDocLine.TESTFIELD("Location Code",SetFromLocationCode);
+            ItemDocLine.CALCFIELDS("Reserved Qty. Inbnd. (Base)");
+            IF ABS(ItemDocLine."Quantity (Base)") <
+               ABS(ItemDocLine."Reserved Qty. Inbnd. (Base)") + Quantity
+            THEN
+              ERROR(
+                Text001,
+                ABS(ItemDocLine."Quantity (Base)") - ABS(ItemDocLine."Reserved Qty. Inbnd. (Base)"));
+            ExpectedReceiptDate := ItemDocLine."Document Date";
+          END;
+      END;
+
+      CreateReservEntry.CreateReservEntryFor(
+        DATABASE::"Item Document Line",
+        ItemDocLine."Document Type",ItemDocLine."Document No.",'',
+        0,ItemDocLine."Line No.",ItemDocLine."Qty. per Unit of Measure",
+        Quantity,QuantityBase,ForSerialNo,ForLotNo,ForCDNo);
+      CreateReservEntry.CreateReservEntryFrom(
+        SetFromType,SetFromSubtype,SetFromID,SetFromBatchName,SetFromProdOrderLine,SetFromRefNo,
+        SetFromQtyPerUOM,SetFromSerialNo,SetFromLotNo,SetFromCDNo);
+      CreateReservEntry.CreateReservEntry(
+        ItemDocLine."Item No.",ItemDocLine."Variant Code",SetFromLocationCode,
+        Description,ExpectedReceiptDate,ShipmentDate,0);
+
+      SetFromType := 0;
+    END;
+
+    PROCEDURE CreateReservationSetFrom@7(TrackingSpecificationFrom@1000 : Record 336);
+    BEGIN
+      WITH TrackingSpecificationFrom DO BEGIN
+        SetFromType := "Source Type";
+        SetFromSubtype := "Source Subtype";
+        SetFromID := "Source ID";
+        SetFromBatchName := "Source Batch Name";
+        SetFromProdOrderLine := "Source Prod. Order Line";
+        SetFromRefNo := "Source Ref. No.";
+        SetFromVariantCode := "Variant Code";
+        SetFromLocationCode := "Location Code";
+        SetFromSerialNo := "Serial No.";
+        SetFromLotNo := "Lot No.";
+        SetFromCDNo := "CD No.";
+        SetFromQtyPerUOM := "Qty. per Unit of Measure";
+      END;
+    END;
+
+    PROCEDURE FilterReservFor@9(VAR FilterReservEntry@1000 : Record 337;ItemDocLine@1001 : Record 12453);
+    BEGIN
+      FilterReservEntry.SETRANGE("Source Type",DATABASE::"Item Document Line");
+      FilterReservEntry.SETRANGE("Source Subtype",ItemDocLine."Document Type");
+      FilterReservEntry.SETRANGE("Source ID",ItemDocLine."Document No.");
+      FilterReservEntry.SETRANGE("Source Batch Name",'');
+      FilterReservEntry.SETRANGE("Source Prod. Order Line",0);
+      FilterReservEntry.SETRANGE("Source Ref. No.",ItemDocLine."Line No.");
+    END;
+
+    PROCEDURE Caption@27(ItemDocLine@1001 : Record 12453) CaptionText@1000 : Text[80];
+    BEGIN
+      CaptionText :=
+        STRSUBSTNO(
+          '%1 %2 %3',ItemDocLine."Document No.",ItemDocLine."Line No.",
+          ItemDocLine."Item No.");
+    END;
+
+    PROCEDURE FindReservEntry@1(ItemDocLine@1000 : Record 12453;VAR ReservEntry@1001 : Record 337) : Boolean;
+    BEGIN
+      ReservEngineMgt.InitFilterAndSortingLookupFor(ReservEntry,FALSE);
+      FilterReservFor(ReservEntry,ItemDocLine);
+      EXIT(ReservEntry.FIND('+'));
+    END;
+
+    PROCEDURE VerifyChange@62(VAR NewItemDocLine@1000 : Record 12453;VAR OldItemDocLine@1001 : Record 12453);
+    VAR
+      ItemDocLine@1007 : Record 12453;
+      TempReservEntry@1002 : Record 337;
+      ShowErrorInbnd@1003 : Boolean;
+      ShowErrorOutbnd@1004 : Boolean;
+      HasErrorInbnd@1005 : Boolean;
+      HasErrorOutbnd@1006 : Boolean;
+    BEGIN
+      IF Blocked THEN
+        EXIT;
+      IF NewItemDocLine."Line No." = 0 THEN
+        IF NOT ItemDocLine.GET(NewItemDocLine."Document Type",NewItemDocLine."Document No.",NewItemDocLine."Line No.") THEN
+          EXIT;
+
+      NewItemDocLine.CALCFIELDS("Reserved Qty. Inbnd. (Base)");
+      NewItemDocLine.CALCFIELDS("Reserved Qty. Outbnd. (Base)");
+
+      ShowErrorInbnd := (NewItemDocLine."Reserved Qty. Inbnd. (Base)" <> 0);
+      ShowErrorOutbnd := (NewItemDocLine."Reserved Qty. Outbnd. (Base)" <> 0);
+
+      IF NewItemDocLine."Document Type" IN
+         [NewItemDocLine."Document Type"::Receipt,NewItemDocLine."Document Type"::"2"]
+      THEN BEGIN
+        IF NewItemDocLine."Document Date" = 0D THEN
+          IF ShowErrorOutbnd THEN
+            NewItemDocLine.FIELDERROR("Document Date",Text002);
+
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF NewItemDocLine."Document Type" IN
+         [NewItemDocLine."Document Type"::Shipment,NewItemDocLine."Document Type"::"2"]
+      THEN BEGIN
+        IF NewItemDocLine."Document Date" = 0D THEN
+          IF ShowErrorOutbnd THEN
+            NewItemDocLine.FIELDERROR("Document Date",Text002);
+
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF NewItemDocLine."Item No." <> OldItemDocLine."Item No." THEN BEGIN
+        IF ShowErrorInbnd OR ShowErrorOutbnd THEN
+          NewItemDocLine.FIELDERROR("Item No.",Text003);
+
+        HasErrorInbnd := TRUE;
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF NewItemDocLine."Location Code" <> OldItemDocLine."Location Code" THEN BEGIN
+        IF ShowErrorOutbnd THEN
+          NewItemDocLine.FIELDERROR("Location Code",Text003);
+
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF NewItemDocLine."Bin Code" <> OldItemDocLine."Bin Code" THEN BEGIN
+        IF ShowErrorOutbnd THEN
+          NewItemDocLine.FIELDERROR("Bin Code",Text003);
+
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF NewItemDocLine."Variant Code" <> OldItemDocLine."Variant Code" THEN BEGIN
+        IF ShowErrorInbnd OR ShowErrorOutbnd THEN
+          NewItemDocLine.FIELDERROR("Variant Code",Text003);
+
+        HasErrorInbnd := TRUE;
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF NewItemDocLine."Line No." <> OldItemDocLine."Line No." THEN BEGIN
+        HasErrorInbnd := TRUE;
+        HasErrorOutbnd := TRUE;
+      END;
+
+      IF HasErrorOutbnd THEN BEGIN
+        IF (NewItemDocLine."Item No." <> OldItemDocLine."Item No.") OR
+           FindReservEntry(NewItemDocLine,TempReservEntry)
+        THEN BEGIN
+          IF NewItemDocLine."Item No." <> OldItemDocLine."Item No." THEN BEGIN
+            ReservMgt.SetItemDocLine(OldItemDocLine);
+            ReservMgt.DeleteReservEntries(TRUE,0);
+            ReservMgt.SetItemDocLine(NewItemDocLine);
+          END ELSE BEGIN
+            ReservMgt.SetItemDocLine(NewItemDocLine);
+            ReservMgt.DeleteReservEntries(TRUE,0);
+          END;
+          ReservMgt.AutoTrack(NewItemDocLine."Quantity (Base)");
+        END;
+        AssignForPlanning(NewItemDocLine);
+        IF (NewItemDocLine."Item No." <> OldItemDocLine."Item No.") OR
+           (NewItemDocLine."Variant Code" <> OldItemDocLine."Variant Code")
+        THEN
+          AssignForPlanning(OldItemDocLine);
+      END;
+
+      IF HasErrorInbnd THEN BEGIN
+        IF (NewItemDocLine."Item No." <> OldItemDocLine."Item No.") OR
+           FindReservEntry(NewItemDocLine,TempReservEntry)
+        THEN BEGIN
+          IF NewItemDocLine."Item No." <> OldItemDocLine."Item No." THEN BEGIN
+            ReservMgt.SetItemDocLine(OldItemDocLine);
+            ReservMgt.DeleteReservEntries(TRUE,0);
+            ReservMgt.SetItemDocLine(NewItemDocLine);
+          END ELSE BEGIN
+            ReservMgt.SetItemDocLine(NewItemDocLine);
+            ReservMgt.DeleteReservEntries(TRUE,0);
+          END;
+          ReservMgt.AutoTrack(NewItemDocLine."Quantity (Base)");
+        END;
+        AssignForPlanning(NewItemDocLine);
+        IF (NewItemDocLine."Item No." <> OldItemDocLine."Item No.") OR
+           (NewItemDocLine."Variant Code" <> OldItemDocLine."Variant Code") OR
+           (NewItemDocLine."Location Code" <> OldItemDocLine."Location Code")
+        THEN
+          AssignForPlanning(OldItemDocLine);
+      END;
+    END;
+
+    PROCEDURE VerifyQuantity@3(VAR NewItemDocLine@1000 : Record 12453;VAR OldItemDocLine@1001 : Record 12453);
+    VAR
+      ItemDocLine@1003 : Record 12453;
+    BEGIN
+      IF Blocked THEN
+        EXIT;
+
+      WITH NewItemDocLine DO BEGIN
+        IF "Line No." = OldItemDocLine."Line No." THEN
+          IF "Quantity (Base)" = OldItemDocLine."Quantity (Base)" THEN
+            EXIT;
+        IF "Line No." = 0 THEN
+          IF NOT ItemDocLine.GET("Document Type","Document No.","Line No.") THEN
+            EXIT;
+        ReservMgt.SetItemDocLine(NewItemDocLine);
+        IF "Qty. per Unit of Measure" <> OldItemDocLine."Qty. per Unit of Measure" THEN
+          ReservMgt.ModifyUnitOfMeasure;
+        ReservMgt.DeleteReservEntries(FALSE,"Quantity (Base)");
+        ReservMgt.ClearSurplus;
+        ReservMgt.AutoTrack("Quantity (Base)");
+        AssignForPlanning(NewItemDocLine);
+      END;
+    END;
+
+    PROCEDURE TransferItemDocToItemJnlLine@35(VAR ItemDocLine@1000 : Record 12453;VAR ItemJnlLine@1001 : Record 83;ReceiptQty@1002 : Decimal);
+    VAR
+      OldReservEntry@1004 : Record 337;
+    BEGIN
+      IF NOT FindReservEntry(ItemDocLine,OldReservEntry) THEN
+        EXIT;
+
+      OldReservEntry.Lock;
+
+      ItemJnlLine.TESTFIELD("Location Code",ItemDocLine."Location Code");
+      ItemJnlLine.TESTFIELD("Item No.",ItemDocLine."Item No.");
+      ItemJnlLine.TESTFIELD("Variant Code",ItemDocLine."Variant Code");
+
+      IF ReceiptQty = 0 THEN
+        EXIT;
+
+      IF ReservEngineMgt.InitRecordSet(OldReservEntry) THEN
+        REPEAT
+          OldReservEntry.TESTFIELD("Item No.",ItemDocLine."Item No.");
+          OldReservEntry.TESTFIELD("Variant Code",ItemDocLine."Variant Code");
+          OldReservEntry.TESTFIELD("Location Code",ItemDocLine."Location Code");
+          IF ItemJnlLine."Red Storno" THEN
+            OldReservEntry.VALIDATE("Quantity (Base)",-OldReservEntry."Quantity (Base)");
+          ReceiptQty :=
+            CreateReservEntry.TransferReservEntry(
+              DATABASE::"Item Journal Line",
+              ItemJnlLine."Entry Type",ItemJnlLine."Journal Template Name",
+              ItemJnlLine."Journal Batch Name",0,ItemJnlLine."Line No.",
+              ItemJnlLine."Qty. per Unit of Measure",OldReservEntry,
+              ReceiptQty * ItemJnlLine."Qty. per Unit of Measure"); // qty base
+
+        UNTIL (ReservEngineMgt.NEXTRecord(OldReservEntry) = 0) OR (ReceiptQty = 0);
+    END;
+
+    PROCEDURE RenameLine@12(VAR NewItemDocLine@1001 : Record 12453;VAR OldItemDocLine@1000 : Record 12453);
+    BEGIN
+      ReservEngineMgt.RenamePointer(DATABASE::"Item Document Line",
+        0,
+        OldItemDocLine."Document No.",
+        '',
+        0,
+        OldItemDocLine."Line No.",
+        0,
+        NewItemDocLine."Document No.",
+        '',
+        0,
+        NewItemDocLine."Line No.");
+    END;
+
+    PROCEDURE DeleteLine@2(VAR ItemDocLine@1000 : Record 12453);
+    VAR
+      ItemDocHeader@1210001 : Record 12450;
+      RedStorno@1210000 : Boolean;
+    BEGIN
+      IF Blocked THEN
+        EXIT;
+
+      WITH ItemDocLine DO BEGIN
+        ItemDocHeader.GET("Document Type","Document No.");
+        RedStorno := ItemDocHeader.Correction;
+        CASE "Document Type" OF
+          "Document Type"::Receipt:
+            BEGIN
+              ReservMgt.SetItemDocLine(ItemDocLine);
+              IF RedStorno THEN
+                ReservMgt.SetItemTrackingHandling(1); // Allow Deletion
+              ReservMgt.DeleteReservEntries(TRUE,0);
+              CALCFIELDS("Reserved Qty. Outbnd. (Base)");
+            END;
+          "Document Type"::Shipment:
+            BEGIN
+              ReservMgt.SetItemDocLine(ItemDocLine);
+              IF RedStorno THEN
+                ReservMgt.SetItemTrackingHandling(1); // Allow Deletion
+              ReservMgt.DeleteReservEntries(TRUE,0);
+              CALCFIELDS("Reserved Qty. Inbnd. (Base)");
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE AssignForPlanning@5(VAR ItemDocLine@1000 : Record 12453);
+    VAR
+      PlanningAssignment@1002 : Record 99000850;
+    BEGIN
+      IF ItemDocLine."Item No." <> '' THEN
+        PlanningAssignment.ChkAssignOne(
+          ItemDocLine."Item No.",
+          ItemDocLine."Variant Code",
+          ItemDocLine."Location Code",
+          ItemDocLine."Document Date");
+    END;
+
+    PROCEDURE Block@14(SetBlocked@1000 : Boolean);
+    BEGIN
+      Blocked := SetBlocked;
+    END;
+
+    PROCEDURE CallItemTracking@6(VAR ItemDocLine@1000 : Record 12453);
+    VAR
+      TrackingSpecification@1001 : Record 336;
+      ItemTrackingLines@1002 : Page 6510;
+    BEGIN
+      TrackingSpecification.InitFromItemDocLine(ItemDocLine);
+      ItemTrackingLines.SetSourceSpec(TrackingSpecification,ItemDocLine."Document Date");
+      ItemTrackingLines.RUNMODAL;
+    END;
+
+    PROCEDURE CallItemTracking2@15(VAR ItemDocLine@1000 : Record 12453;VAR SecondSourceQuantityArray@1001 : ARRAY [3] OF Decimal);
+    VAR
+      TrackingSpecification@1002 : Record 336;
+      ItemTrackingLines@1003 : Page 6510;
+    BEGIN
+      TrackingSpecification.InitFromItemDocLine(ItemDocLine);
+      ItemTrackingLines.SetSourceSpec(TrackingSpecification,ItemDocLine."Document Date");
+      ItemTrackingLines.SetSecondSourceQuantity(SecondSourceQuantityArray);
+      ItemTrackingLines.RUNMODAL;
+    END;
+
+    PROCEDURE InitBinContentItemTracking@10(VAR ItemDocLine@1003 : Record 12453;SerialNo@1002 : Code[20];LotNo@1001 : Code[20];CDNo@1210000 : Code[30];QtyOnBin@1000 : Decimal);
+    VAR
+      TrackingSpecification@1006 : TEMPORARY Record 336;
+      ReservEntry@1005 : Record 337;
+    BEGIN
+      TrackingSpecification.InitFromItemDocLine(ItemDocLine);
+      TrackingSpecification."Serial No." := SerialNo;
+      TrackingSpecification."New Serial No." := SerialNo;
+      TrackingSpecification."Lot No." := LotNo;
+      TrackingSpecification."New Lot No." := LotNo;
+      TrackingSpecification."CD No." := CDNo;
+      TrackingSpecification."Quantity Handled (Base)" := 0;
+      TrackingSpecification.VALIDATE("Quantity (Base)",QtyOnBin);
+      ReservEntry.TRANSFERFIELDS(TrackingSpecification);
+      ReservEntry."Reservation Status" := ReservEntry."Reservation Status"::Surplus;
+      ReservEntry.Positive := ReservEntry."Quantity (Base)" > 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

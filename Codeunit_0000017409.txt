@@ -1,0 +1,392 @@
+OBJECT Codeunit 17409 Person Income Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Employee@1210000 : Record 5200;
+      Person@1210009 : Record 17350;
+      PayrollPeriod@1210002 : Record 17426;
+      HRSetup@1210003 : Record 5218;
+      PersonIncomeLine@1210005 : Record 17393;
+      PayrollPostingGr@1210008 : Record 17401;
+      PayrollLedgEntry@1210007 : Record 17418;
+      PayrollCalcGr@1210016 : Record 17402;
+      PayrollDoc@1210015 : Record 17414;
+      PstdPayrollDoc@1210014 : Record 17416;
+      DocNo@1210004 : Code[20];
+      NextLineNo@1210010 : Integer;
+      TaxPercent@1210001 : Integer;
+      IsInterim@1210012 : Boolean;
+      Text001@1210013 : TextConst 'ENU=There is no Open or Posted %1 %2.;RUS=Нет открытых или учетных %1 %2.';
+
+    PROCEDURE CreateIncomeTaxLine@1210000(PostedPayrollDocLine@1210000 : Record 17417;PostingDate@1210011 : Date;Correction@1210004 : Boolean);
+    VAR
+      PersonIncomeEntry2@1210001 : Record 17398;
+      PayrollElement@1210002 : Record 17400;
+      PersonIncomeHeader@1210003 : Record 17392;
+      BaseAmount@1210005 : Decimal;
+    BEGIN
+      HRSetup.GET;
+      WITH PostedPayrollDocLine DO BEGIN
+        Employee.GET("Employee No.");
+        Person.GET(Employee."Person No.");
+        PayrollPeriod.GET("Period Code");
+        PayrollElement.GET("Element Code");
+
+        CreateIncomeHeader(PersonIncomeHeader,Person."No.",DATE2DMY(PayrollPeriod."Ending Date",3));
+        CreateIncomeLine(PersonIncomeHeader,"Period Code");
+
+        IF PstdPayrollDoc.GET("Document No.") THEN BEGIN
+          PayrollCalcGr.GET(PstdPayrollDoc."Calc Group Code");
+          IsInterim := PayrollCalcGr.Type = PayrollCalcGr.Type::Between;
+        END ELSE
+          IF PayrollDoc.GET("Document No.") THEN BEGIN
+            PayrollCalcGr.GET(PayrollDoc."Calc Group Code");
+            IsInterim := PayrollCalcGr.Type = PayrollCalcGr.Type::Between;
+          END ELSE
+            ERROR(Text001,PayrollDoc.TABLECAPTION,"Document No.");
+
+        CASE "Element Type" OF
+          "Element Type"::Wage,
+          "Element Type"::Bonus:
+            CreateGainTaxLine(PostedPayrollDocLine,PostingDate,PayrollElement."Advance Payment",Correction);
+          "Element Type"::Other:
+            IF PayrollElement."Income Tax Base" THEN
+              CreateGainTaxLine(PostedPayrollDocLine,PostingDate,PayrollElement."Advance Payment",Correction);
+          "Element Type"::"Tax Deduction":
+            InsertPersonIncomeEntry(
+              PersonIncomeEntry2."Entry Type"::"Tax Deduction","Document No.",
+              '',0,0,0,Quantity,"Directory Code",-"Payroll Amount",PostingDate,PostingDate,
+              0,"Employee Ledger Entry No.",IsInterim,FALSE);
+          "Element Type"::"Income Tax":
+            BEGIN
+              CASE TRUE OF
+                HRSetup."Income Tax 13%" = "Element Code":
+                  TaxPercent := 1;
+                HRSetup."Income Tax 30%" = "Element Code":
+                  TaxPercent := 2;
+                HRSetup."Income Tax 35%" = "Element Code":
+                  TaxPercent := 3;
+                HRSetup."Income Tax 9%" = "Element Code":
+                  TaxPercent := 4;
+              END;
+              InsertPersonIncomeEntry(
+                PersonIncomeEntry2."Entry Type"::"Accrued Income Tax","Document No.",
+                '',TaxPercent,0,-"Payroll Amount",0,'',0,PostingDate,PostingDate,
+                0,"Employee Ledger Entry No.",IsInterim,FALSE);
+              // insert tax authority payment information
+              IF PayrollLedgEntry.GET("Payroll Ledger Entry No.") THEN BEGIN
+                PayrollPostingGr.GET("Posting Group");
+                CreatePaidToBudget(PostedPayrollDocLine,PayrollPostingGr."Account No.",PostingDate);
+              END;
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateSocialTaxLine@1210001(PostedPayrollDocLine@1210000 : Record 17417);
+    VAR
+      PersonIncomeLine@1210002 : Record 17396;
+    BEGIN
+      WITH PostedPayrollDocLine DO BEGIN
+        IF NOT ("FSI Base" OR "FSI Injury Base") THEN
+          EXIT;
+
+        IF NOT ("Element Type" IN ["Element Type"::Wage,"Element Type"::Bonus]) THEN
+          EXIT;
+
+        Employee.GET("Employee No.");
+        PayrollPeriod.GET("Period Code");
+
+        PersonIncomeLine.RESET;
+        PersonIncomeLine.SETRANGE("Person No.",Employee."Person No.");
+        PersonIncomeLine.SETRANGE("Document No.","Document No.");
+        PersonIncomeLine.SETRANGE("Period Code","Period Code");
+        PersonIncomeLine.SETRANGE(Calculation,TRUE);
+        IF PersonIncomeLine.FINDFIRST THEN BEGIN
+          PersonIncomeLine.Amount += "Payroll Amount";
+          PersonIncomeLine.MODIFY;
+        END ELSE BEGIN
+          PersonIncomeLine.INIT;
+          PersonIncomeLine.VALIDATE("Person No.",Employee."Person No.");
+          PersonIncomeLine.VALIDATE("Period Code","Period Code");
+          PersonIncomeLine."Document No." := "Document No.";
+          PersonIncomeLine.Description := Description;
+          PersonIncomeLine.Amount := "Payroll Amount";
+          PersonIncomeLine.Calculation := TRUE;
+          IF PersonIncomeLine.Amount <> 0 THEN
+            PersonIncomeLine.INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateIncomeHeader@1210004(VAR PersonIncomeHeader@1210002 : Record 17392;PersonNo@1210000 : Code[20];NewYear@1210001 : Integer);
+    BEGIN
+      WITH PersonIncomeHeader DO BEGIN
+        RESET;
+        SETCURRENTKEY("Person No.");
+        SETRANGE("Person No.",PersonNo);
+        SETRANGE(Year,NewYear);
+        SETRANGE(Calculation,TRUE);
+        IF DocNo <> '' THEN
+          SETRANGE("No.",DocNo);
+        IF NOT FINDFIRST THEN BEGIN
+          INIT;
+          "No." := '';
+          INSERT(TRUE);
+          "Person No." := PersonNo;
+          VALIDATE(Year,NewYear);
+          Calculation := TRUE;
+          MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateIncomeLine@1210008(NewPersonIncomeHeader@1210003 : Record 17392;PeriodCode@1210001 : Code[10]);
+    BEGIN
+      WITH PersonIncomeLine DO BEGIN
+        RESET;
+        SETRANGE("Document No.",NewPersonIncomeHeader."No.");
+        IF FINDLAST THEN
+          NextLineNo := "Line No." + 10000
+        ELSE
+          NextLineNo := 10000;
+        SETRANGE("Period Code",PeriodCode);
+        SETRANGE(Calculation,TRUE);
+        IF ISEMPTY THEN BEGIN
+          INIT;
+          "Document No." := NewPersonIncomeHeader."No.";
+          "Person No." := NewPersonIncomeHeader."Person No.";
+          Year := NewPersonIncomeHeader.Year;
+          "Line No." := NextLineNo;
+          "Period Code" := PeriodCode;
+          Calculation := TRUE;
+          INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetDocNo@1210002(DocNo2@1210000 : Code[20]);
+    BEGIN
+      DocNo := DocNo2;
+    END;
+
+    PROCEDURE CreatePaidToBudget@1210003(PostedPayrollDocLine@1210007 : Record 17417;VendorNo@1210000 : Code[20];PostingDate@1210008 : Date);
+    VAR
+      VendLedgEntry@1210004 : Record 25;
+      DtldVendLedgEntry@1210003 : Record 380;
+      DtldVendLedgEntry2@1210002 : Record 380;
+      VendLedgEntry2@1210001 : Record 25;
+      PersonIncomeEntry2@1210006 : Record 17398;
+    BEGIN
+      VendLedgEntry.RESET;
+      VendLedgEntry.SETCURRENTKEY("Payroll Ledger Entry No.");
+      VendLedgEntry.SETRANGE("Payroll Ledger Entry No.",PayrollLedgEntry."Entry No.");
+      VendLedgEntry.SETRANGE("Vendor No.",VendorNo);
+      IF VendLedgEntry.FINDSET THEN
+        REPEAT
+          VendLedgEntry.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+          IF VendLedgEntry."Amount (LCY)" <> VendLedgEntry."Remaining Amt. (LCY)" THEN BEGIN
+            DtldVendLedgEntry.RESET;
+            DtldVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type");
+            DtldVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",VendLedgEntry."Entry No.");
+            DtldVendLedgEntry.SETRANGE("Entry Type",DtldVendLedgEntry."Entry Type"::Application);
+            DtldVendLedgEntry.SETRANGE(Unapplied,FALSE);
+            IF DtldVendLedgEntry.FINDSET THEN
+              REPEAT
+                IF DtldVendLedgEntry."Vendor Ledger Entry No." =
+                   DtldVendLedgEntry."Applied Vend. Ledger Entry No."
+                THEN BEGIN
+                  DtldVendLedgEntry2.RESET;
+                  DtldVendLedgEntry2.SETCURRENTKEY("Applied Vend. Ledger Entry No.","Entry Type");
+                  DtldVendLedgEntry2.SETRANGE(
+                    "Applied Vend. Ledger Entry No.",DtldVendLedgEntry."Applied Vend. Ledger Entry No.");
+                  DtldVendLedgEntry2.SETRANGE(
+                    "Entry Type",DtldVendLedgEntry2."Entry Type"::Application);
+                  DtldVendLedgEntry2.SETRANGE(Unapplied,FALSE);
+                  IF DtldVendLedgEntry2.FINDSET THEN
+                    REPEAT
+                      IF DtldVendLedgEntry2."Vendor Ledger Entry No." <>
+                         DtldVendLedgEntry2."Applied Vend. Ledger Entry No."
+                      THEN
+                        InsertPersonIncomeEntry(
+                          PersonIncomeEntry2."Entry Type"::"Paid Income Tax",DtldVendLedgEntry2."Document No.",
+                          '',0,0,ABS(DtldVendLedgEntry2."Amount (LCY)"),0,'',0,
+                          DtldVendLedgEntry2."Posting Date",DtldVendLedgEntry2."Posting Date",
+                          DtldVendLedgEntry2."Vendor Ledger Entry No.",PostedPayrollDocLine."Employee Ledger Entry No.",
+                          DtldVendLedgEntry2."Posting Date" <> DtldVendLedgEntry."Posting Date",FALSE);
+                    UNTIL DtldVendLedgEntry2.NEXT = 0;
+                END ELSE
+                  IF VendLedgEntry2.GET(DtldVendLedgEntry."Applied Vend. Ledger Entry No.") THEN
+                    InsertPersonIncomeEntry(
+                      PersonIncomeEntry2."Entry Type"::"Paid Income Tax",DtldVendLedgEntry."Document No.",
+                      '',0,0,ABS(DtldVendLedgEntry."Amount (LCY)"),0,'',0,
+                      VendLedgEntry2."Posting Date",VendLedgEntry2."Posting Date",
+                      DtldVendLedgEntry."Applied Vend. Ledger Entry No.",PostedPayrollDocLine."Employee Ledger Entry No.",
+                      DtldVendLedgEntry."Posting Date" <> VendLedgEntry2."Posting Date",FALSE);
+              UNTIL DtldVendLedgEntry.NEXT = 0;
+          END;
+        UNTIL VendLedgEntry.NEXT = 0;
+    END;
+
+    PROCEDURE CreatePaidToPerson@1210009(PersonNo@1210000 : Code[20];PayrollPeriod@1210001 : Record 17426);
+    VAR
+      VendLedgEntry@1210002 : Record 25;
+      PersonIncomeEntry2@1210003 : Record 17398;
+    BEGIN
+      Person.GET(PersonNo);
+      Person.TESTFIELD("Vendor No.");
+      PayrollPeriod.GET(PayrollPeriod.Code);
+      WITH VendLedgEntry DO BEGIN
+        RESET;
+        SETCURRENTKEY("Vendor No.");
+        SETRANGE("Vendor No.",Person."Vendor No.");
+        SETRANGE("Posting Date",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+        SETRANGE("Document Type","Document Type"::Payment);
+        IF FINDSET THEN
+          REPEAT
+            CALCFIELDS("Amount (LCY)");
+            InsertPersonIncomeEntry(
+              PersonIncomeEntry2."Entry Type"::"Paid Taxable Income","Document No.",
+              '',0,"Amount (LCY)",0,0,'',0,
+              "Posting Date","Posting Date",
+              0,0,"Posting Date" < PayrollPeriod."Ending Date",FALSE);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE InsertPersonIncomeEntry@1210005(EntryType@1210006 : Option;DocNo@1210012 : Code[20];TaxCode@1210014 : Code[10];TaxPercent@1210010 : Option;Base@1210004 : Decimal;Amount@1210005 : Decimal;Quantity@1210009 : Decimal;TaxDeductionCode@1210013 : Code[10];TaxDeductionAmount@1210017 : Decimal;PostingDate@1210000 : Date;DocumentDate@1210011 : Date;VendLedgEntryNo@1210007 : Integer;EmplLedgEntryNo@1210008 : Integer;Interim@1210016 : Boolean;Advance@1210019 : Boolean);
+    VAR
+      PersonIncomeEntry@1210018 : Record 17398;
+      PersonIncomeEntry3@1210002 : Record 17398;
+      VendLedgEntry@1210001 : Record 25;
+      PayrollDirectory@1210015 : Record 17425;
+      NextEntryNo@1210003 : Integer;
+    BEGIN
+      PersonIncomeEntry3.RESET;
+      PersonIncomeEntry3.SETRANGE("Person Income No.",PersonIncomeLine."Document No.");
+      PersonIncomeEntry3.SETRANGE("Person Income Line No.",PersonIncomeLine."Line No.");
+      IF PersonIncomeEntry3.FINDLAST THEN
+        NextEntryNo := PersonIncomeEntry3."Line No." + 1
+      ELSE
+        NextEntryNo := 1;
+
+      PersonIncomeEntry.INIT;
+      PersonIncomeEntry."Person Income No." := PersonIncomeLine."Document No.";
+      PersonIncomeEntry."Person Income Line No." := PersonIncomeLine."Line No.";
+      PersonIncomeEntry."Line No." := NextEntryNo;
+      PersonIncomeEntry."Person No." := PersonIncomeLine."Person No.";
+      PersonIncomeEntry."Period Code" := PersonIncomeLine."Period Code";
+      PersonIncomeEntry."Entry Type" := EntryType;
+      PersonIncomeEntry."Document No." := DocNo;
+      PersonIncomeEntry."Document Date" := DocumentDate;
+      PersonIncomeEntry."Posting Date" := PostingDate;
+      PersonIncomeEntry."Tax Code" := TaxCode;
+      PersonIncomeEntry."Tax %" := TaxPercent;
+      IF TaxCode <> '' THEN BEGIN
+        PayrollDirectory.RESET;
+        PayrollDirectory.SETRANGE(Type,PayrollDirectory.Type::Income);
+        PayrollDirectory.SETRANGE(Code,TaxCode);
+        PayrollDirectory.SETFILTER("Starting Date",'..%1',PostingDate);
+        PayrollDirectory.FINDLAST;
+        PersonIncomeEntry."Tax %" := PayrollDirectory."Income Tax Percent";
+      END;
+      PersonIncomeEntry.Base := Base;
+      PersonIncomeEntry.Amount := Amount;
+      PersonIncomeEntry."Tax Deduction Code" := TaxDeductionCode;
+      PersonIncomeEntry."Tax Deduction Amount" := TaxDeductionAmount;
+      PersonIncomeEntry.Quantity := Quantity;
+      PersonIncomeEntry."User ID" := USERID;
+      PersonIncomeEntry.Calculation := TRUE;
+      PersonIncomeEntry."Vendor Ledger Entry No." := VendLedgEntryNo;
+      IF VendLedgEntryNo <> 0 THEN BEGIN
+        VendLedgEntry.GET(VendLedgEntryNo);
+        PersonIncomeEntry."Document Type" := VendLedgEntry."Document Type";
+        IF EntryType = PersonIncomeEntry."Entry Type"::"Paid Taxable Income" THEN BEGIN
+          IF VendLedgEntry."Document Type" <> VendLedgEntry."Document Type"::Payment THEN
+            EXIT;
+          VendLedgEntry.CALCFIELDS("Amount (LCY)");
+          PersonIncomeEntry.Base := ABS(VendLedgEntry."Amount (LCY)");
+        END;
+      END;
+      PersonIncomeEntry."Employee Ledger Entry No." := EmplLedgEntryNo;
+      PersonIncomeEntry.Interim := Interim;
+      PersonIncomeEntry."Advance Payment" := Advance;
+      IF (Base <> 0) OR (Amount <> 0) OR (TaxDeductionAmount <> 0) THEN
+        PersonIncomeEntry.INSERT;
+    END;
+
+    PROCEDURE CreateGainTaxLine@1210006(PostedPayrollDocLine@1210000 : Record 17417;PostingDate@1210011 : Date;AdvancePayment@1210003 : Boolean;Correction@1210004 : Boolean);
+    VAR
+      PersonIncomeEntry@1210001 : Record 17398;
+      BaseAmount@1210002 : Decimal;
+    BEGIN
+      WITH PostedPayrollDocLine DO BEGIN
+        BaseAmount := "Payroll Amount";
+
+        IF ("Employee Ledger Entry No." <> 0) AND NOT Correction THEN BEGIN
+          PersonIncomeEntry.SETCURRENTKEY("Employee Ledger Entry No.");
+          PersonIncomeEntry.SETRANGE("Period Code","Period Code");
+          PersonIncomeEntry.SETRANGE("Person No.",Person."No.");
+          PersonIncomeEntry.SETRANGE("Document No.","Document No.");
+          PersonIncomeEntry.SETRANGE(Interim,IsInterim);
+          PersonIncomeEntry.SETRANGE("Employee Ledger Entry No.","Employee Ledger Entry No.");
+          IF PersonIncomeEntry.FINDSET THEN
+            REPEAT
+              BaseAmount := BaseAmount - PersonIncomeEntry.Base;
+            UNTIL PersonIncomeEntry.NEXT = 0;
+        END;
+
+        InsertPersonIncomeEntry(
+          PersonIncomeEntry."Entry Type"::"Taxable Income","Document No.",
+          "Directory Code",0,BaseAmount,0,0,'',0,PostingDate,PostingDate,
+          0,"Employee Ledger Entry No.",IsInterim,AdvancePayment);
+      END;
+    END;
+
+    PROCEDURE UpdateSocialTaxLine@1210007(PostedPayrollDocLine@1210000 : Record 17417);
+    VAR
+      PersonIncomeLine@1210002 : Record 17396;
+      PersonExcludedDays@1210001 : Record 17399;
+    BEGIN
+      WITH PostedPayrollDocLine DO BEGIN
+        Employee.GET("Employee No.");
+        PayrollPeriod.GET("Period Code");
+
+        PersonIncomeLine.RESET;
+        PersonIncomeLine.SETRANGE("Person No.",Employee."Person No.");
+        PersonIncomeLine.SETRANGE("Period Code","Period Code");
+        PersonIncomeLine.SETRANGE("Document No.","Document No.");
+        PersonIncomeLine.SETRANGE(Calculation,TRUE);
+        IF PersonIncomeLine.FINDSET THEN
+          REPEAT
+            PersonExcludedDays.INIT;
+            PersonExcludedDays."Person No." := PersonIncomeLine."Person No.";
+            PersonExcludedDays."Period Code" := PersonIncomeLine."Period Code";
+            PersonExcludedDays."Document No." := "Document No.";
+            PersonExcludedDays."Absence Starting Date" := "Action Starting Date";
+            PersonExcludedDays."Absence Ending Date" := "Action Ending Date";
+            PersonExcludedDays."Calendar Days" := "Days To Exclude";
+            PersonExcludedDays.Description := Description;
+            PersonExcludedDays.INSERT;
+          UNTIL PersonIncomeLine.NEXT = 0;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

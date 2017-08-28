@@ -1,0 +1,93 @@
+OBJECT Codeunit 5603 FA Get Balance Account
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.06.17;
+    Time=11:37:22;
+    Modified=Yes;
+    Version List=NAVW110.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Do you want to insert a line for the balancing account that is related to the selected lines?;RUS=Вставить строку для балансирующего счета, связанную с выбранными строками?';
+      FAInsertGLAcc@1001 : Codeunit 5601;
+
+    PROCEDURE InsertAcc@1(VAR GenJnlLine@1000 : Record 81);
+    BEGIN
+      CLEARALL;
+      WITH GenJnlLine DO BEGIN
+        IF COUNT > 1 THEN
+          IF NOT CONFIRM(Text000) THEN
+            EXIT;
+        IF FIND('+') THEN
+          REPEAT
+            FAInsertGLAcc.GetBalAcc(GenJnlLine);
+            UpdateJnlDimension(GenJnlLine); // NC NOS-26 SPA
+          UNTIL NEXT(-1) = 0;
+      END;
+    END;
+
+    PROCEDURE InsertAccWithBalAccountInfo@2(VAR GenJnlLine@1000 : Record 81;BalAccountType@1001 : Option;BalAccountNo@1002 : Code[20]);
+    BEGIN
+      CLEARALL;
+      WITH GenJnlLine DO BEGIN
+        IF COUNT > 1 THEN
+          IF NOT CONFIRM(Text000) THEN
+            EXIT;
+        IF FIND('+') THEN
+          REPEAT
+            FAInsertGLAcc.GetBalAccWithBalAccountInfo(GenJnlLine,BalAccountType,BalAccountNo);
+            UpdateJnlDimension(GenJnlLine); // NC NOS-26 SPA
+          UNTIL NEXT(-1) = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateJnlDimension@1101495000(VAR GenJournalLine@1101495000 : Record 81);
+    VAR
+      TempDimSetEntry@1101495001 : TEMPORARY Record 480;
+      DefaultDimension@1101495003 : Record 352;
+      DimMgt@1101495002 : Codeunit 408;
+    BEGIN
+      //NC NOS-26 SPA Модификация доработки //NC M1 > DP 150811
+      //если такое измерение существует, то меняем значение
+      //если для строки значение измерения не заполнено, то берем значение из карточки ОС
+      IF GenJournalLine."Account Type" <> GenJournalLine."Account Type"::"Fixed Asset" THEN
+        EXIT;
+
+      DefaultDimension.SETRANGE("Table ID", DATABASE::"Fixed Asset");
+      DefaultDimension.SETRANGE("No.", GenJournalLine."Account No.");
+      DefaultDimension.SETFILTER("Value Posting", '%1|%2',
+        DefaultDimension."Value Posting"::"Code Mandatory", DefaultDimension."Value Posting"::"Same Code");
+      DefaultDimension.SETFILTER("Dimension Value Code", '<>%1', '');
+      IF DefaultDimension.FINDSET THEN BEGIN
+        DimMgt.GetDimensionSet(TempDimSetEntry, GenJournalLine."Dimension Set ID");
+        REPEAT
+          IF TempDimSetEntry.GET(TempDimSetEntry."Dimension Set ID", DefaultDimension."Dimension Code") THEN
+            TempDimSetEntry.DELETE;
+
+          TempDimSetEntry.VALIDATE("Dimension Code",DefaultDimension."Dimension Code");
+          TempDimSetEntry.VALIDATE("Dimension Value Code",DefaultDimension."Dimension Value Code");
+          TempDimSetEntry.SetObject(GenJournalLine);
+          TempDimSetEntry.INSERT(TRUE);
+        UNTIL DefaultDimension.NEXT = 0;
+        DimMgt.UpdateGenJnlLineDim(GenJournalLine, DimMgt.GetDimensionSetID(TempDimSetEntry));
+      END;
+    END;
+
+    BEGIN
+    {
+      NC M1 DP 15.08.11 Вставка измерений с карточки ОС на балансирующую строку
+      ------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+}
+

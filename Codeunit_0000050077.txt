@@ -1,0 +1,982 @@
+OBJECT Codeunit 50077 FI Jnl.-Post Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26.12.16;
+    Time=13:09:28;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50220;
+    Permissions=TableData 50109=imd,
+                TableData 50217=imd,
+                TableData 50216=imd;
+    OnRun=VAR
+            TempJnlLineDim2@1001 : TEMPORARY Record 356;
+          BEGIN
+            GetGLSetup;
+            TempJnlLineDim2.RESET;
+            TempJnlLineDim2.DELETEALL;
+            IF "Shortcut Dimension 1 Code" <> '' THEN BEGIN
+              TempJnlLineDim2."Table ID" := DATABASE::"FI Journal Line";
+              TempJnlLineDim2."Journal Template Name" := "Journal Template Name";
+              TempJnlLineDim2."Journal Batch Name" := "Journal Batch Name";
+              TempJnlLineDim2."Journal Line No." := "Line No.";
+              TempJnlLineDim2."Dimension Code" := GLSetup."Global Dimension 1 Code";
+              TempJnlLineDim2."Dimension Value Code" := "Shortcut Dimension 1 Code";
+              TempJnlLineDim2.INSERT;
+            END;
+            IF "Shortcut Dimension 2 Code" <> '' THEN BEGIN
+              TempJnlLineDim2."Table ID" := DATABASE::"FI Journal Line";
+              TempJnlLineDim2."Journal Template Name" := "Journal Template Name";
+              TempJnlLineDim2."Journal Batch Name" := "Journal Batch Name";
+              TempJnlLineDim2."Journal Line No." := "Line No.";
+              TempJnlLineDim2."Dimension Code" := GLSetup."Global Dimension 2 Code";
+              TempJnlLineDim2."Dimension Value Code" := "Shortcut Dimension 2 Code";
+              TempJnlLineDim2.INSERT;
+            END;
+            RunWithCheck(Rec,TempJnlLineDim2);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1010 : Record 98;
+      FISetup@1170000001 : Record 50100;
+      FIJnlLine@1000 : Record 50220;
+      FILedgEntry@1001 : Record 50216;
+      FIReg@1003 : Record 50109;
+      TempJnlLineDim@1005 : TEMPORARY Record 356;
+      CurrExchRate@1170000002 : Record 330;
+      Currency@1170000004 : Record 4;
+      FIJnlCheckLine@1006 : Codeunit 50076;
+      DimMgt@1007 : Codeunit 408;
+      AddCurrencyCode@1170000003 : Code[10];
+      NextEntryNo@1008 : Integer;
+      NextDtldEntryNo@1170000000 : Integer;
+      GLSetupRead@1009 : Boolean;
+      FISetupRead@1170000005 : Boolean;
+
+    PROCEDURE GetFIReg@2(VAR NewFIReg@1000 : Record 50109);
+    BEGIN
+      NewFIReg := FIReg;
+    END;
+
+    PROCEDURE RunWithCheck@3(VAR FIJnlLine2@1000 : Record 50220;VAR TempJnlLineDim2@1001 : Record 356);
+    BEGIN
+      FIJnlLine.COPY(FIJnlLine2);
+      TempJnlLineDim.RESET;
+      TempJnlLineDim.DELETEALL;
+      DimMgt.CopyJnlLineDimToJnlLineDim(TempJnlLineDim2,TempJnlLineDim);
+      Code;
+      FIJnlLine2 := FIJnlLine;
+    END;
+
+    LOCAL PROCEDURE Code@1();
+    BEGIN
+      GetGLSetup;
+      WITH FIJnlLine DO BEGIN
+        IF EmptyLine THEN
+          EXIT;
+
+        FIJnlCheckLine.RunCheck(FIJnlLine,TempJnlLineDim);
+
+        FindNextEntryNo;
+
+        InsertFIRegEntry(FIJnlLine);
+
+        IF Quantity > 0 THEN
+          PostFIEntry(FIJnlLine)
+        ELSE
+          PostCancelEntry(FIJnlLine);
+      END;
+    END;
+
+    PROCEDURE CalcLCYAmount@1170000023(Amount@1170000000 : Decimal;CurrencyCode@1170000001 : Code[10];PostingDate@1170000002 : Date) : Decimal;
+    VAR
+      CurrencyFactor@1170000003 : Decimal;
+    BEGIN
+      GetCurrency(CurrencyCode);
+
+      IF CurrencyCode = '' THEN
+        EXIT(Amount);
+
+      CurrencyFactor := CurrExchRate.ExchangeRate(PostingDate,CurrencyCode);
+      //NC AA 08.12.16 >>
+      //EXIT(
+        //ROUND(
+          //CurrExchRate.ExchangeAmtFCYToLCY(
+            //PostingDate,CurrencyCode,
+            //Amount,CurrencyFactor)));
+
+      EXIT(
+        ROUND(
+          CurrExchRate.ExchangeAmtFCYToLCY(
+            PostingDate,CurrencyCode,
+            Amount,CurrencyFactor),0.0000000001));
+      //NC AA 08.12.16 <<
+    END;
+
+    PROCEDURE CalcACYAmountFromLCY@42(AmountLCY@1000 : Decimal;PostingDate@1170000000 : Date) : Decimal;
+    BEGIN
+      GetGLSetup;
+
+      IF AddCurrencyCode = '' THEN
+        EXIT;
+
+      EXIT(
+        ROUND(
+          CurrExchRate.ExchangeAmtFCYToFCY(PostingDate,'',AddCurrencyCode,AmountLCY)));
+    END;
+
+    LOCAL PROCEDURE FindNextEntryNo@1170000006();
+    BEGIN
+      IF NextEntryNo = 0 THEN BEGIN
+        FILedgEntry.LOCKTABLE;
+        IF FILedgEntry.FINDLAST THEN
+          NextEntryNo := FILedgEntry."Entry No.";
+        NextEntryNo := NextEntryNo + 1;
+      END;
+    END;
+
+    LOCAL PROCEDURE FindNextDtldEntryNo@1170000014();
+    VAR
+      DetailedFILedgerEntry@1170000000 : Record 50217;
+    BEGIN
+      IF NextDtldEntryNo = 0 THEN BEGIN
+        DetailedFILedgerEntry.LOCKTABLE;
+        IF DetailedFILedgerEntry.FINDLAST THEN
+          NextDtldEntryNo := DetailedFILedgerEntry."Entry No.";
+      END;
+      NextDtldEntryNo := NextDtldEntryNo + 1;
+    END;
+
+    PROCEDURE FindFIQuotingOnDate@1170000019(FILedgerEntry@1170000000 : Record 50216;RateDate@1170000001 : Date) : Decimal;
+    VAR
+      FIRates@1170000002 : Record 50058;
+      "AA->>"@1101495002 : Integer;
+      tCurrency@1101495001 : Record 4;
+      ProcCurr@1101495004 : Code[20];
+      ProcAmount@1101495003 : Decimal;
+      CurrExchRate@1101495005 : Record 330;
+      "AA<<-"@1101495000 : Integer;
+    BEGIN
+      FIRates.SETRANGE("No.",FILedgerEntry."FI No.");
+      FIRates.SETRANGE("Date Rate",0D,RateDate);
+      //AA 06.12.2016 ->>
+      IF FIRates.FINDLAST THEN BEGIN
+        tCurrency.GET(FIRates."Currency Ask");
+        IF tCurrency."Currency Type" = Currency."Currency Type"::"3" THEN BEGIN
+          CalcPercent(FILedgerEntry,ProcCurr,ProcAmount,RateDate);
+          CASE FILedgerEntry."FI Entry Type" OF
+            FILedgerEntry."FI Entry Type"::Purchase,
+            FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+              EXIT(FIRates."Quoting Bid" * ProcAmount / 100);
+            FILedgerEntry."FI Entry Type"::Sale,
+            FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+              EXIT(FIRates."Quoting Ask" * ProcAmount / 100);
+          END;
+        END ELSE BEGIN
+
+          CASE FILedgerEntry."FI Entry Type" OF
+            FILedgerEntry."FI Entry Type"::Purchase,
+            FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+            EXIT(
+              CurrExchRate.ExchangeAmtFCYToFCY(RateDate,FIRates."Currency Bid",FILedgerEntry."Currency Code",FIRates."Quoting Bid"));
+              //EXIT(FIRates."Quoting Bid");
+            FILedgerEntry."FI Entry Type"::Sale,
+            FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+            EXIT(
+              CurrExchRate.ExchangeAmtFCYToFCY(RateDate,FIRates."Currency Ask",FILedgerEntry."Currency Code",FIRates."Quoting Ask"));
+              //EXIT(FIRates."Quoting Ask");
+          END;
+        END;
+      END ELSE
+        EXIT(0);
+      //AA 06.12.2016 <<-
+    END;
+
+    PROCEDURE FindInitialDtldFILedgerEntry@1170000022(FILedgerEntry@1170000001 : Record 50216;VAR InitialDetailedFILedgerEntry@1170000000 : Record 50217);
+    BEGIN
+      WITH InitialDetailedFILedgerEntry DO BEGIN
+        SETCURRENTKEY("FI Entry No.","Entry Type");
+        SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+        SETRANGE("Entry Type","Entry Type"::"Initial Entry");
+        FINDFIRST;
+      END;
+    END;
+
+    PROCEDURE InsertApplFILedgerEntry@1170000008(FILedgerEntry@1170000000 : Record 50216;AppliedFIEntryNo@1170000001 : Integer;QtyToApply@1170000002 : Decimal;ShortPosition@1170000006 : Boolean;PostingDate@1170000008 : Date;UnitCost@1170000003 : Decimal;Amount@1170000005 : Decimal;AmountLCY@1170000009 : Decimal;AmountACY@1170000010 : Decimal);
+    VAR
+      DetailedFILedgerEntry@1170000004 : Record 50217;
+    BEGIN
+      FindNextDtldEntryNo;
+      WITH DetailedFILedgerEntry DO BEGIN
+        INIT;
+        "Entry No." := NextDtldEntryNo;
+        "FI Entry No." := FILedgerEntry."Entry No.";
+        "Entry Type" := "Entry Type"::Application;
+        "Posting Date" := PostingDate;
+        "Document No." := FILedgerEntry."Document No.";
+        "FI No." := FILedgerEntry."FI No.";
+        "Currency Code" := FILedgerEntry."Currency Code";
+        "Short Position" := ShortPosition;
+        Quantity := QtyToApply;
+        "Applied Quantity" := QtyToApply;
+        "Applied FI Ledger Entry No." := AppliedFIEntryNo;
+        "Unit Cost" := UnitCost;
+
+        CASE FILedgerEntry."FI Entry Type" OF
+          FILedgerEntry."FI Entry Type"::Purchase,
+          FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+            BEGIN
+              "Cost Amount" := Amount;
+              "Cost Amount (LCY)" := AmountLCY;
+              "Cost Amount (ACY)" := AmountACY;
+            END;
+          FILedgerEntry."FI Entry Type"::Sale,
+          FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+            BEGIN
+              "Sales Amount" := Amount;
+              "Sales Amount (LCY)" := AmountLCY;
+              "Sales Amount (ACY)" := AmountACY;
+            END;
+        END;
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE InsertFIRegEntry@1170000000(FIJnlLine@1170000000 : Record 50220);
+    BEGIN
+      WITH FIJnlLine DO BEGIN
+        IF FIReg."No." = 0 THEN BEGIN
+          FIReg.LOCKTABLE;
+          IF (NOT FIReg.FINDLAST) OR (FIReg."To Entry No." <> 0) THEN BEGIN
+            FIReg.INIT;
+            FIReg."No." := FIReg."No." + 1;
+            FIReg."From Entry No." := NextEntryNo;
+            FIReg."To Entry No." := NextEntryNo;
+            FIReg."Creation Date" := TODAY;
+            FIReg."Journal Batch Name" := "Journal Batch Name";
+            FIReg."User ID" := USERID;
+            FIReg.INSERT;
+          END;
+        END;
+        FIReg."To Entry No." := NextEntryNo;
+        FIReg.MODIFY;
+      END;
+    END;
+
+    PROCEDURE InsertFILedgEntry@1170000003(FIJnlLine@1170000000 : Record 50220);
+    VAR
+      FI@1170000001 : Record 50021;
+    BEGIN
+      WITH FIJnlLine DO BEGIN
+        FI.GET("FI No.");
+
+        FILedgEntry.INIT;
+        FILedgEntry."Entry No." := NextEntryNo;
+        FILedgEntry."FI Entry Type" := "FI Entry Type";
+        FILedgEntry."Document No." := "Document No.";
+        FILedgEntry."Posting Date" := "Posting Date";
+        FILedgEntry."Deal Time" := "Deal Time";
+        FILedgEntry."FI No." := "FI No.";
+        FILedgEntry."FI Posting Book" := "FI Posting Book";
+        FILedgEntry."FI Portfolio" := "FI Portfolio";
+        FILedgEntry.Description := Description;
+        FILedgEntry.Quantity := GetEntrySign * Quantity;
+        FILedgEntry."Currency Code" := "Currency Code";
+        FILedgEntry."Global Dimension 1 Code" := "Shortcut Dimension 1 Code";
+        FILedgEntry."Global Dimension 2 Code" := "Shortcut Dimension 2 Code";
+        FILedgEntry."External System ID" := "External System ID";
+        FILedgEntry."External Document ID" := "External Document ID";
+        FILedgEntry."Deal ID" := "Deal ID";
+        FILedgEntry."User ID" := USERID;
+        FILedgEntry."Created Date" := TODAY;
+        FILedgEntry.Open := TRUE;
+        FILedgEntry.Positive := IsFIEntryPositive(FIJnlLine);
+        FILedgEntry."Recalculate Application" := TRUE;
+        FILedgEntry."Export Cons. Source Code" := "Export Cons. Source Code";
+        FILedgEntry."Export Register No." := "Export Register No.";
+        FILedgEntry."Buffer Entry No." := "Buffer Entry No.";
+        FILedgEntry."Last Revaluation Date" := "Posting Date";
+        FILedgEntry."FI Journal Batch Name" := "Journal Batch Name";
+        FILedgEntry.INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertInitialDtldFIEntry@1170000002(FIJnlLine@1170000003 : Record 50220);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      GetGLSetup;
+      FindNextDtldEntryNo;
+
+      WITH FIJnlLine DO BEGIN
+        DetailedFILedgerEntry.INIT;
+        DetailedFILedgerEntry."Entry No." := NextDtldEntryNo;
+        DetailedFILedgerEntry."FI Entry No." := NextEntryNo;
+        DetailedFILedgerEntry."Entry Type" := DetailedFILedgerEntry."Entry Type"::"Initial Entry";
+        DetailedFILedgerEntry."Posting Date" := "Posting Date";
+        DetailedFILedgerEntry."Document No." := "Document No.";
+        DetailedFILedgerEntry."FI No." := "FI No.";
+        DetailedFILedgerEntry."Currency Code" := "Currency Code";
+        CASE "FI Entry Type" OF
+          "FI Entry Type"::Purchase,
+          "FI Entry Type"::"Positive Adjmt.":
+            BEGIN
+              DetailedFILedgerEntry.Quantity := Quantity;
+              DetailedFILedgerEntry."Unit Cost" := ROUND(Amount / Quantity,GLSetup."Unit-Amount Rounding Precision");
+              DetailedFILedgerEntry."Cost Amount" := Amount;
+              DetailedFILedgerEntry."Cost Amount (LCY)" := "Amount (LCY)";
+              DetailedFILedgerEntry."Cost Amount (ACY)" := "Amount (ACY)";
+            END;
+          "FI Entry Type"::Sale,
+          "FI Entry Type"::"Negative Adjmt.":
+            BEGIN
+              DetailedFILedgerEntry.Quantity := -Quantity;
+              DetailedFILedgerEntry."Unit Cost" := ROUND(Amount / Quantity,GLSetup."Unit-Amount Rounding Precision");
+              DetailedFILedgerEntry."Sales Amount" := -Amount;
+              DetailedFILedgerEntry."Sales Amount (LCY)" := -"Amount (LCY)";
+              DetailedFILedgerEntry."Sales Amount (ACY)" := -"Amount (ACY)";
+            END;
+        END;
+      END;
+
+      DetailedFILedgerEntry.INSERT;
+    END;
+
+    LOCAL PROCEDURE InsertRevalMTMDtldFIEntry@1170000027(FILedgerEntry@1170000003 : Record 50216;RevalDate@1170000000 : Date;ApplQty@1170000002 : Decimal;UnitCost@1170000004 : Decimal;Amount@1170000005 : Decimal;AmountLCY@1170000006 : Decimal;AmountACY@1170000007 : Decimal);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      FindNextDtldEntryNo;
+
+      WITH FILedgerEntry DO BEGIN
+        DetailedFILedgerEntry.INIT;
+        DetailedFILedgerEntry."Entry No." := NextDtldEntryNo;
+        DetailedFILedgerEntry."FI Entry No." := "Entry No.";
+        DetailedFILedgerEntry."Entry Type" := DetailedFILedgerEntry."Entry Type"::"Reval. MTM";
+        DetailedFILedgerEntry."Posting Date" := RevalDate;
+        DetailedFILedgerEntry."Document No." := "Document No.";
+        DetailedFILedgerEntry."FI No." := "FI No.";
+        DetailedFILedgerEntry."Currency Code" := "Currency Code";
+        DetailedFILedgerEntry."Applied Quantity" := ApplQty;
+        DetailedFILedgerEntry."Unit Cost" := UnitCost;
+        CASE "FI Entry Type" OF
+          "FI Entry Type"::Purchase,
+          "FI Entry Type"::"Positive Adjmt.":
+            BEGIN
+              DetailedFILedgerEntry."Cost Amount" := Amount;
+              DetailedFILedgerEntry."Cost Amount (LCY)" := AmountLCY;
+              DetailedFILedgerEntry."Cost Amount (ACY)" := AmountACY;
+            END;
+          "FI Entry Type"::Sale,
+          "FI Entry Type"::"Negative Adjmt.":
+            BEGIN
+              DetailedFILedgerEntry."Sales Amount" := Amount;
+              DetailedFILedgerEntry."Sales Amount (LCY)" := AmountLCY;
+              DetailedFILedgerEntry."Sales Amount (ACY)" := AmountACY;
+            END;
+        END;
+      END;
+
+      DetailedFILedgerEntry.INSERT;
+    END;
+
+    LOCAL PROCEDURE InsertRevalMTM_RDtldFIEntry@1170000026(FILedgerEntry@1170000003 : Record 50216;ApplQty@1170000002 : Decimal;Amount@1170000005 : Decimal;AmountLCY@1170000006 : Decimal;AmountACY@1170000007 : Decimal;PostingDate@1170000000 : Date);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      FindNextDtldEntryNo;
+
+      WITH FILedgerEntry DO BEGIN
+        DetailedFILedgerEntry.INIT;
+        DetailedFILedgerEntry."Entry No." := NextDtldEntryNo;
+        DetailedFILedgerEntry."FI Entry No." := "Entry No.";
+        DetailedFILedgerEntry."Entry Type" := DetailedFILedgerEntry."Entry Type"::"Reval. MTM-R";
+        DetailedFILedgerEntry."Posting Date" := PostingDate;
+        DetailedFILedgerEntry."Document No." := "Document No.";
+        DetailedFILedgerEntry."FI No." := "FI No.";
+        DetailedFILedgerEntry."Currency Code" := "Currency Code";
+        DetailedFILedgerEntry."Applied Quantity" := ApplQty;
+        CASE "FI Entry Type" OF
+          "FI Entry Type"::Purchase,
+          "FI Entry Type"::"Positive Adjmt.":
+            BEGIN
+              DetailedFILedgerEntry."Cost Amount" := Amount;
+              DetailedFILedgerEntry."Cost Amount (LCY)" := AmountLCY;
+              DetailedFILedgerEntry."Cost Amount (ACY)" := AmountACY;
+            END;
+          "FI Entry Type"::Sale,
+          "FI Entry Type"::"Negative Adjmt.":
+            BEGIN
+              DetailedFILedgerEntry."Sales Amount" := Amount;
+              DetailedFILedgerEntry."Sales Amount (LCY)" := AmountLCY;
+              DetailedFILedgerEntry."Sales Amount (ACY)" := AmountACY;
+            END;
+        END;
+      END;
+
+      DetailedFILedgerEntry.INSERT;
+    END;
+
+    LOCAL PROCEDURE InsertACYCorrectionDtldFIEntry@1170000035(FILedgerEntry@1170000003 : Record 50216;RevalDate@1170000000 : Date;AmountACY@1170000007 : Decimal);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      FindNextDtldEntryNo;
+
+      WITH FILedgerEntry DO BEGIN
+        DetailedFILedgerEntry.INIT;
+        DetailedFILedgerEntry."Entry No." := NextDtldEntryNo;
+        DetailedFILedgerEntry."FI Entry No." := "Entry No.";
+        DetailedFILedgerEntry."Entry Type" := DetailedFILedgerEntry."Entry Type"::"ACY Correction";
+        DetailedFILedgerEntry."Posting Date" := RevalDate;
+        DetailedFILedgerEntry."Document No." := "Document No.";
+        DetailedFILedgerEntry."FI No." := "FI No.";
+        DetailedFILedgerEntry."Currency Code" := "Currency Code";
+        CASE "FI Entry Type" OF
+          "FI Entry Type"::Purchase,
+          "FI Entry Type"::"Positive Adjmt.":
+            DetailedFILedgerEntry."Cost Amount (ACY)" := AmountACY;
+          "FI Entry Type"::Sale,
+          "FI Entry Type"::"Negative Adjmt.":
+            DetailedFILedgerEntry."Sales Amount (ACY)" := AmountACY;
+        END;
+      END;
+
+      DetailedFILedgerEntry.INSERT;
+    END;
+
+    PROCEDURE IsFIEntryPositive@1170000011(FIJnlLine@1170000000 : Record 50220) : Boolean;
+    BEGIN
+      IF FIJnlLine."FI Entry Type" IN [FIJnlLine."FI Entry Type"::Purchase,FIJnlLine."FI Entry Type"::"Positive Adjmt."] THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsRevalMTMOnDateExists@1170000017(FILedgerEntry@1170000000 : Record 50216;RevaluationDate@1170000002 : Date) : Boolean;
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      WITH DetailedFILedgerEntry DO BEGIN
+        SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+        SETRANGE("Entry Type","Entry Type"::"Reval. MTM");
+        SETRANGE("Posting Date",RevaluationDate);
+        SETRANGE(Reversed,FALSE);
+        EXIT(NOT ISEMPTY);
+      END;
+    END;
+
+    PROCEDURE IsRevalMTMROnDateExists@1170000021(FILedgerEntry@1170000000 : Record 50216;RevaluationDate@1170000002 : Date) : Boolean;
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      WITH DetailedFILedgerEntry DO BEGIN
+        SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+        SETRANGE("Entry Type","Entry Type"::"Reval. MTM-R");
+        SETRANGE("Posting Date",RevaluationDate);
+        SETRANGE(Reversed,FALSE);
+        EXIT(NOT ISEMPTY);
+      END;
+    END;
+
+    PROCEDURE GetCurrency@1170000024(CurrencyCode@1170000000 : Code[10]);
+    BEGIN
+      IF CurrencyCode = '' THEN BEGIN
+        CLEAR(Currency);
+        Currency.InitRoundingPrecision
+      END ELSE BEGIN
+        Currency.GET(CurrencyCode);
+        Currency.TESTFIELD("Amount Rounding Precision");
+      END;
+    END;
+
+    LOCAL PROCEDURE GetGLSetup@14();
+    BEGIN
+      IF NOT GLSetupRead THEN
+        GLSetup.GET;
+      GLSetupRead := TRUE;
+      AddCurrencyCode := GLSetup."Additional Reporting Currency";
+    END;
+
+    LOCAL PROCEDURE GetFISetup@1170000009();
+    BEGIN
+      IF NOT FISetupRead THEN
+        FISetup.GET;
+      FISetupRead := TRUE;
+    END;
+
+    PROCEDURE GetEntrySign@1170000013() : Integer;
+    BEGIN
+      IF FIJnlLine."FI Entry Type" IN [FIJnlLine."FI Entry Type"::Sale,FIJnlLine."FI Entry Type"::"Negative Adjmt."] THEN
+        EXIT(-1);
+
+      EXIT(1);
+    END;
+
+    PROCEDURE GetInitialFIEntryPostingDate@1170000025(FIEntryNo@1170000000 : Integer) : Date;
+    VAR
+      FILedgerEntry@1170000001 : Record 50216;
+    BEGIN
+      FILedgerEntry.GET(FIEntryNo);
+      EXIT(FILedgerEntry."Posting Date");
+    END;
+
+    PROCEDURE PostFIEntry@1170000015(VAR FIJnlLine2@1170000000 : Record 50220);
+    VAR
+      FI@1170000001 : Record 50021;
+      locCurrencyOfNominal@1101495000 : Code[20];
+    BEGIN
+      {*}
+      FI.GET(FIJnlLine."FI No.");
+      locCurrencyOfNominal := FI."Currency of Nominal";
+      IF locCurrencyOfNominal = GLSetup."LCY Code" THEN
+        locCurrencyOfNominal := '';
+
+      IF locCurrencyOfNominal <> FIJnlLine."Currency Code" THEN
+        RecalcAmountsToFICurrency(FIJnlLine,locCurrencyOfNominal);
+
+      InsertFILedgEntry(FIJnlLine2);
+      InsertInitialDtldFIEntry(FIJnlLine2);
+
+      DimMgt.MoveJnlLineDimToLedgEntryDim(
+        TempJnlLineDim,DATABASE::"FI Ledger Entry 2",FILedgEntry."Entry No.");
+
+      NextEntryNo := NextEntryNo + 1;
+    END;
+
+    PROCEDURE PostCancelEntry@1170000005(VAR FIJnlLine2@1170000000 : Record 50220);
+    VAR
+      FILedgerEntry@1170000001 : Record 50216;
+    BEGIN
+      FILedgerEntry.SETRANGE("FI No.",FIJnlLine2."FI No.");
+      FILedgerEntry.SETRANGE("Posting Date",FIJnlLine2."Posting Date");
+      FILedgerEntry.SETRANGE("Deal Time",FIJnlLine2."Deal Time");
+      FILedgerEntry.SETRANGE(Reversed,FALSE);
+      // AAP > 6-12-2016
+      FILedgerEntry.SETRANGE("Deal ID",FIJnlLine2."Deal ID");
+      CASE FIJnlLine2."FI Entry Type" OF
+        FIJnlLine2."FI Entry Type"::Sale: FILedgerEntry.SETRANGE(Quantity,FIJnlLine2.Quantity);
+        FIJnlLine2."FI Entry Type"::Purchase: FILedgerEntry.SETRANGE(Quantity,ABS(FIJnlLine2.Quantity));
+      END;
+      // AAP < 6-12-2016
+      FILedgerEntry.FINDFIRST;
+
+      CancelFIEntry(FILedgerEntry);
+      NextEntryNo := NextEntryNo + 1;
+    END;
+
+    PROCEDURE CancelFIEntry@1170000001(VAR FILedgerEntry@1170000000 : Record 50216);
+    VAR
+      ReversedByEntryNo@1170000001 : Integer;
+    BEGIN
+      ReversedByEntryNo := InsertReversedFILedgEntry(FILedgerEntry);
+
+      FILedgerEntry.Reversed := TRUE;
+      FILedgerEntry."Reversed By Entry No." := ReversedByEntryNo;
+      FILedgerEntry."Recalculate Application" := TRUE;
+      FILedgerEntry."Last Revaluation Date" := FILedgerEntry."Posting Date";
+      FILedgerEntry.Open := TRUE;
+      FILedgerEntry.MODIFY;
+
+      ReverseDtldFIEntries(FILedgerEntry,FILedgerEntry."Reversed By Entry No.");
+    END;
+
+    PROCEDURE InsertReversedFILedgEntry@1170000004(FILedgerEntry@1170000000 : Record 50216) : Integer;
+    VAR
+      ReversedFILedgerEntry@1170000001 : Record 50216;
+    BEGIN
+      IF NextEntryNo = 0 THEN
+        FindNextEntryNo;
+
+      ReversedFILedgerEntry.TRANSFERFIELDS(FILedgerEntry);
+      ReversedFILedgerEntry."Entry No." := NextEntryNo;
+      ReversedFILedgerEntry.Quantity := -FILedgerEntry.Quantity;
+      ReversedFILedgerEntry.Reversed := TRUE;
+      ReversedFILedgerEntry."Reversed Entry No." := FILedgerEntry."Entry No.";
+      ReversedFILedgerEntry."Last Revaluation Date" := 31129999D;
+      ReversedFILedgerEntry."Created Date" := TODAY;
+      ReversedFILedgerEntry."User ID" := USERID;
+      ReversedFILedgerEntry.Open := TRUE;
+      ReversedFILedgerEntry.Positive := NOT FILedgerEntry.Positive;
+      ReversedFILedgerEntry.INSERT;
+
+      EXIT(ReversedFILedgerEntry."Entry No.");
+    END;
+
+    PROCEDURE ReverseDtldFIEntries@1170000010(FILedgerEntry@1170000000 : Record 50216;NewFILedgerEntryNo@1170000002 : Integer);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      WITH DetailedFILedgerEntry DO BEGIN
+        SETCURRENTKEY("FI Entry No.");
+        SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+        SETRANGE(Reversed,FALSE);
+        SETFILTER("Entry Type",'%1|%2|%3',
+          "Entry Type"::"Initial Entry","Entry Type"::"Reval. MTM-R","Entry Type"::"ACY Correction");
+        IF FINDSET THEN
+          REPEAT
+            CASE "Entry Type" OF
+              "Entry Type"::"Initial Entry":
+                ReverseDtldFILedgEntry(DetailedFILedgerEntry,NewFILedgerEntryNo);
+              "Entry Type"::"Reval. MTM-R",
+              "Entry Type"::"ACY Correction":
+                ReverseDtldFILedgEntry(DetailedFILedgerEntry,"FI Entry No.");
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ReverseDtldFILedgEntry@1170000012(VAR DetailedFILedgerEntry@1170000000 : Record 50217;NewFILedgerEntryNo@1170000002 : Integer);
+    VAR
+      ReversedDetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      FindNextDtldEntryNo;
+
+      ReversedDetailedFILedgerEntry.TRANSFERFIELDS(DetailedFILedgerEntry);
+      ReversedDetailedFILedgerEntry."Entry No." := NextDtldEntryNo;
+      ReversedDetailedFILedgerEntry."FI Entry No." := NewFILedgerEntryNo;
+      ReversedDetailedFILedgerEntry.Quantity := -DetailedFILedgerEntry.Quantity;
+      ReversedDetailedFILedgerEntry."Applied Quantity" := -DetailedFILedgerEntry."Applied Quantity";
+      ReversedDetailedFILedgerEntry."Cost Amount" := -DetailedFILedgerEntry."Cost Amount";
+      ReversedDetailedFILedgerEntry."Cost Amount (LCY)" := -DetailedFILedgerEntry."Cost Amount (LCY)";
+      ReversedDetailedFILedgerEntry."Cost Amount (ACY)" := -DetailedFILedgerEntry."Cost Amount (ACY)";
+      ReversedDetailedFILedgerEntry."Sales Amount" := -DetailedFILedgerEntry."Sales Amount";
+      ReversedDetailedFILedgerEntry."Sales Amount (LCY)" := -DetailedFILedgerEntry."Sales Amount (LCY)";
+      ReversedDetailedFILedgerEntry."Sales Amount (ACY)" := -DetailedFILedgerEntry."Sales Amount (ACY)";
+      ReversedDetailedFILedgerEntry.Reversed := TRUE;
+      ReversedDetailedFILedgerEntry."Reversed Entry No." := DetailedFILedgerEntry."Entry No.";
+      ReversedDetailedFILedgerEntry.INSERT;
+
+      DetailedFILedgerEntry.Reversed := TRUE;
+      DetailedFILedgerEntry."Reversed By Entry No." := ReversedDetailedFILedgerEntry."Entry No.";
+      DetailedFILedgerEntry.MODIFY;
+    END;
+
+    PROCEDURE RecalcAmountsToFICurrency@1170000007(VAR FIJournalLine@1170000000 : Record 50220;FICurrencyCode@1170000001 : Code[10]);
+    VAR
+      CurrExchRate@1170000003 : Record 330;
+      AmountInFICurrency@1170000002 : Decimal;
+    BEGIN
+      AmountInFICurrency :=
+        ROUND(
+          CurrExchRate.ExchangeAmtFCYToFCY(
+            FIJournalLine."Posting Date",FIJournalLine."Currency Code",FICurrencyCode,FIJnlLine.Amount));
+
+      FIJournalLine."Currency Code" := FICurrencyCode;
+      FIJournalLine.VALIDATE(Amount,AmountInFICurrency);
+    END;
+
+    PROCEDURE RevaluateFILedgerEntry@1170000016(FILedgerEntry@1170000000 : Record 50216;RevaluationDate@1170000001 : Date) : Boolean;
+    VAR
+      RemainingQty@1170000002 : Decimal;
+      UnitCostOnRevalDate@1170000003 : Decimal;
+      UnitCostLCYOnRevalDate@1170000008 : Decimal;
+      Amount@1170000004 : Decimal;
+      AmountLCY@1170000005 : Decimal;
+      AmountACY@1170000006 : Decimal;
+      MaxRevaluationDate@1170000007 : Date;
+    BEGIN
+      MaxRevaluationDate := FILedgerEntry."Max Revaluation Date";
+
+      IF RevaluationAfterMaxRevaluation(MaxRevaluationDate,RevaluationDate) THEN
+        EXIT(FALSE);
+
+      FindAndPostRevalMTMR(FILedgerEntry,RevaluationDate);
+
+      FILedgerEntry.SETRANGE("Date Filter",0D,RevaluationDate);
+      FILedgerEntry.CALCFIELDS("Remaining Quantity","Sales Amount","Cost Amount","Sales Amount (LCY)","Cost Amount (LCY)");
+      RemainingQty := FILedgerEntry."Remaining Quantity";
+      UnitCostOnRevalDate := FindFIQuotingOnDate(FILedgerEntry,RevaluationDate);
+      UnitCostLCYOnRevalDate := CalcLCYAmount(UnitCostOnRevalDate,FILedgerEntry."Currency Code",RevaluationDate);
+      CASE FILedgerEntry."FI Entry Type" OF
+        FILedgerEntry."FI Entry Type"::Purchase,
+        FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+          BEGIN
+            Amount := RemainingQty * UnitCostOnRevalDate - FILedgerEntry."Cost Amount";
+            AmountLCY := RemainingQty * UnitCostLCYOnRevalDate - FILedgerEntry."Cost Amount (LCY)";
+          END;
+        FILedgerEntry."FI Entry Type"::Sale,
+        FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+          BEGIN
+            Amount := RemainingQty * UnitCostOnRevalDate - FILedgerEntry."Sales Amount";
+            AmountLCY := RemainingQty * UnitCostLCYOnRevalDate - FILedgerEntry."Sales Amount (LCY)";
+          END;
+      END;
+      AmountACY := CalcACYAmountFromLCY(AmountLCY,RevaluationDate);
+
+      IF NOT ((Amount = 0) AND (AmountLCY = 0) AND (UnitCostOnRevalDate=0)) THEN BEGIN
+        InsertRevalMTMDtldFIEntry(FILedgerEntry,RevaluationDate,RemainingQty,UnitCostOnRevalDate,Amount,AmountLCY,AmountACY);
+
+        GetFISetup;
+        IF FISetup."Zero ACY for Closed" AND (NOT FILedgerEntry.Open) AND (RevaluationDate >= FILedgerEntry."Max Revaluation Date") THEN
+          AdjustACYAmount(FILedgerEntry,RevaluationDate);
+
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE AdjustACYAmount@1170000029(FILedgerEntry@1170000001 : Record 50216;RevaluationDate@1170000000 : Date);
+    BEGIN
+      CASE FILedgerEntry."FI Entry Type" OF
+        FILedgerEntry."FI Entry Type"::Purchase,
+        FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+          BEGIN
+            FILedgerEntry.CALCFIELDS("Cost Amount (ACY)");
+            IF FILedgerEntry."Cost Amount (ACY)" <> 0 THEN
+              InsertACYCorrectionDtldFIEntry(FILedgerEntry,RevaluationDate,-FILedgerEntry."Cost Amount (ACY)");
+          END;
+        FILedgerEntry."FI Entry Type"::Sale,
+        FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+          BEGIN
+            FILedgerEntry.CALCFIELDS("Sales Amount (ACY)");
+            IF FILedgerEntry."Sales Amount (ACY)" <> 0 THEN
+              InsertACYCorrectionDtldFIEntry(FILedgerEntry,RevaluationDate,-FILedgerEntry."Sales Amount (ACY)");
+          END;
+      END;
+    END;
+
+    PROCEDURE FindAndPostRevalMTMR@1170000020(FILedgerEntry@1170000000 : Record 50216;RevaluationDate@1170000003 : Date);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+      InitialAppliedEntryPostingDate@1170000002 : Date;
+    BEGIN
+      IF FILedgerEntry.Reversed THEN
+        EXIT;
+
+      IF IsRevalMTMROnDateExists(FILedgerEntry,RevaluationDate) THEN
+        EXIT;
+
+      // если есть применение к текущей операции другой операции с датой учета ее Initial Entry из прошлого года
+      // и если дата учета этого применения совпадает с датой переоценки
+      // то сформировать операцию MTM-R
+      WITH DetailedFILedgerEntry DO BEGIN
+        SETCURRENTKEY("FI No.","Entry Type","Applied FI Ledger Entry No.");
+        SETRANGE("FI No.",FILedgerEntry."FI No.");
+        SETRANGE("Entry Type","Entry Type"::Application);
+        SETRANGE("Applied FI Ledger Entry No.",FILedgerEntry."Entry No.");
+        SETRANGE(Reversed,FALSE);
+        IF FINDSET THEN
+          REPEAT
+            IF "Posting Date" = RevaluationDate THEN BEGIN
+              InitialAppliedEntryPostingDate := GetInitialFIEntryPostingDate("FI Entry No.");
+              IF DATE2DMY(InitialAppliedEntryPostingDate,3) > DATE2DMY(FILedgerEntry."Posting Date",3) THEN
+                PostRevalMTMR(FILedgerEntry,RevaluationDate,DetailedFILedgerEntry);
+              //NC AA 22.12.16 >>
+              PostReverseRevalMTM(FILedgerEntry,RevaluationDate,DetailedFILedgerEntry);
+              //NC AA 22.12.16 <<
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PostRevalMTMR@1170000030(FILedgerEntry@1170000001 : Record 50216;RevaluationDate@1170000000 : Date;AppliedDetailedFILedgerEntry@1170000002 : Record 50217);
+    VAR
+      Amount@1170000005 : Decimal;
+      AmountLCY@1170000004 : Decimal;
+      AmountACY@1170000003 : Decimal;
+      EndOfYear@1170000006 : Date;
+      RemainingQty@1170000007 : Decimal;
+      Ratio@1170000008 : Decimal;
+      "NC AA>>"@1101495000 : Integer;
+      lFILedgerEntry@1101495001 : Record 50216;
+      MTMRAmount@1101495002 : Decimal;
+      MTMRAmountLCY@1101495003 : Decimal;
+      MTMRAmountACY@1101495004 : Decimal;
+    BEGIN
+      //NC AA 16.12.16 >>
+      //EndOfYear := CALCDATE('<CY>',FILedgerEntry."Posting Date");
+      EndOfYear := CALCDATE('<CY-1Y>',AppliedDetailedFILedgerEntry."Posting Date");
+      //NC AA 16.12.16 <<
+
+      // посчитать сумму переоценок MTM с начальной даты до конца года
+      FILedgerEntry.SETRANGE("Entry Type Filter",FILedgerEntry."Entry Type Filter"::"Reval. MTM");
+      FILedgerEntry.SETRANGE("Date Filter",FILedgerEntry."Posting Date",EndOfYear);
+      CASE FILedgerEntry."FI Entry Type" OF
+        FILedgerEntry."FI Entry Type"::Purchase,
+        FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+          BEGIN
+            FILedgerEntry.CALCFIELDS("Cost Amount","Cost Amount (LCY)","Cost Amount (ACY)");
+            Amount := -FILedgerEntry."Cost Amount";
+            AmountLCY := -FILedgerEntry."Cost Amount (LCY)";
+            AmountACY := -FILedgerEntry."Cost Amount (ACY)";
+          END;
+        FILedgerEntry."FI Entry Type"::Sale,
+        FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+          BEGIN
+            FILedgerEntry.CALCFIELDS("Sales Amount","Sales Amount (LCY)","Sales Amount (ACY)");
+            Amount := -FILedgerEntry."Sales Amount";
+            AmountLCY := -FILedgerEntry."Sales Amount (LCY)";
+            AmountACY := -FILedgerEntry."Sales Amount (ACY)";
+          END;
+      END;
+
+      // посчитать оставшееся непримененным по данной операции количество ЦБ на конец года
+      FILedgerEntry.SETRANGE("Entry Type Filter");
+      FILedgerEntry.CALCFIELDS("Remaining Quantity");
+      RemainingQty := FILedgerEntry."Remaining Quantity";
+
+      // посчитать применяемое между продажей и покупкой количество ЦБ
+      IF RemainingQty <> 0 THEN
+        Ratio := AppliedDetailedFILedgerEntry."Applied Quantity" / RemainingQty;
+
+      Amount := ROUND(Amount * Ratio);
+      AmountLCY := ROUND(AmountLCY * Ratio);
+
+      //NC AA 16.12.16 >>
+      //AmountACY := CalcACYAmountFromLCY(AmountLCY,RevaluationDate);
+      AmountACY := ROUND(AmountACY * Ratio);
+      //NC AA 16.12.16 <<
+
+      //NC AA 21.12.16 >>
+      //посчитать и вычесть уже учтенный MTM-R
+      lFILedgerEntry.GET(FILedgerEntry."Entry No.");
+      lFILedgerEntry.SETRANGE("Entry Type Filter",FILedgerEntry."Entry Type Filter"::"Reval. MTM-R");
+      lFILedgerEntry.SETRANGE("Date Filter",FILedgerEntry."Posting Date",EndOfYear);
+      CASE lFILedgerEntry."FI Entry Type" OF
+        lFILedgerEntry."FI Entry Type"::Purchase,
+        lFILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+          BEGIN
+            lFILedgerEntry.CALCFIELDS("Cost Amount","Cost Amount (LCY)","Cost Amount (ACY)");
+            Amount -= lFILedgerEntry."Cost Amount";
+            AmountLCY -= lFILedgerEntry."Cost Amount (LCY)";
+            AmountACY -= lFILedgerEntry."Cost Amount (ACY)";
+          END;
+        lFILedgerEntry."FI Entry Type"::Sale,
+        lFILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+          BEGIN
+            lFILedgerEntry.CALCFIELDS("Sales Amount","Sales Amount (LCY)","Sales Amount (ACY)");
+            Amount -= lFILedgerEntry."Sales Amount";
+            AmountLCY -= lFILedgerEntry."Sales Amount (LCY)";
+            AmountACY -= lFILedgerEntry."Sales Amount (ACY)";
+          END;
+      END;
+      //NC AA 21.12.16 <<
+
+      InsertRevalMTM_RDtldFIEntry(
+        FILedgerEntry,-AppliedDetailedFILedgerEntry."Applied Quantity",Amount,AmountLCY,AmountACY,RevaluationDate);
+    END;
+
+    PROCEDURE CalcMaxRevaluationDate@1170000018(FILedgerEntry@1170000000 : Record 50216) : Date;
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+    BEGIN
+      FILedgerEntry.CALCFIELDS("Remaining Quantity");
+      IF FILedgerEntry."Remaining Quantity" <> 0 THEN
+        EXIT(0D);
+
+      DetailedFILedgerEntry.SETCURRENTKEY("FI Entry No.","Entry Type","Posting Date");
+      DetailedFILedgerEntry.SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+      DetailedFILedgerEntry.SETRANGE("Entry Type",DetailedFILedgerEntry."Entry Type"::Application);
+      DetailedFILedgerEntry.SETRANGE(Reversed,FALSE);
+      IF DetailedFILedgerEntry.FINDLAST THEN;
+
+      EXIT(DetailedFILedgerEntry."Posting Date");
+    END;
+
+    PROCEDURE RevaluationAfterMaxRevaluation@1170000031(MaxRevaluationDate@1170000001 : Date;RevaluationDate@1170000000 : Date) : Boolean;
+    BEGIN
+      EXIT((MaxRevaluationDate <> 0D) AND (RevaluationDate > MaxRevaluationDate));
+    END;
+
+    PROCEDURE "AA->>"@1101495001();
+    BEGIN
+    END;
+
+    PROCEDURE CalcPercent@1101495002(VAR pEntry@1101495000 : Record 50216;VAR pCurr@1101495002 : Code[20];VAR pAmount@1101495001 : Decimal;VAR pRate@1101495005 : Date);
+    VAR
+      lrecFI@1101495004 : Record 50021;
+      lrecFIvalue@1101495003 : Record 50090;
+    BEGIN
+      lrecFI.GET(pEntry."FI No.");
+      BEGIN
+        pCurr := lrecFI."Currency of Nominal";
+        IF pCurr=GLSetup."LCY Code" THEN
+          pCurr :='';
+
+        lrecFI.TESTFIELD(Nominal);
+        pAmount := lrecFI.Nominal;
+        lrecFIvalue.RESET;
+        lrecFIvalue.SETRANGE("FI No.",lrecFI."No.");
+        lrecFIvalue.SETRANGE("Type Value",lrecFIvalue."Type Value"::"Dep. factor");
+        lrecFIvalue.SETRANGE("Start Date",0D,pRate);
+        IF lrecFIvalue.FINDLAST THEN
+          pAmount *= lrecFIvalue.Value
+      END;
+    END;
+
+    PROCEDURE PostReverseRevalMTM@1101495004(FILedgerEntry@1170000001 : Record 50216;RevaluationDate@1170000000 : Date;AppliedDetailedFILedgerEntry@1170000002 : Record 50217);
+    VAR
+      Amount@1170000005 : Decimal;
+      AmountLCY@1170000004 : Decimal;
+      AmountACY@1170000003 : Decimal;
+      StartDate@1170000006 : Date;
+      EndDate@1101495000 : Date;
+      RemainingQty@1170000007 : Decimal;
+      Ratio@1170000008 : Decimal;
+    BEGIN
+      StartDate := CALCDATE('<CY-1Y+1D>',RevaluationDate);
+      EndDate := CALCDATE('<-1D>',AppliedDetailedFILedgerEntry."Posting Date");
+
+      // посчитать сумму переоценок MTM с начальной даты до даты применения
+      FILedgerEntry.SETRANGE("Entry Type Filter",FILedgerEntry."Entry Type Filter"::"Reval. MTM");
+      FILedgerEntry.SETRANGE("Date Filter",StartDate,EndDate);
+      CASE FILedgerEntry."FI Entry Type" OF
+        FILedgerEntry."FI Entry Type"::Purchase,
+        FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+          BEGIN
+            FILedgerEntry.CALCFIELDS("Cost Amount","Cost Amount (LCY)","Cost Amount (ACY)");
+            Amount := -FILedgerEntry."Cost Amount";
+            AmountLCY := -FILedgerEntry."Cost Amount (LCY)";
+            AmountACY := -FILedgerEntry."Cost Amount (ACY)";
+          END;
+        FILedgerEntry."FI Entry Type"::Sale,
+        FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+          BEGIN
+            FILedgerEntry.CALCFIELDS("Sales Amount","Sales Amount (LCY)","Sales Amount (ACY)");
+            Amount := -FILedgerEntry."Sales Amount";
+            AmountLCY := -FILedgerEntry."Sales Amount (LCY)";
+            AmountACY := -FILedgerEntry."Sales Amount (ACY)";
+          END;
+      END;
+
+      // посчитать оставшееся непримененным по данной операции количество ЦБ на конец года
+      FILedgerEntry.SETRANGE("Entry Type Filter");
+      FILedgerEntry.SETRANGE("Date Filter",0D,EndDate);
+      FILedgerEntry.CALCFIELDS("Remaining Quantity");
+      RemainingQty := FILedgerEntry."Remaining Quantity";
+
+      // посчитать применяемое между продажей и покупкой количество ЦБ
+      IF RemainingQty <> 0 THEN
+        Ratio := AppliedDetailedFILedgerEntry."Applied Quantity" / RemainingQty;
+
+      // посчитать итоговую сумму, которую необходимо реверсировать
+      Amount := ROUND(Amount * Ratio);
+      AmountLCY := ROUND(AmountLCY * Ratio);
+      AmountACY := ROUND(AmountACY * Ratio);
+
+      IF (Amount <> 0) AND (AmountLCY <> 0) AND (AmountACY <> 0) THEN
+        InsertRevalMTMDtldFIEntry(
+          FILedgerEntry,RevaluationDate,-AppliedDetailedFILedgerEntry."Applied Quantity",0,Amount,AmountLCY,AmountACY);
+    END;
+
+    PROCEDURE "AA<<-"@1101495003();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      NC NCS-2360 ORM Created
+    }
+    END.
+  }
+}
+

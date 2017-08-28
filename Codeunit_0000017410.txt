@@ -1,0 +1,177 @@
+OBJECT Codeunit 17410 Payroll Period-Close
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17426;
+    Permissions=TableData 17389=rim;
+    OnRun=BEGIN
+            IF Closed THEN
+              EXIT;
+
+            PayrollStatus.SETRANGE("Period Code",Code);
+            PayrollStatus.SETFILTER("Payroll Status",'<%1',PayrollStatus."Payroll Status"::Posted);
+            IF PayrollStatus.FINDSET THEN
+              REPEAT
+                PayrollStatus.FIELDERROR("Payroll Status");
+              UNTIL PayrollStatus.NEXT = 0;
+
+            IF NOT HideDialog THEN
+              IF NOT
+                 CONFIRM(
+                   Text001 +
+                   Text002,FALSE,
+                   "Starting Date","Ending Date")
+              THEN
+                EXIT;
+
+            UpdateEmployeeAbsenceEntries("Starting Date","Ending Date");
+
+            Closed := TRUE;
+            MODIFY(TRUE);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1001 : TextConst 'ENU="This function closes the payroll period from %1 to %2. ";RUS="Эта функция закрывает зарплатный период с %1 по %2. "';
+      Text002@1003 : TextConst 'ENU=Do you want to close the payroll period?;RUS=Закрыть этот зарплатный период?';
+      HRSetup@1210001 : Record 5218;
+      PayrollStatus@1210000 : Record 17457;
+      TimesheetMgt@1210002 : Codeunit 17440;
+      HideDialog@1210003 : Boolean;
+
+    PROCEDURE Reopen@1210000(VAR PayrollPeriod@1210000 : Record 17426);
+    BEGIN
+      WITH PayrollPeriod DO BEGIN
+        IF NOT Closed THEN
+          EXIT;
+
+        Closed := FALSE;
+        MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE UpdateEmployeeAbsenceEntries@1210001(StartDate@1210002 : Date;EndDate@1210003 : Date);
+    VAR
+      Employee@1210000 : Record 5200;
+      EmplAbsenceEntry@1210001 : Record 17389;
+      LinkedEmplAbsenceEntry@1210010 : Record 17389;
+      NewEmplAbsenceEntry@1210007 : Record 17389;
+      TimesheetMgt@1210004 : Codeunit 17440;
+      NewStartDate@1210009 : Date;
+      NewEndDate@1210011 : Date;
+      AbsenceDays@1210006 : Integer;
+      NextEntryNo@1210008 : Integer;
+    BEGIN
+      HRSetup.GET;
+      HRSetup.TESTFIELD("Annual Vacation Group Code");
+      HRSetup.TESTFIELD("Change Vacation Accr. Periodic");
+
+      IF EmplAbsenceEntry.FINDLAST THEN
+        NextEntryNo := EmplAbsenceEntry."Entry No." + 1
+      ELSE
+        EXIT;
+
+      IF Employee.FINDSET THEN
+        REPEAT
+          AbsenceDays :=
+            TimesheetMgt.GetTimesheetInfo(
+              Employee."No.",
+              HRSetup."Change Vacation Accr. Periodic",
+              StartDate,
+              EndDate,
+              4);
+          IF AbsenceDays > 0 THEN BEGIN
+            EmplAbsenceEntry.SETRANGE("Employee No.",Employee."No.");
+            EmplAbsenceEntry.SETRANGE("Accrual Entry No.",0);
+            EmplAbsenceEntry.SETRANGE("Entry Type",EmplAbsenceEntry."Entry Type"::Accrual);
+            EmplAbsenceEntry.SETFILTER("End Date",'>%1',StartDate);
+            EmplAbsenceEntry.SETFILTER("Start Date",'<%1',EndDate);
+            EmplAbsenceEntry.SETFILTER("Time Activity Code",GetAnnualVacTimeActFilter(EndDate));
+            IF EmplAbsenceEntry.FINDLAST THEN BEGIN
+              NewEmplAbsenceEntry.INIT;
+              NewEmplAbsenceEntry.TRANSFERFIELDS(EmplAbsenceEntry);
+              NewEmplAbsenceEntry."Entry No." := NextEntryNo;
+              NewEmplAbsenceEntry."Start Date" := EmplAbsenceEntry."End Date" + 1;
+              NewEmplAbsenceEntry."End Date" := NewEmplAbsenceEntry."Start Date" + AbsenceDays;
+              NewEmplAbsenceEntry."Accrual Entry No." := EmplAbsenceEntry."Entry No.";
+              NewEmplAbsenceEntry."Calendar Days" := 0;
+              NewEmplAbsenceEntry."Working Days" := 0;
+              NewEmplAbsenceEntry.Description := HRSetup.FIELDCAPTION("Change Vacation Accr. Periodic") +
+                ' ' + FORMAT(EndDate,0,'<Month Text> <Year4>');
+              NewEmplAbsenceEntry.INSERT;
+              NextEntryNo := NextEntryNo + 1;
+            END;
+          END;
+
+          EmplAbsenceEntry.RESET;
+          EmplAbsenceEntry.SETRANGE("Employee No.",Employee."No.");
+          EmplAbsenceEntry.SETRANGE("Entry Type",EmplAbsenceEntry."Entry Type"::Accrual);
+          EmplAbsenceEntry.SETRANGE("End Date",StartDate,EndDate);
+          EmplAbsenceEntry.SETRANGE("Accrual Entry No.",0);
+          EmplAbsenceEntry.SETFILTER("Time Activity Code",GetAnnualVacTimeActFilter(EndDate));
+          IF EmplAbsenceEntry.FINDSET THEN
+            REPEAT
+              LinkedEmplAbsenceEntry.SETRANGE("Accrual Entry No.",EmplAbsenceEntry."Entry No.");
+              LinkedEmplAbsenceEntry.SETRANGE("Entry Type",LinkedEmplAbsenceEntry."Entry Type"::Accrual);
+              IF LinkedEmplAbsenceEntry.FINDLAST THEN
+                NewStartDate := LinkedEmplAbsenceEntry."End Date" + 1
+              ELSE
+                NewStartDate := EmplAbsenceEntry."End Date" + 1;
+              NewEndDate := CALCDATE('<1Y-1D>',NewStartDate);
+
+              IF NOT AccrualEntryExists(Employee."No.",NewStartDate,NewEndDate) THEN BEGIN
+                NewEmplAbsenceEntry.INIT;
+                NewEmplAbsenceEntry.TRANSFERFIELDS(EmplAbsenceEntry);
+                NewEmplAbsenceEntry."Entry No." := NextEntryNo;
+                NewEmplAbsenceEntry."Start Date" := NewStartDate;
+                NewEmplAbsenceEntry."End Date" := NewEndDate;
+                NewEmplAbsenceEntry."Accrual Entry No." := EmplAbsenceEntry."Entry No.";
+                NewEmplAbsenceEntry."Calendar Days" := EmplAbsenceEntry."Calendar Days";
+                NewEmplAbsenceEntry."Working Days" := 0;
+                NewEmplAbsenceEntry.INSERT;
+                NextEntryNo := NextEntryNo + 1;
+              END;
+            UNTIL EmplAbsenceEntry.NEXT = 0;
+        UNTIL Employee.NEXT = 0;
+    END;
+
+    PROCEDURE GetAnnualVacTimeActFilter@1210006(StartDate@1210000 : Date) : Code[250];
+    VAR
+      TimeActivityFilter@1210001 : Record 17445;
+    BEGIN
+      HRSetup.GET;
+      TimesheetMgt.GetTimeGroupFilter(HRSetup."Annual Vacation Group Code",StartDate,TimeActivityFilter);
+      EXIT(TimeActivityFilter."Activity Code Filter");
+    END;
+
+    PROCEDURE SetHideDialog@1210002(NewHideDialog@1210000 : Boolean);
+    BEGIN
+      HideDialog := NewHideDialog;
+    END;
+
+    PROCEDURE AccrualEntryExists@1210003(EmployeeNo@1210000 : Code[20];StartDate@1210001 : Date;EndDate@1210002 : Date) : Boolean;
+    VAR
+      EmplAbsenceEntry@1210003 : Record 17389;
+    BEGIN
+      WITH EmplAbsenceEntry DO BEGIN
+        SETRANGE("Employee No.",EmployeeNo);
+        SETRANGE("Entry Type","Entry Type"::Accrual);
+        SETRANGE("Start Date",StartDate);
+        SETRANGE("End Date",EndDate);
+        EXIT(NOT ISEMPTY);
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

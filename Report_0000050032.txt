@@ -1,0 +1,919 @@
+OBJECT Report 50032 Auto Application
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.06.17;
+    Time=13:59:14;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rimd,
+                TableData 25=rimd,
+                TableData 379=rimd,
+                TableData 380=rimd;
+    CaptionML=[ENU=Auto Application Entry;
+               RUS=Автоматическое Применение Операций];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  GLSetup.GET;
+                  PurchasesSetup.GET;
+                  SalesSetup.GET;
+
+                  GLE.LOCKTABLE;
+                  CLE.LOCKTABLE;
+                  VLE.LOCKTABLE;
+                  DCLE.LOCKTABLE;
+                  DVLE.LOCKTABLE;
+                  Cus.LOCKTABLE;
+                  Ven.LOCKTABLE;
+                  VenAgr.LOCKTABLE;
+                  CusAgr.LOCKTABLE;
+
+                  IF GUIALLOWED THEN
+                    Wnd.OPEN(Text005 + '\' + Text000 + '\' + Text004 + '\' + Text001 + '\' + Text002 + '\' + Text003);
+                END;
+
+    OnPostReport=BEGIN
+                   IF GUIALLOWED THEN BEGIN
+                     Wnd.CLOSE;
+                     MESSAGE(Text50004,CustCountApply,CustCountError,VendCountApply,VendCountError);
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+    { 1101495000;;DataItem;VendorFilter      ;
+               DataItemTable=Table23;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               IF PVendor THEN
+                                 IF GUIALLOWED THEN
+                                   Wnd.UPDATE(6, Text007);
+                               i := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CurrReport.BREAK;
+                                END;
+
+               ReqFilterFields=No.,Vendor Type }
+
+    { 1101495002;;DataItem;VendLoop          ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 ORDER(Ascending);
+               OnPreDataItem=BEGIN
+                               IF NOT PVendor THEN
+                                 CurrReport.BREAK;
+
+                               //NC M1 > DP
+                               //получение набора данных из хранимой процедуры GetFXRevalCombinations
+                               tmpVendor.DELETEALL;
+
+                               PurchasesSetup.GET;
+                               P1 := 0;
+                               P2 := 0;
+                               IF PurchasesSetup."Appln. between Currencies" = PurchasesSetup."Appln. between Currencies"::None THEN
+                                 P1 := 1;
+                               IF NOT PurchasesSetup."Appln. between Posting Groups" THEN
+                                 P2 := 1;
+
+                               cuAdo.GetAppCard(COMPANYNAME,FX_Type::Vendor,P1,P2,StartDate,EndDate,VendorFilter.GETFILTER("No."),SqlReader);
+
+                               //NC NOS-26 > SPA
+                               IF SqlReader.HasRows THEN
+                                 WHILE SqlReader.Read DO BEGIN
+                                   lKeyCode := FORMAT(SqlReader.Item('Code'));
+                                   IF Vendor.GET(lKeyCode) THEN BEGIN
+                                     tmpVendor := Vendor;
+                                     IF tmpVendor.INSERT THEN;
+                                   END;
+                                 END;
+
+                               SqlReader.Close;
+                               //NC NOS-26 < SPA
+
+                               tmpVendor.COPYFILTERS(VendorFilter);
+                               IF tmpVendor.GETFILTER("Vendor Type") <> '' THEN
+                                 tmpVendor.SETFILTER("Vendor Type", tmpVendor.GETFILTER("Vendor Type"))
+                               ELSE
+                                 tmpVendor.SETRANGE("Vendor Type",tmpVendor."Vendor Type"::Vendor);
+                               IF NOT tmpVendor.FIND('-') THEN
+                                 CurrReport.BREAK;
+                               FirstEntry := TRUE;
+                               TotalVendor := tmpVendor.COUNT;
+                               //NC M1 < DP
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  lEntryNo@1101495000 : Integer;
+                                BEGIN
+                                  //NC M1 > DP
+                                  IF FirstEntry THEN BEGIN
+                                    tmpVendor.FIND('-');
+                                    FirstEntry := FALSE
+                                  END ELSE
+                                    IF tmpVendor.NEXT = 0 THEN
+                                      CurrReport.BREAK;
+                                  Vendor.GET(tmpVendor."No.");
+                                  //NC M1 > DP
+                                  i += 1;
+                                  IF GUIALLOWED THEN BEGIN
+                                    Wnd.UPDATE(1, ROUND(i / TotalVendor * 10000,1));
+                                    Wnd.UPDATE(5,Vendor."No.");
+                                  END;
+
+                                  cuAdo.GetAppCardEntryNo(COMPANYNAME,FX_Type::Vendor,P1,P2,Vendor."No.", StartDate, EndDate, SqlReader);
+                                  VendRecNo := 0;
+                                  //NC NOS-26 > SPA
+                                  IF SqlReader.HasRows THEN
+                                    WHILE SqlReader.Read DO BEGIN
+                                      IF NOT EVALUATE(lEntryNo, SqlReader.Item('EntryNo')) THEN
+                                        EVALUATE(lEntryNo, SqlReader.Item('EntryNo'), 9);
+                                      ApplyVendor(lEntryNo);
+                                    END;
+                                  SqlReader.Close;
+                                  //NC NOS-26 < SPA
+                                END;
+                                 }
+
+    { 1101495001;;DataItem;CustomerFilter    ;
+               DataItemTable=Table18;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               IF PCustomer THEN
+                                 IF GUIALLOWED THEN
+                                   Wnd.UPDATE(6, Text006);
+                               i := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CurrReport.BREAK;
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 1101495003;0;DataItem;CustLoop         ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 ORDER(Ascending);
+               OnPreDataItem=BEGIN
+                               IF NOT PCustomer THEN
+                                 CurrReport.BREAK;
+
+                               //NC M1 > DP
+                               //получение набора данных из хранимой процедуры GetFXRevalCombinations
+                               tmpCustomer.DELETEALL;
+
+                               SalesSetup.GET;
+                               P1 := 0;
+                               P2 := 0;
+                               IF SalesSetup."Appln. between Currencies" = SalesSetup."Appln. between Currencies"::None THEN
+                                 P1 := 1;
+                               IF NOT SalesSetup."Appln. between Posting Groups" THEN
+                                 P2 := 1;
+                               IF GUIALLOWED THEN    //NC RD
+                                 Wnd.UPDATE(5,'Отправка запроса');
+
+
+                               cuAdo.GetAppCard(COMPANYNAME,FX_Type::Customer,P1,P2,StartDate,EndDate,CustomerFilter.GETFILTER("No."),SqlReader);
+                               //NC NOS-26 > SPA
+                               IF SqlReader.HasRows THEN
+                                 WHILE SqlReader.Read DO BEGIN
+                                   lKeyCode := FORMAT(SqlReader.Item('Code'));
+                                   IF Customer.GET(lKeyCode) THEN BEGIN
+                                     tmpCustomer := Customer;
+                                     IF tmpCustomer.INSERT THEN;
+                                   END;
+                                 END;
+
+                               SqlReader.Close;
+                               //NC NOS-26 < SPA
+
+                               IF GUIALLOWED THEN  //NC RD
+                               Wnd.UPDATE(5,'Обработка результатов запроса');
+                               tmpCustomer.COPYFILTERS(CustomerFilter);
+                               IF NOT tmpCustomer.FIND('-') THEN
+                                 CurrReport.BREAK;
+                               FirstEntry := TRUE;
+                               TotalCustomer := tmpCustomer.COUNT;
+                               //NC M1 > DP
+                               // NC SB >
+                               i := 0;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  lEntryNo@1101495000 : Integer;
+                                BEGIN
+                                  //NC M1 > DP
+                                  IF FirstEntry THEN BEGIN
+                                    tmpCustomer.FIND('-');
+                                    FirstEntry := FALSE
+                                  END ELSE
+                                    IF tmpCustomer.NEXT = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  Customer.GET(tmpCustomer."No.");
+                                  //NC M1 > DP
+                                  i += 1;
+                                  IF GUIALLOWED THEN BEGIN
+                                    Wnd.UPDATE(1, ROUND(i / TotalCustomer * 10000,1));
+                                    Wnd.UPDATE(5,Customer."No.");
+                                  END;
+
+                                  cuAdo.GetAppCardEntryNo(COMPANYNAME,FX_Type::Customer,P1,P2,Customer."No.",StartDate,EndDate,SqlReader);
+                                  CustRecNo := 0;
+                                  //NC NOS-26 > SPA
+                                  IF SqlReader.HasRows THEN
+                                    WHILE SqlReader.Read DO BEGIN
+                                      IF NOT EVALUATE(lEntryNo, SqlReader.Item('EntryNo')) THEN
+                                        EVALUATE(lEntryNo, SqlReader.Item('EntryNo'), 9);
+                                      ApplyCustomer(lEntryNo);
+                                    END;
+                                  SqlReader.Close;
+                                  //NC NOS-26 < SPA
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   SetEnabledColumnDimNeg;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Group  ;
+                  CaptionML=[ENU=Report parameters;
+                             RUS=Параметры отчета];
+                  GroupType=Group }
+
+      { 1101495002;2;Group  ;
+                  CaptionML=[ENU=Application period;
+                             RUS=Период применения];
+                  GroupType=Group }
+
+      { 1101495004;3;Field  ;
+                  CaptionML=[ENU=Biginning;
+                             RUS=Начало];
+                  SourceExpr=StartDate }
+
+      { 1101495006;3;Field  ;
+                  CaptionML=[ENU=Ending;
+                             RUS=Окончание];
+                  SourceExpr=EndDate;
+                  OnValidate=BEGIN
+                               IF (PostingDate <> 0D) AND (PostingDate < EndDate) THEN
+                                 ERROR(Text50005);
+                             END;
+                              }
+
+      { 1101495007;2;Field  ;
+                  CaptionML=[ENU=Process Vendors;
+                             RUS=Обрабатывать поставщиков];
+                  SourceExpr=PVendor }
+
+      { 1101495008;2;Field  ;
+                  CaptionML=[ENU=Vendor posting group Filter;
+                             RUS=Поставщик учетная группа Фильтр];
+                  SourceExpr=VendorPG;
+                  TableRelation="Vendor Posting Group" }
+
+      { 1101495009;2;Field  ;
+                  CaptionML=[ENU=Process Customers;
+                             RUS=Обрабатывать клиентов];
+                  SourceExpr=PCustomer }
+
+      { 1101495010;2;Field  ;
+                  CaptionML=[ENU=Customer postig group Filter;
+                             RUS=Клиент учетная группа Фильтр];
+                  SourceExpr=CustomerPG;
+                  TableRelation="Customer Posting Group" }
+
+      { 1101495011;2;Field  ;
+                  CaptionML=[ENU=Posting date;
+                             RUS=Дата учета];
+                  SourceExpr=PostingDate;
+                  OnValidate=BEGIN
+                               IF (PostingDate <> 0D) AND (PostingDate < EndDate) THEN
+                                 ERROR(Text50005);
+                             END;
+                              }
+
+      { 1101495012;2;Field  ;
+                  CaptionML=[ENU=Use common dimenensions for Pos. & Neg. diff.;
+                             RUS=Общие измерения для Полож. и Отриц. Разн.];
+                  SourceExpr=CommonPosNegDim;
+                  OnValidate=BEGIN
+                               SetEnabledColumnDimNeg;
+                             END;
+                              }
+
+      { 1101495013;2;Field  ;
+                  CaptionML=[ENU=Dimensions for Positive differences;
+                             RUS=Измерения для Положительных];
+                  SourceExpr=ColumnDimPos }
+
+      { 1101495014;2;Field  ;
+                  CaptionML=[ENU=Dimensions for Negative differences;
+                             RUS=Измерения для Отрицательных];
+                  SourceExpr=ColumnDimNeg;
+                  Enabled=NegDimEnable }
+
+      { 1101495015;2;Field  ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Contragent Filter;
+                             RUS=Контрагент Фильтр];
+                  SourceExpr=ContragentFilter;
+                  OnLookup=VAR
+                             CustomerList@1101495001 : Page 22;
+                             VendorList@1101495000 : Page 27;
+                           BEGIN
+                             CASE ContractorType OF
+                               ContractorType::Customer :
+                                 BEGIN
+                                    CustomerList.SETTABLEVIEW(Customer);
+                                    CustomerList.SETRECORD(Customer);
+                                    CustomerList.LOOKUPMODE(TRUE);
+                                    IF CustomerList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                                      Text := CustomerList.GetSelectionFilter();
+                                      EXIT(TRUE);
+                                    END;
+                                 END;
+                               ContractorType::Vendor :
+                                 BEGIN
+                                    VendorList.SETTABLEVIEW(Vendor);
+                                    VendorList.SETRECORD(Vendor);
+                                    VendorList.LOOKUPMODE(TRUE);
+                                    IF VendorList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                                      Text := VendorList.GetSelectionFilter();
+                                      EXIT(TRUE);
+                                    END;
+                                 END;
+                             END;
+                             EXIT(FALSE);
+                           END;
+                            }
+
+      { 1101495016;2;Field  ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Contragent operations Filter;
+                             RUS=Контрагент Операция Фильтр];
+                  SourceExpr=ConrtagentEntryFilterDisp;
+                  OnLookup=VAR
+                             CustomerList@1101495001 : Page 22;
+                             VendorList@1101495000 : Page 27;
+                           BEGIN
+                             CLEAR(CustLedgEntries);
+                             CLEAR(VendLedgEntries);
+
+                             CASE ContractorType OF
+                               ContractorType::Customer :
+                                 BEGIN
+                                    IF ContragentFilter <> '' THEN
+                                    CustomerLE.SETFILTER("Customer No.",ContragentFilter);
+                                    CustLedgEntries.SETTABLEVIEW(CustomerLE);
+                                    CustLedgEntries.SETRECORD(CustomerLE);
+                                    CustLedgEntries.LOOKUPMODE(TRUE);
+                                    IF CustLedgEntries.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                                      ConrtagentEntryFilter := CustLedgEntries.GetRecView;
+                                      Text := CustLedgEntries.GetRecFilters;
+                                      EXIT(TRUE);
+                                    END;
+                                 END;
+                               ContractorType::Vendor :
+                                 BEGIN
+                                    IF ContragentFilter <> '' THEN
+                                    VendorLE.SETFILTER("Vendor No.",ContragentFilter);
+
+                                    VendLedgEntries.SETTABLEVIEW(VendorLE);
+                                    VendLedgEntries.SETRECORD(VendorLE);
+                                    VendLedgEntries.LOOKUPMODE(TRUE);
+                                    IF VendLedgEntries.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                                      ConrtagentEntryFilter := VendLedgEntries.GetRecView;
+                                      Text := VendLedgEntries.GetRecFilters;
+                                      EXIT(TRUE);
+                                    END;
+                                 END;
+                             END;
+                             EXIT(FALSE);
+                           END;
+                            }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      DimSelectionBuf@1101495059 : Record 368;
+      SelectedDim@1101495058 : Record 369;
+      ApplyLedgerEntry@1101495056 : TEMPORARY Record 339;
+      CustLedgerEntry@1101495051 : Record 21;
+      VendLedgerEntry@1101495050 : Record 25;
+      ErrJnl@1101495049 : Record 50023;
+      CustomerLE@1101495047 : Record 21;
+      VendorLE@1101495046 : Record 25;
+      PurchasesSetup@1101495032 : Record 312;
+      SalesSetup@1101495043 : Record 311;
+      GLSetup@1101495028 : Record 98;
+      Customer@1101495018 : Record 18;
+      Vendor@1101495017 : Record 23;
+      GLE@1101495009 : Record 17;
+      CLE@1101495008 : Record 21;
+      VLE@1101495007 : Record 25;
+      DCLE@1101495006 : Record 379;
+      DVLE@1101495005 : Record 380;
+      Cus@1101495004 : Record 18;
+      Ven@1101495003 : Record 23;
+      VenAgr@1101495002 : Record 14901;
+      CusAgr@1101495001 : Record 14902;
+      tmpBankAccount@1101495024 : TEMPORARY Record 270;
+      tmpCustomer@1101495023 : TEMPORARY Record 18;
+      tmpVendor@1101495022 : TEMPORARY Record 23;
+      CustLedgEntries@1101495045 : Page 25;
+      VendLedgEntries@1101495044 : Page 29;
+      GenJnlPostLine@1101495057 : Codeunit 12;
+      cuAdo@1101495019 : Codeunit 50024;
+      TypeHelper@1101495026 : Codeunit 10;
+      StartDate@1101495068 : Date;
+      EndDate@1101495067 : Date;
+      PostingDate@1101495000 : Date;
+      ContractorType@1101495066 : 'Customer,Vendor';
+      FX_Type@1101495027 : ' ,Customer,Vendor,Bank Account';
+      ContragentFilter@1101495065 : Text[1000];
+      ConrtagentEntryFilter@1101495064 : Text[1000];
+      ConrtagentEntryFilterDisp@1101495063 : Text[1000];
+      ColumnDimPos@1101495062 : Text[250];
+      ColumnDimNeg@1101495061 : Text[250];
+      TextError@1101495031 : Text[250];
+      TextError1@1101495030 : Text[250];
+      CommonPosNegDim@1101495060 : Boolean;
+      FirstEntry@1101495016 : Boolean;
+      PVendor@1101495013 : Boolean;
+      PCustomer@1101495012 : Boolean;
+      NegDimEnable@1101495083 : Boolean INDATASET;
+      ApplyEntryNo@1101495055 : Integer;
+      EntryNoBeforeApplication@1101495054 : Integer;
+      EntryNoAfterApplication@1101495053 : Integer;
+      TotalCustomer@1101495042 : Integer;
+      TotalVendor@1101495041 : Integer;
+      i@1101495040 : Integer;
+      CustCountApply@1101495039 : Integer;
+      CustCountError@1101495038 : Integer;
+      VendCountApply@1101495037 : Integer;
+      VendCountError@1101495036 : Integer;
+      CustRecNo@1101495035 : Integer;
+      VendRecNo@1101495034 : Integer;
+      TotalRec@1101495033 : Integer;
+      P1@1101495015 : Integer;
+      P2@1101495014 : Integer;
+      lcount@1101495025 : Integer;
+      Wnd@1101495052 : Dialog;
+      ErrRec@1101495048 : RecordRef;
+      SqlReader@1101495084 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+      PostingGroup@1101495029 : Code[20];
+      lKeyCode@1101495021 : Code[20];
+      lKeyCurrency@1101495020 : Code[10];
+      VendorPG@1101495011 : Code[20];
+      CustomerPG@1101495010 : Code[20];
+      Text000@1101495082 : TextConst 'RUS=Обработано контрагентов \ @1@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text001@1101495081 : TextConst 'RUS=Применение операций контраагента \ @2@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text002@1101495080 : TextConst 'RUS=Количество закрытых операций \ #3###########################';
+      Text003@1101495079 : TextConst 'RUS=Количество ошибок применения \ #4###########################';
+      Text004@1101495078 : TextConst 'RUS=Обрабатывается контрагент \ #5###########################';
+      Text005@1101495077 : TextConst 'RUS=Контрагент Тип \ #6###########################';
+      Text006@1101495076 : TextConst 'RUS=Клиент';
+      Text007@1101495075 : TextConst 'RUS=Поставщик';
+      Text50000@1101495074 : TextConst 'ENU=Dimensions;RUS=Измерения';
+      Text50001@1101495073 : TextConst 'ENU=&View, &Print, Post;RUS=&Просмотреть, &Напечатать, Учесть';
+      Text50002@1101495072 : TextConst 'RUS=По клиенту %1 ошибка применения операций %2 и %3 в рамках договора %4:';
+      Text50003@1101495071 : TextConst 'RUS=По поставщику %1 ошибка применения операций %2 и %3 в рамках договора %4:';
+      Text50004@1101495070 : TextConst 'RUS=Операций клиентов применено:  %1, ошибок применения %2\Операций поставщиков применено:  %3, ошибок применения %4';
+      Text50005@1101495069 : TextConst 'ENU=Posting Date shouldn''t be previously than Application Ending Date;RUS=Дата учета не должна быть меньше даты окончания периода применения';
+
+    PROCEDURE SetEnabledColumnDimNeg@1101495000();
+    BEGIN
+      IF ContractorType = ContractorType::Customer THEN BEGIN
+        ColumnDimPos := DimSelectionBuf.GetDimSelectionText(2,PAGE::"FA Journal Batches Select",'');
+        ColumnDimNeg := DimSelectionBuf.GetDimSelectionText(2,-PAGE::"FA Journal Batches Select",'');
+      END;
+      IF ContractorType = ContractorType::Vendor THEN BEGIN
+        ColumnDimPos := DimSelectionBuf.GetDimSelectionText(2,PAGE::"General Journal 2",'');
+        ColumnDimNeg := DimSelectionBuf.GetDimSelectionText(2,-PAGE::"General Journal 2",'');
+      END;
+
+      NegDimEnable := NOT CommonPosNegDim;
+    END;
+
+    LOCAL PROCEDURE PostCustApply@1000000005();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE PostVendApply@1000000006();
+    BEGIN
+    END;
+
+    PROCEDURE SetParameter@1000000000(AtDate@1000000000 : Date);
+    BEGIN
+      StartDate := CALCDATE('<-CM>',AtDate);
+      EndDate := AtDate;
+
+      PVendor := TRUE;
+      PCustomer := TRUE;
+    END;
+
+    LOCAL PROCEDURE ApplyCustomer@1101495001(EntryNo@1101495000 : Integer);
+    VAR
+      CustLE2@1101495005 : Record 21;
+      CustLE@1101495004 : Record 21;
+      PostDate@1101495003 : Date;
+      CurrExchRate@1101495002 : Record 330;
+      ExchRate@1101495001 : Decimal;
+      CVEntriesPost@1101495006 : Codeunit 50032;
+    BEGIN
+      //NC 05/07/12
+      CLEAR(CVEntriesPost);
+      //NC 05/07/12
+
+      CustRecNo += 1;
+      IF GUIALLOWED THEN;
+       // Wnd.UPDATE(2,ROUND(CustRecNo / TotalRec * 10000,1)); // NC NOS-26 SPA : TotalRec = 0
+
+      CustLE.GET(EntryNo);
+      IF NOT CustLE.Open THEN
+        EXIT;
+
+      IF (CustomerPG <> '') AND (CustLE."Customer Posting Group" <> CustomerPG) THEN
+        EXIT;
+
+      CustLE.CALCFIELDS("Remaining Amt. (LCY)");
+      CustLE.CALCFIELDS("Remaining Amount");
+      IF ABS(CustLE."Remaining Amt. (LCY)") < GLSetup."Appln. Rounding Precision" THEN
+        EXIT;
+
+      CustLE2.RESET;
+      CustLE2.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.",Open,"Customer Posting Group");
+      CustLE2.SETRANGE("Customer No.", Customer."No.");
+      //NC S1033 > PCH
+      //CustLE2.SETRANGE("Posting Date", 0D, EndDate);
+      IF (StartDate <= CustLE."Posting Date") AND (CustLE."Posting Date" <= EndDate) THEN
+        CustLE2.SETRANGE("Posting Date", 0D, EndDate)
+      ELSE
+        CustLE2.SETRANGE("Posting Date", StartDate, EndDate);
+      //NC S1033 < PCH
+      CustLE2.SETRANGE(Open, TRUE);
+      CustLE2.SETRANGE("Agreement No.",CustLE."Agreement No.");
+      IF SalesSetup."Appln. between Currencies" = SalesSetup."Appln. between Currencies"::None THEN
+        CustLE2.SETRANGE("Currency Code",CustLE."Currency Code");
+      IF NOT SalesSetup."Appln. between Posting Groups" THEN
+        CustLE2.SETRANGE("Customer Posting Group",CustLE."Customer Posting Group");
+
+      CustLE2.SETRANGE("Agreement Condition No.",CustLE."Agreement Condition No.");
+
+      CustLE2.SETRANGE(Positive, NOT CustLE.Positive);
+      IF CustLE2.FINDSET THEN
+      REPEAT
+        CustLE2.CALCFIELDS("Remaining Amt. (LCY)");
+        CustLE.GET(EntryNo);
+        CustLE.CALCFIELDS("Remaining Amt. (LCY)");
+        CustLE.CALCFIELDS("Remaining Amount");
+        //TDRANCS-759> commented
+        //IF ABS(CustLE."Remaining Amt. (LCY)") > ABS(CustLE2."Remaining Amt. (LCY)") THEN BEGIN
+        IF (ABS(CustLE."Remaining Amt. (LCY)") + GLSetup."Appln. Rounding Precision") >= ABS(CustLE2."Remaining Amt. (LCY)") THEN BEGIN
+        //TDRANCS-759<
+          CustLE2."Applies-to ID" := FORMAT(CustLE2."Entry No.");
+          CustLE2.CALCFIELDS("Remaining Amount");
+          CustLE2."Amount to Apply" := CustLE2."Remaining Amount";
+
+          CustLE."Applies-to ID" := FORMAT(CustLE2."Entry No.");
+          IF CustLE."Currency Code" = CustLE2."Currency Code" THEN BEGIN
+            CustLE."Amount to Apply" := - CustLE2."Remaining Amount";
+          END ELSE BEGIN
+            ExchRate := CurrExchRate.ExchangeRate(CustLE."Posting Date",CustLE."Currency Code");
+            CustLE."Amount to Apply" :=
+              -CurrExchRate.ExchangeAmtLCYToFCY(CustLE."Posting Date",CustLE."Currency Code",CustLE2."Remaining Amt. (LCY)",ExchRate);
+          END;
+
+          IF CustLE2.Open AND CustLE.Open THEN BEGIN
+          CustLE2.MODIFY;
+          CustLE.MODIFY;
+
+          CVEntriesPost.SetCustEntry(CustLE2);
+
+          //NC NCS-791 > DP
+          IF PostingDate<>0D THEN
+            CVEntriesPost.SetPostingDate(PostingDate)
+          ELSE
+          //NC NCS-791 > DP
+
+          IF CustLE."Posting Date" > CustLE2."Posting Date" THEN
+            CVEntriesPost.SetPostingDate(CustLE."Posting Date")
+          ELSE
+            CVEntriesPost.SetPostingDate(CustLE2."Posting Date");
+
+          COMMIT;
+          IF NOT CVEntriesPost.RUN THEN BEGIN
+            TextError := STRSUBSTNO(Text50002,Customer."No.",CustLE2."Entry No.",CustLE."Entry No.",CustLE2."Agreement No.");
+            TextError += ' ' + COPYSTR(GETLASTERRORTEXT,1,249-STRLEN(TextError));
+            ErrJnl.AddError(COMPANYNAME,ErrJnl."Error Group"::Apply,ErrJnl.Type::Delay,'',TextError,0);
+            CustCountError += 1;
+
+            CustLE2."Applies-to ID" := '';
+            CustLE2."Amount to Apply" := 0;
+            CustLE2.MODIFY;
+
+            CustLE."Applies-to ID" := '';
+            CustLE."Amount to Apply" := 0;
+            CustLE.MODIFY;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,CustCountApply);
+              Wnd.UPDATE(4,CustCountError);
+            END;
+          END ELSE BEGIN
+            CustCountApply += 1;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,CustCountApply);
+              Wnd.UPDATE(4,CustCountError);
+            END;
+          END;
+          END;
+          IF GUIALLOWED THEN BEGIN
+            Wnd.UPDATE(3,CustCountApply);
+            Wnd.UPDATE(4,CustCountError);
+          END;
+        END ELSE BEGIN
+          CustLE2."Applies-to ID" := FORMAT(CustLE."Entry No.");
+          IF CustLE."Currency Code" = CustLE2."Currency Code" THEN BEGIN
+            CustLE2."Amount to Apply" := - CustLE."Remaining Amount";
+          END ELSE BEGIN
+            ExchRate := CurrExchRate.ExchangeRate(CustLE2."Posting Date",CustLE2."Currency Code");
+            CustLE2."Amount to Apply" :=
+            -CurrExchRate.ExchangeAmtLCYToFCY(CustLE2."Posting Date",CustLE2."Currency Code",CustLE."Remaining Amt. (LCY)",ExchRate);
+          END;
+
+          CustLE."Applies-to ID" := FORMAT(CustLE."Entry No.");
+          CustLE."Amount to Apply" := CustLE."Remaining Amount";
+
+          IF CustLE2.Open AND CustLE.Open THEN BEGIN
+          CustLE2.MODIFY;
+          CustLE.MODIFY;
+
+          CVEntriesPost.SetCustEntry(CustLE);
+
+          //NC NCS-791 > DP
+          IF PostingDate<>0D THEN
+            CVEntriesPost.SetPostingDate(PostingDate)
+          ELSE
+          //NC NCS-791 > DP
+
+          IF CustLE."Posting Date" > CustLE2."Posting Date" THEN
+            CVEntriesPost.SetPostingDate(CustLE."Posting Date")
+          ELSE
+            CVEntriesPost.SetPostingDate(CustLE2."Posting Date");
+          COMMIT;
+          IF NOT CVEntriesPost.RUN THEN BEGIN
+            TextError := STRSUBSTNO(Text50002,Customer."No.",CustLE2."Entry No.",CustLE."Entry No.",CustLE2."Agreement No.");
+            TextError += ' ' + COPYSTR(GETLASTERRORTEXT,1,249-STRLEN(TextError));
+            ErrJnl.AddError(COMPANYNAME,ErrJnl."Error Group"::Apply,ErrJnl.Type::Delay,'',TextError,0);
+            CustCountError += 1;
+            CustLE2."Applies-to ID" := '';
+            CustLE2."Amount to Apply" := 0;
+            CustLE2.MODIFY;
+
+            CustLE."Applies-to ID" := '';
+            CustLE."Amount to Apply" := 0;
+            CustLE.MODIFY;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,CustCountApply);
+              Wnd.UPDATE(4,CustCountError);
+            END;
+          END ELSE BEGIN
+            CustCountApply += 1;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,CustCountApply);
+              Wnd.UPDATE(4,CustCountError);
+            END;
+            EXIT;
+          END;
+          END;
+          IF GUIALLOWED THEN BEGIN
+            Wnd.UPDATE(3,CustCountApply);
+            Wnd.UPDATE(4,CustCountError);
+          END;
+        END;
+      UNTIL CustLE2.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE ApplyVendor@1101495002(EntryNo@1101495004 : Integer);
+    VAR
+      VendLE@1101495003 : Record 25;
+      VendLE2@1101495002 : Record 25;
+      CurrExchRate@1101495001 : Record 330;
+      ExchRate@1101495000 : Decimal;
+      CVEntriesPost@1101495005 : Codeunit 50032;
+    BEGIN
+      //NC 05/07/12
+      CLEAR(CVEntriesPost);
+      //NC 05/07/12
+
+      VendRecNo += 1;
+      IF GUIALLOWED THEN;
+      //  Wnd.UPDATE(2,ROUND(VendRecNo / TotalRec * 10000,1)); // NC NOS-26 SPA : TotalRec = 0
+
+      VendLE.GET(EntryNo);
+      IF VendLE.Open = FALSE THEN
+        EXIT;
+
+      IF (VendorPG <> '') AND (VendLE."Vendor Posting Group" <> VendorPG) THEN
+        EXIT;
+
+      VendLE.CALCFIELDS("Remaining Amt. (LCY)");
+      VendLE.CALCFIELDS("Remaining Amount");
+      IF ABS(VendLE."Remaining Amt. (LCY)") < GLSetup."Appln. Rounding Precision" THEN
+        EXIT;
+
+      VendLE2.RESET;
+      VendLE2.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.",Open,"Vendor Posting Group");
+      VendLE2.SETRANGE("Vendor No.", Vendor."No.");
+      //NC S1033 > PCH
+      //VendLE2.SETRANGE("Posting Date", 0D, EndDate);
+      IF (StartDate <= VendLE."Posting Date") AND (VendLE."Posting Date" <= EndDate) THEN
+        VendLE2.SETRANGE("Posting Date", 0D, EndDate)
+      ELSE
+        VendLE2.SETRANGE("Posting Date", StartDate, EndDate);
+      //NC S1033 < PCH
+      VendLE2.SETRANGE(Open, TRUE);
+      VendLE2.SETRANGE("Agreement No.",VendLE."Agreement No.");
+      IF PurchasesSetup."Appln. between Currencies" = PurchasesSetup."Appln. between Currencies"::None THEN
+        VendLE2.SETRANGE("Currency Code",VendLE."Currency Code");
+      IF NOT PurchasesSetup."Appln. between Posting Groups" THEN
+        VendLE2.SETRANGE("Vendor Posting Group",VendLE."Vendor Posting Group");
+
+      VendLE2.SETRANGE("Agreement Condition No.", VendLE."Agreement Condition No.");
+      VendLE2.SETRANGE(Positive, NOT VendLE.Positive);
+      IF VendLE2.FINDSET THEN
+      REPEAT
+        VendLE.GET(EntryNo);
+        VendLE.CALCFIELDS("Remaining Amount");
+        VendLE.CALCFIELDS("Remaining Amt. (LCY)");
+
+        VendLE2.CALCFIELDS("Remaining Amt. (LCY)");
+        VendLE2.CALCFIELDS("Remaining Amount");
+        //TDRANCS-759> commented
+        //IF ABS(VendLE."Remaining Amt. (LCY)") > ABS(VendLE2."Remaining Amt. (LCY)") THEN BEGIN
+        IF (ABS(VendLE."Remaining Amt. (LCY)") + GLSetup."Appln. Rounding Precision") >= ABS(VendLE2."Remaining Amt. (LCY)") THEN BEGIN
+        //TDRANCS-759<
+          VendLE2."Applies-to ID" := FORMAT(VendLE2."Entry No.");
+          VendLE2."Amount to Apply" := VendLE2."Remaining Amount";
+
+          VendLE."Applies-to ID" := FORMAT(VendLE2."Entry No.");
+          IF VendLE."Currency Code" = VendLE2."Currency Code" THEN BEGIN
+            VendLE."Amount to Apply" := - VendLE2."Remaining Amount";
+          END ELSE BEGIN
+            ExchRate := CurrExchRate.ExchangeRate(VendLE."Posting Date",VendLE."Currency Code");
+            VendLE."Amount to Apply" :=
+            -CurrExchRate.ExchangeAmtLCYToFCY(VendLE."Posting Date",VendLE."Currency Code",VendLE2."Remaining Amt. (LCY)",ExchRate);
+          END;
+
+          IF VendLE2.Open AND VendLE.Open THEN BEGIN
+          VendLE2.MODIFY;
+          VendLE.MODIFY;
+          CVEntriesPost.SetVendEntry(VendLE2);
+          CVEntriesPost.SetContractorType(2);
+
+          //NC NCS-791 > DP
+          IF PostingDate<>0D THEN
+            CVEntriesPost.SetPostingDate(PostingDate)
+          ELSE
+          //NC NCS-791 > DP
+
+          IF VendLE."Posting Date" > VendLE2."Posting Date" THEN
+            CVEntriesPost.SetPostingDate(VendLE."Posting Date")
+          ELSE
+            CVEntriesPost.SetPostingDate(VendLE2."Posting Date");
+          COMMIT;
+          IF NOT CVEntriesPost.RUN THEN BEGIN
+            TextError := STRSUBSTNO(Text50003,Vendor."No.",VendLE."Entry No.",VendLE2."Entry No.",VendLE2."Agreement No.");
+            TextError += ' ' + COPYSTR(GETLASTERRORTEXT,1,249-STRLEN(TextError));
+
+            ErrJnl.AddError(COMPANYNAME,ErrJnl."Error Group"::Apply,ErrJnl.Type::Delay,'',TextError,0);
+            VendCountError += 1;
+
+            VendLE2."Applies-to ID" := '';
+            VendLE2."Amount to Apply" := 0;
+            VendLE2.MODIFY;
+
+            VendLE."Applies-to ID" := '';
+            VendLE."Amount to Apply" := 0;
+            VendLE.MODIFY;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,VendCountApply);
+              Wnd.UPDATE(4,VendCountError);
+            END;
+          END ELSE BEGIN
+            VendCountApply += 1;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,VendCountApply);
+              Wnd.UPDATE(4,VendCountError);
+            END;
+          END;
+          END;
+          IF GUIALLOWED THEN BEGIN
+            Wnd.UPDATE(3,VendCountApply);
+            Wnd.UPDATE(4,VendCountError);
+          END;
+        END ELSE BEGIN
+          VendLE2."Applies-to ID" := FORMAT(VendLE2."Entry No.");
+          IF VendLE."Currency Code" = VendLE2."Currency Code" THEN BEGIN
+            VendLE2."Amount to Apply" := - VendLE."Remaining Amount";
+          END ELSE BEGIN
+            ExchRate := CurrExchRate.ExchangeRate(VendLE2."Posting Date",VendLE2."Currency Code");
+            VendLE2."Amount to Apply" :=
+            -CurrExchRate.ExchangeAmtLCYToFCY(VendLE2."Posting Date",VendLE2."Currency Code",VendLE."Remaining Amt. (LCY)",ExchRate);
+          END;
+
+          VendLE."Applies-to ID" := FORMAT(VendLE2."Entry No.");
+          VendLE."Amount to Apply" := VendLE."Remaining Amount";
+
+          IF VendLE2.Open AND VendLE.Open THEN BEGIN
+          VendLE.MODIFY;
+          VendLE2.MODIFY;
+          CVEntriesPost.SetVendEntry(VendLE);
+          CVEntriesPost.SetContractorType(2);
+
+          //NC NCS-791 > DP
+          IF PostingDate<>0D THEN
+            CVEntriesPost.SetPostingDate(PostingDate)
+          ELSE
+          //NC NCS-791 > DP
+
+          IF VendLE."Posting Date" > VendLE2."Posting Date" THEN
+            CVEntriesPost.SetPostingDate(VendLE."Posting Date")
+          ELSE
+            CVEntriesPost.SetPostingDate(VendLE2."Posting Date");
+          COMMIT;
+          IF NOT CVEntriesPost.RUN THEN BEGIN
+            TextError := STRSUBSTNO(Text50003,Vendor."No.",VendLE."Entry No.",VendLE2."Entry No.",VendLE2."Agreement No.");
+            TextError += ' ' + COPYSTR(GETLASTERRORTEXT,1,249-STRLEN(TextError));
+
+            ErrJnl.AddError(COMPANYNAME,ErrJnl."Error Group"::Apply,ErrJnl.Type::Delay,'',TextError,0);
+            VendCountError += 1;
+
+            VendLE2."Applies-to ID" := '';
+            VendLE2."Amount to Apply" := 0;
+            VendLE2.MODIFY;
+
+            VendLE."Applies-to ID" := '';
+            VendLE."Amount to Apply" := 0;
+            VendLE.MODIFY;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,VendCountApply);
+              Wnd.UPDATE(4,VendCountError);
+            END;
+          END ELSE BEGIN
+            VendCountApply += 1;
+            IF GUIALLOWED THEN BEGIN
+              Wnd.UPDATE(3,VendCountApply);
+              Wnd.UPDATE(4,VendCountError);
+            END;
+            EXIT;
+          END;
+          END;
+          IF GUIALLOWED THEN BEGIN
+            Wnd.UPDATE(3,VendCountApply);
+            Wnd.UPDATE(4,VendCountError);
+          END;
+        END;
+      UNTIL VendLE2.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      NC MTD02 AIG Создан отчет
+      NC NCS-791 DP Дата учета применения в параметрах задания
+      TDRANCS-759 change function ApplyCustomer, ApplyVendor
+      NC S1033 PCH исправлен порядок применения
+      ------------------------------
+      NC NOS-26 SPA Перенесено на новую функциональность
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

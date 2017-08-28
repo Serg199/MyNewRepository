@@ -1,0 +1,1333 @@
+OBJECT Table 5600 Fixed Asset
+{
+  OBJECT-PROPERTIES
+  {
+    Date=31.07.17;
+    Time=18:27:25;
+    Modified=Yes;
+    Version List=NAVW110.00.00.15601,NAVRU10.00.00.15601,NOS-26;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 5629=r,
+                TableData 50121=rimd,
+                TableData 50122=rimd,
+                TableData 50123=rimd,
+                TableData 50131=rimd;
+    DataCaptionFields=No.,Description;
+    OnInsert=BEGIN
+               IF "No." = '' THEN BEGIN
+                 FASetup.GET;
+                 //NC OFA002 > DP
+                 IF "FA Type"= "FA Type"::"Future Expense" THEN BEGIN
+                   FASetup.TESTFIELD("Future Expencies Nos.");
+                   NoSeriesMgt.InitSeries(FASetup."Future Expencies Nos.",xRec."No. Series",0D,"No.","No. Series");
+                 END ELSE BEGIN
+                 //NC OFA002 < DP
+                   FASetup.TESTFIELD("Fixed Asset Nos.");
+                   NoSeriesMgt.InitSeries(FASetup."Fixed Asset Nos.",xRec."No. Series",0D,"No.","No. Series");
+                 //NC OFA002 > DP
+                 END;
+                 //NC OFA002 > DP
+               END;
+
+               "Main Asset/Component" := "Main Asset/Component"::" ";
+               "Component of Main Asset" := '';
+
+               //NC MDB01 > PCH
+               MovingDataSetup.GET;
+
+               IF "FA Type" = "FA Type"::"Future Expense" THEN
+                 DimValue."Dimension Code" := MovingDataSetup."FE Dimension Code"
+               ELSE
+                 DimValue."Dimension Code" := MovingDataSetup."FA Dimension Code";
+               DimValue.Code := "No.";
+               //NC NOS-26 > SPA
+               IF DimValue.FIND THEN;
+               //NC NOS-26 < SPA
+               DimValue.Name := Description;
+               DimValue."Name 2" := "Description 2";
+               //NC S547 > PCH
+               DimValue."Rec ID" := "Rec ID";
+               //NC S547 < PCH
+               //NC MDB01.1 > DP
+               DimValue."Company Name" := COMPANYNAME;
+               //NC MDB01.1 < DP
+               IF NOT DimValue.INSERT(TRUE) THEN
+                 DimValue.MODIFY(TRUE);
+
+               DefDim."Table ID" := DATABASE::"Fixed Asset";
+               DefDim."No." := "No.";
+               IF "FA Type" = "FA Type"::"Future Expense" THEN
+                 DefDim."Dimension Code" := MovingDataSetup."FE Dimension Code"
+               ELSE
+                 DefDim."Dimension Code" := MovingDataSetup."FA Dimension Code";
+               DefDim."Dimension Value Code" := "No.";
+               DefDim."Value Posting" := DefDim."Value Posting"::"Code Mandatory";
+               IF NOT DefDim.INSERT(TRUE) THEN
+                 DefDim.MODIFY(TRUE);
+               //NC MDB01 < PCH
+
+               DimMgt.UpdateDefaultDim(
+                 DATABASE::"Fixed Asset","No.",
+                 "Global Dimension 1 Code","Global Dimension 2 Code");
+
+               InitFADeprBooks("No.");
+             END;
+
+    OnModify=BEGIN
+               "Last Date Modified" := TODAY;
+
+               //NC MDB01 > PCH
+               oldFixedAsset.GET("No.");
+               IF (Description <> oldFixedAsset.Description) OR
+                 //NC S547 > PCH
+                 (("Rec ID" <> '') AND ("Rec ID" <> oldFixedAsset."Rec ID")) OR
+                 //NC S547 < PCH
+                  ("Description 2" <> oldFixedAsset."Description 2")
+               THEN BEGIN
+                 MovingDataSetup.GET;
+                 IF "FA Type" = "FA Type"::"Future Expense" THEN
+                   DimValue."Dimension Code" := MovingDataSetup."FE Dimension Code"
+                 ELSE
+                   DimValue."Dimension Code" := MovingDataSetup."FA Dimension Code";
+                 DimValue.Code := "No.";
+                 //NC NOS-26 > SPA
+                 IF DimValue.FIND THEN;
+                 //NC NOS-26 < SPA
+                 DimValue.Name := Description;
+                 DimValue."Name 2" := "Description 2";
+                 //NC MDB01.1 > DP
+                 DimValue."Company Name" := COMPANYNAME;
+                 //NC MDB01.1 < DP
+                 //NC S547 > PCH
+                 DimValue."Rec ID" := "Rec ID";
+                 //NC S547 < PCH
+                 IF NOT DimValue.INSERT(TRUE) THEN
+                   DimValue.MODIFY(TRUE);
+               END;
+               //NC MDB01 < PCH
+
+               SynchroniseIt(1); //TD BMN 23.11.2012 NCS-712
+             END;
+
+    OnDelete=VAR
+               FADeprBook@1000 : Record 5612;
+               FAEntry@1101495000 : Record 5601;
+             BEGIN
+               // BMN 29.11.2011 >
+               FAEntry.RESET;
+               FAEntry.SETRANGE("FA No.", "No.");
+               IF FAEntry.FINDFIRST THEN
+                 ERROR('Для ОС есть учтенные операции. Удаление невозможно!');
+               // BMN 29.11.2011 <
+
+               LOCKTABLE;
+               MainAssetComp.LOCKTABLE;
+               InsCoverageLedgEntry.LOCKTABLE;
+               IF "Main Asset/Component" = "Main Asset/Component"::"Main Asset" THEN
+                 ERROR(Text000);
+               FAMoveEntries.MoveFAInsuranceEntries("No.");
+               FADeprBook.SETRANGE("FA No.","No.");
+               FADeprBook.DELETEALL(TRUE);
+               IF NOT FADeprBook.ISEMPTY THEN
+                 ERROR(Text001,TABLECAPTION,"No.");
+
+               MainAssetComp.SETCURRENTKEY("FA No.");
+               MainAssetComp.SETRANGE("FA No.","No.");
+               MainAssetComp.DELETEALL;
+               IF "Main Asset/Component" = "Main Asset/Component"::Component THEN BEGIN
+                 MainAssetComp.RESET;
+                 MainAssetComp.SETRANGE("Main Asset No.","Component of Main Asset");
+                 MainAssetComp.SETRANGE("FA No.",'');
+                 MainAssetComp.DELETEALL;
+                 MainAssetComp.SETRANGE("FA No.");
+                 IF NOT MainAssetComp.FINDFIRST THEN BEGIN
+                   FA.GET("Component of Main Asset");
+                   FA."Main Asset/Component" := FA."Main Asset/Component"::" ";
+                   FA."Component of Main Asset" := '';
+                   FA.MODIFY;
+                 END;
+               END;
+
+               MaintenanceRegistration.SETRANGE("FA No.","No.");
+               MaintenanceRegistration.DELETEALL;
+
+               CommentLine.SETRANGE("Table Name",CommentLine."Table Name"::"Fixed Asset");
+               CommentLine.SETRANGE("No.","No.");
+               CommentLine.DELETEALL;
+
+               DimMgt.DeleteDefaultDim(DATABASE::"Fixed Asset","No.");
+
+               //NC MDB01 > PCH
+               MovingDataSetup.GET;
+               IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+                 IF DimValue.GET(MovingDataSetup."FE Dimension Code","No.") THEN
+                   DimValue.DELETE(TRUE);
+               END ELSE BEGIN
+                 IF DimValue.GET(MovingDataSetup."FA Dimension Code","No.") THEN
+                   DimValue.DELETE(TRUE);
+               END;
+               //NC MDB01 < PCH
+             END;
+
+    OnRename=VAR
+               SalesLine@1000 : Record 37;
+               PurchLine@1001 : Record 39;
+             BEGIN
+               SalesLine.RenameNo(SalesLine.Type::"Fixed Asset",xRec."No.","No.");
+               PurchLine.RenameNo(PurchLine.Type::"Fixed Asset",xRec."No.","No.");
+               "Last Date Modified" := TODAY;
+
+               //NC MDB01 > PCH
+               MovingDataSetup.GET;
+               DimValue.SetDoNotTestRename(TRUE);
+               IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+                 IF DimValue.GET(MovingDataSetup."FE Dimension Code",xRec."No.") THEN
+                   IF DimValue.RENAME(MovingDataSetup."FE Dimension Code","No.") THEN;
+               END ELSE BEGIN
+                 IF DimValue.GET(MovingDataSetup."FA Dimension Code",xRec."No.") THEN
+                   IF DimValue.RENAME(MovingDataSetup."FA Dimension Code","No.") THEN;
+               END;
+               //NC MDB01 < PCH
+
+               SynchroniseIt(3); //TD BMN 23.11.2012 NCS-712
+             END;
+
+    CaptionML=[ENU=Fixed Asset;
+               RUS=Основное средство];
+    LookupPageID=Page5601;
+    DrillDownPageID=Page5601;
+  }
+  FIELDS
+  {
+    { 1   ;   ;No.                 ;Code20        ;OnValidate=BEGIN
+                                                                IF "No." <> xRec."No." THEN BEGIN
+                                                                  FASetup.GET;
+                                                                  NoSeriesMgt.TestManual(FASetup."Fixed Asset Nos.");
+                                                                  "No. Series" := '';
+                                                                END;
+                                                              END;
+
+                                                   AltSearchField=Search Description;
+                                                   CaptionML=[ENU=No.;
+                                                              RUS=Номер] }
+    { 2   ;   ;Description         ;Text50        ;OnValidate=VAR
+                                                                FADeprBook@1000 : Record 5612;
+                                                              BEGIN
+                                                                IF ("Search Description" = UPPERCASE(xRec.Description)) OR ("Search Description" = '') THEN
+                                                                  "Search Description" := Description;
+                                                                IF Description <> xRec.Description THEN BEGIN
+                                                                  //NC MDB01 > PCH
+                                                                  MovingDataSetup.GET;
+                                                                  IF "FA Type" = "FA Type"::"Future Expense" THEN
+                                                                    DimValue."Dimension Code" := MovingDataSetup."FE Dimension Code"
+                                                                  ELSE
+                                                                    DimValue."Dimension Code" := MovingDataSetup."FA Dimension Code";
+                                                                  DimValue.Code := "No.";
+                                                                  //NC NOS-26 > SPA
+                                                                  IF DimValue.FIND THEN;
+                                                                  //NC NOS-26 < SPA
+                                                                  DimValue.Name := Description;
+                                                                  DimValue."Name 2" := "Description 2";
+                                                                  IF NOT DimValue.INSERT(TRUE) THEN
+                                                                    DimValue.MODIFY(TRUE);
+                                                                  //NC MDB01 < PCH
+                                                                  FADeprBook.SETCURRENTKEY("FA No.");
+                                                                  FADeprBook.SETRANGE("FA No.","No.");
+                                                                  FADeprBook.MODIFYALL(Description,Description);
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 3   ;   ;Search Description  ;Code50        ;CaptionML=[ENU=Search Description;
+                                                              RUS=Описание поиска] }
+    { 4   ;   ;Description 2       ;Text70        ;CaptionML=[ENU=Description 2;
+                                                              RUS=Описание 2] }
+    { 5   ;   ;FA Class Code       ;Code10        ;TableRelation="FA Class";
+                                                   OnValidate=VAR
+                                                                FASubclass@1000 : Record 5608;
+                                                              BEGIN
+                                                                SetFADeprPeriod; //NC
+
+                                                                IF "FA Subclass Code" = '' THEN
+                                                                  EXIT;
+
+                                                                FASubclass.GET("FA Subclass Code");
+                                                                IF NOT (FASubclass."FA Class Code" IN ['',"FA Class Code"]) THEN
+                                                                  "FA Subclass Code" := '';
+                                                              END;
+
+                                                   CaptionML=[ENU=FA Class Code;
+                                                              RUS=Код класса ОС] }
+    { 6   ;   ;FA Subclass Code    ;Code10        ;TableRelation="FA Subclass";
+                                                   OnValidate=VAR
+                                                                FASubclass@1000 : Record 5608;
+                                                              BEGIN
+                                                                FASubclass.GET("FA Subclass Code");
+                                                                IF "FA Class Code" <> '' THEN BEGIN
+                                                                  IF FASubclass."FA Class Code" IN ['',"FA Class Code"] THEN
+                                                                    EXIT;
+
+                                                                  ERROR(UnexpctedSubclassErr);
+                                                                END;
+
+                                                                VALIDATE("FA Class Code",FASubclass."FA Class Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=FA Subclass Code;
+                                                              RUS=Код подкласса ОС] }
+    { 7   ;   ;Global Dimension 1 Code;Code20     ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(1));
+                                                   OnValidate=BEGIN
+                                                                ValidateShortcutDimCode(1,"Global Dimension 1 Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=Global Dimension 1 Code;
+                                                              RUS=Код глобального измерения 1];
+                                                   CaptionClass='1,1,1' }
+    { 8   ;   ;Global Dimension 2 Code;Code20     ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(2));
+                                                   OnValidate=BEGIN
+                                                                ValidateShortcutDimCode(2,"Global Dimension 2 Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=Global Dimension 2 Code;
+                                                              RUS=Код глобального измерения 2];
+                                                   CaptionClass='1,1,2' }
+    { 9   ;   ;Location Code       ;Code10        ;TableRelation=Location WHERE (Use As In-Transit=CONST(No));
+                                                   CaptionML=[ENU=Location Code;
+                                                              RUS=Код склада] }
+    { 10  ;   ;FA Location Code    ;Code10        ;TableRelation="FA Location";
+                                                   OnValidate=BEGIN
+                                                                IF (Status > Status::Inventory) AND (xRec."Location Code" <> '') THEN
+                                                                  TestNoEntriesExist(FIELDCAPTION("Location Code"));
+
+                                                                IF "FA Location Code" <> '' THEN BEGIN
+                                                                  FALocation.GET("FA Location Code");
+                                                                  "OKATO Code" := FALocation."OKATO Code";
+                                                                  IF "Assessed Tax Code" <> '' THEN
+                                                                    CheckRegionCode;
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=FA Location Code;
+                                                              RUS=Код местонахождения ОС] }
+    { 11  ;   ;Vendor No.          ;Code20        ;TableRelation=Vendor;
+                                                   OnValidate=VAR
+                                                                DefDimVend@1101495000 : Record 352;
+                                                              BEGIN
+                                                                //NC >
+                                                                IF "Vendor No."<>'' THEN
+                                                                  IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+                                                                    MovingDataSetup.GET;
+                                                                    MovingDataSetup.TESTFIELD("Customer Dimension Code");
+                                                                    IF DefDimVend.GET(23,"Vendor No.",MovingDataSetup."Customer Dimension Code") THEN BEGIN
+                                                                      DefDim.INIT;
+                                                                      DefDim."Table ID" := 5600;
+                                                                      DefDim."No." :="No.";
+                                                                      DefDim."Dimension Code" := DefDimVend."Dimension Code";
+                                                                      DefDim."Dimension Value Code" := DefDimVend."Dimension Value Code";
+                                                                      IF NOT DefDim.INSERT(TRUE) THEN DefDim.MODIFY(TRUE);
+                                                                    END;
+                                                                  END;
+                                                                //NC <
+                                                              END;
+
+                                                   CaptionML=[ENU=Vendor No.;
+                                                              RUS=Код поставщика] }
+    { 12  ;   ;Main Asset/Component;Option        ;CaptionML=[ENU=Main Asset/Component;
+                                                              RUS=Комплект ОС/компонент];
+                                                   OptionCaptionML=[ENU=" ,Main Asset,Component";
+                                                                    RUS=" ,Комплект ОС,Компонент"];
+                                                   OptionString=[ ,Main Asset,Component];
+                                                   Editable=No }
+    { 13  ;   ;Component of Main Asset;Code20     ;TableRelation="Fixed Asset";
+                                                   CaptionML=[ENU=Component of Main Asset;
+                                                              RUS=Компонент комплекта ОС];
+                                                   Editable=No }
+    { 14  ;   ;Budgeted Asset      ;Boolean       ;OnValidate=BEGIN
+                                                                FAMoveEntries.ChangeBudget(Rec);
+                                                              END;
+
+                                                   CaptionML=[ENU=Budgeted Asset;
+                                                              RUS=Бюджетируемое ОС] }
+    { 15  ;   ;Warranty Date       ;Date          ;CaptionML=[ENU=Warranty Date;
+                                                              RUS=Дата гарантии] }
+    { 16  ;   ;Responsible Employee;Code20        ;TableRelation=Employee;
+                                                   CaptionML=[ENU=Responsible Employee;
+                                                              RUS=Материально ответственное лицо] }
+    { 17  ;   ;Serial No.          ;Text30        ;CaptionML=[ENU=Serial No.;
+                                                              RUS=Серийный номер] }
+    { 18  ;   ;Last Date Modified  ;Date          ;CaptionML=[ENU=Last Date Modified;
+                                                              RUS=Дата последнего изменения];
+                                                   Editable=No }
+    { 19  ;   ;Insured             ;Boolean       ;FieldClass=FlowField;
+                                                   CalcFormula=Exist("Ins. Coverage Ledger Entry" WHERE (FA No.=FIELD(No.),
+                                                                                                         Disposed FA=CONST(No)));
+                                                   CaptionML=[ENU=Insured;
+                                                              RUS=Застраховано];
+                                                   Editable=No }
+    { 20  ;   ;Comment             ;Boolean       ;FieldClass=FlowField;
+                                                   CalcFormula=Exist("Comment Line" WHERE (Table Name=CONST(Fixed Asset),
+                                                                                           No.=FIELD(No.)));
+                                                   CaptionML=[ENU=Comment;
+                                                              RUS=Комментарий];
+                                                   Editable=No }
+    { 21  ;   ;Blocked             ;Boolean       ;CaptionML=[ENU=Blocked;
+                                                              RUS=Заблокировано] }
+    { 22  ;   ;Picture             ;BLOB          ;CaptionML=[ENU=Picture;
+                                                              RUS=Рисунок];
+                                                   SubType=Bitmap }
+    { 23  ;   ;Maintenance Vendor No.;Code20      ;TableRelation=Vendor;
+                                                   CaptionML=[ENU=Maintenance Vendor No.;
+                                                              RUS=Обслуживание - код поставщика] }
+    { 24  ;   ;Under Maintenance   ;Boolean       ;CaptionML=[ENU=Under Maintenance;
+                                                              RUS=На обслуживании] }
+    { 25  ;   ;Next Service Date   ;Date          ;CaptionML=[ENU=Next Service Date;
+                                                              RUS=След. дата сервисного обслуживания] }
+    { 26  ;   ;Inactive            ;Boolean       ;CaptionML=[ENU=Inactive;
+                                                              RUS=Неактивно] }
+    { 27  ;   ;FA Posting Date Filter;Date        ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=FA Posting Date Filter;
+                                                              RUS=Фильтр по дате учета ОС] }
+    { 28  ;   ;No. Series          ;Code10        ;TableRelation="No. Series";
+                                                   CaptionML=[ENU=No. Series;
+                                                              RUS=Серия номеров];
+                                                   Editable=No }
+    { 29  ;   ;FA Posting Group    ;Code10        ;TableRelation="FA Posting Group";
+                                                   CaptionML=[ENU=FA Posting Group;
+                                                              RUS=Учетная группа ОС] }
+    { 30  ;   ;Acquired            ;Boolean       ;FieldClass=FlowField;
+                                                   CalcFormula=Exist("FA Depreciation Book" WHERE (FA No.=FIELD(No.),
+                                                                                                   Acquisition Date=FILTER(<>'')));
+                                                   CaptionML=[ENU=Acquired;
+                                                              RUS=Приобретено] }
+    { 140 ;   ;Image               ;Media         ;CaptionML=[ENU=Image;
+                                                              RUS=Изображение] }
+    { 12400;  ;Inventory Number    ;Text30        ;CaptionML=[ENU=Inventory Number;
+                                                              RUS=Инвентарный номер] }
+    { 12401;  ;Depreciation Code   ;Code10        ;TableRelation="Depreciation Code";
+                                                   OnValidate=VAR
+                                                                DepreciationCode@1470000 : Record 12473;
+                                                                FADeprBook@1210000 : Record 5612;
+                                                              BEGIN
+                                                                IF CONFIRM(Text12401,TRUE) THEN
+                                                                  IF DepreciationCode.GET("Depreciation Code") THEN BEGIN
+                                                                    FADeprBook.SETRANGE(FADeprBook."FA No.","No.");
+                                                                    IF FADeprBook.FIND('-') THEN
+                                                                      REPEAT
+                                                                        FADeprBook."Straight-Line %" := DepreciationCode."Depreciation Quota";
+                                                                        FADeprBook.VALIDATE("No. of Depreciation Years",DepreciationCode."Service Life");
+                                                                        FADeprBook.MODIFY;
+                                                                      UNTIL FADeprBook.NEXT = 0;
+                                                                  END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Depreciation Code;
+                                                              RUS=Код амортизации] }
+    { 12402;  ;FA Type             ;Option        ;OnValidate=BEGIN
+                                                                FASetup.GET;
+                                                                IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+                                                                  IF FASetup."Default Depr. Book" <> '' THEN
+                                                                    DeleteFADeprBook("No.",FASetup."Default Depr. Book");
+                                                                  IF FASetup."Release Depr. Book" <> '' THEN
+                                                                    DeleteFADeprBook("No.",FASetup."Release Depr. Book");
+                                                                  IF FASetup."Disposal Depr. Book" <> '' THEN
+                                                                    DeleteFADeprBook("No.",FASetup."Disposal Depr. Book");
+                                                                  IF FASetup."Future Depr. Book" <> '' THEN
+                                                                    InsertFADeprBook("No.",FASetup."Future Depr. Book",'',0,0)
+                                                                  ELSE
+                                                                    MESSAGE(Text12400);
+                                                                END ELSE BEGIN
+                                                                  IF FASetup."Future Depr. Book" <> '' THEN
+                                                                    DeleteFADeprBook("No.",FASetup."Future Depr. Book");
+                                                                  IF FASetup."Release Depr. Book" <> '' THEN
+                                                                    InsertFADeprBook("No.",FASetup."Release Depr. Book",'',0,0);
+                                                                  IF FASetup."Default Depr. Book" <> '' THEN
+                                                                    InsertFADeprBook("No.",FASetup."Default Depr. Book",'',0,0);
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=FA Type;
+                                                              RUS=Тип ОС];
+                                                   OptionCaptionML=[ENU=Fixed Assets,Intangible Asset,Future Expense;
+                                                                    RUS=Основные средства,Нематериальный актив,Расходы будущих периодов];
+                                                   OptionString=Fixed Assets,Intangible Asset,Future Expense }
+    { 12403;  ;Depreciation Group  ;Code10        ;TableRelation="Depreciation Group";
+                                                   OnValidate=VAR
+                                                                DepreciationGroup@1210000 : Record 12476;
+                                                                FADeprBook@1210001 : Record 5612;
+                                                              BEGIN
+                                                                IF ("Depreciation Group" <> xRec."Depreciation Group") THEN BEGIN
+                                                                  AmortizationCode.SETRANGE(Code,"Depreciation Code");
+                                                                  AmortizationCode.SETRANGE("Depreciation Group","Depreciation Group");
+                                                                  IF NOT AmortizationCode.FINDFIRST THEN BEGIN
+                                                                    IF "Depreciation Code" <> '' THEN
+                                                                      VALIDATE("Depreciation Code",'');
+                                                                  END ELSE
+                                                                    VALIDATE("Depreciation Code");
+
+                                                                  IF TaxRegisterSetup.GET THEN
+                                                                    IF FADeprBook.GET("No.",TaxRegisterSetup."Tax Depreciation Book") THEN BEGIN
+                                                                      IF DepreciationGroup.GET("Depreciation Group") THEN;
+                                                                      IF FADeprBook."Depr. Bonus %" <> DepreciationGroup."Depr. Bonus %" THEN BEGIN
+                                                                        IF NOT CONFIRM(
+                                                                            Text12409,
+                                                                            TRUE,
+                                                                            FADeprBook.FIELDCAPTION("Depr. Bonus %"),
+                                                                            FADeprBook."Depr. Bonus %",
+                                                                            DepreciationGroup."Depr. Bonus %",
+                                                                            FADeprBook.TABLECAPTION,
+                                                                            FADeprBook.FIELDCAPTION("FA No."),
+                                                                            FADeprBook."FA No.",
+                                                                            FADeprBook.FIELDCAPTION("Depreciation Book Code"),
+                                                                            FADeprBook."Depreciation Book Code")
+                                                                        THEN
+                                                                          ERROR('');
+                                                                        FADeprBook.VALIDATE("Depr. Bonus %",DepreciationGroup."Depr. Bonus %");
+                                                                        FADeprBook.MODIFY;
+                                                                      END;
+                                                                    END;
+
+                                                                  IF "Depreciation Group" = '' THEN BEGIN
+                                                                    FADeprBook.SETCURRENTKEY("FA No.");
+                                                                    FADeprBook.SETRANGE("FA No.","No.");
+                                                                    IF FADeprBook.FINDSET THEN
+                                                                      REPEAT
+                                                                        IF FADeprBook."Depreciation Method" = FADeprBook."Depreciation Method"::"DB/SL-RU Tax Group" THEN
+                                                                          FADeprBook.FIELDERROR("Depreciation Method");
+                                                                      UNTIL FADeprBook.NEXT = 0;
+                                                                  END;
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Depreciation Group;
+                                                              RUS=Группа амортизации] }
+    { 12404;  ;Belonging to Manufacturing;Option  ;CaptionML=[ENU=Belonging to Manufacturing;
+                                                              RUS=Принадлежность к производству];
+                                                   OptionCaptionML=[ENU=" ,Production,Nonproduction";
+                                                                    RUS=" ,Производственное,Непроизводственное"];
+                                                   OptionString=[ ,Production,Nonproduction] }
+    { 12405;  ;Global Dimension 1 Filter;Code20   ;FieldClass=FlowFilter;
+                                                   TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(1));
+                                                   CaptionML=[ENU=Global Dimension 1 Filter;
+                                                              RUS=Фильтр глобального измерения 1];
+                                                   CaptionClass='1,3,1' }
+    { 12406;  ;Global Dimension 2 Filter;Code20   ;FieldClass=FlowFilter;
+                                                   TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(2));
+                                                   CaptionML=[ENU=Global Dimension 2 Filter;
+                                                              RUS=Фильтр глобального измерения 2];
+                                                   CaptionClass='1,3,2' }
+    { 12407;  ;FA Location Code Filter;Code20     ;FieldClass=FlowFilter;
+                                                   TableRelation="FA Location";
+                                                   ValidateTableRelation=No;
+                                                   CaptionML=[ENU=FA Location Code Filter;
+                                                              RUS=Фильтр по коду местонахождения ОС] }
+    { 12408;  ;Depreciation Book Code Filter;Code10;
+                                                   FieldClass=FlowFilter;
+                                                   TableRelation="Depreciation Book";
+                                                   CaptionML=[ENU=Depreciation Book Code Filter;
+                                                              RUS=Фильтр по коду книги амортизации] }
+    { 12409;  ;Status              ;Option        ;OnValidate=BEGIN
+                                                                IF xRec.Status <> Rec.Status THEN
+                                                                  IF NOT CONFIRM(Text12403,FALSE,xRec.Status,Rec.Status) THEN
+                                                                    Status := xRec.Status;
+                                                              END;
+
+                                                   CaptionML=[ENU=Status;
+                                                              RUS=Статус];
+                                                   OptionCaptionML=[ENU=Inventory,Montage,Operation,Maintenance,Repair,Disposed,WrittenOff;
+                                                                    RUS=Запасы,Монтаж,Работа,Обслуживание,Ремонт,Реализовано,Списано];
+                                                   OptionString=Inventory,Montage,Operation,Maintenance,Repair,Disposed,WrittenOff }
+    { 12410;  ;Factory No.         ;Text30        ;CaptionML=[ENU=Factory No.;
+                                                              RUS=Заводской номер] }
+    { 12411;  ;Initial Release Date;Date          ;CaptionML=[ENU=Initial Release Date;
+                                                              RUS=Дата первого ввода в эксплуатацию];
+                                                   Editable=No }
+    { 12412;  ;Status Document No. ;Code20        ;CaptionML=[ENU=Status Document No.;
+                                                              RUS=Номер документа статуса];
+                                                   Editable=No }
+    { 12413;  ;Passport No.        ;Text30        ;CaptionML=[ENU=Passport No.;
+                                                              RUS=Номер паспорта] }
+    { 12414;  ;Status Date         ;Date          ;CaptionML=[ENU=Status Date;
+                                                              RUS=Дата статуса] }
+    { 12415;  ;Manufacturing Year  ;Text4         ;CaptionML=[ENU=Manufacturing Year;
+                                                              RUS=Год производства] }
+    { 12417;  ;Date Filter         ;Date          ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Date Filter;
+                                                              RUS=Фильтр по дате] }
+    { 12418;  ;Unrealized VAT Amount;Decimal      ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("VAT Entry"."Remaining Unrealized Amount" WHERE (Object Type=CONST(Fixed Asset),
+                                                                                                                    Object No.=FIELD(No.),
+                                                                                                                    Type=CONST(Purchase)));
+                                                   CaptionML=[ENU=Unrealized VAT Amount;
+                                                              RUS=Нереал. сумма НДС];
+                                                   Editable=No }
+    { 12425;  ;G/L Account No. Filter;Code20      ;FieldClass=FlowFilter;
+                                                   TableRelation="G/L Account";
+                                                   CaptionML=[ENU=G/L Account No. Filter;
+                                                              RUS=ГК - фильтр по номеру счета] }
+    { 12426;  ;G/L Starting Date Filter;Date      ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=G/L Starting Date Filter;
+                                                              RUS=ГК - фильтр по дате начала] }
+    { 12427;  ;G/L Starting Balance;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Amount WHERE (Source Type=CONST(Fixed Asset),
+                                                                                             Source No.=FIELD(No.),
+                                                                                             G/L Account No.=FIELD(G/L Account No. Filter),
+                                                                                             Global Dimension 1 Code=FIELD(Global Dimension 1 Filter),
+                                                                                             Global Dimension 2 Code=FIELD(Global Dimension 2 Filter),
+                                                                                             Posting Date=FIELD(UPPERLIMIT(G/L Starting Date Filter))));
+                                                   CaptionML=[ENU=G/L Starting Balance;
+                                                              RUS=ГК - начальное сальдо];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 12428;  ;G/L Net Change      ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Amount WHERE (Source Type=CONST(Fixed Asset),
+                                                                                             Source No.=FIELD(No.),
+                                                                                             G/L Account No.=FIELD(G/L Account No. Filter),
+                                                                                             Posting Date=FIELD(Date Filter),
+                                                                                             Global Dimension 1 Code=FIELD(Global Dimension 1 Filter),
+                                                                                             Global Dimension 2 Code=FIELD(Global Dimension 2 Filter)));
+                                                   CaptionML=[ENU=G/L Net Change;
+                                                              RUS=Оборот по ГК];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 12429;  ;G/L Debit Amount    ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry"."Debit Amount" WHERE (Source Type=CONST(Fixed Asset),
+                                                                                                     Source No.=FIELD(No.),
+                                                                                                     G/L Account No.=FIELD(G/L Account No. Filter),
+                                                                                                     Posting Date=FIELD(Date Filter),
+                                                                                                     Global Dimension 1 Code=FIELD(Global Dimension 1 Filter),
+                                                                                                     Global Dimension 2 Code=FIELD(Global Dimension 2 Filter)));
+                                                   CaptionML=[ENU=G/L Debit Amount;
+                                                              RUS=ГК - сумма по дебету];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 12430;  ;G/L Credit Amount   ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry"."Credit Amount" WHERE (Source Type=CONST(Fixed Asset),
+                                                                                                      Source No.=FIELD(No.),
+                                                                                                      G/L Account No.=FIELD(G/L Account No. Filter),
+                                                                                                      Posting Date=FIELD(Date Filter),
+                                                                                                      Global Dimension 1 Code=FIELD(Global Dimension 1 Filter),
+                                                                                                      Global Dimension 2 Code=FIELD(Global Dimension 2 Filter)));
+                                                   CaptionML=[ENU=G/L Credit Amount;
+                                                              RUS=ГК - сумма по кредиту];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 12431;  ;G/L Balance to Date ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Amount WHERE (Source Type=CONST(Fixed Asset),
+                                                                                             Source No.=FIELD(No.),
+                                                                                             G/L Account No.=FIELD(G/L Account No. Filter),
+                                                                                             Posting Date=FIELD(UPPERLIMIT(Date Filter)),
+                                                                                             Global Dimension 1 Code=FIELD(Global Dimension 1 Filter),
+                                                                                             Global Dimension 2 Code=FIELD(Global Dimension 2 Filter)));
+                                                   CaptionML=[ENU=G/L Balance to Date;
+                                                              RUS=ГК - сальдо на данное число];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 12450;  ;Vehicle Identification Number;Code30;
+                                                   CaptionML=[ENU=Vehicle Identification Number;
+                                                              RUS=Номер ТС] }
+    { 12451;  ;Vehicle Model       ;Text30        ;CaptionML=[ENU=Vehicle Model;
+                                                              RUS=Модель ТС] }
+    { 12452;  ;Vehicle Type        ;Text50        ;CaptionML=[ENU=Vehicle Type;
+                                                              RUS=Тип ТС] }
+    { 12453;  ;Vehicle Reg. No.    ;Code20        ;CaptionML=[ENU=Vehicle Reg. No.;
+                                                              RUS=Рег. номер ТС] }
+    { 12454;  ;Vehicle Capacity    ;Decimal       ;CaptionML=[ENU=Vehicle Capacity;
+                                                              RUS=Мощность транспортного средства] }
+    { 12455;  ;Vehicle Engine No.  ;Code20        ;CaptionML=[ENU=Vehicle Engine No.;
+                                                              RUS=Номер двигателя ТС] }
+    { 12456;  ;Vehicle Chassis No. ;Code20        ;CaptionML=[ENU=Vehicle Chassis No.;
+                                                              RUS=Номер шасси ТС] }
+    { 12457;  ;Vehicle Passport Weight;Decimal    ;CaptionML=[ENU=Vehicle Passport Weight;
+                                                              RUS=Вес ТС по паспорту] }
+    { 12458;  ;Run after Release Date;Decimal     ;CaptionML=[ENU=Run after Release Date;
+                                                              RUS=Срок экспл. после ввода в экспл.] }
+    { 12459;  ;Run after Renovation Date;Decimal  ;CaptionML=[ENU=Run after Renovation Date;
+                                                              RUS=Срок экспл. после модернизации] }
+    { 12460;  ;Vehicle Writeoff Date;Date         ;CaptionML=[ENU=Vehicle Writeoff Date;
+                                                              RUS=Дата списания ТС];
+                                                   Editable=No }
+    { 12461;  ;Vehicle Class       ;Option        ;CaptionML=[ENU=Vehicle Class;
+                                                              RUS=Класс ТС];
+                                                   OptionCaptionML=[ENU=" ,Automobile,Trailer,Semitrailer";
+                                                                    RUS=" ,Автомобиль,Трейлер,Полутрейлер"];
+                                                   OptionString=[ ,Automobile,Trailer,Semitrailer] }
+    { 12462;  ;Is Vehicle          ;Boolean       ;CaptionML=[ENU=Is Vehicle;
+                                                              RUS=Является транспортным средством] }
+    { 12463;  ;Last Renovation Date;Date          ;CaptionML=[ENU=Last Renovation Date;
+                                                              RUS=Дата последней модернизации] }
+    { 12470;  ;Manufacturer        ;Text30        ;CaptionML=[ENU=Manufacturer;
+                                                              RUS=Производитель] }
+    { 12493;  ;Undepreciable FA    ;Boolean       ;OnValidate=BEGIN
+                                                                IF Status > Status::Inventory THEN
+                                                                  TestNoEntriesExist(FIELDCAPTION("Undepreciable FA"));
+                                                              END;
+
+                                                   CaptionML=[ENU=Undepreciable FA;
+                                                              RUS=Неамортизируемое ОС] }
+    { 12495;  ;Operation Life (Months);Integer    ;CaptionML=[ENU=Operation Life (Months);
+                                                              RUS=Срок эксплуатации (мес.)];
+                                                   MinValue=0 }
+    { 12496;  ;Accrued Depr. Amount;Decimal       ;CaptionML=[ENU=Accrued Depr. Amount;
+                                                              RUS=Сумма накопленной амортизации];
+                                                   MinValue=0 }
+    { 14900;  ;CD No.              ;Code30        ;TableRelation="CD No. Information"."CD No." WHERE (Type=CONST(Fixed Asset),
+                                                                                                      No.=FIELD(No.));
+                                                   CaptionML=[ENU=CD No.;
+                                                              RUS=Номер ДТ] }
+    { 14921;  ;Assessed Tax Code   ;Code20        ;TableRelation="Assessed Tax Code";
+                                                   OnValidate=BEGIN
+                                                                IF "Assessed Tax Code" <> '' THEN BEGIN
+                                                                  IF "FA Location Code" = '' THEN
+                                                                    MESSAGE(Text12404,"No.");
+                                                                  IF "OKATO Code" = '' THEN
+                                                                    MESSAGE(Text12405,"No.");
+                                                                  CheckATCode;
+                                                                  CheckBaseCode;
+                                                                  CheckATCodeDuplicate;
+                                                                  IF ("FA Location Code" <> '') AND ("OKATO Code" <> '') THEN
+                                                                    CheckRegionCode;
+                                                                END;
+                                                                MODIFY;
+                                                              END;
+
+                                                   CaptionML=[ENU=Assessed Tax Code;
+                                                              RUS=Код налога на имущество] }
+    { 14922;  ;FA Type for Taxation;Option        ;CaptionML=[ENU=FA Type for Taxation;
+                                                              RUS=Тип ОС для налогообложения];
+                                                   OptionCaptionML=[ENU=" ,Movable,Immovable,Untaxable";
+                                                                    RUS=" ,Движимое,Недвижимое,Не облагаемое налогом"];
+                                                   OptionString=[ ,Movable,Immovable,Untaxable] }
+    { 14923;  ;Distributed Asset   ;Boolean       ;CaptionML=[ENU=Distributed Asset;
+                                                              RUS=Выданный актив] }
+    { 14924;  ;UGSS Asset          ;Boolean       ;CaptionML=[ENU=UGSS Asset;
+                                                              RUS=Актив ЕСГС] }
+    { 14925;  ;OKATO Code          ;Code11        ;TableRelation=OKATO;
+                                                   CaptionML=[ENU=OKATO Code;
+                                                              RUS=Код ОКАТО] }
+    { 14926;  ;Book Value per Share;Decimal       ;CaptionML=[ENU=Book Value per Share;
+                                                              RUS=Доля балансовой стоимости];
+                                                   DecimalPlaces=2:2;
+                                                   MinValue=0;
+                                                   MaxValue=1 }
+    { 14927;  ;Property Type       ;Option        ;CaptionML=[ENU=Property Type;
+                                                              RUS=Вид имущества];
+                                                   OptionCaptionML=[ENU=" ,Immovable UGSS Property,Immovable Distributed Property,Other Property,,Special Economic Zone Property";
+                                                                    RUS=" ,недвижимое имущество ЕСГС,недвижимое распределенное имущество,прочее имущество,,Имущество особой экономической зоны"];
+                                                   OptionString=[ ,Immovable UGSS Property,Immovable Distributed Property,Other Property,,Special Economic Zone Property] }
+    { 14928;  ;Tax Amount Paid Abroad;Decimal     ;CaptionML=[ENU=Tax Amount Paid Abroad;
+                                                              RUS=Сумма налога, уплаченная за рубежом] }
+    { 17301;  ;Tax Difference Code ;Code10        ;TableRelation="Tax Difference" WHERE (Depreciation Bonus=CONST(No),
+                                                                                         Source Code Mandatory=CONST(Yes));
+                                                   CaptionML=[ENU=Tax Difference Code;
+                                                              RUS=Код налоговой разницы] }
+    { 17302;  ;Tax Amount          ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Tax Diff. Ledger Entry"."Tax Amount" WHERE (Tax Diff. Code=FIELD(Tax Difference Code),
+                                                                                                                Source Type=CONST(Future Expense),
+                                                                                                                Source No.=FIELD(No.),
+                                                                                                                Posting Date=FIELD(FA Posting Date Filter)));
+                                                   CaptionML=[ENU=Tax Amount;
+                                                              RUS=Сумма налога];
+                                                   BlankZero=Yes;
+                                                   Editable=No }
+    { 17303;  ;Created by FA No.   ;Code20        ;TableRelation="Fixed Asset".No.;
+                                                   CaptionML=[ENU=Created by FA No.;
+                                                              RUS=Создано по номеру ОС];
+                                                   Editable=No }
+    { 50001;  ;FA Card Type        ;Option        ;CaptionML=[ENU=FA Card Type;
+                                                              RUS=Тип Карточки ОС];
+                                                   OptionCaptionML=[ENU=FA,CIP;
+                                                                    RUS=ОС,ОВА];
+                                                   OptionString=FA,CIP;
+                                                   Description=NC PIF001 }
+    { 50002;  ;Leasing Asset       ;Boolean       ;CaptionML=[ENU=Leasing Asset;
+                                                              RUS=Объект в Лизинге];
+                                                   Description=NC PIF001 }
+    { 50003;  ;Source FA No.       ;Code20        ;CaptionML=[ENU=Source FA No.;
+                                                              RUS=Источник ОС Но.];
+                                                   Description=NC MFA22 }
+    { 50004;  ;Cons. FA No.        ;Code20        ;CaptionML=[ENU=Cons. FA No.;
+                                                              RUS=Консол. ОС Но.];
+                                                   Description=NC MFA22 }
+    { 50008;  ;Rec ID              ;Code40        ;CaptionML=[ENU=Rec ID;
+                                                              RUS=ID Записи];
+                                                   Description=NC S547 PCH }
+    { 50009;  ;No. of Depreciation Months;Decimal ;CaptionML=[ENU=No of Depreciation Months;
+                                                              RUS=Число Месяцев Амортизации];
+                                                   Description=TD NCS-712 }
+    { 50010;  ;Depreciation Starting Date;Date    ;CaptionML=[ENU=Depreciation Starting Date;
+                                                              RUS=Дата Начала Амортизации];
+                                                   Description=TD NCS-712;
+                                                   Editable=Yes }
+    { 50025;  ;Extern. No. of Deprec. Months;Decimal;
+                                                   OnValidate=BEGIN
+                                                                //NC NCS-1662 > DP
+                                                                SetDepreciationDates;
+                                                                //NC NCS-1662 < DP
+                                                              END;
+
+                                                   CaptionML=[ENU=Extern. No. of Deprec. Months;
+                                                              RUS=Внеш. Число Месяцев Амортизации];
+                                                   Description=NCS-1662 DP }
+    { 50030;  ;Extern. Deprec. Starting Date;Date ;OnValidate=BEGIN
+                                                                //NC NCS-1662 > DP
+                                                                SetDepreciationDates;
+                                                                //NC NCS-1662 < DP
+                                                              END;
+
+                                                   CaptionML=[ENU=Extern. Deprec. Starting Date;
+                                                              RUS=Внеш. Дата Начала Амортизации];
+                                                   Description=NCS-1662 DP;
+                                                   Editable=Yes }
+  }
+  KEYS
+  {
+    {    ;No.                                     ;Clustered=Yes }
+    {    ;Search Description                       }
+    {    ;FA Class Code                            }
+    {    ;FA Subclass Code                         }
+    {    ;Component of Main Asset,Main Asset/Component }
+    {    ;FA Location Code                         }
+    {    ;Global Dimension 1 Code                  }
+    {    ;Global Dimension 2 Code                  }
+    {    ;FA Posting Group                         }
+    {    ;Description                              }
+    {    ;FA Type                                  }
+    {    ;Created by FA No.                        }
+    {    ;Depreciation Group                       }
+    {    ;Inventory Number,FA Card Type            }
+    {    ;Rec ID                                   }
+  }
+  FIELDGROUPS
+  {
+    { 1   ;DropDown            ;No.,Description,FA Class Code            }
+    { 2   ;Brick               ;No.,Description,FA Class Code,Image      }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=A main asset cannot be deleted.;RUS=Удаление комплекта ОС невозможно.';
+      Text001@1001 : TextConst 'ENU=You cannot delete %1 %2 because it has associated depreciation books.;RUS=Удаление %1 %2 невозможно, так как существуют связанные книги амортизации.';
+      CommentLine@1002 : Record 97;
+      FA@1003 : Record 5600;
+      FASetup@1004 : Record 5603;
+      MaintenanceRegistration@1005 : Record 5616;
+      MainAssetComp@1007 : Record 5640;
+      InsCoverageLedgEntry@1008 : Record 5629;
+      FAMoveEntries@1009 : Codeunit 5623;
+      NoSeriesMgt@1010 : Codeunit 396;
+      DimMgt@1011 : Codeunit 408;
+      Text12401@1470012 : TextConst 'ENU=Change service life?;RUS=Изменить срок службы?';
+      Text12400@1470013 : TextConst 'ENU=Future Depr. Book does not exist;RUS=Отсутствует книга амортизации будущих периодов';
+      Text12402@1470015 : TextConst 'ENU=The field %1 cannot be changed for a fixed asset with ledger entries.;RUS=Поле %1 не может быть изменено для основного средства с операциями ГК.';
+      AmortizationCode@1470016 : Record 12473;
+      FALocation@1470017 : Record 5609;
+      FALedgEntry@1470018 : Record 5601;
+      TaxRegisterSetup@1470019 : Record 17236;
+      Text12403@1470000 : TextConst 'ENU=FA Status will be changed from %1 to %2. Continue?;RUS=Статус ОС будет изменен с %1 на %2. Продолжить?';
+      AssessedTaxCode@1470001 : Record 14921;
+      Text12404@1470002 : TextConst 'ENU="FA Location Code is empty in FA No.=%1. Assessed tax would not be calculated properly.";RUS=Код местонахождения ОС пуст для ОС с номером %1. Налог на имущество будет рассчитан неправильно.';
+      Text12405@1470003 : TextConst 'ENU="OKATO Code is empty in FA No.=%1. Assessed tax would not be calculated properly.";RUS=Код ОКАТО пуст в ОС с номером %1. Налог на имущество будет рассчитан неправильно.';
+      OKATO@1470004 : Record 12427;
+      Text12406@1470005 : TextConst 'ENU="Region Code should be the same both in OKATO Code=%1 and in Assessed Tax Code=%2 for Fixed Asset=%3. \Assessed Tax would not be calculated properly.";RUS=Код региона должен быть одинаковым в коде ОКАТО, равном %1, и коде налога на имущество, равном %2, для ОС %3. \Налог на имущество будет рассчитан неправильно.';
+      Text12407@1470006 : TextConst 'ENU="There are duplicate Assessed Tax Codes: Assessed Tax Code=%1 and Assessed Tax Code=%2. Remove one of them.";RUS=Дублирование кодов налога на имущество: налог на имущество с кодом %1 и налог на имущество с кодом %2. Удалите один из них.';
+      Text12408@1470007 : TextConst 'ENU="Base Assessed Tax Code should exist for Assessed Tax Code=%1.";RUS=Для кода налога на имущество %1 должен существовать базовый код налога на имущество.';
+      Text12409@1210000 : TextConst 'ENU="%1 will be changed from %2 to %3 for %4 %5=%6, %7=%8. Continue?";RUS="Значение %1 будет изменено с %2 на %3 для %4 %5=%6, %7=%8. Продолжить?"';
+      UnexpctedSubclassErr@1006 : TextConst 'ENU=This fixed asset subclass belongs to a different fixed asset class.;RUS=Этот подкласс основных средств принадлежит к другому классу основных средств.';
+      "NCV>"@1101495006 : Integer;
+      MovingDataSetup@1101495005 : Record 50064;
+      DimValue@1101495004 : Record 349;
+      DefDim@1101495003 : Record 352;
+      oldFixedAsset@1101495002 : Record 5600;
+      FAClass@1101495001 : Record 5607;
+      tmpDim@1101495000 : TEMPORARY Record 348;
+      Text50101@1101495009 : TextConst 'ENU=% is empty for %2 %3.;RUS=Не заполнено %1 для %2 %3.';
+      Text50102@1101495008 : TextConst 'ENU=% is empty for %2 %3.;RUS=Не заполнено %1.';
+
+    PROCEDURE AssistEdit@2(OldFA@1000 : Record 5600) : Boolean;
+    BEGIN
+      WITH FA DO BEGIN
+        FA := Rec;
+        FASetup.GET;
+        //NC OFA002 > DP
+        IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+          FASetup.TESTFIELD("Future Expencies Nos.");
+          IF NoSeriesMgt.SelectSeries(FASetup."Future Expencies Nos.",OldFA."No. Series","No. Series") THEN BEGIN
+            NoSeriesMgt.SetSeries("No.");
+            Rec := FA;
+            EXIT(TRUE);
+          END;
+        END ELSE BEGIN
+        //NC OFA002 < DP
+          FASetup.TESTFIELD("Fixed Asset Nos.");
+          IF NoSeriesMgt.SelectSeries(FASetup."Fixed Asset Nos.",OldFA."No. Series","No. Series") THEN BEGIN
+            NoSeriesMgt.SetSeries("No.");
+            Rec := FA;
+            EXIT(TRUE);
+          END;
+        //NC OFA002 > DP
+        END;
+        //NC OFA002 < DP
+      END;
+    END;
+
+    LOCAL PROCEDURE ValidateShortcutDimCode@29(FieldNumber@1000 : Integer;VAR ShortcutDimCode@1001 : Code[20]);
+    BEGIN
+      DimMgt.ValidateDimValueCode(FieldNumber,ShortcutDimCode);
+      DimMgt.SaveDefaultDim(DATABASE::"Fixed Asset","No.",FieldNumber,ShortcutDimCode);
+      MODIFY(TRUE);
+    END;
+
+    PROCEDURE TestNoEntriesExist@1470006(CurrentFieldName@1470000 : Text[100]);
+    VAR
+      ItemLedgEntry@1470001 : Record 32;
+    BEGIN
+      FALedgEntry.SETCURRENTKEY("FA No.");
+      FALedgEntry.SETRANGE("FA No.","No.");
+      IF FALedgEntry.FIND('-') THEN
+        ERROR(
+          Text12402,
+          CurrentFieldName);
+    END;
+
+    PROCEDURE CheckATCode@1470009();
+    BEGIN
+      AssessedTaxCode.GET("Assessed Tax Code");
+      AssessedTaxCode.TESTFIELD("Region Code");
+      AssessedTaxCode.TESTFIELD("Rate %");
+    END;
+
+    PROCEDURE CheckRegionCode@1470002();
+    BEGIN
+      AssessedTaxCode.GET("Assessed Tax Code");
+      OKATO.GET("OKATO Code");
+      IF AssessedTaxCode."Region Code" <> OKATO."Region Code" THEN
+        MESSAGE(Text12406,OKATO.Code,AssessedTaxCode.Code,"No.");
+    END;
+
+    PROCEDURE CheckATCodeDuplicate@1470000();
+    VAR
+      AssessedTaxCodeDubl@1470001 : Record 14921;
+    BEGIN
+      AssessedTaxCode.GET("Assessed Tax Code");
+      AssessedTaxCodeDubl.RESET;
+      AssessedTaxCodeDubl.SETRANGE("Region Code",AssessedTaxCode."Region Code");
+      AssessedTaxCodeDubl.SETRANGE("Rate %",AssessedTaxCode."Rate %");
+      AssessedTaxCodeDubl.SETRANGE("Dec. Rate Tax Allowance Code",AssessedTaxCode."Dec. Rate Tax Allowance Code");
+      AssessedTaxCodeDubl.SETFILTER(Code,'<>%1',AssessedTaxCode.Code);
+      IF AssessedTaxCode."Exemption Tax Allowance Code" = '' THEN BEGIN
+        AssessedTaxCodeDubl.SETRANGE("Exemption Tax Allowance Code",'');
+      END ELSE BEGIN
+        AssessedTaxCodeDubl.SETRANGE("Dec. Amount Tax Allowance Code",AssessedTaxCode."Dec. Amount Tax Allowance Code");
+        AssessedTaxCodeDubl.SETRANGE("Exemption Tax Allowance Code",AssessedTaxCode."Exemption Tax Allowance Code");
+      END;
+
+      IF AssessedTaxCodeDubl.FIND('-') THEN
+        ERROR(Text12407,AssessedTaxCode.Code,AssessedTaxCodeDubl.Code);
+    END;
+
+    PROCEDURE CheckBaseCode@1470001();
+    VAR
+      AssessedTaxCodeBase@1470000 : Record 14921;
+    BEGIN
+      AssessedTaxCode.GET("Assessed Tax Code");
+      IF AssessedTaxCode."Exemption Tax Allowance Code" <> '' THEN BEGIN
+        AssessedTaxCodeBase.RESET;
+        AssessedTaxCodeBase.SETRANGE("Region Code",AssessedTaxCode."Region Code");
+        AssessedTaxCodeBase.SETRANGE("Rate %",AssessedTaxCode."Rate %");
+        AssessedTaxCodeBase.SETRANGE("Dec. Rate Tax Allowance Code",AssessedTaxCode."Dec. Rate Tax Allowance Code");
+        AssessedTaxCodeBase.SETRANGE("Dec. Amount Tax Allowance Code",AssessedTaxCode."Dec. Amount Tax Allowance Code");
+        AssessedTaxCodeBase.SETRANGE("Exemption Tax Allowance Code",'');
+        IF NOT AssessedTaxCodeBase.FIND('-') THEN
+          ERROR(Text12408,AssessedTaxCode.Code);
+      END;
+    END;
+
+    PROCEDURE InitFADeprBooks@1210000("No."@1210000 : Code[20]);
+    VAR
+      GeneralLedgerSetup@1210001 : Record 98;
+      FADeprBook@1210002 : Record 5612;
+      DeprBook@1101495000 : Record 5611;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      IF NOT GeneralLedgerSetup."Enable Russian Accounting" THEN
+        EXIT;
+
+      FASetup.GET;
+      IF TaxRegisterSetup.GET THEN;
+      IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+        IF FASetup."Future Depr. Book" <> '' THEN
+          InsertFADeprBook("No.",FASetup."Future Depr. Book",Description,0,0);
+        IF TaxRegisterSetup."Future Exp. Depreciation Book" <> '' THEN
+          InsertFADeprBook("No.",TaxRegisterSetup."Future Exp. Depreciation Book",Description,0,0);
+      END ELSE BEGIN
+        IF FASetup."Release Depr. Book" <> '' THEN
+        BEGIN // NC NOS-26
+          //NC OFA013 > DP
+          DeprBook.GET(FASetup."Release Depr. Book");
+          IF DeprBook."RU Depreciation Method" THEN
+          //NC OFA013 > DP
+            InsertFADeprBook("No.",FASetup."Release Depr. Book",Description,FADeprBook."Depreciation Method"::"SL-RU",0)
+          //NC NOS-26 > SPA
+          ELSE
+            InsertFADeprBook("No.",FASetup."Release Depr. Book",Description,0,0);
+          //NC NOS-26 < SPA
+        END; // NC NOS-26
+        IF FASetup."Default Depr. Book" <> '' THEN
+        BEGIN // NC NOS-26
+          //NC OFA013 > DP
+          DeprBook.GET(FASetup."Default Depr. Book");
+          IF NOT DeprBook."RU Depreciation Method" THEN
+          //NC OFA013 > DP
+            InsertFADeprBook("No.",FASetup."Default Depr. Book",Description,0,0)
+          //NC NOS-26 > SPA
+          ELSE
+            InsertFADeprBook("No.",FASetup."Default Depr. Book",Description,FADeprBook."Depreciation Method"::"SL-RU",0);
+          //NC NOS-26 < SPA
+        END; // NC NOS-26
+        IF TaxRegisterSetup."Tax Depreciation Book" <> '' THEN
+          InsertFADeprBook("No.",TaxRegisterSetup."Tax Depreciation Book",Description,
+            FADeprBook."Depreciation Method"::"SL-RU",TaxRegisterSetup."Default Depr. Bonus %");
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertFADeprBook@1210004(FANo@1210000 : Code[20];DeprBookCode@1210001 : Code[10];Description@1210002 : Text[50];DepreciationMethod@1210003 : Option;DeprBonus@1210004 : Decimal);
+    VAR
+      FADeprBook@1210005 : Record 5612;
+    BEGIN
+      WITH FADeprBook DO BEGIN
+        INIT;
+        "FA No." := FANo;
+        "Depreciation Book Code" := DeprBookCode;
+        Description := Description;
+        "Depr. Bonus %" := DeprBonus;
+        "Depreciation Method" := DepreciationMethod;
+        IF INSERT THEN;
+      END;
+    END;
+
+    LOCAL PROCEDURE DeleteFADeprBook@1210011(FANo@1210002 : Code[20];DeprBookCode@1210001 : Code[10]);
+    VAR
+      FADeprBook@1210000 : Record 5612;
+    BEGIN
+      IF FADeprBook.GET(FANo,DeprBookCode) THEN
+        FADeprBook.DELETE(TRUE);
+    END;
+
+    PROCEDURE ShowTaxDifferences@1210001();
+    VAR
+      TaxDifference@1210003 : Record 17300;
+      TaxDiffLedgerEntry@1210001 : Record 17306;
+      TaxDiffFABuffer@1210000 : TEMPORARY Record 17324;
+      FATaxDifferences@1210002 : Page 17336;
+    BEGIN
+      TaxDiffLedgerEntry.SETRANGE("Source Type",GetTDESourceType);
+      TaxDiffLedgerEntry.SETRANGE("Source No.","No.");
+      IF TaxDiffLedgerEntry.FINDSET THEN
+        REPEAT
+          IF NOT TaxDiffFABuffer.GET("No.",TaxDiffLedgerEntry."Tax Diff. Code") THEN BEGIN
+            TaxDifference.GET(TaxDiffLedgerEntry."Tax Diff. Code");
+            TaxDiffFABuffer."FA No." := "No.";
+            TaxDiffFABuffer."Tax Difference Code" := TaxDiffLedgerEntry."Tax Diff. Code";
+            TaxDiffFABuffer.Description := TaxDifference.Description;
+            TaxDiffFABuffer."Amount (Base)" := TaxDiffLedgerEntry."Amount (Base)";
+            TaxDiffFABuffer."Amount (Tax)" := TaxDiffLedgerEntry."Amount (Tax)";
+            TaxDiffFABuffer.Difference := TaxDiffLedgerEntry.Difference;
+            TaxDiffFABuffer."Tax Amount" := TaxDiffLedgerEntry."Tax Amount";
+            TaxDiffFABuffer."FA Type" := "FA Type";
+            TaxDiffFABuffer.INSERT;
+          END ELSE BEGIN
+            TaxDiffFABuffer."Amount (Base)" += TaxDiffLedgerEntry."Amount (Base)";
+            TaxDiffFABuffer."Amount (Tax)" += TaxDiffLedgerEntry."Amount (Tax)";
+            TaxDiffFABuffer.Difference += TaxDiffLedgerEntry.Difference;
+            TaxDiffFABuffer."Tax Amount" += TaxDiffLedgerEntry."Tax Amount";
+            TaxDiffFABuffer.MODIFY;
+          END;
+        UNTIL TaxDiffLedgerEntry.NEXT = 0;
+
+      TaxDiffFABuffer.SETRANGE("FA No.","No.");
+      FATaxDifferences.SETTABLEVIEW(TaxDiffFABuffer);
+      FATaxDifferences.FillBuffer(TaxDiffFABuffer);
+      FATaxDifferences.RUNMODAL;
+    END;
+
+    PROCEDURE GetTDESourceType@1210002() : Integer;
+    VAR
+      TaxDiffLedgerEntry@1210000 : Record 17306;
+    BEGIN
+      CASE "FA Type" OF
+        "FA Type"::"Fixed Assets":
+          EXIT(TaxDiffLedgerEntry."Source Type"::"Fixed Asset");
+        "FA Type"::"Intangible Asset":
+          EXIT(TaxDiffLedgerEntry."Source Type"::"Intangible Asset");
+        "FA Type"::"Future Expense":
+          EXIT(TaxDiffLedgerEntry."Source Type"::"Future Expense");
+      END;
+    END;
+
+    PROCEDURE GetDefDeprBook@1210003() : Code[10];
+    VAR
+      FASetup@1210000 : Record 5603;
+    BEGIN
+      FASetup.GET;
+      IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+        FASetup.TESTFIELD("Future Depr. Book");
+        EXIT(FASetup."Future Depr. Book");
+      END;
+      FASetup.TESTFIELD("Default Depr. Book");
+      EXIT(FASetup."Default Depr. Book");
+    END;
+
+    PROCEDURE FieldsForAcquitionInGeneralGroupAreCompleted@30() : Boolean;
+    BEGIN
+      EXIT(("No." <> '') AND (Description <> '') AND ("FA Subclass Code" <> ''));
+    END;
+
+    LOCAL PROCEDURE "NCF>"@1101495006();
+    BEGIN
+    END;
+
+    PROCEDURE SetFADeprPeriod@1000000000();
+    VAR
+      FADeprBook@1101495000 : Record 5612;
+    BEGIN
+      //NC MFA030 > DP
+      FADeprBook.RESET;
+      FADeprBook.SETRANGE(FADeprBook."FA No.","No.");
+      IF FADeprBook.FINDSET THEN
+        REPEAT
+          IF FAClass.GET("FA Class Code") THEN BEGIN
+            IF (FADeprBook."No. of Depreciation Months"=0) AND (FADeprBook."Straight-Line %"=0) THEN BEGIN
+            IF FAClass."No. of Depreciation Months"<>0 THEN BEGIN
+              FADeprBook.VALIDATE("No. of Depreciation Months", FAClass."No. of Depreciation Months");
+              FADeprBook.MODIFY;
+            END;
+            IF FAClass."Straight-Line %"<>0 THEN BEGIN
+              FADeprBook.VALIDATE("Straight-Line %",FAClass."Straight-Line %");
+              FADeprBook.MODIFY;
+            END;
+            END;
+            FASetup.GET;
+            IF FAClass."Acquisition FA Posting Group"<>'' THEN
+              IF (FASetup."Default Depr. Book"<>'') AND (FADeprBook."Depreciation Book Code"=FASetup."Default Depr. Book") THEN BEGIN
+                FADeprBook."FA Posting Group" :=FAClass."Acquisition FA Posting Group";
+                FADeprBook.MODIFY;
+              END;
+            IF FAClass."Operation FA Posting Group"<>'' THEN
+              IF (FASetup."Release Depr. Book"<>'') AND (FADeprBook."Depreciation Book Code"=FASetup."Release Depr. Book") THEN BEGIN
+                FADeprBook."FA Posting Group" :=FAClass."Operation FA Posting Group";
+                FADeprBook.MODIFY;
+              END;
+
+          END;
+        UNTIL FADeprBook.NEXT=0;
+      //NC MFA030 < DP
+    END;
+
+    PROCEDURE SynchroniseIt@1000000001(Mode@1000000000 : 'Insert,Modify,Delete,Rename');
+    VAR
+      SyncLog@1000000005 : Record 50121;
+      Recref@1000000006 : RecordRef;
+      xRecref@1000000004 : RecordRef;
+    BEGIN
+      //TD BMN 23.11.2012 NCS-712
+
+      xRecref.GETTABLE(xRec);
+      xRecref.SETRECFILTER;
+      Recref.GETTABLE(Rec);
+      Recref.SETRECFILTER;
+
+      SyncLog.Synchronise(Mode, xRecref, Recref);
+    END;
+
+    PROCEDURE CheckFAStatus@1101495000(FANo@1101495000 : Code[20]) : Integer;
+    VAR
+      FADeprBook@1101495001 : Record 5612;
+      FA@1101495003 : Record 5600;
+      FAStatus@1101495002 : Integer;
+      DeprBook@1101495004 : Code[20];
+    BEGIN
+      //NC NCS-1266 > DP
+      FAStatus := 0;
+      FASetup.GET;
+      FA.GET(FANo);
+      FADeprBook.SETRANGE("FA No.",FANo);
+      IF FA."FA Type"=FA."FA Type"::"Fixed Assets" THEN
+         DeprBook := FASetup."Release Depr. Book";
+      IF FA."FA Type"=FA."FA Type"::"Intangible Asset" THEN
+          DeprBook := FASetup."Non Fixed Asset Depr. Book";
+      IF FA."FA Type"=FA."FA Type"::"Future Expense" THEN
+          DeprBook := FASetup."Future Depr. Book";
+      IF FADeprBook.GET(FANo,DeprBook) THEN BEGIN
+        FADeprBook.CALCFIELDS("Book Value");
+        IF FADeprBook."Book Value"<>0 THEN
+          FAStatus := 1;
+      END;
+        IF (FAStatus=0) AND (FA."FA Type" IN [FA."FA Type"::"Fixed Assets", FA."FA Type"::"Intangible Asset"]) THEN
+          IF FADeprBook.GET(FANo,FASetup."Default Depr. Book") THEN BEGIN
+            FADeprBook.CALCFIELDS("Book Value");
+            IF FADeprBook."Book Value"<>0 THEN
+              FAStatus := 1;
+          END;
+      EXIT(FAStatus);
+      //NC NCS-1266 < DP
+    END;
+
+    PROCEDURE CheckFA@1101495005(FANo@1101495000 : Code[20];VAR ErrorText@1101495004 : Text[250]) : Boolean;
+    VAR
+      IsFAError@1101495002 : Boolean;
+      FAErrorText@1101495001 : Text[250];
+      FAPostingGroup@1101495003 : Record 5606;
+      FADeprBook@1101495005 : Record 5612;
+    BEGIN
+      //NC NCS-1266 > DP
+      tmpDim.DELETEALL;
+      IsFAError := FALSE;
+      FAErrorText :='';
+      FASetup.GET;
+      FA.GET(FANo);
+      IF FA.Description='' THEN BEGIN
+        IsFAError :=TRUE;
+        FAErrorText := FAErrorText + STRSUBSTNO(Text50102,FA.FIELDCAPTION(FA.Description),FA.TABLECAPTION,'');
+      END;
+      FADeprBook.RESET;
+      FADeprBook.SETRANGE("FA No.",FANo);
+      IF FADeprBook.FINDSET THEN
+        REPEAT
+        IF FADeprBook."Depreciation Ending Date"=0D THEN BEGIN
+          IsFAError :=TRUE;
+          IF FAErrorText='' THEN
+            FAErrorText := COPYSTR(STRSUBSTNO(Text50101,FADeprBook.FIELDCAPTION("Depreciation Ending Date"),FADeprBook.TABLECAPTION,
+                           FADeprBook."Depreciation Book Code"),1,MAXSTRLEN(FAErrorText))
+          ELSE
+            FAErrorText := COPYSTR(FAErrorText + '; ' +
+                           STRSUBSTNO(Text50101,FADeprBook.FIELDCAPTION("Depreciation Ending Date"),FADeprBook.TABLECAPTION,
+                           FADeprBook."Depreciation Book Code"),1,MAXSTRLEN(FAErrorText));
+        END;
+        IF (FADeprBook."FA Posting Group"<>'') AND FAPostingGroup.GET(FADeprBook."FA Posting Group") THEN BEGIN
+          IF FAPostingGroup."Acquisition Cost Account"<>'' THEN
+            CheckDefGLAccountDim(FANo,FAPostingGroup."Acquisition Cost Account",FAErrorText,IsFAError);
+          IF FAPostingGroup."Accum. Depreciation Account"<>'' THEN
+            CheckDefGLAccountDim(FANo,FAPostingGroup."Accum. Depreciation Account",FAErrorText,IsFAError);
+          IF FAPostingGroup."Sales Bal. Acc."<>'' THEN
+            CheckDefGLAccountDim(FANo,FAPostingGroup."Sales Bal. Acc.",FAErrorText,IsFAError);
+          IF FAPostingGroup."Acquisition Cost Bal. Acc."<>'' THEN
+            CheckDefGLAccountDim(FANo,FAPostingGroup."Acquisition Cost Bal. Acc.",FAErrorText,IsFAError);
+        END;
+        UNTIL FADeprBook.NEXT=0;
+        IF FAErrorText<>'' THEN
+          ErrorText :=FAErrorText;
+      EXIT(IsFAError);
+      //NC NCS-1266 < DP
+    END;
+
+    PROCEDURE CheckDefGLAccountDim@1101495002(FANo@1101495003 : Code[20];AccountNo@1101495002 : Code[20];VAR FAErrorText@1101495004 : Text[250];VAR IsError@1101495005 : Boolean);
+    VAR
+      DefDim@1101495000 : Record 352;
+      DefDim1@1101495001 : Record 352;
+    BEGIN
+      //NC NCS-1266 > DP
+      DefDim.RESET;
+      DefDim.SETRANGE("Table ID",15);
+      DefDim.SETRANGE("No.",AccountNo);
+      DefDim.SETRANGE("Value Posting",DefDim."Value Posting"::"Code Mandatory",DefDim."Value Posting"::"Same Code");
+      IF DefDim.FINDSET THEN
+        REPEAT
+          IF NOT DefDim1.GET(5600,FANo,DefDim."Dimension Code") THEN BEGIN
+            IsError := TRUE;
+            IF NOT tmpDim.GET(DefDim."Dimension Code") AND (DefDim."Dimension Code"<>FASetup."FA Operation Type Dim. Code") THEN BEGIN
+              tmpDim.INIT;
+              tmpDim.Code :=DefDim."Dimension Code";
+              tmpDim.INSERT;
+              IF FAErrorText='' THEN
+                FAErrorText := COPYSTR(
+                STRSUBSTNO(Text50102,DefDim.TABLECAPTION+' '+DefDim."Dimension Code"),1,MAXSTRLEN(FAErrorText))
+              ELSE
+                FAErrorText := COPYSTR(FAErrorText+'; '+
+                STRSUBSTNO(Text50102,DefDim.TABLECAPTION+' '+DefDim."Dimension Code"),1,MAXSTRLEN(FAErrorText));
+            END;
+          END;
+        UNTIL DefDim.NEXT=0;
+      //NC NCS-1266 < DP
+    END;
+
+    PROCEDURE SetDepreciationDates@1101495003();
+    VAR
+      FADeprBook@1101495000 : Record 5612;
+    BEGIN
+      //NC NCS-1662 > DP
+      FASetup.GET;
+      FADeprBook.RESET;
+      FADeprBook.SETRANGE("FA No.","No.");
+      IF "FA Type"  = "FA Type"::"Fixed Assets" THEN BEGIN
+        FASetup.TESTFIELD("Release Depr. Book");
+        FADeprBook.SETRANGE("Depreciation Book Code",FASetup."Release Depr. Book");
+      END;
+      IF "FA Type"  = "FA Type"::"Intangible Asset" THEN BEGIN
+        FASetup.TESTFIELD("Non Fixed Asset Depr. Book");
+        FADeprBook.SETRANGE("Depreciation Book Code",FASetup."Non Fixed Asset Depr. Book");
+      END;
+      IF "FA Type"  = "FA Type"::"Future Expense" THEN BEGIN
+        FASetup.TESTFIELD("Future Depr. Book");
+        FADeprBook.SETRANGE("Depreciation Book Code",FASetup."Future Depr. Book");
+      END;
+      IF FADeprBook.FINDFIRST THEN BEGIN
+        FADeprBook.CALCFIELDS(Depreciation);
+        IF FADeprBook.Depreciation=0 THEN BEGIN
+          IF "Extern. No. of Deprec. Months"<>0 THEN BEGIN
+            FADeprBook.VALIDATE("No. of Depreciation Months", "Extern. No. of Deprec. Months");
+            FADeprBook.MODIFY;
+          END;
+          //NC NCS-1662.1 > DP
+          {
+          IF ("Extern. Deprec. Starting Date"<>0D) AND (FADeprBook."Depreciation Starting Date"=0D) THEN BEGIN
+          }
+          IF ("Extern. Deprec. Starting Date"<>0D) THEN BEGIN
+          //NC NCS-1662.1 < DP
+            FADeprBook.VALIDATE("Depreciation Starting Date", "Extern. Deprec. Starting Date");
+            FADeprBook.MODIFY;
+          END;
+        END;
+      END;
+      //NC NCS-1662 < DP
+    END;
+
+    PROCEDURE IsFirstMonthDepr@1101495001() : Boolean;
+    VAR
+      l_recCompany@1101495005 : Record 2000000006;
+      l_recLEType@1101495004 : Record 50084;
+      l_blnIsFirstMonthDepr@1101495003 : Boolean;
+    BEGIN
+      //NC NCS-1823 > DP
+      l_blnIsFirstMonthDepr := FALSE;
+      l_recCompany.GET(COMPANYNAME);
+      IF l_recLEType.GET(l_recCompany."Legal Entity Type") THEN
+        l_blnIsFirstMonthDepr := l_recLEType."First Month FA Depreciation";
+      EXIT(l_blnIsFirstMonthDepr);
+      //NC NCS-1823 < DP
+    END;
+
+    BEGIN
+    {
+      NC PIF001 DL Добавлен ключ Inventory Number,"FA Card Type"
+      NC PIF001 DL Добавлено поле FA Card Type, Leasing Asset
+      NC MDB01 PCH Работа с измернием FA
+      NC OFA002 DP Серия номеров отдельно для ОС и РБП
+      NC OFA013 DP SL-RU метод амортизации из настроек Книги Амортизации
+      TD BMN 23.11.2012 NCS-712 "Интеграция данных из договоров OFF - IFRS"
+      NC S547 PCH добавлено поле Rec ID
+      NC NCS-1266 DP Добавлены функции CheckFAStatus, CheckFA, CheckDefGLAccountDim
+      ------------------------------------
+      NC BLD001 DP Создан билд по модификациям NCPIF001,MDB01,MDB03,OFA002,OFA013,MFA22,S547,S1266
+      NC NCS-1662 DP Добавлены поля "Extern. Deprec. Starting Date", "Extern. No. of Deprec. Months", функция SetDepreciationDates
+      NC NCS-1662.1 DP Изменена функция SetDepreciationDates
+      NC NCS-1823 DP Добавлена функция IsFirstMonthDepr
+      ----------------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+}
+

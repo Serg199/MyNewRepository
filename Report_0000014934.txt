@@ -1,0 +1,204 @@
+OBJECT Report 14934 Write-off for Tax Ledger
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Write-off for Tax Ledger;
+               RUS=Списание для НУ];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  TaxRegisterSetup.GET;
+                  TaxRegisterSetup.TESTFIELD("Tax Depreciation Book");
+                  DeprBookCode := TaxRegisterSetup."Tax Depreciation Book";
+                  DeprBook.GET(DeprBookCode);
+
+                  IF UseNewPostDate THEN
+                    IF NewPostingDate = 0D THEN
+                      ERROR(Text000);
+
+                  Window.OPEN(
+                    Text001 +
+                    Text002);
+                END;
+
+  }
+  DATASET
+  {
+    { 3950;    ;DataItem;                    ;
+               DataItemTable=Table12471;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=CONST(Writeoff));
+               OnAfterGetRecord=BEGIN
+                                  IF UseNewPostDate THEN
+                                    PostingDate := NewPostingDate
+                                  ELSE
+                                    PostingDate := "Posting Date";
+                                END;
+                                 }
+
+    { 6338;1   ;DataItem;                    ;
+               DataItemTable=Table12472;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  FixedAsset@1210001 : Record 5600;
+                                  GenJnlPostLine@1210003 : Codeunit 12;
+                                  FAJnlPostLine@1210002 : Codeunit 5632;
+                                  BookValue@1210000 : Decimal;
+                                BEGIN
+                                  FixedAsset.GET("FA No.");
+                                  Window.UPDATE(1,"FA No.");
+
+                                  FADeprBook.GET("FA No.",DeprBookCode);
+                                  FADeprBook.SETFILTER("FA Posting Date Filter",'..%1',PostingDate);
+                                  FADeprBook.CALCFIELDS("Book Value");
+                                  IF FADeprBook."Book Value" = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  IF NOT DeprBook."G/L Integration - Disposal" OR FixedAsset."Budgeted Asset" THEN BEGIN
+                                    WITH FAJnlLine DO BEGIN
+                                      LOCKTABLE;
+                                      FAJnlSetup.FAJnlName(DeprBook,FAJnlLine,FAJnlNextLineNo);
+                                      INIT;
+                                      FAJnlSetup.SetFAJnlTrailCodes(FAJnlLine);
+                                      FAJnlNextLineNo := FAJnlNextLineNo + 10000;
+                                      "Line No." := FAJnlNextLineNo;
+                                      "Posting Date" := PostingDate;
+                                      "FA Posting Date" := PostingDate;
+                                      IF "Posting Date" = "FA Posting Date" THEN
+                                        "Posting Date" := 0D;
+                                      VALIDATE("FA Posting Type","FA Posting Type"::Disposal);
+                                      VALIDATE("FA No.",FixedAsset."No.");
+                                      "Document No." := "Posted FA Doc. Header"."No.";
+                                      VALIDATE("Depreciation Book Code",DeprBookCode);
+                                      VALIDATE("Depr. until FA Posting Date",NOT DeprBook."G/L Integration - Depreciation");
+                                      VALIDATE(Amount,BookValue);
+                                      "Location Code" := FixedAsset."FA Location Code";
+                                      "Employee No." := FixedAsset."Responsible Employee";
+                                      CreateDim("FA Posting Type","FA No.");
+                                      IF Post THEN
+                                        FAJnlPostLine.FAJnlPostLine(FAJnlLine,TRUE)
+                                      ELSE
+                                        INSERT(TRUE);
+                                    END;
+                                  END ELSE BEGIN
+                                    WITH GenJnlLine DO BEGIN
+                                      LOCKTABLE;
+                                      FAJnlSetup.GenJnlName(DeprBook,GenJnlLine,GenJnlNextLineNo);
+
+                                      INIT;
+                                      FAJnlSetup.SetGenJnlTrailCodes(GenJnlLine);
+                                      GenJnlNextLineNo := GenJnlNextLineNo + 1000;
+                                      "Line No." := GenJnlNextLineNo;
+                                      "Posting Date" := PostingDate;
+                                      "FA Posting Date" := PostingDate;
+                                      IF "Posting Date" = "FA Posting Date" THEN
+                                        "FA Posting Date" := 0D;
+                                      "Account Type" := "Account Type"::"Fixed Asset";
+                                      VALIDATE("FA Posting Type","FA Posting Type"::Disposal);
+                                      VALIDATE("Account No.",FixedAsset."No.");
+                                      "Document No." := "Posted FA Doc. Header"."No.";
+                                      VALIDATE("Depreciation Book Code",DeprBookCode);
+                                      VALIDATE(Amount,BookValue);
+                                      "Employee No." := FixedAsset."Responsible Employee";
+                                      "FA Location Code" := FixedAsset."FA Location Code";
+                                      CreateDim("Account Type","Account No.",0,'',0,'',0,'',0,'');
+                                      IF Post THEN
+                                        GenJnlPostLine.RunWithCheck(GenJnlLine)
+                                      ELSE
+                                        INSERT(TRUE);
+                                    END;
+                                  END;
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1210000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 1210001;1;Group     ;
+                  GroupType=Group }
+
+      { 1210002;2;Field     ;
+                  Name=UseNewPostDate;
+                  CaptionML=[ENU=Use New Posting Date;
+                             RUS=Использовать новую дату учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseNewPostDate;
+                  OnValidate=BEGIN
+                               IF NOT UseNewPostDate THEN
+                                 NewPostingDate := 0D;
+                             END;
+                              }
+
+      { 1210003;2;Field     ;
+                  Name=NewPostingDate;
+                  CaptionML=[ENU=New Posting Date;
+                             RUS=Новая дата учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=NewPostingDate;
+                  Editable=UseNewPostDate }
+
+      { 1210004;2;Field     ;
+                  Name=Post;
+                  CaptionML=[ENU=Post;
+                             RUS=Учет];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Post }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GenJnlLine@1210005 : Record 81;
+      FAJnlLine@1210004 : Record 5621;
+      FAJnlSetup@1210006 : Record 5605;
+      DeprBook@1210003 : Record 5611;
+      FADeprBook@1210021 : Record 5612;
+      TaxRegisterSetup@1210015 : Record 17236;
+      Window@1210018 : Dialog;
+      NewPostingDate@1210000 : Date;
+      PostingDate@1210016 : Date;
+      DeprBookCode@1210012 : Code[10];
+      UseNewPostDate@1210001 : Boolean INDATASET;
+      Post@1210002 : Boolean;
+      FAJnlNextLineNo@1210007 : Integer;
+      GenJnlNextLineNo@1210013 : Integer;
+      Text000@1210017 : TextConst 'ENU=You must specify New Posting Date.;RUS=Необходимо указать новую дату учета.';
+      Text001@1210019 : TextConst 'ENU=Processing;RUS=Обработка';
+      Text002@1210020 : TextConst 'ENU=Fixed Asset #1##########;RUS=Основные средства #1##########';
+      NewPostingDateTextBoxEnable@19048218 : Boolean INDATASET;
+
+    PROCEDURE InitializeRequest@1210000(UseNewPostDate2@1210000 : Boolean;NewPostingDate2@1210001 : Date;Post2@1210002 : Boolean);
+    BEGIN
+      CLEARALL;
+      UseNewPostDate := UseNewPostDate2;
+      NewPostingDate := NewPostingDate2;
+      Post := Post2;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

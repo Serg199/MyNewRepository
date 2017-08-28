@@ -1,0 +1,1386 @@
+OBJECT Codeunit 12411 VAT Settlement Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.08.17;
+    Time=17:19:36;
+    Modified=Yes;
+    Version List=NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 254=imd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text14701@1470002 : TextConst 'ENU="VAT by Act - ";RUS="НДС по акту - "';
+      Text14705@1470006 : TextConst 'ENU="Unrealized VAT had been already realized for %1 = %2, %3 = %4.";RUS="Нереализованный НДС уже был реализован для %1 = %2, %3 = %4."';
+      Text14704@1470005 : TextConst 'ENU="Unrealized VAT had been already realized in %1 for %2 = %3, %4 = %5.";RUS="Нереализованный НДС уже был реализован в %1 для %2 = %3, %4 = %5."';
+      Text14706@1470007 : TextConst 'ENU=%1 %2 must not be more than %3.;RUS=%1 %2 не может превышать %3.';
+      Text14707@1470003 : TextConst 'ENU=%1 %2: %3 must not be less than %4.;RUS=%1 %2: %3 не должно быть меньше %4.';
+      Text12403@1470010 : TextConst 'ENU=FA No. %1 is not into operation.;RUS=ОС номер %1 не эксплуатируется.';
+      Text12404@1470009 : TextConst 'ENU=%1 %2 cannot be less than %3 %4 for FA No. %5.;RUS=%1 %2 не может быть меньше %3 %4 для ОС с номером %5.';
+      Text12405@1470008 : TextConst 'ENU=%1 %2: %3 %4 cannot be less than %5 %6.;RUS=%1 %2: %3 %4 не может быть меньше %5 %6.';
+      Text14711@1470013 : TextConst 'ENU="%1 must be %2 for %3 = %4.";RUS="%1 должно быть %2 для %3 = %4."';
+      Text14713@1470015 : TextConst 'ENU=must be positive;RUS=должно быть положительным';
+      Text14714@1470016 : TextConst 'ENU=must be negative;RUS=должно быть отрицательным';
+      Text14715@1470018 : TextConst 'ENU=Posted VAT Settlement entries exist. You should reverse these entries before unapply operation.;RUS=Существуют операции учт. зачета НДС. Перед отменой операции необходимо сторнировать эти операции.';
+      VATDocEntryBuffer@1210000 : Record 14927;
+      DimMgt@1210002 : Codeunit 408;
+      RecalculationDate@1210001 : Date;
+      Text14716@1210003 : TextConst 'ENU=Dimension used in %1 %2, %3 has caused an error. %4;RUS=Измерение, использованное в %1 %2, %3, вызвало ошибку. %4';
+      Text14717@1210004 : TextConst 'ENU=Dimension used in %1 %2, %3, %4 has caused an error. %5;RUS=Измерение, использованное в %1 %2, %3, %4, вызвало ошибку. %5';
+
+    PROCEDURE CalcAmount@1470000(VAR GenJnlLine@1470000 : Record 81) AppliedAmount : Decimal;
+    VAR
+      DtldVendLedgEntry@1470001 : Record 380;
+      VendLedgEntry@1470002 : Record 25;
+    BEGIN
+      AppliedAmount := 0;
+      DtldVendLedgEntry.SETCURRENTKEY("Transaction No.","Vendor No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Transaction No.",GenJnlLine."VAT Transaction No.");
+      DtldVendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+      DtldVendLedgEntry.SETFILTER("Entry Type",'%1|%2|%3',DtldVendLedgEntry."Entry Type"::Application,
+        DtldVendLedgEntry."Entry Type"::"Realized Loss",
+        DtldVendLedgEntry."Entry Type"::"Realized Gain");
+      IF DtldVendLedgEntry.FINDSET THEN
+        REPEAT
+          IF NOT DtldVendLedgEntry.Unapplied THEN BEGIN
+            VendLedgEntry.GET(DtldVendLedgEntry."Vendor Ledger Entry No.");
+            IF (VendLedgEntry."Document Type" = GenJnlLine."Document Type") AND
+               (VendLedgEntry."Document No." = GenJnlLine."Document No.")
+            THEN
+              AppliedAmount += DtldVendLedgEntry."Amount (LCY)";
+          END;
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+    END;
+
+    PROCEDURE TransferVendLedgEntry@1470020(VAR VendLedgEntry@1470000 : Record 25;VAR CVLedgEntry@1470001 : Record 382);
+    BEGIN
+      CVLedgEntry."Posting Date" := VendLedgEntry."Posting Date";
+      CVLedgEntry."Entry No." := VendLedgEntry."Entry No.";
+      CVLedgEntry."CV No." := VendLedgEntry."Vendor No.";
+      CVLedgEntry."Document Type" := VendLedgEntry."Document Type";
+      CVLedgEntry."Document No." := VendLedgEntry."Document No.";
+      CVLedgEntry.Description := VendLedgEntry.Description;
+    END;
+
+    PROCEDURE TransferCustLedgEntry@1470021(VAR CustLedgEntry@1470000 : Record 21;VAR CVLedgEntry@1470001 : Record 382);
+    BEGIN
+      CVLedgEntry."Posting Date" := CustLedgEntry."Posting Date";
+      CVLedgEntry."Entry No." := CustLedgEntry."Entry No.";
+      CVLedgEntry."CV No." := CustLedgEntry."Customer No.";
+      CVLedgEntry."Document Type" := CustLedgEntry."Document Type";
+      CVLedgEntry."Document No." := CustLedgEntry."Document No.";
+      CVLedgEntry.Description := CustLedgEntry.Description;
+    END;
+
+    PROCEDURE InsertLine@1470001(VAR GenJnlLine@1470008 : Record 81;VATEntry@1470000 : Record 254;CVLedgEntry@1470001 : Record 382;CVType@1470009 : Option;VATSettlementPart@1470004 : Option;PostingDate@1470002 : Date;VATAmount@1470006 : Decimal;BaseAmount@1470011 : Decimal;NextTransactionNo@1470007 : Integer);
+    VAR
+      GenJnlBatch@1470003 : Record 232;
+      GenJnlLine1@1470010 : Record 81;
+      Currency@1000 : Record 4;
+      VATDifference@1001 : Decimal;
+      Prefix@1210000 : Text[50];
+    BEGIN
+      GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+      GenJnlBatch.TESTFIELD("No. Series",'');
+
+      GenJnlLine1.COPY(GenJnlLine);
+      GenJnlLine1.RESET;
+      GenJnlLine1.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+      GenJnlLine1.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+      IF GenJnlLine1.FINDLAST THEN
+        GenJnlLine1."Line No." := GenJnlLine1."Line No." + 10000
+      ELSE
+        GenJnlLine1."Line No." := 10000;
+
+      GenJnlLine1.INIT;
+      GenJnlLine1.SetUpNewLine(GenJnlLine,0,TRUE);
+      GenJnlLine1."VAT Settlement Part" := VATSettlementPart;
+      GenJnlLine1."Document Date" := CVLedgEntry."Posting Date";
+      GenJnlLine1."Unrealized VAT Entry No." := VATEntry."Entry No.";
+      GenJnlLine1."External Document No." := VATEntry."External Document No.";
+      GenJnlLine1."Object Type" := VATEntry."Object Type";
+      GenJnlLine1."Object No." := VATEntry."Object No.";
+      GenJnlLine1.Correction := GenJnlLine.Correction;
+      GenJnlLine1."Posting Date" := PostingDate;
+      GenJnlLine1.VALIDATE("Posting Date",PostingDate);
+      GenJnlLine1."Account Type" := CVType;
+      GenJnlLine1.VALIDATE("Account No.",CVLedgEntry."CV No.");
+      GenJnlLine1."VAT Transaction No." := NextTransactionNo;
+      //NC NOS-26 > ENK #TODO# check text14703
+      {
+      IF VATSettlementPart = GenJnlLine1."VAT Settlement Part"::Ratio THEN BEGIN
+        GenJnlLine1."Document Type" := GenJnlLine."Document Type";
+        GenJnlLine1."Document No." := GenJnlLine."Document No.";
+        GenJnlLine1."FA Error Entry No." := GenJnlLine."FA Error Entry No.";
+        Prefix := Text14703;
+      END ELSE BEGIN
+      }
+      //NC NOS-26 < ENK
+        GenJnlLine1."Document Type" := CVLedgEntry."Document Type";
+        GenJnlLine1."Document No." := CVLedgEntry."Document No.";
+
+      Prefix := Text14701;
+      //NC NOS-26 > ENK
+      {
+        IF GenJnlLine1."VAT Settlement Part" = GenJnlLine1."VAT Settlement Part"::Full THEN
+          Prefix := Text14703
+        ELSE
+          Prefix := Text14701;
+      END;
+      }
+      //NC NOS-26 < ENK
+      GenJnlLine1."Paid Amount" := GenJnlLine."Paid Amount";
+      GenJnlLine1."Currency Code" := '';
+      GenJnlLine1.VALIDATE(Amount,BaseAmount + VATAmount);
+      GenJnlLine1.Description := COPYSTR(Prefix + CVLedgEntry.Description,1,MAXSTRLEN(GenJnlLine.Description));
+      GenJnlLine1.VALIDATE("VAT %",GetVATPercent(GenJnlLine1."Unrealized VAT Entry No."));
+      GenJnlLine1."Additional VAT Ledger Sheet" := GenJnlLine."Additional VAT Ledger Sheet";
+      GenJnlLine1."Corrected Document Date" := GenJnlLine."Corrected Document Date";
+      GenJnlLine1."Prepmt. Diff." := VATEntry."Prepmt. Diff.";
+
+      Currency.InitRoundingPrecision;
+
+      VATDifference :=
+        VATAmount -
+        ROUND(
+          GenJnlLine1.Amount * GenJnlLine1."VAT %" / (100 + GenJnlLine1."VAT %"),
+          Currency."Amount Rounding Precision",Currency.VATRoundingDirection);
+
+      VATAmount := VATAmount - VATDifference;
+
+      IF VATAmount <> 0 THEN
+        GenJnlLine1.VALIDATE("VAT Amount",VATAmount);
+      GenJnlLine1."Payment Date" := GenJnlLine."Posting Date";
+      GenJnlLine1.UpdateLineBalance;
+      CopyDimensions(GenJnlLine1,CVType,NextTransactionNo);
+      GenJnlLine1.INSERT;
+
+      GenJnlLine := GenJnlLine1;
+    END;
+
+    PROCEDURE CheckDuplicate@1470002(GenJnlLine@1470000 : Record 81);
+    VAR
+      VATEntry@1470001 : Record 254;
+    BEGIN
+      VATEntry.RESET;
+      CASE GenJnlLine."VAT Settlement Part" OF
+        GenJnlLine."VAT Settlement Part"::" ":
+          BEGIN
+            VATEntry.SETCURRENTKEY("Transaction No.");
+            VATEntry.SETRANGE("Transaction No.",GenJnlLine."VAT Transaction No.");
+            IF VATEntry.FINDSET THEN
+              REPEAT
+                IF (NOT VATEntry.Reversed) AND (VATEntry."Unrealized VAT Entry No." = GenJnlLine."Unrealized VAT Entry No.") AND
+                   (VATEntry."Object No." = GenJnlLine."Object No.")
+                THEN
+                  ERROR(Text14705,GenJnlLine.FIELDCAPTION("Object No."),GenJnlLine."Object No.",
+                    VATEntry.FIELDCAPTION("Entry No."),VATEntry."Entry No.");
+              UNTIL VATEntry.NEXT = 0;
+          END;
+      END;
+    END;
+
+    PROCEDURE IsLastOperation@1470005(GenJnlLine@1470000 : Record 81) : Boolean;
+    BEGIN
+      IF GenJnlLine.Correction THEN
+        EXIT(FALSE);
+
+      IF GenJnlLine."VAT Settlement Part" = GenJnlLine."VAT Settlement Part"::" " THEN
+        EXIT(IsLastApplication(GenJnlLine));
+      EXIT(IsLastSettlement(GenJnlLine));
+    END;
+
+    PROCEDURE IsLastApplication@1470003(GenJnlLine@1470004 : Record 81) : Boolean;
+    VAR
+      VATEntry@1470000 : Record 254;
+      DtldVendLedgEntry@1470001 : Record 380;
+      VendLedgEntry@1470005 : Record 25;
+      VendLedgEntryNo@1210001 : Integer;
+      FoundRealVAT@1210000 : Boolean;
+    BEGIN
+      DtldVendLedgEntry.RESET;
+      DtldVendLedgEntry.SETCURRENTKEY("Transaction No.","Vendor No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Transaction No.",GenJnlLine."VAT Transaction No.");
+      DtldVendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+      DtldVendLedgEntry.SETRANGE("Entry Type",DtldVendLedgEntry."Entry Type"::Application);
+      IF DtldVendLedgEntry.FINDSET THEN
+        REPEAT
+          IF NOT DtldVendLedgEntry.Unapplied THEN BEGIN
+            VendLedgEntry.GET(DtldVendLedgEntry."Vendor Ledger Entry No.");
+            IF VendLedgEntry."Document No." = GenJnlLine."Document No." THEN
+              VendLedgEntryNo := DtldVendLedgEntry."Vendor Ledger Entry No."
+          END;
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+
+      VendLedgEntry.GET(VendLedgEntryNo);
+      IF VendLedgEntry.Open THEN
+        EXIT(FALSE);
+
+      DtldVendLedgEntry.RESET;
+      DtldVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",VendLedgEntryNo);
+      DtldVendLedgEntry.SETRANGE("Entry Type",DtldVendLedgEntry."Entry Type"::Application);
+      IF DtldVendLedgEntry.FINDSET THEN
+        REPEAT
+          IF NOT DtldVendLedgEntry.Unapplied THEN
+            IF DtldVendLedgEntry."Transaction No." <> GenJnlLine."VAT Transaction No." THEN BEGIN
+              FoundRealVAT := FALSE;
+              VATEntry.SETCURRENTKEY("Transaction No.");
+              VATEntry.SETRANGE("Transaction No.",DtldVendLedgEntry."Transaction No.");
+              IF VATEntry.FINDSET THEN
+                REPEAT
+                  FoundRealVAT := FoundRealVAT OR ((VATEntry."Object Type" = GenJnlLine."Object Type") AND
+                                                   (VATEntry."Object No." = GenJnlLine."Object No.") AND
+                                                   (NOT VATEntry.Reversed) AND
+                                                   (VATEntry."Unrealized VAT Entry No." <> 0));
+                UNTIL VATEntry.NEXT = 0;
+              IF NOT FoundRealVAT THEN
+                EXIT(FALSE);
+            END;
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE IsLastSettlement@1470006(GenJnlLine@1470003 : Record 81) : Boolean;
+    BEGIN
+      EXIT(GetPeriodCount(GenJnlLine."VAT Settlement Part") -
+        GetLastPosted(GenJnlLine."Unrealized VAT Entry No.",GenJnlLine."VAT Settlement Part") = 1);
+    END;
+
+    PROCEDURE GetLastPosted@1470012(UnrealVATEntryNo@1470001 : Integer;VATSettlementPart@1470000 : ' ,Full,1/6,1/12,28FL') EntryCount : Integer;
+    VAR
+      VATEntry@1470005 : Record 254;
+    BEGIN
+      WITH VATEntry DO BEGIN
+        EntryCount := 0;
+        SETCURRENTKEY("Unrealized VAT Entry No.");
+        SETRANGE("Unrealized VAT Entry No.",UnrealVATEntryNo);
+        IF FINDSET THEN
+          REPEAT
+            IF (NOT Correction) AND
+               (NOT Reversed) AND ("VAT Settlement Part" <> "VAT Settlement Part"::" ")
+            THEN
+              IF "VAT Settlement Part" = VATSettlementPart THEN
+                EntryCount := EntryCount + 1
+              ELSE
+                ERROR(Text14711,FIELDCAPTION("VAT Settlement Part"),"VAT Settlement Part",
+                  FIELDCAPTION("Unrealized VAT Entry No."),"Unrealized VAT Entry No.");
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetPeriodCount@1470009(VATSettlementPart@1470000 : ' ,Full,1/6,1/12,28FL') PeriodCount : Integer;
+    BEGIN
+      IF VATSettlementPart = VATSettlementPart::" " THEN
+        PeriodCount := 0;
+    END;
+
+    PROCEDURE CheckDate@1470007(GenJnlLine@1470001 : Record 81);
+    VAR
+      VATEntry@1470000 : Record 254;
+      FA@1470003 : Record 5600;
+      FALedgEntry@1210000 : Record 5601;
+      GLSetup@1210002 : Record 98;
+    BEGIN
+      CASE GenJnlLine."VAT Settlement Part" OF
+        GenJnlLine."VAT Settlement Part"::Custom,
+        GenJnlLine."VAT Settlement Part"::" ":
+          IF GenJnlLine."Object Type" = GenJnlLine."Object Type"::"Fixed Asset" THEN BEGIN
+            IF GenJnlLine."Posting Date" < GenJnlLine."Payment Date" THEN
+              ERROR(Text12405,GenJnlLine.FIELDCAPTION("Document No."),GenJnlLine."Document No.",
+                GenJnlLine.FIELDCAPTION("Posting Date"),GenJnlLine."Posting Date",
+                GenJnlLine.FIELDCAPTION("Payment Date"),GenJnlLine."Payment Date");
+            IF VATEntry.GET(GenJnlLine."Unrealized VAT Entry No.") THEN
+              IF FA.GET(GenJnlLine."Object No.") THEN
+                IF VATEntry."VAT Settlement Type" = VATEntry."VAT Settlement Type"::"Future Expenses" THEN BEGIN
+                  IF GenJnlLine."FA Error Entry No." <> 0 THEN BEGIN
+                    FALedgEntry.GET(GenJnlLine."FA Error Entry No.");
+                    IF GenJnlLine."Posting Date" < FALedgEntry."Posting Date" THEN
+                      ERROR(Text14707,GenJnlLine.FIELDCAPTION("Document No."),GenJnlLine."Document No.",
+                        GenJnlLine.FIELDCAPTION("Posting Date"),FALedgEntry."Posting Date");
+                  END;
+                END ELSE BEGIN
+                  IF AppliedToCrMemo(GenJnlLine) THEN
+                    EXIT;
+                  GLSetup.GET;
+                  IF (FA."Initial Release Date" = 0D) AND (NOT GLSetup."Allow VAT Set. before FA Rel.") THEN
+                    ERROR(Text12403,FA."No.");
+                  IF FA."Initial Release Date" > GenJnlLine."Posting Date" THEN
+                    ERROR(Text12404,GenJnlLine.FIELDCAPTION("Posting Date"),GenJnlLine."Posting Date",
+                      FA.FIELDCAPTION("Initial Release Date"),FA."Initial Release Date",FA."No.");
+                END;
+          END;
+      END;
+    END;
+
+    PROCEDURE CalcUnrealVATPart@1470010(GenJnlLine@1470000 : Record 81) : Decimal;
+    VAR
+      VATEntry@1470001 : Record 254;
+      FullAmount@1000 : Decimal;
+      InitialAmount@1470002 : Decimal;
+      NewAmount@1470003 : Decimal;
+      PositiveNewAmount@1470004 : Boolean;
+      PositiveAmount@1470005 : Boolean;
+    BEGIN
+      FullAmount := GetRemUnrealVAT(GenJnlLine."Unrealized VAT Entry No.",0D);
+      IF (NOT GenJnlLine.Correction) AND (FullAmount = 0) THEN
+        EXIT(0);
+
+      VATEntry.GET(GenJnlLine."Unrealized VAT Entry No.");
+      InitialAmount := VATEntry."Unrealized Base" + VATEntry."Unrealized Amount";
+      PositiveAmount := InitialAmount > 0;
+      NewAmount := FullAmount - GenJnlLine.Amount;
+      PositiveNewAmount := (NewAmount > 0) OR (NewAmount = 0) AND PositiveAmount;
+      IF ABS(NewAmount) > ABS(InitialAmount) THEN
+        ERROR(Text14707,GenJnlLine.FIELDCAPTION("Document No."),GenJnlLine."Document No.",
+          GenJnlLine.FIELDCAPTION(Amount),FullAmount - InitialAmount);
+      IF PositiveAmount <> PositiveNewAmount THEN
+        ERROR(Text14706,GenJnlLine.FIELDCAPTION(Amount),GenJnlLine.Amount,FullAmount);
+
+      IF NOT GenJnlLine.Correction THEN
+        IF GenJnlLine.Amount / FullAmount < 0 THEN
+          IF GenJnlLine.Amount < 0 THEN
+            GenJnlLine.FIELDERROR(Amount,Text14713)
+          ELSE
+            GenJnlLine.FIELDERROR(Amount,Text14714);
+      EXIT(GenJnlLine.Amount / FullAmount);
+    END;
+
+    PROCEDURE PartiallyRealized@1470018(UnrealVATEntryNo@1470000 : Integer;VATSettlementPart@1470002 : ' ,Full,1/6,1/12,28FL') : Boolean;
+    BEGIN
+      IF VATSettlementPart <> VATSettlementPart::" " THEN
+        EXIT(FALSE);
+
+      EXIT(GetPart(UnrealVATEntryNo) <> 0);
+    END;
+
+    PROCEDURE GetRemUnrealVAT@1(EntryNo@1001 : Integer;AtDate@1002 : Date) FullAmount : Decimal;
+    VAR
+      VATEntry@1000 : Record 254;
+    BEGIN
+      FullAmount := 0;
+      IF VATEntry.GET(EntryNo) THEN
+        FullAmount := VATEntry."Remaining Unrealized Amount" + VATEntry."Remaining Unrealized Base";
+      IF AtDate <> 0D THEN BEGIN
+        VATEntry.SETCURRENTKEY("Unrealized VAT Entry No.");
+        VATEntry.SETRANGE("Unrealized VAT Entry No.",EntryNo);
+        IF VATEntry.FIND('+') THEN
+          REPEAT
+            IF NOT VATEntry.Reversed AND (VATEntry."Posting Date" >= AtDate) THEN
+              FullAmount := FullAmount + (VATEntry.Amount + VATEntry.Base);
+          UNTIL VATEntry.NEXT(-1) = 0;
+      END;
+    END;
+
+    PROCEDURE CalcPaidAmount@5(FromDate@1000 : Date;ToDate@1470001 : Date;UnrealVATEntryNo@1001 : Integer;AddRealVAT@1470003 : ',Add,Deduct,RealVATOnly,Correction') PaidAmount : Decimal;
+    VAR
+      VATEntry@1470002 : Record 254;
+      OriginalAmount@1470000 : Decimal;
+    BEGIN
+      IF AddRealVAT < AddRealVAT::RealVATOnly THEN BEGIN
+        VATEntry.GET(UnrealVATEntryNo);
+        CASE VATEntry.Type OF
+          VATEntry.Type::Sale:
+            PaidAmount := GetCustPaidAmount(VATEntry,FromDate,ToDate,OriginalAmount);
+          VATEntry.Type::Purchase:
+            PaidAmount := GetVendPaidAmount(VATEntry,FromDate,ToDate,OriginalAmount);
+        END;
+        PaidAmount := ROUND(PaidAmount * (VATEntry."Unrealized Amount" + VATEntry."Unrealized Base") / OriginalAmount);
+      END;
+
+      IF AddRealVAT = 0 THEN
+        EXIT;
+
+      VATEntry.SETCURRENTKEY("Unrealized VAT Entry No.");
+      VATEntry.SETRANGE("Unrealized VAT Entry No.",UnrealVATEntryNo);
+      VATEntry.SETRANGE("Posting Date",FromDate,ToDate);
+      IF VATEntry.FINDSET THEN
+        REPEAT
+          IF NOT VATEntry.Reversed THEN
+            CASE AddRealVAT OF
+              AddRealVAT::Add,
+              AddRealVAT::RealVATOnly:
+                PaidAmount -= VATEntry.Base + VATEntry.Amount;
+              AddRealVAT::Correction:
+                IF VATEntry.Correction OR
+                   VATEntry."Additional VAT Ledger Sheet"
+                THEN
+                  PaidAmount -= VATEntry.Base + VATEntry.Amount;
+              AddRealVAT::Deduct:
+                PaidAmount += VATEntry.Base + VATEntry.Amount;
+            END;
+        UNTIL VATEntry.NEXT = 0;
+    END;
+
+    PROCEDURE GetCustPaidAmount@1470032(VATEntry@1470003 : Record 254;FromDate@1470007 : Date;ToDate@1470006 : Date;VAR OriginalAmount@1470005 : Decimal) PaidAmount : Decimal;
+    VAR
+      CustLedgEntry@1470001 : Record 21;
+      DtldCustLedgEntry@1470000 : Record 379;
+      LedgerEntryNo@1210000 : Integer;
+    BEGIN
+      LedgerEntryNo := 0;
+      CustLedgEntry.SETCURRENTKEY("Transaction No.");
+      CustLedgEntry.SETRANGE("Transaction No.",VATEntry."Transaction No.");
+      IF CustLedgEntry.FINDSET THEN
+        REPEAT
+          IF CustLedgEntry."Document Type" = VATEntry."Document Type" THEN BEGIN
+            LedgerEntryNo := CustLedgEntry."Entry No.";
+            CustLedgEntry.CALCFIELDS("Original Amt. (LCY)");
+            OriginalAmount := CustLedgEntry."Original Amt. (LCY)";
+          END;
+        UNTIL (CustLedgEntry.NEXT = 0) OR (LedgerEntryNo <> 0);
+      DtldCustLedgEntry.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type","Posting Date");
+      DtldCustLedgEntry.SETRANGE("Cust. Ledger Entry No.",LedgerEntryNo);
+      IF ToDate <> 0D THEN
+        DtldCustLedgEntry.SETRANGE("Posting Date",FromDate,ToDate);
+      DtldCustLedgEntry.SETFILTER("Entry Type",'%1|%2|%3',DtldCustLedgEntry."Entry Type"::Application,
+        DtldCustLedgEntry."Entry Type"::"Realized Loss",
+        DtldCustLedgEntry."Entry Type"::"Realized Gain");
+      IF DtldCustLedgEntry.FINDSET THEN
+        REPEAT
+          IF NOT DtldCustLedgEntry.Unapplied THEN
+            PaidAmount += DtldCustLedgEntry."Amount (LCY)";
+        UNTIL DtldCustLedgEntry.NEXT = 0;
+    END;
+
+    PROCEDURE GetVendPaidAmount@1470033(VATEntry@1470005 : Record 254;FromDate@1470004 : Date;ToDate@1470006 : Date;VAR OriginalAmount@1470003 : Decimal) PaidAmount : Decimal;
+    VAR
+      VendLedgEntry@1470001 : Record 25;
+      DtldVendLedgEntry@1470000 : Record 380;
+      LedgerEntryNo@1470002 : Integer;
+    BEGIN
+      LedgerEntryNo := 0;
+      VendLedgEntry.SETCURRENTKEY("Transaction No.");
+      VendLedgEntry.SETRANGE("Transaction No.",VATEntry."Transaction No.");
+      IF VendLedgEntry.FINDSET THEN
+        REPEAT
+          IF VendLedgEntry."Document Type" = VATEntry."Document Type" THEN BEGIN
+            LedgerEntryNo := VendLedgEntry."Entry No.";
+            VendLedgEntry.CALCFIELDS("Original Amt. (LCY)");
+            OriginalAmount := VendLedgEntry."Original Amt. (LCY)";
+          END;
+        UNTIL (VendLedgEntry.NEXT = 0) OR (LedgerEntryNo <> 0);
+      DtldVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type","Posting Date");
+      DtldVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",LedgerEntryNo);
+      IF ToDate <> 0D THEN
+        DtldVendLedgEntry.SETRANGE("Posting Date",FromDate,ToDate);
+      DtldVendLedgEntry.SETFILTER("Entry Type",'%1|%2|%3',DtldVendLedgEntry."Entry Type"::Application,
+        DtldVendLedgEntry."Entry Type"::"Realized Loss",
+        DtldVendLedgEntry."Entry Type"::"Realized Gain");
+      IF DtldVendLedgEntry.FINDSET THEN
+        REPEAT
+          IF NOT DtldVendLedgEntry.Unapplied THEN
+            PaidAmount += DtldVendLedgEntry."Amount (LCY)";
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+    END;
+
+    PROCEDURE VATIsPostponed@1470016(VATEntry@1470000 : Record 254;VATSettlementPart@1470003 : ' ,Full,1/6,1/12,28FL';PostingDate@1470004 : Date) : Boolean;
+    VAR
+      VATBusPostingGroup@1470001 : Record 323;
+      VATPostingSetup@1470002 : Record 325;
+    BEGIN
+      IF VATSettlementPart <> 0 THEN
+        EXIT(FALSE);
+      WITH VATEntry DO BEGIN
+        IF VATBusPostingGroup.GET("VAT Bus. Posting Group") THEN
+          IF VATPostingSetup.GET("VAT Bus. Posting Group","VAT Prod. Posting Group") THEN
+            EXIT(VATPostingSetup."Manual VAT Settlement");
+      END;
+    END;
+
+    PROCEDURE GetPart@1470022(UnrealVATEntryNo@1470000 : Integer) : Integer;
+    VAR
+      VATEntry@1470001 : Record 254;
+    BEGIN
+      WITH VATEntry DO BEGIN
+        SETCURRENTKEY("Unrealized VAT Entry No.");
+        SETRANGE("Unrealized VAT Entry No.",UnrealVATEntryNo);
+        IF FIND('+') THEN
+          REPEAT
+            IF (NOT Reversed) AND ("VAT Settlement Part" > "VAT Settlement Part"::" ") THEN
+              EXIT("VAT Settlement Part");
+          UNTIL NEXT(-1) = 0;
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE GetVATPercent@1470023(UnrealVATEntryNo@1470000 : Integer) : Decimal;
+    VAR
+      VATEntry@1470001 : Record 254;
+      VATPostingSetup@1470002 : Record 325;
+    BEGIN
+      IF VATEntry.GET(UnrealVATEntryNo) THEN
+        IF VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group") THEN
+          EXIT(VATPostingSetup."VAT %");
+      EXIT(0);
+    END;
+
+    PROCEDURE Recalculate@1470027(VAR GenJnlLine@1470000 : Record 81;VAR VATEntry@1470001 : Record 254);
+    VAR
+      PaidAmount@1470002 : Decimal;
+      Date1@1470003 : Date;
+      Amount@1470004 : Decimal;
+      I@1470005 : Integer;
+      PostedCorrection@1470008 : Decimal;
+    BEGIN
+      Date1 := CALCDATE('<-CY-1D>',RecalculationDate);
+      PaidAmount := CalcPaidAmount(0D,Date1,GenJnlLine."Unrealized VAT Entry No.",2);
+      REPEAT
+        I := I + 1;
+        Date1 := CALCDATE('<+1M+CM>',Date1);
+        PaidAmount := PaidAmount + CalcPaidAmount(CALCDATE('<-CM>',Date1),Date1,GenJnlLine."Unrealized VAT Entry No.",0);
+        Amount := Amount + ROUND((PaidAmount - Amount) / (13 - I));
+      UNTIL Date1 = CALCDATE('<-1D+CM>',RecalculationDate);
+      PostedCorrection := CalcPaidAmount(RecalculationDate,CALCDATE('<CM>',RecalculationDate),GenJnlLine."Unrealized VAT Entry No.",4);
+      GenJnlLine.Correction := TRUE;
+      GenJnlLine.Amount :=
+        CalcPaidAmount(CALCDATE('<-CY>',Date1),Date1,GenJnlLine."Unrealized VAT Entry No.",3) - Amount + PostedCorrection;
+      VATEntry."Remaining Unrealized Amount" :=
+        ROUND(GenJnlLine.Amount * VATEntry."Unrealized Amount" / (VATEntry."Unrealized Amount" + VATEntry."Unrealized Base"));
+      VATEntry."Remaining Unrealized Base" := GenJnlLine.Amount - VATEntry."Remaining Unrealized Amount";
+    END;
+
+    PROCEDURE AppliedToCrMemo@1470029(GenJnlLine@1470000 : Record 81) : Boolean;
+    VAR
+      DtldVendLedgEntry@1470001 : Record 380;
+    BEGIN
+      IF GenJnlLine."Document Type" = GenJnlLine."Document Type"::"Credit Memo" THEN
+        EXIT(TRUE);
+
+      DtldVendLedgEntry.SETCURRENTKEY("Transaction No.","Vendor No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Transaction No.",GenJnlLine."VAT Transaction No.");
+      DtldVendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+      DtldVendLedgEntry.SETRANGE("Entry Type",DtldVendLedgEntry."Entry Type"::Application);
+      IF DtldVendLedgEntry.FIND('-') THEN
+        REPEAT
+          IF DtldVendLedgEntry."Document Type" = DtldVendLedgEntry."Document Type"::"Credit Memo" THEN
+            EXIT(TRUE);
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckForUnapplyByEntryNo@4(EntryNo@1470000 : Integer;ContragentType@1000 : 'Customer,Vendor');
+    VAR
+      CustLedgerEntry@1470001 : Record 21;
+      VendorLedgerEntry@1001 : Record 25;
+      TransactionNo@1002 : Integer;
+    BEGIN
+      CASE ContragentType OF
+        ContragentType::Customer:
+          BEGIN
+            CustLedgerEntry.GET(EntryNo);
+            TransactionNo := CustLedgerEntry."Transaction No.";
+          END;
+        ContragentType::Vendor:
+          BEGIN
+            VendorLedgerEntry.GET(EntryNo);
+            TransactionNo := VendorLedgerEntry."Transaction No.";
+          END;
+      END;
+      CheckForUnapplyByTransNo(TransactionNo);
+    END;
+
+    PROCEDURE CheckForUnapplyByTransNo@1210001(TransactionNo@1470000 : Integer);
+    VAR
+      VATEntry@1470002 : Record 254;
+      VATEntry2@1470003 : Record 254;
+    BEGIN
+      VATEntry.SETCURRENTKEY("Transaction No.");
+      VATEntry.SETRANGE("Transaction No.",TransactionNo);
+      IF VATEntry.FIND('-') THEN
+        REPEAT
+          VATEntry2.SETCURRENTKEY("Unrealized VAT Entry No.");
+          VATEntry2.SETRANGE("Unrealized VAT Entry No.",VATEntry."Entry No.");
+          IF VATEntry2.FIND('-') THEN
+            REPEAT
+              IF NOT VATEntry2.Reversed THEN
+                IF (VATEntry2."VAT Settlement Part" = VATEntry2."VAT Settlement Part"::Custom) AND
+                   NOT VATEntry2."Manual VAT Settlement"
+                THEN
+                  ERROR(Text14715);
+            UNTIL VATEntry2.NEXT = 0;
+        UNTIL VATEntry.NEXT = 0;
+    END;
+
+    PROCEDURE CopyDimensions@1210002(VAR GenJournalLine@1210006 : Record 81;CVType@1210001 : ' ,Customer,Vendor';TransactionNo@1210002 : Integer);
+    VAR
+      CustLedgerEntry@1210004 : Record 21;
+      VendLedgerEntry@1210005 : Record 25;
+    BEGIN
+      CASE CVType OF
+        CVType::Customer:
+          BEGIN
+            CustLedgerEntry.SETCURRENTKEY("Transaction No.");
+            CustLedgerEntry.SETRANGE("Transaction No.",TransactionNo);
+            IF CustLedgerEntry.FINDFIRST THEN BEGIN
+              GenJournalLine."Shortcut Dimension 1 Code" := CustLedgerEntry."Global Dimension 1 Code";
+              GenJournalLine."Shortcut Dimension 2 Code" := CustLedgerEntry."Global Dimension 2 Code";
+              GenJournalLine."Dimension Set ID" := CustLedgerEntry."Dimension Set ID";
+            END;
+          END;
+        CVType::Vendor:
+          BEGIN
+            VendLedgerEntry.SETCURRENTKEY("Transaction No.");
+            VendLedgerEntry.SETRANGE("Transaction No.",TransactionNo);
+            IF VendLedgerEntry.FINDFIRST THEN BEGIN
+              GenJournalLine."Shortcut Dimension 1 Code" := VendLedgerEntry."Global Dimension 1 Code";
+              GenJournalLine."Shortcut Dimension 2 Code" := VendLedgerEntry."Global Dimension 2 Code";
+              GenJournalLine."Dimension Set ID" := VendLedgerEntry."Dimension Set ID";
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE CheckForPDUnapply@1210003(CVLedgEntryNo@1210002 : Integer);
+    VAR
+      VATEntry@1210001 : Record 254;
+      VATEntry2@1210000 : Record 254;
+    BEGIN
+      VATEntry.SETCURRENTKEY(Type,"CV Ledg. Entry No.");
+      VATEntry.SETRANGE("CV Ledg. Entry No.",CVLedgEntryNo);
+      IF VATEntry.FINDSET THEN
+        REPEAT
+          VATEntry2.SETCURRENTKEY("Unrealized VAT Entry No.");
+          VATEntry2.SETRANGE("Unrealized VAT Entry No.",VATEntry."Entry No.");
+          IF VATEntry2.FINDSET THEN
+            REPEAT
+              IF NOT VATEntry2.Reversed THEN
+                IF VATEntry2."Prepmt. Diff." AND (VATEntry2."VAT Settlement Part" > VATEntry2."VAT Settlement Part"::" ")
+                THEN
+                  ERROR(Text14715);
+            UNTIL VATEntry2.NEXT = 0;
+        UNTIL VATEntry.NEXT = 0;
+    END;
+
+    PROCEDURE CheckFPE@1210004(VAR GenJnlLine@1210000 : Record 81);
+    VAR
+      VATEntry@1210003 : Record 254;
+      FALedgEntry@1210001 : Record 5601;
+      VATAllocLine@1210005 : Record 14925;
+      Mode@1210006 : 'Any,Depreciation,General';
+      RemVATAmount@1210004 : Decimal;
+      RemVATBase@1210002 : Decimal;
+    BEGIN
+      VATEntry.GET(GenJnlLine."Unrealized VAT Entry No.");
+      VATAllocLine.SETRANGE("VAT Entry No.",GenJnlLine."Unrealized VAT Entry No.");
+      VATAllocLine.FINDFIRST;
+      GetFPEMode(GenJnlLine."Unrealized VAT Entry No.",Mode);
+      IF (Mode = Mode::Depreciation) OR
+         (Mode = Mode::Any) AND (GenJnlLine."FA Error Entry No." <> 0)
+      THEN BEGIN
+        GenJnlLine.TESTFIELD("FA Error Entry No.");
+        FALedgEntry.GET(GenJnlLine."FA Error Entry No.");
+        RemVATBase := FALedgEntry.GetAmountToRealize(GenJnlLine."Unrealized VAT Entry No.");
+        IF Mode = Mode::Depreciation THEN
+          VATAllocLine.TESTFIELD(Base,VATAllocLine.Base::Depreciation);
+        IF VATAllocLine.Base = VATAllocLine.Base::Depreciation THEN BEGIN
+          IF ABS(RemVATBase) < ABS(VATAllocLine."VAT Base Amount") THEN
+            VATAllocLine.FIELDERROR("VAT Base Amount");
+          RemVATAmount := VATEntry.GetAmountOnBase(RemVATBase);
+          IF ABS(GenJnlLine.Amount) > ABS(RemVATAmount) THEN
+            ERROR(Text14704,FORMAT(FALedgEntry."Posting Date",0,'<Month Text> <Year4>'),
+              FALedgEntry.TABLECAPTION,GenJnlLine."FA Error Entry No.",
+              VATEntry.FIELDCAPTION("Remaining Unrealized Amount"),-RemVATAmount);
+        END ELSE
+          GenJnlLine."FA Error Entry No." := 0
+      END ELSE BEGIN
+        IF VATAllocLine.Base = VATAllocLine.Base::Depreciation THEN
+          VATAllocLine.FIELDERROR(Base);
+        GenJnlLine."FA Error Entry No." := 0;
+      END;
+    END;
+
+    PROCEDURE UpdateRealEntries@1210005(UnrealVAtEntryNo@1470000 : Integer;CVEntryNo@1470001 : Integer);
+    VAR
+      VATEntry@1470002 : Record 254;
+    BEGIN
+      VATEntry.SETCURRENTKEY("Unrealized VAT Entry No.");
+      VATEntry.SETRANGE("Unrealized VAT Entry No.",UnrealVAtEntryNo);
+      VATEntry.MODIFYALL("CV Ledg. Entry No.",CVEntryNo);
+    END;
+
+    PROCEDURE FillCVEntryNo@1210006(TransactionNo@1470002 : Integer;CVEntryNo@1470003 : Integer);
+    VAR
+      UnrealVATEntry@1470000 : Record 254;
+    BEGIN
+      UnrealVATEntry.SETCURRENTKEY("Transaction No.");
+      UnrealVATEntry.SETRANGE("Transaction No.",TransactionNo);
+      IF UnrealVATEntry.FINDSET(TRUE) THEN
+        REPEAT
+          IF UnrealVATEntry."Unrealized Base" <> 0 THEN BEGIN // Unreal. Amount may be 0 even for unrealized VAT entry
+            UnrealVATEntry."CV Ledg. Entry No." := CVEntryNo;
+            UnrealVATEntry.MODIFY;
+            UpdateRealEntries(UnrealVATEntry."Entry No.",CVEntryNo);
+          END;
+        UNTIL UnrealVATEntry.NEXT = 0;
+    END;
+
+    PROCEDURE Generate@1210007(VAR TempVATDocBuf@1210001 : TEMPORARY Record 14927;Type@1210002 : ',Purchase,Sale,Fixed Asset,Future Expense');
+    VAR
+      CustLedgEntry@1210000 : Record 21;
+      VendLedgEntry@1470000 : Record 25;
+      VATEntry@1470001 : Record 254;
+      Cust@1210004 : Record 18;
+      Vend@1210005 : Record 23;
+      VATPostingSetup@1210008 : Record 325;
+      Window@1210003 : Dialog;
+      VATCount@1470002 : Integer;
+      I@1470003 : Integer;
+      CVEntryNo@1210007 : Integer;
+      DimSetID@1210009 : Integer;
+      PostingDate@1470004 : Date;
+      CVEntryType@1210006 : ' ,Purchase,Sale';
+    BEGIN
+      WITH TempVATDocBuf DO BEGIN
+        VATDocEntryBuffer.COPYFILTERS(TempVATDocBuf);
+        DELETEALL;
+        Window.OPEN('@1@@@@@@@@@@@@@@@');
+
+        VATEntry.RESET;
+        CASE Type OF
+          Type::Purchase:
+            VATEntry.SETRANGE(Type,Type::Purchase);
+          Type::Sale:
+            VATEntry.SETRANGE(Type,Type::Sale);
+          Type::"Fixed Asset":
+            VATEntry.SETRANGE("VAT Settlement Type",VATEntry."VAT Settlement Type"::"by Act");
+          Type::"Future Expense":
+            VATEntry.SETRANGE("VAT Settlement Type",VATEntry."VAT Settlement Type"::"Future Expenses");
+        END;
+        IF Type IN [Type::"Fixed Asset",Type::"Future Expense"] THEN
+          VATEntry.SETRANGE("Object Type",VATEntry."Object Type"::"Fixed Asset")
+        ELSE
+          VATEntry.SETFILTER("Object Type",'<>%1',VATEntry."Object Type"::"Fixed Asset");
+        VATEntry.SETRANGE(Reversed,FALSE);
+        VATEntry.SETRANGE("Unrealized VAT Entry No.",0);
+        VATEntry.SETFILTER("Posting Date",GETFILTER("Date Filter"));
+        VATEntry.SETFILTER("VAT Bus. Posting Group",GETFILTER("VAT Bus. Posting Group Filter"));
+        VATEntry.SETFILTER("VAT Prod. Posting Group",GETFILTER("VAT Prod. Posting Group Filter"));
+        VATEntry.SETRANGE(Base,0);
+        VATEntry.SETFILTER("Remaining Unrealized Amount",'<>%1',0);
+        VATEntry.SETRANGE("Manual VAT Settlement",TRUE);
+        I := 0;
+        VATCount := VATEntry.COUNT;
+        IF VATEntry.FINDSET THEN
+          REPEAT
+            I += 1;
+            Window.UPDATE(1,ROUND(I / VATCount * 10000,1));
+            PostingDate := GETRANGEMAX("Date Filter");
+            IF CheckFixedAsset(VATEntry,PostingDate,Type) THEN
+              IF VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group") THEN
+                // IF VATPostingSetup."Manual VAT Settlement" THEN
+                IF VATEntry.FindCVEntry(CVEntryType,CVEntryNo) THEN BEGIN
+                  CASE CVEntryType OF
+                    CVEntryType::Purchase:
+                      BEGIN
+                        VendLedgEntry.GET(CVEntryNo);
+                        VendLedgEntry.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+                        TRANSFERFIELDS(VendLedgEntry);
+                        "Amount (LCY)" := VendLedgEntry."Amount (LCY)";
+                        "Remaining Amt. (LCY)" := VendLedgEntry."Remaining Amt. (LCY)";
+                        "Table ID" := DATABASE::"Vendor Ledger Entry";
+                        Vend.GET(VendLedgEntry."Vendor No.");
+                        "CV Name" := Vend.Name;
+                        DimSetID := VendLedgEntry."Dimension Set ID";
+                      END;
+                    CVEntryType::Sale:
+                      BEGIN
+                        CustLedgEntry.GET(CVEntryNo);
+                        CustLedgEntry.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+                        TRANSFERFIELDS(CustLedgEntry);
+                        "Amount (LCY)" := CustLedgEntry."Amount (LCY)";
+                        "Remaining Amt. (LCY)" := CustLedgEntry."Remaining Amt. (LCY)";
+                        "Table ID" := DATABASE::"Cust. Ledger Entry";
+                        Cust.GET(CustLedgEntry."Customer No.");
+                        "CV Name" := Cust.Name;
+                        DimSetID := CustLedgEntry."Dimension Set ID";
+                      END;
+                  END;
+                  "Entry Type" := CVEntryType;
+                  "Document Date" := "Posting Date";
+                  IF PostingDate > "Posting Date" THEN
+                    "Posting Date" := PostingDate;
+                  CreateAllocation(VATEntry."Entry No.");
+                  RecalculateAllocation(VATEntry."Entry No.","Posting Date");
+                  MergeEntryDimSetIDWithVATAllocationDim(VATEntry."Entry No.",DimSetID);
+                  CALCFIELDS("VAT Amount To Allocate");
+                  "Allocated VAT Amount" := "VAT Amount To Allocate";
+                  IF INSERT THEN
+                    FillCVEntryNo("Transaction No.","Entry No.");
+                END;
+          UNTIL VATEntry.NEXT = 0;
+        Window.CLOSE;
+      END;
+    END;
+
+    PROCEDURE CheckFixedAsset@1210022(VAR VATEntry@1210000 : Record 254;VAR PostingDate@1210003 : Date;Type@1210002 : ' ,Purchase,Sale,Fixed Asset,Future Expense') : Boolean;
+    VAR
+      GLSetup@1210008 : Record 98;
+      FA@1210001 : Record 5600;
+      FALedgEntry@1210007 : Record 5601;
+      FAInsertLedgEntry@1210004 : Codeunit 5600;
+      Mode@1210005 : 'Any,Depreciation,General';
+      DeprEntryNo@1210006 : Integer;
+    BEGIN
+      IF Type IN [Type::Purchase,Type::Sale] THEN
+        EXIT(TRUE);
+
+      IF FA.GET(VATEntry."Object No.") THEN BEGIN
+        IF FA.Blocked OR FA.Inactive THEN
+          EXIT(FALSE);
+      END ELSE
+        EXIT(FALSE);
+
+      CASE Type OF
+        Type::"Fixed Asset":
+          IF (FA.Status >= FA.Status::Operation) AND (FA."Initial Release Date" <> 0D) THEN BEGIN
+            IF FA."Initial Release Date" <= PostingDate THEN BEGIN
+              PostingDate := FA."Initial Release Date";
+              EXIT(TRUE);
+            END;
+          END ELSE BEGIN
+            GLSetup.GET;
+            EXIT(GLSetup."Allow VAT Set. before FA Rel.");
+          END;
+        Type::"Future Expense":
+          BEGIN
+            FA.SETFILTER("Date Filter",VATEntry.GETFILTER("Posting Date"));
+            DeprEntryNo :=
+              FAInsertLedgEntry.GetDeprEntryForVATSettlement(FA,PostingDate,VATEntry."Entry No.");
+            GetFPEMode(VATEntry."Entry No.",Mode);
+            IF Mode <> Mode::Depreciation THEN
+              EXIT(TRUE);
+            IF DeprEntryNo = 0 THEN
+              EXIT(FALSE);
+            IF FALedgEntry.GET(DeprEntryNo) THEN
+              EXIT(FALedgEntry.GetAmountToRealize(VATEntry."Entry No.") <> 0);
+          END;
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE UpdateDocVATAlloc@1210012(VAR VATAmtToAlloc@1210002 : Decimal;CVLedgEntryNo@1210000 : Integer;VAR PostingDate@1210007 : Date);
+    VAR
+      VATEntry@1210001 : Record 254;
+      VATAmountRnded@1210003 : Decimal;
+      TotalVATAmount@1210004 : Decimal;
+      Factor@1210005 : Decimal;
+      AmtToAllocate@1210006 : Decimal;
+    BEGIN
+      VATEntry.SETCURRENTKEY(Type,"CV Ledg. Entry No.");
+      VATEntry.SETRANGE("CV Ledg. Entry No.",CVLedgEntryNo);
+      VATEntry.CALCSUMS("Remaining Unrealized Amount");
+      CASE TRUE OF
+        VATEntry."Remaining Unrealized Amount" > 0:
+          IF VATAmtToAlloc < 0 THEN
+            ERROR(Text14713);
+        VATEntry."Remaining Unrealized Amount" < 0:
+          IF VATAmtToAlloc > 0 THEN
+            ERROR(Text14714);
+        VATEntry."Remaining Unrealized Amount" = 0:
+          EXIT;
+      END;
+      IF ABS(VATAmtToAlloc) > ABS(VATEntry."Remaining Unrealized Amount") THEN
+        VATAmtToAlloc := VATEntry."Remaining Unrealized Amount";
+      Factor := VATAmtToAlloc / VATEntry."Remaining Unrealized Amount";
+      IF VATEntry.FINDSET THEN
+        REPEAT
+          IF VATEntry."Remaining Unrealized Amount" <> 0 THEN BEGIN
+            CreateAllocation(VATEntry."Entry No.");
+            TotalVATAmount := TotalVATAmount + VATEntry."Remaining Unrealized Amount" * Factor;
+            AmtToAllocate := ROUND(TotalVATAmount) - VATAmountRnded;
+            CalculateAllocation(VATEntry."Entry No.",-AmtToAllocate,PostingDate);
+            VATAmountRnded := VATAmountRnded + AmtToAllocate;
+          END;
+        UNTIL VATEntry.NEXT = 0;
+    END;
+
+    PROCEDURE CreateAllocation@1210011(VATEntryNo@1210000 : Integer);
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+    BEGIN
+      VATAllocLine.SETRANGE("VAT Entry No.",VATEntryNo);
+      IF VATAllocLine.ISEMPTY THEN
+        IF NOT ApplyDefaultAllocation(VATEntryNo) THEN
+          InsertInitEntry(VATEntryNo);
+    END;
+
+    PROCEDURE InsertInitEntry@1210010(VATEntryNo@1210000 : Integer);
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+      VATEntry@1210002 : Record 254;
+      Mode@1210003 : 'Any,Depreciation,General';
+      ">NOS-26"@1101495000 : Integer;
+      CVEntryType@1101495006 : ' ,Purchase,Sale';
+      CVEntryNo@1101495005 : Integer;
+      VendLedgEntry@1101495004 : Record 25;
+      CustLedgEntry@1101495003 : Record 21;
+      GlobalDim1@1101495002 : Code[20];
+      GlobalDim2@1101495001 : Code[20];
+    BEGIN
+      VATEntry.GET(VATEntryNo);
+
+      //NC OFA010 > DP
+      IF VATEntry.FindCVEntry(CVEntryType,CVEntryNo) THEN BEGIN
+        CASE CVEntryType OF
+           CVEntryType::Purchase:
+             BEGIN
+               VendLedgEntry.GET(CVEntryNo);
+               GlobalDim1 :=VendLedgEntry."Global Dimension 1 Code";
+               GlobalDim2 :=VendLedgEntry."Global Dimension 2 Code";
+             END;
+           CVEntryType::Sale:
+             BEGIN
+               CustLedgEntry.GET(CVEntryNo);
+               GlobalDim1 :=CustLedgEntry."Global Dimension 1 Code";
+               GlobalDim2 :=CustLedgEntry."Global Dimension 2 Code";
+             END;
+        END;
+      END;
+      //NC OFA010 < DP
+
+      WITH VATAllocLine DO BEGIN
+        SETFILTER("Posting Date Filter",VATDocEntryBuffer.GETFILTER("Date Filter"));
+        INIT;
+        "Line No." := 10000;
+
+        //NC NOS-26 > ENK
+        //NC OFA010 > DP
+        {
+        "Shortcut Dimension 1 Code" :=GlobalDim1;
+        "Shortcut Dimension 2 Code" :=GlobalDim2;
+        }
+        VALIDATE("Shortcut Dimension 1 Code", GlobalDim1);
+        VALIDATE("Shortcut Dimension 2 Code", GlobalDim2);
+        "Not Use Def. Dimension" := TRUE;
+        //NC OFA010 < DP
+        //NC NOS-26 < ENK
+
+        VALIDATE("VAT Entry No.",VATEntryNo);
+        "Allocation %" := 100;
+        Base := Base::Remaining;
+        IF VATEntry."Object Type" = VATEntry."Object Type"::"Fixed Asset" THEN BEGIN
+          "VAT Settlement Type" := VATEntry."VAT Settlement Type";
+          IF "VAT Settlement Type" = "VAT Settlement Type"::"Future Expenses" THEN BEGIN
+            GetFPEMode(VATEntryNo,Mode);
+            IF Mode <> Mode::General THEN
+              Base := Base::Depreciation;
+          END;
+        END;
+        VALIDATE(Base);
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE ApplyDefaultAllocation@1210009(VATEntryNo@1210000 : Integer) : Boolean;
+    VAR
+      VATEntry@1210001 : Record 254;
+      DefaultVATAlloc@1210002 : Record 14926;
+    BEGIN
+      VATEntry.GET(VATEntryNo);
+      DefaultVATAlloc.SETRANGE("VAT Bus. Posting Group",VATEntry."VAT Bus. Posting Group");
+      DefaultVATAlloc.SETRANGE("VAT Prod. Posting Group",VATEntry."VAT Prod. Posting Group");
+      IF DefaultVATAlloc.ISEMPTY THEN
+        EXIT(FALSE);
+
+      InsertVATAlloc(DefaultVATAlloc,VATEntry);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE InsertVATAlloc@1210020(VAR DefaultVATAlloc@1210002 : Record 14926;VATEntry@1210003 : Record 254);
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+      LineNo@1210000 : Integer;
+    BEGIN
+      WITH VATAllocLine DO BEGIN
+        SETFILTER("Posting Date Filter",VATDocEntryBuffer.GETFILTER("Date Filter"));
+        LineNo := 0;
+        DefaultVATAlloc.FINDSET;
+        REPEAT
+          LineNo := LineNo + 10000;
+          INIT;
+          "Line No." := LineNo;
+          VALIDATE("VAT Entry No.",VATEntry."Entry No.");
+          "CV Ledger Entry No." := VATEntry."CV Ledg. Entry No.";
+          Type := DefaultVATAlloc.Type;
+          "Account No." := DefaultVATAlloc."Account No.";
+          IF "Account No." = '' THEN
+            VALIDATE(Type);
+          IF DefaultVATAlloc.Description <> '' THEN
+            Description := DefaultVATAlloc.Description;
+          "Recurring Frequency" := DefaultVATAlloc."Recurring Frequency";
+          "Shortcut Dimension 1 Code" := DefaultVATAlloc."Shortcut Dimension 1 Code";
+          "Shortcut Dimension 2 Code" := DefaultVATAlloc."Shortcut Dimension 2 Code";
+          "Dimension Set ID" := DefaultVATAlloc."Dimension Set ID";
+          "Allocation %" := DefaultVATAlloc."Allocation %";
+          Amount := DefaultVATAlloc.Amount;
+          VALIDATE(Base,DefaultVATAlloc.Base);
+          IF VATEntry."Object Type" = VATEntry."Object Type"::"Fixed Asset" THEN
+            "VAT Settlement Type" := VATEntry."VAT Settlement Type";
+          INSERT;
+        UNTIL DefaultVATAlloc.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CalculateAllocation@1210008(VATEntryNo@1210000 : Integer;Amount@1210003 : Decimal;VAR PostingDate@1210005 : Date);
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+      TotalAmount@1210002 : Decimal;
+      Factor@1210004 : Decimal;
+      TotalAmountRnded@1210006 : Decimal;
+      MinDateFormula@1210007 : DateFormula;
+      NewAmount@1210008 : Decimal;
+    BEGIN
+      VATAllocLine.SETFILTER("Posting Date Filter",VATDocEntryBuffer.GETFILTER("Date Filter"));
+      VATAllocLine.SETRANGE("VAT Entry No.",VATEntryNo);
+      VATAllocLine.LOCKTABLE;
+      VATAllocLine.CALCSUMS(Amount);
+      IF VATAllocLine.Amount = 0 THEN BEGIN
+        VATAllocLine.FINDFIRST;
+        VATAllocLine.VALIDATE(Base);
+        VATAllocLine.VALIDATE(Amount,-Amount);
+        VATAllocLine.MODIFY;
+      END;
+      Factor := 0;
+      IF VATAllocLine.Amount <> 0 THEN
+        Factor := -Amount / VATAllocLine.Amount;
+
+      TotalAmount := 0;
+      IF VATAllocLine.FINDSET(TRUE) THEN
+        REPEAT
+          VATAllocLine."Allocation %" := 0;
+          NewAmount := VATAllocLine.Amount * Factor;
+          IF ABS(NewAmount) > ABS(VATAllocLine."VAT Amount") THEN
+            NewAmount := VATAllocLine."VAT Amount";
+          TotalAmount := TotalAmount + NewAmount;
+          VATAllocLine.Amount := ROUND(TotalAmount) - TotalAmountRnded;
+          TotalAmountRnded := TotalAmountRnded + VATAllocLine.Amount;
+          VATAllocLine.MODIFY;
+          VATAllocLine.CheckVATAllocation;
+          SetDateFormula(MinDateFormula,VATAllocLine."Recurring Frequency");
+        UNTIL VATAllocLine.NEXT = 0;
+      IF FORMAT(MinDateFormula) <> '' THEN
+        GetLastRealVATEntryDate(PostingDate,VATEntryNo,MinDateFormula);
+    END;
+
+    PROCEDURE RecalculateAllocation@1210014(VATEntryNo@1210000 : Integer;VAR PostingDate@1210004 : Date);
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+      MinDateFormula@1210003 : DateFormula;
+      TotalAmount@1210002 : Decimal;
+      ControlTotal@1210005 : Boolean;
+      TotalAmountRnded@1210006 : Decimal;
+    BEGIN
+      VATAllocLine.SETFILTER("Posting Date Filter",VATDocEntryBuffer.GETFILTER("Date Filter"));
+      VATAllocLine.SETRANGE("VAT Entry No.",VATEntryNo);
+      IF VATAllocLine.FINDFIRST THEN BEGIN
+        VATAllocLine.SETFILTER(Base,'<>%1',VATAllocLine.Base);
+        ControlTotal := VATAllocLine.ISEMPTY;
+        VATAllocLine.SETRANGE(Base);
+      END;
+      IF VATAllocLine.FINDSET(TRUE) THEN
+        REPEAT
+          VATAllocLine.SetTotalCheck(FALSE);
+          VATAllocLine.VALIDATE(Base);
+          IF ControlTotal THEN BEGIN
+            IF VATAllocLine."Allocation %" <> 0 THEN
+              TotalAmount := TotalAmount + VATAllocLine."VAT Amount" * VATAllocLine."Allocation %" / 100
+            ELSE BEGIN
+              IF ABS(VATAllocLine.Amount) > ABS(VATAllocLine."VAT Amount") THEN
+                VATAllocLine.Amount := VATAllocLine."VAT Amount";
+              TotalAmount := TotalAmount + VATAllocLine.Amount;
+            END;
+            VATAllocLine.Amount := ROUND(TotalAmount) - TotalAmountRnded;
+            TotalAmountRnded := TotalAmountRnded + VATAllocLine.Amount;
+          END;
+          VATAllocLine.MODIFY;
+          SetDateFormula(MinDateFormula,VATAllocLine."Recurring Frequency");
+        UNTIL VATAllocLine.NEXT = 0;
+      IF FORMAT(MinDateFormula) <> '' THEN
+        GetLastRealVATEntryDate(PostingDate,VATEntryNo,MinDateFormula);
+    END;
+
+    PROCEDURE SetDateFormula@1210017(VAR MinDateFormula@1210000 : DateFormula;DateFormula@1210001 : DateFormula);
+    VAR
+      ClearDateFormula@1210002 : DateFormula;
+    BEGIN
+      CLEAR(ClearDateFormula);
+      IF DateFormula <> ClearDateFormula THEN BEGIN
+        IF (MinDateFormula = ClearDateFormula) OR
+           (CALCDATE(MinDateFormula,WORKDATE) > CALCDATE(DateFormula,WORKDATE))
+        THEN
+          MinDateFormula := DateFormula;
+      END;
+    END;
+
+    PROCEDURE GetLastRealVATEntryDate@1210015(VAR LastPostingDate@1210000 : Date;UnrealVATEntryNo@1210001 : Integer;DateFormula@1210003 : DateFormula);
+    VAR
+      VATEntry@1210002 : Record 254;
+    BEGIN
+      VATEntry.SETCURRENTKEY("Unrealized VAT Entry No.");
+      VATEntry.SETRANGE("Unrealized VAT Entry No.",UnrealVATEntryNo);
+      VATEntry.SETRANGE(Reversed,FALSE);
+      IF VATEntry.FINDLAST THEN
+        LastPostingDate := CALCDATE(DateFormula,VATEntry."Posting Date");
+    END;
+
+    PROCEDURE CopyToJnl@1210013(VAR EntryToPost@1210000 : TEMPORARY Record 14927;VAR VATEntry@1210002 : Record 254);
+    VAR
+      GenJnlLine@1210001 : Record 81;
+      VATPostingSetup@1210003 : Record 325;
+      FA@1210006 : Record 5600;
+      SalesCrMemoHeader@1210012 : Record 114;
+      PurchCrMemoHeader@1210013 : Record 124;
+      FAInsertLedgEntry@1210011 : Codeunit 5600;
+      Mode@1210008 : 'Any,Depreciation,General';
+      NextLineNo@1210007 : Integer;
+      InsertLine@1210004 : Boolean;
+      IsCorrection@1210014 : Boolean;
+      ">NOS-26"@1101495000 : Integer;
+      VATProductPostGroup@1101495002 : Record 324;
+      GLSetup@1101495001 : Record 98;
+      TempDimSetEntry@1101495003 : TEMPORARY Record 480;
+    BEGIN
+      VATDocEntryBuffer.COPYFILTERS(EntryToPost);
+      EntryToPost.FINDSET;
+      REPEAT
+        IsCorrection := FALSE;
+        IF EntryToPost."Document Type" = EntryToPost."Document Type"::"Credit Memo" THEN
+          CASE EntryToPost."Entry Type" OF
+            EntryToPost."Entry Type"::Purchase:
+              IF PurchCrMemoHeader.GET(EntryToPost."Document No.") THEN
+                IsCorrection := PurchCrMemoHeader.Correction;
+            EntryToPost."Entry Type"::Sale:
+              IF SalesCrMemoHeader.GET(EntryToPost."Document No.") THEN
+                IsCorrection := SalesCrMemoHeader.Correction;
+          END;
+        VATEntry.SETCURRENTKEY(Type,"CV Ledg. Entry No.");
+        VATEntry.SETRANGE("CV Ledg. Entry No.",EntryToPost."Entry No.");
+        VATEntry.SETRANGE("Unrealized VAT Entry No.",0);
+        VATEntry.SETFILTER("Remaining Unrealized Amount",'<>0');
+        VATEntry.SETFILTER("VAT Settlement Type",EntryToPost.GETFILTER("Type Filter"));
+        VATEntry.SETRANGE("Manual VAT Settlement",TRUE);
+        IF VATEntry.FINDSET THEN
+          REPEAT
+            VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group");
+            VATPostingSetup.TESTFIELD("VAT Settlement Template");
+            VATPostingSetup.TESTFIELD("VAT Settlement Batch");
+            RecalculateAllocation(VATEntry."Entry No.",EntryToPost."Posting Date");
+
+            NextLineNo := 0;
+            GenJnlLine.SETRANGE("Journal Template Name",VATPostingSetup."VAT Settlement Template");
+            GenJnlLine.SETRANGE("Journal Batch Name",VATPostingSetup."VAT Settlement Batch");
+            IF GenJnlLine.FINDLAST THEN
+              NextLineNo := GenJnlLine."Line No.";
+            NextLineNo := NextLineNo + 10000;
+
+            GenJnlLine.INIT;
+            GenJnlLine."Journal Template Name" := VATPostingSetup."VAT Settlement Template";
+            GenJnlLine."Journal Batch Name" := VATPostingSetup."VAT Settlement Batch";
+            GenJnlLine."Line No." := NextLineNo;
+            GenJnlLine.VALIDATE("Unrealized VAT Entry No.",VATEntry."Entry No.");
+            UpdateGenJnlLineDimSetID(GenJnlLine,VATEntry."Entry No.");
+            InsertLine := GenJnlLine.Amount <> 0;
+            GenJnlLine."Posting Date" := EntryToPost."Posting Date";
+            GenJnlLine.Correction := IsCorrection;
+            GenJnlLine."External Document No." := VATEntry."External Document No.";
+            IF VATEntry."VAT Settlement Type" = VATEntry."VAT Settlement Type"::"Future Expenses" THEN BEGIN
+              FA.GET(VATEntry."Object No.");
+              FA.SETFILTER("Date Filter",EntryToPost.GETFILTER("Date Filter"));
+              GenJnlLine."FA Error Entry No." :=
+                FAInsertLedgEntry.GetDeprEntryForVATSettlement(FA,GenJnlLine."Posting Date",VATEntry."Entry No.");
+              GetFPEMode(VATEntry."Entry No.",Mode);
+              IF Mode = Mode::Depreciation THEN
+                InsertLine := GenJnlLine."FA Error Entry No." <> 0;
+            END;
+            IF ABS(GenJnlLine.Amount) > ABS(GenJnlLine."Paid Amount") THEN
+              GenJnlLine.VALIDATE(Amount,-GenJnlLine."Paid Amount");
+
+            //NC OFA003 > DP
+            IF VATProductPostGroup.GET(VATEntry."VAT Prod. Posting Group") AND
+              (VATProductPostGroup."VAT Dimension Value Code"<>'') THEN BEGIN
+              GLSetup.GET;
+              GLSetup.TESTFIELD("Tax Dimension Code");
+              //NC NOS-26 > ENK
+              {
+              JnlLineDim.INIT;
+              JnlLineDim."Table ID":=DATABASE::"Gen. Journal Line";
+              JnlLineDim."Journal Template Name" := GenJnlLine."Journal Template Name";
+              JnlLineDim."Journal Batch Name" := GenJnlLine."Journal Batch Name";
+              JnlLineDim."Journal Line No." := GenJnlLine."Line No.";
+              JnlLineDim."Dimension Code" := GLSetup."Tax Dimension Code";
+              JnlLineDim."Dimension Value Code" :=VATProductPostGroup."VAT Dimension Value Code";
+              IF NOT JnlLineDim.INSERT THEN JnlLineDim.MODIFY;
+              }
+              //NC NOS-26 > SPA
+              IF GenJnlLine."Dimension Set ID" <> 0 THEN
+                DimMgt.GetDimensionSet(TempDimSetEntry, GenJnlLine."Dimension Set ID");
+              TempDimSetEntry.VALIDATE("Dimension Code", GLSetup."Tax Dimension Code");
+              IF TempDimSetEntry.FIND THEN
+                TempDimSetEntry.DELETE;
+              TempDimSetEntry.VALIDATE("Dimension Value Code", VATProductPostGroup."VAT Dimension Value Code");
+              TempDimSetEntry.SetObject(GenJnlLine);
+              TempDimSetEntry.INSERT(TRUE);
+              GenJnlLine."Dimension Set ID" := DimMgt.GetDimensionSetID(TempDimSetEntry);
+              DimMgt.UpdateGlobalDimFromDimSetID(GenJnlLine."Dimension Set ID",GenJnlLine."Shortcut Dimension 1 Code",GenJnlLine."Shortcut Dimension 2 Code");
+              //NC NOS-26 < SPA
+              //NC NOS-26 < ENK
+            END;
+            //NC OFA003 < DP
+
+            IF InsertLine THEN
+              GenJnlLine.INSERT;
+          UNTIL VATEntry.NEXT = 0;
+      UNTIL EntryToPost.NEXT = 0;
+    END;
+
+    PROCEDURE SetGroupVATAlloc@1210016(VAR VATEntry@1210000 : Record 254;VAR EntryNo@1210001 : Record 2000000026) : Boolean;
+    VAR
+      GroupVATAllocLine@1210002 : TEMPORARY Record 14926;
+      VATAllocLine@1210003 : Record 14925;
+      PostingDate@1210004 : Date;
+    BEGIN
+      IF EntryNo.FINDSET THEN
+        IF GetGroupVATAlloc(GroupVATAllocLine) THEN BEGIN
+          REPEAT
+            VATEntry.SETRANGE("CV Ledg. Entry No.",EntryNo.Number);
+            IF VATEntry.FINDSET THEN
+              REPEAT
+                VATAllocLine.SETRANGE("VAT Entry No.",VATEntry."Entry No.");
+                VATAllocLine.DELETEALL(TRUE);
+                InsertVATAlloc(GroupVATAllocLine,VATEntry);
+                RecalculateAllocation(VATEntry."Entry No.",PostingDate);
+              UNTIL VATEntry.NEXT = 0;
+          UNTIL EntryNo.NEXT = 0;
+
+          EXIT(TRUE);
+        END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetGroupVATAlloc@1210018(VAR GroupVATAllocLine@1210000 : TEMPORARY Record 14926) : Boolean;
+    VAR
+      GroupVATAllocForm@1210001 : Page 14928;
+    BEGIN
+      GroupVATAllocForm.LOOKUPMODE := TRUE;
+      IF GroupVATAllocForm.RUNMODAL = ACTION::LookupOK THEN
+        GroupVATAllocForm.GetRecords(GroupVATAllocLine);
+      EXIT(NOT GroupVATAllocLine.ISEMPTY);
+    END;
+
+    PROCEDURE CheckVATAllocation@1210019(GenJnlLine@1210000 : Record 81);
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+      TableID@1210003 : ARRAY [10] OF Integer;
+      AccNo@1210004 : ARRAY [10] OF Code[20];
+    BEGIN
+      WITH VATAllocLine DO BEGIN
+        SETRANGE("VAT Entry No.",GenJnlLine."Unrealized VAT Entry No.");
+        IF FINDSET THEN
+          REPEAT
+            TESTFIELD("Account No.");
+            TESTFIELD(Amount);
+            TableID[1] := DATABASE::"G/L Account";
+            AccNo[1] := "Account No.";
+            IF NOT DimMgt.CheckDimValuePosting(TableID,AccNo,"Dimension Set ID") THEN
+              ERROR(
+                Text14716,
+                TABLECAPTION,"VAT Entry No.","Line No.",
+                DimMgt.GetDimValuePostingErr);
+            TableID[1] := DATABASE::"G/L Account";
+            AccNo[1] := "VAT Unreal. Account No.";
+            IF NOT DimMgt.CheckDimValuePosting(TableID,AccNo,"Dimension Set ID") THEN
+              ERROR(
+                Text14717,
+                GenJnlLine.TABLECAPTION,GenJnlLine."Journal Template Name",
+                GenJnlLine."Journal Batch Name",GenJnlLine."Line No.",
+                DimMgt.GetDimValuePostingErr)
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetFPEMode@1210021(UnrealVATEntryNo@1210000 : Integer;VAR Mode@1210001 : 'Any,Depreciation,General');
+    VAR
+      VATEntry@1210002 : Record 254;
+    BEGIN
+      WITH VATEntry DO BEGIN
+        SETCURRENTKEY("Unrealized VAT Entry No.");
+        SETRANGE("Unrealized VAT Entry No.",UnrealVATEntryNo);
+        SETRANGE(Reversed,FALSE);
+        IF FINDLAST THEN BEGIN
+          IF "FA Ledger Entry No." = 0 THEN
+            Mode := Mode::General
+          ELSE
+            Mode := Mode::Depreciation;
+        END ELSE
+          Mode := Mode::Any;
+      END;
+    END;
+
+    LOCAL PROCEDURE MergeEntryDimSetIDWithVATAllocationDim@1210000(VATEntryNo@1210000 : Integer;DimSetID@1210001 : Integer);
+    VAR
+      VATAllocationLine@1210002 : Record 14925;
+    BEGIN
+      WITH VATAllocationLine DO BEGIN
+        SETRANGE("VAT Entry No.",VATEntryNo);
+        IF FINDSET(TRUE) THEN
+          REPEAT
+            "Dimension Set ID" := GetCombinedDimSetID(
+                "Shortcut Dimension 1 Code","Shortcut Dimension 2 Code",
+                "Dimension Set ID",DimSetID,GetVATEntryDimSetID(VATEntryNo));
+            MODIFY(TRUE);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateGenJnlLineDimSetID@1210023(VAR GenJournalLine@1210000 : Record 81;VATEntryNo@1210002 : Integer);
+    BEGIN
+      WITH GenJournalLine DO
+        "Dimension Set ID" := GetCombinedDimSetID(
+            "Shortcut Dimension 1 Code","Shortcut Dimension 2 Code",
+            "Dimension Set ID",GetVATEntryDimSetID(VATEntryNo),0);
+    END;
+
+    LOCAL PROCEDURE GetCombinedDimSetID@1210025(VAR ShortcutDimensionCode1@1210003 : Code[20];VAR ShortcutDimensionCode2@1210004 : Code[20];DimSetID1@1210000 : Integer;DimSetID2@1210001 : Integer;DimSetID3@1210002 : Integer) : Integer;
+    VAR
+      DimensionSetIDArr@1210005 : ARRAY [10] OF Integer;
+    BEGIN
+      DimensionSetIDArr[1] := DimSetID1;
+      DimensionSetIDArr[2] := DimSetID2;
+      DimensionSetIDArr[3] := DimSetID3;
+      EXIT(DimMgt.GetCombinedDimensionSetID(DimensionSetIDArr,ShortcutDimensionCode1,ShortcutDimensionCode2));
+    END;
+
+    LOCAL PROCEDURE GetVATEntryDimSetID@1210024(VATEntryNo@1210001 : Integer) : Integer;
+    VAR
+      GLEntryVATEntryLink@1210002 : Record 253;
+      GLEntry@1210003 : Record 17;
+    BEGIN
+      GLEntryVATEntryLink.SETRANGE("VAT Entry No.",VATEntryNo);
+      IF GLEntryVATEntryLink.FINDFIRST THEN BEGIN
+        GLEntry.GET(GLEntryVATEntryLink."G/L Entry No.");
+        EXIT(GLEntry."Dimension Set ID");
+      END;
+      EXIT(0);
+    END;
+
+    BEGIN
+    {
+      NC OFA003 DP Указание значения измерения TAX.OTHER для НДС
+      NC OFA010 DP Измерение с операции при отсутствии стандартного распределения НДС
+      -----
+      NC NOS-26 ENK #TODO#
+        Change function: CopyToJnl.
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,121 @@
+OBJECT Table 17396 Person Income FSI
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnModify=BEGIN
+               IF xRec.Calculation THEN
+                 TESTFIELD(Calculation);
+             END;
+
+    CaptionML=[ENU=Person Income FSI;
+               RUS=Личный доход ФСС];
+  }
+  FIELDS
+  {
+    { 1   ;   ;Person No.          ;Code20        ;TableRelation=Person;
+                                                   CaptionML=[ENU=Person No.;
+                                                              RUS=Код физ. лица] }
+    { 2   ;   ;Period Code         ;Code10        ;TableRelation="Payroll Period";
+                                                   OnValidate=BEGIN
+                                                                IF PayrollPeriod.GET("Period Code") THEN
+                                                                  Year := DATE2DMY(PayrollPeriod."Starting Date",3);
+                                                              END;
+
+                                                   CaptionML=[ENU=Period Code;
+                                                              RUS=Код периода] }
+    { 5   ;   ;Document No.        ;Code20        ;CaptionML=[ENU=Document No.;
+                                                              RUS=Номер документа] }
+    { 6   ;   ;Description         ;Text50        ;CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 7   ;   ;Company Name        ;Text50        ;CaptionML=[ENU=Company Name;
+                                                              RUS=Название организации] }
+    { 8   ;   ;Year                ;Integer       ;CaptionML=[ENU=Year;
+                                                              RUS=Год] }
+    { 9   ;   ;Amount              ;Decimal       ;CaptionML=[ENU=Amount;
+                                                              RUS=Сумма] }
+    { 10  ;   ;Calculation         ;Boolean       ;CaptionML=[ENU=Calculation;
+                                                              RUS=Расчет];
+                                                   Editable=No }
+    { 11  ;   ;Exclude from Calculation;Boolean   ;CaptionML=[ENU=Exclude from Calculation;
+                                                              RUS=Исключить из расчета] }
+    { 12  ;   ;Document Date       ;Date          ;CaptionML=[ENU=Document Date;
+                                                              RUS=Дата документа] }
+    { 13  ;   ;Excluded Days       ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Person Excluded Days"."Calendar Days" WHERE (Person No.=FIELD(Person No.),
+                                                                                                                 Period Code=FIELD(Period Code),
+                                                                                                                 Document No.=FIELD(Document No.)));
+                                                   CaptionML=[ENU=Excluded Days;
+                                                              RUS=Исключенные дни];
+                                                   Editable=No }
+  }
+  KEYS
+  {
+    {    ;Person No.,Period Code,Document No.     ;Clustered=Yes }
+    {    ;Year,Calculation                        ;SumIndexFields=Amount }
+    {    ;Person No.,Year                         ;SumIndexFields=Amount }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      PayrollPeriod@1210000 : Record 17426;
+      PersonIncomeFSI@1210001 : Record 17396;
+
+    PROCEDURE Recalculate@1210000();
+    VAR
+      Employee@1210000 : Record 5200;
+      PayrollPeriod@1210002 : Record 17426;
+      PstdPayrollDocHeader@1210003 : Record 17416;
+      PstdPayrollDocLine@1210004 : Record 17417;
+      PayrollCalcGroup@1210006 : Record 17402;
+      PersonIncomeMgt@1210007 : Codeunit 17409;
+    BEGIN
+      TESTFIELD(Year);
+      TESTFIELD("Person No.");
+
+      PersonIncomeFSI.RESET;
+      PersonIncomeFSI.SETRANGE("Person No.","Person No.");
+      PersonIncomeFSI.SETRANGE(Year,Year);
+      PersonIncomeFSI.SETRANGE(Calculation,TRUE);
+      PersonIncomeFSI.DELETEALL;
+
+      Employee.SETRANGE("Person No.","Person No.");
+      IF Employee.FINDSET THEN
+        REPEAT
+          PayrollPeriod.RESET;
+          PayrollPeriod.SETRANGE("Ending Date",DMY2DATE(1,1,Year),CALCDATE('<+CY>',DMY2DATE(1,12,Year)));
+          IF PayrollPeriod.FINDSET THEN
+            REPEAT
+              PstdPayrollDocHeader.RESET;
+              PstdPayrollDocHeader.SETRANGE("Employee No.",Employee."No.");
+              PstdPayrollDocHeader.SETRANGE("Period Code",PayrollPeriod.Code);
+              IF PstdPayrollDocHeader.FINDSET THEN
+                REPEAT
+                  PayrollCalcGroup.GET(PstdPayrollDocHeader."Calc Group Code");
+                  IF PayrollCalcGroup.Type <> PayrollCalcGroup.Type::Between THEN BEGIN
+                    PstdPayrollDocLine.RESET;
+                    PstdPayrollDocLine.SETRANGE("Document No.",PstdPayrollDocHeader."No.");
+                    IF PstdPayrollDocLine.FINDSET THEN
+                      REPEAT
+                        IF PstdPayrollDocLine."FSI Base" OR PstdPayrollDocLine."FSI Injury Base" THEN
+                          PersonIncomeMgt.CreateSocialTaxLine(PstdPayrollDocLine);
+                      UNTIL PstdPayrollDocLine.NEXT = 0;
+                  END;
+                UNTIL PstdPayrollDocHeader.NEXT = 0;
+            UNTIL PayrollPeriod.NEXT = 0;
+        UNTIL Employee.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

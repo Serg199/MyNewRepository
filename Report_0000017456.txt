@@ -1,0 +1,446 @@
+OBJECT Report 17456 Paysheet T-51
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Paysheet T-51;
+               RUS=Расчетная ведомость Т-51];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF PayrollDocLine.GETFILTER("Org. Unit Code") <> '' THEN
+                    IF Department.GET(PayrollDocLine.GETFILTER("Org. Unit Code")) THEN
+                      DepartmentName := Department.Name;
+
+                  CompanyInfo.GET;
+
+                  HumanResSetup.GET;
+                  HumanResSetup.TESTFIELD("T-51 Template Code");
+                  HumanResSetup.TESTFIELD("Work Time Group Code");
+                  HumanResSetup.TESTFIELD("Holiday Work Group");
+
+                  CASE DataSource OF
+                    DataSource::"Posted Entries":
+                      BEGIN
+                        PostedPayrollDoc.SETRANGE("Posting Date",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+                        IF PostedPayrollDoc.FINDSET THEN
+                          REPEAT
+                            IF NOT EmployeeBuffer.GET(PostedPayrollDoc."Employee No.") THEN BEGIN
+                              EmployeeBuffer."No." := PostedPayrollDoc."Employee No.";
+                              EmployeeBuffer.INSERT;
+                            END;
+                          UNTIL PostedPayrollDoc.NEXT = 0;
+                      END;
+                    DataSource::"Payroll Documents":
+                      BEGIN
+                        PayrollDoc.SETRANGE("Posting Date",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+                        IF PayrollDoc.FINDSET THEN
+                          REPEAT
+                            IF NOT EmployeeBuffer.GET(PayrollDoc."Employee No.") THEN BEGIN
+                              EmployeeBuffer."No." := PayrollDoc."Employee No.";
+                              EmployeeBuffer.INSERT;
+                            END;
+                          UNTIL PayrollDoc.NEXT = 0;
+                      END;
+                  END;
+
+                  IF EmployeeBuffer.FIND('-') THEN
+                    REPEAT
+                      Employee.GET(EmployeeBuffer."No.");
+
+                      EmployeeList."No." := EmployeeBuffer."No.";
+                      EmployeeList."Last Name & Initials" := Employee."Last Name" + ' ' + Employee.Initials;
+                      EmployeeList."Appointment Name" := Employee."Job Title";
+                      EmployeeList.INSERT;
+                    UNTIL EmployeeBuffer.NEXT = 0;
+
+                  IF PreviewMode THEN
+                    DocNo := 'XXXXXXXXXX'
+                  ELSE BEGIN
+                    HumanResSetup.TESTFIELD("Calculation Sheet Nos.");
+                    DocNo := NoSeriesMgt.GetNextNo(HumanResSetup."Calculation Sheet Nos.",WORKDATE,TRUE);
+                  END;
+
+                  FileName := ExcelTemplate.OpenTemplate(HumanResSetup."T-51 Template Code");
+                  ExcelMgt.OpenBook(FileName);
+                  ExcelMgt.OpenSheet('Sheet1');
+                  ExcelMgt.FillCell('A7',CompanyInfo.Name + ' ' + CompanyInfo."Name 2");
+                  IF DepartmentName <> '' THEN
+                    ExcelMgt.FillCell('A9',DepartmentName);
+                  ExcelMgt.FillCell('DE7',CompanyInfo."OKPO Code");
+                  ExcelMgt.FillCell('BF14',DocNo);
+                  ExcelMgt.FillCell('BY14',FORMAT(TODAY));
+                  ExcelMgt.FillCell('CV14',FORMAT(PayrollPeriod."Starting Date"));
+                  ExcelMgt.FillCell('DI14',FORMAT(PayrollPeriod."Ending Date"));
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT TestMode THEN
+                     ExcelMgt.GiveUserControl
+                   ELSE
+                     ExcelMgt.QuitXlApp;
+                 END;
+
+  }
+  DATASET
+  {
+    { 5444;    ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               SETRANGE(Number,1,EmployeeList.COUNT);
+                               Counter := 1;
+                               RowNo := 8;
+                               TemplateRowsQty := 29;
+
+                               EmployeeList.SETCURRENTKEY("Last Name & Initials");
+                               ExcelMgt.OpenSheet('Sheet2');
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  PayrollDocCalc@1210002 : Codeunit 17404;
+                                  TotalCharged@1210000 : Decimal;
+                                  TotalDeduction@1210001 : Decimal;
+                                  WageAmount@1210003 : Decimal;
+                                  BonusAmount@1210004 : Decimal;
+                                  OtherGainAmount@1210005 : Decimal;
+                                  IncomeTaxAmount@1210006 : Decimal;
+                                  DeductionAmount@1210007 : Decimal;
+                                  AmountToPay@1210008 : Decimal;
+                                  WorkMode@1210009 : Integer;
+                                BEGIN
+                                  IF Number = 1 THEN
+                                    EmployeeList.FINDFIRST
+                                  ELSE
+                                    EmployeeList.NEXT;
+
+                                  IF Counter >= TemplateRowsQty THEN
+                                    ExcelMgt.CopyRow(RowNo);
+
+                                  WorkMode := GetWorkMode(EmployeeList."No.");
+
+                                  ExcelMgt.FillCell('A' + FORMAT(RowNo),FORMAT(Counter));
+                                  ExcelMgt.FillCell('K' + FORMAT(RowNo),EmployeeList."No.");
+                                  ExcelMgt.FillCell('X' + FORMAT(RowNo),EmployeeList."Last Name & Initials");
+                                  ExcelMgt.FillCell('BF' + FORMAT(RowNo),EmployeeList."Appointment Name");
+
+                                  // tariff rate (salary)
+                                  ExcelMgt.FillCell('BT' + FORMAT(RowNo),FORMAT(GetSalary(EmployeeList."No.")));
+
+                                  // work days
+                                  ExcelMgt.FillCell(
+                                    'CM' + FORMAT(RowNo),
+                                    FORMAT(
+                                      TimesheetMgt.GetTimesheetInfo(
+                                        EmployeeList."No.",
+                                        HumanResSetup."Work Time Group Code",
+                                        PayrollPeriod."Starting Date",
+                                        PayrollPeriod."Ending Date",
+                                        WorkMode)));
+
+                                  // holidays days
+                                  ExcelMgt.FillCell(
+                                    'CZ' + FORMAT(RowNo),
+                                    FORMAT(
+                                      TimesheetMgt.GetTimesheetInfo(
+                                        EmployeeList."No.",
+                                        HumanResSetup."Holiday Work Group",
+                                        PayrollPeriod."Starting Date",
+                                        PayrollPeriod."Ending Date",
+                                        WorkMode)));
+
+                                  CASE DataSource OF
+                                    DataSource::"Posted Entries":
+                                      BEGIN
+                                        Employee.SETRANGE("Employee No. Filter",EmployeeList."No.");
+                                        Employee.SETRANGE("Payroll Period Filter",PayrollPeriod.Code);
+                                        Employee.SETRANGE("Element Type Filter",Employee."Element Type Filter"::Wage);
+                                        Employee.CALCFIELDS("Payroll Amount");
+                                        WageAmount := Employee."Payroll Amount";
+
+                                        Employee.SETRANGE("Element Type Filter",Employee."Element Type Filter"::Bonus);
+                                        Employee.CALCFIELDS("Payroll Amount");
+                                        BonusAmount := Employee."Payroll Amount";
+
+                                        Employee.SETRANGE("Element Type Filter",Employee."Element Type Filter"::Other);
+                                        Employee.CALCFIELDS("Payroll Amount");
+                                        OtherGainAmount := Employee."Payroll Amount";
+
+                                        Employee.SETRANGE("Element Type Filter",Employee."Element Type Filter"::"Income Tax");
+                                        Employee.CALCFIELDS("Payroll Amount");
+                                        IncomeTaxAmount := Employee."Payroll Amount";
+
+                                        Employee.SETRANGE("Element Type Filter",Employee."Element Type Filter"::Deduction);
+                                        Employee.CALCFIELDS("Payroll Amount");
+                                        DeductionAmount := Employee."Payroll Amount";
+                                      END;
+                                    DataSource::"Payroll Documents":
+                                      BEGIN
+                                        PayrollDoc.SETRANGE("Employee No.",EmployeeList."No.");
+                                        PayrollDoc.SETRANGE("Posting Date",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+                                        IF PayrollDoc.FINDSET THEN
+                                          REPEAT
+                                            PayrollDocLine.RESET;
+                                            PayrollDocLine.SETCURRENTKEY("Element Type","Employee No.","Period Code","Posting Type");
+                                            PayrollDocLine.SETRANGE("Document No.",PayrollDoc."No.");
+                                            PayrollDocLine.SETRANGE(
+                                              "Posting Type",
+                                              PayrollDocLine."Posting Type"::Charge,
+                                              PayrollDocLine."Posting Type"::Liability);
+                                            PayrollDocLine.SETRANGE("Element Type",PayrollDocLine."Element Type"::Wage);
+                                            PayrollDocLine.CALCSUMS("Payroll Amount");
+                                            WageAmount += PayrollDocLine."Payroll Amount";
+
+                                            PayrollDocLine.SETRANGE("Element Type",PayrollDocLine."Element Type"::Bonus);
+                                            PayrollDocLine.CALCSUMS("Payroll Amount");
+                                            BonusAmount += PayrollDocLine."Payroll Amount";
+
+                                            PayrollDocLine.SETRANGE("Element Type",PayrollDocLine."Element Type"::Other);
+                                            PayrollDocLine.CALCSUMS("Payroll Amount");
+                                            OtherGainAmount += PayrollDocLine."Payroll Amount";
+
+                                            PayrollDocLine.SETRANGE("Element Type",PayrollDocLine."Element Type"::"Income Tax");
+                                            PayrollDocLine.CALCSUMS("Payroll Amount");
+                                            IncomeTaxAmount += PayrollDocLine."Payroll Amount";
+
+                                            PayrollDocLine.SETRANGE("Element Type",PayrollDocLine."Element Type"::Deduction);
+                                            PayrollDocLine.CALCSUMS("Payroll Amount");
+                                            DeductionAmount += PayrollDocLine."Payroll Amount";
+                                          UNTIL PayrollDoc.NEXT = 0;
+                                      END;
+                                  END;
+
+                                  TotalCharged := WageAmount + BonusAmount + OtherGainAmount;
+                                  TotalDeduction := IncomeTaxAmount + DeductionAmount;
+
+                                  // wage
+                                  FillCell('DV',WageAmount);
+
+                                  // bonus
+                                  FillCell('EF',BonusAmount);
+
+                                  // other gain
+                                  FillCell('EZ',OtherGainAmount);
+
+                                  // total
+                                  FillCell('FO',TotalCharged);
+
+                                  // income tax
+                                  FillCell('FY',ABS(IncomeTaxAmount));
+
+                                  // deduction
+                                  FillCell('GJ',ABS(DeductionAmount));
+
+                                  // total deduction
+                                  FillCell('GT',ABS(TotalDeduction));
+
+                                  // starting balance
+                                  Employee.GET(EmployeeList."No.");
+                                  Employee.TESTFIELD("Person No.");
+                                  Person.GET(Employee."Person No.");
+                                  Person.TESTFIELD("Vendor No.");
+                                  Vendor.GET(Person."Vendor No.");
+                                  Vendor.SETFILTER("Date Filter",'..%1',CALCDATE('<-CM - 1D>',PayrollPeriod."Ending Date"));
+                                  Vendor.CALCFIELDS("Net Change (LCY)");
+
+                                  // debt
+                                  IF Vendor."Net Change (LCY)" < 0 THEN
+                                    // employee's debt
+                                    FillCell('HR',-Vendor."Net Change (LCY)")
+                                  ELSE
+                                    IF Vendor."Net Change (LCY)" > 0 THEN
+                                      // company's debt
+                                      FillCell('HD',Vendor."Net Change (LCY)");
+
+                                  // amount to pay
+                                  AmountToPay := PayrollDocCalc.RoundAmountToPay(TotalCharged + TotalDeduction + Vendor."Net Change (LCY)");
+                                  FillCell('IE',AmountToPay);
+
+                                  RowNo += 1;
+                                  Counter += 1;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF Counter >= TemplateRowsQty THEN
+                                  ExcelMgt.DeleteRows(RowNo,RowNo);
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodCode := PeriodByDate(WORKDATE);
+                   IF PeriodCode <> '' THEN BEGIN
+                     PayrollPeriod.GET(PeriodCode);
+                     DocNo :=
+                       COPYSTR(
+                         FORMAT(DATE2DMY(PayrollPeriod."Starting Date",3)),3,2) +
+                       FORMAT(DATE2DMY(PayrollPeriod."Ending Date",2)) + '-';
+                   END;
+
+                   RequestOptionsPage.UPDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Pay Period;
+                             RUS=Платежный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PeriodCode;
+                  TableRelation="Payroll Period";
+                  OnValidate=BEGIN
+                               PeriodCodeOnAfterValidate;
+                             END;
+                              }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PreviewMode }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Data Source;
+                             RUS=Источник данных];
+                  OptionCaptionML=[ENU=Posted Entries,Payroll Documents;
+                                   RUS=Учтенные операции,Зарплатные документы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DataSource }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Employee@1210024 : Record 5200;
+      Person@1210007 : Record 17350;
+      Vendor@1210010 : Record 23;
+      EmployeeBuffer@1210018 : TEMPORARY Record 5200;
+      ExcelTemplate@1210055 : Record 14919;
+      Department@1210001 : Record 12422;
+      HumanResSetup@1210002 : Record 5218;
+      CompanyInfo@1210003 : Record 79;
+      PayrollDoc@1210004 : Record 17414;
+      PayrollDocLine@1210005 : Record 17415;
+      PostedPayrollDoc@1210009 : Record 17416;
+      EmployeeList@1210006 : TEMPORARY Record 17452;
+      PayrollPeriod@1210011 : Record 17426;
+      ExcelMgt@1210056 : Codeunit 12416;
+      NoSeriesMgt@1210012 : Codeunit 396;
+      TimesheetMgt@1210014 : Codeunit 17440;
+      PeriodCode@1210013 : Code[10];
+      FileName@1210057 : Text[1024];
+      DepartmentName@1210000 : Text[250];
+      DocNo@1210019 : Code[10];
+      Counter@1210023 : Integer;
+      PreviewMode@1210058 : Boolean;
+      RowNo@1210016 : Integer;
+      TemplateRowsQty@1210017 : Integer;
+      DataSource@1210008 : 'Posted Entries,Payroll Documents';
+      TestMode@1210015 : Boolean;
+
+    PROCEDURE FillCell@1210030(ColumnCode@1210000 : Code[10];Amount@1210001 : Decimal);
+    BEGIN
+      IF Amount <> 0 THEN
+        ExcelMgt.FillCell(ColumnCode + FORMAT(RowNo),FORMAT(Amount));
+    END;
+
+    PROCEDURE GetWorkMode@1210017(EmployeeNo@1210000 : Code[20]) : Integer;
+    VAR
+      EmplLedgerEntry@1210001 : Record 17413;
+    BEGIN
+      IF HumanResSetup."Element Code Salary Days" <> '' THEN
+        IF FindEmplLedgerEntry(EmployeeNo,HumanResSetup."Element Code Salary Days",EmplLedgerEntry) THEN
+          EXIT(4);
+
+      IF HumanResSetup."Element Code Salary Hours" <> '' THEN
+        IF FindEmplLedgerEntry(EmployeeNo,HumanResSetup."Element Code Salary Hours",EmplLedgerEntry) THEN
+          EXIT(3);
+
+      IF HumanResSetup."Element Code Salary Amount" <> '' THEN
+        IF FindEmplLedgerEntry(EmployeeNo,HumanResSetup."Element Code Salary Amount",EmplLedgerEntry) THEN
+          EXIT(3);
+
+      EXIT(4);
+    END;
+
+    PROCEDURE GetSalary@1210000(EmployeeNo@1210000 : Code[20]) : Decimal;
+    VAR
+      EmplLedgerEntry@1210001 : Record 17413;
+    BEGIN
+      IF HumanResSetup."Element Code Salary Days" <> '' THEN
+        IF FindEmplLedgerEntry(EmployeeNo,HumanResSetup."Element Code Salary Days",EmplLedgerEntry) THEN
+          EXIT(EmplLedgerEntry.Amount);
+
+      IF HumanResSetup."Element Code Salary Hours" <> '' THEN
+        IF FindEmplLedgerEntry(EmployeeNo,HumanResSetup."Element Code Salary Hours",EmplLedgerEntry) THEN
+          EXIT(EmplLedgerEntry.Amount);
+
+      IF HumanResSetup."Element Code Salary Amount" <> '' THEN
+        IF FindEmplLedgerEntry(EmployeeNo,HumanResSetup."Element Code Salary Amount",EmplLedgerEntry) THEN
+          EXIT(EmplLedgerEntry.Amount);
+    END;
+
+    PROCEDURE FindEmplLedgerEntry@1210011(EmployeeNo@1210000 : Code[20];ElementCode@1210001 : Code[20];VAR EmplLedgerEntry@1210002 : Record 17413) : Boolean;
+    BEGIN
+      EmplLedgerEntry.SETCURRENTKEY("Employee No.","Action Starting Date","Action Ending Date","Element Code");
+      EmplLedgerEntry.SETRANGE("Employee No.",EmployeeNo);
+      EmplLedgerEntry.SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+      EmplLedgerEntry.SETFILTER("Action Ending Date",'%1|%2..',0D,PayrollPeriod."Starting Date");
+      EmplLedgerEntry.SETRANGE("Element Code",ElementCode);
+      EXIT(EmplLedgerEntry.FINDFIRST);
+    END;
+
+    PROCEDURE PeriodByDate@1210001(Date@1210000 : Date) : Code[10];
+    VAR
+      PayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      PayrollPeriod.RESET;
+      PayrollPeriod.SETFILTER("Ending Date",'%1..',Date);
+      IF PayrollPeriod.FINDFIRST THEN
+        IF PayrollPeriod."Starting Date" <= Date THEN
+          EXIT(PayrollPeriod.Code);
+
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE PeriodCodeOnAfterValidate@19067385();
+    BEGIN
+      PayrollPeriod.GET(PeriodCode);
+    END;
+
+    PROCEDURE SetTestMode@1210002(NewTestMode@1210000 : Boolean;NewPeriodCode@1210001 : Code[10];NewDataSource@1210002 : Option);
+    BEGIN
+      TestMode := NewTestMode;
+      PeriodCode := NewPeriodCode;
+      DataSource := NewDataSource;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

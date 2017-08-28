@@ -1,0 +1,376 @@
+OBJECT Page 50210 Check Preview Subpage
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.06.17;
+    Time=13:56:00;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    InsertAllowed=No;
+    DeleteAllowed=No;
+    ModifyAllowed=No;
+    SourceTable=Table21;
+    PageType=ListPart;
+    SourceTableTemporary=Yes;
+    OnFindRecord=BEGIN
+                   EXIT(FindRec(Rec,Which));
+                 END;
+
+    OnNextRecord=BEGIN
+                   EXIT(NextRec(Rec,Steps));
+                 END;
+
+  }
+  CONTROLS
+  {
+    { 1101495000;0;Container;
+                ContainerType=ContentArea }
+
+    { 1101495001;1;Group  ;
+                Name=Group;
+                GroupType=Repeater }
+
+    { 1101495002;2;Field  ;
+                SourceExpr="Document Type" }
+
+    { 1101495003;2;Field  ;
+                SourceExpr="Document No." }
+
+    { 1101495004;2;Field  ;
+                SourceExpr="External Document No." }
+
+    { 1101495005;2;Field  ;
+                SourceExpr=Description }
+
+    { 1101495006;2;Field  ;
+                CaptionML=[ENU=Original amount;
+                           RUS=Оригинальная сумма];
+                SourceExpr="Sales (LCY)" }
+
+    { 1101495007;2;Field  ;
+                CaptionML=[ENU=Remaining amount;
+                           RUS=Сумма остатка];
+                SourceExpr="Profit (LCY)" }
+
+    { 1101495008;2;Field  ;
+                SourceExpr="Pmt. Disc. Given (LCY)" }
+
+    { 1101495009;2;Field  ;
+                SourceExpr="Amount to Apply" }
+
+    { 1101495010;2;Field  ;
+                SourceExpr="Applies-to Doc. No." }
+
+    { 1101495011;2;Field  ;
+                SourceExpr="Applies-to ID" }
+
+    { 1101495012;2;Field  ;
+                SourceExpr="Customer No." }
+
+  }
+  CODE
+  {
+    VAR
+      tmpCustLedgerEntry@1101495006 : TEMPORARY Record 21;
+      ApplyMethod@1101495005 : 'Payment,OneLineOneEntry,OneLineID,MoreLinesOneEntry';
+      RemainingAmount@1101495004 : Decimal;
+      CustLedgEntry@1101495003 : Record 21;
+      VendLedgEntry@1101495002 : Record 25;
+      Currency@1101495001 : Record 4;
+      LineAmount2@1101495000 : Decimal;
+      Text01@1101495008 : TextConst 'ENU=Original Amount;RUS=Оригинальная сумма';
+      Text02@1101495007 : TextConst 'ENU=Remaining Amount;RUS=Сумма Остатка';
+
+    PROCEDURE GetApplication@1101495000(GenJnlLine@1101495000 : Record 81);
+    BEGIN
+      //NC NCS-1108 > DP
+      tmpCustLedgerEntry.DELETEALL;
+      RemainingAmount := GenJnlLine.Amount;
+      IF GenJnlLine."Applies-to Doc. No."<>'' THEN
+         ApplyMethod := ApplyMethod::OneLineOneEntry
+      ELSE
+        IF GenJnlLine."Applies-to ID"<>'' THEN
+          ApplyMethod :=  ApplyMethod::OneLineID
+        ELSE
+           EXIT;
+
+      IF GenJnlLine."Currency Code" <> '' THEN
+        Currency.GET(GenJnlLine."Currency Code");
+
+
+      CASE ApplyMethod OF
+        ApplyMethod::OneLineOneEntry:
+          BEGIN
+            CASE GenJnlLine."Account Type" OF
+              GenJnlLine."Account Type"::Customer:
+                BEGIN
+                  CustLedgEntry.RESET;
+                  CustLedgEntry.SETCURRENTKEY("Document No.");
+                  CustLedgEntry.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+                  CustLedgEntry.SETRANGE("Document No.",GenJnlLine."Applies-to Doc. No.");
+                  CustLedgEntry.SETRANGE("Customer No.",GenJnlLine."Account No.");
+                  IF CustLedgEntry.FINDSET THEN
+                    REPEAT
+                      CustUpdateAmounts(GenJnlLine,CustLedgEntry,RemainingAmount);
+
+                    UNTIL CustLedgEntry.NEXT=0;
+                END;
+              GenJnlLine."Account Type"::Vendor:
+                BEGIN
+                  VendLedgEntry.RESET;
+                  VendLedgEntry.SETCURRENTKEY("Document No.");
+                  VendLedgEntry.SETRANGE("Document Type",GenJnlLine."Applies-to Doc. Type");
+                  VendLedgEntry.SETRANGE("Document No.",GenJnlLine."Applies-to Doc. No.");
+                  VendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+                  IF VendLedgEntry.FINDSET THEN
+                    REPEAT
+                      VendUpdateAmounts(GenJnlLine,VendLedgEntry,RemainingAmount);
+
+                    UNTIL VendLedgEntry.NEXT=0;
+                END;
+            END;
+          END;
+        ApplyMethod::OneLineID:
+          BEGIN
+            CASE GenJnlLine."Account Type" OF
+              GenJnlLine."Account Type"::Customer:
+                BEGIN
+                  CustLedgEntry.RESET;
+                  CustLedgEntry.SETCURRENTKEY("Customer No.",Open,Positive);
+                  CustLedgEntry.SETRANGE("Customer No.",GenJnlLine."Account No.");
+                  CustLedgEntry.SETRANGE(Open,TRUE);
+                  CustLedgEntry.SETRANGE("Applies-to ID",GenJnlLine."Applies-to ID");
+                  IF CustLedgEntry.FINDSET THEN
+                    REPEAT
+                      CustUpdateAmounts(GenJnlLine,CustLedgEntry,RemainingAmount);
+
+                    UNTIL (CustLedgEntry.NEXT=0) OR (RemainingAmount <=0);
+                END;
+              GenJnlLine."Account Type"::Vendor:
+                BEGIN
+                  VendLedgEntry.RESET;
+                  VendLedgEntry.SETCURRENTKEY("Vendor No.",Open,Positive);
+                  VendLedgEntry.SETRANGE("Vendor No.",GenJnlLine."Account No.");
+                  VendLedgEntry.SETRANGE(Open,TRUE);
+                  VendLedgEntry.SETRANGE("Applies-to ID",GenJnlLine."Applies-to ID");
+                  IF VendLedgEntry.FINDSET THEN
+                    REPEAT
+                      VendUpdateAmounts(GenJnlLine,VendLedgEntry,RemainingAmount);
+
+                    UNTIL (VendLedgEntry.NEXT=0) OR (RemainingAmount <=0);
+                END;
+             END;
+          END;
+      END;
+      CurrPage.UPDATE;
+      //NC NCS-1108 < DP
+    END;
+
+    LOCAL PROCEDURE CustUpdateAmounts@3(GenJnlLine@1101495003 : Record 81;VAR CustLedgEntry2@1000 : Record 21;VAR RemainingAmount2@1001 : Decimal);
+    VAR
+      LineAmount@1101495002 : Decimal;
+      LineDiscount@1101495001 : Decimal;
+    BEGIN
+      //NC NCS-1108 > DP
+      CustLedgEntry2.CALCFIELDS("Original Amount", "Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)");
+
+      LineAmount := -(CustLedgEntry2."Remaining Amount" - CustLedgEntry2."Remaining Pmt. Disc. Possible"-
+        CustLedgEntry2."Accepted Payment Tolerance");
+      LineAmount2 :=
+        ROUND(
+          ExchangeAmt(CustLedgEntry2."Posting Date",GenJnlLine."Currency Code",CustLedgEntry2."Currency Code",LineAmount),
+          Currency."Amount Rounding Precision");
+
+      IF ((((CustLedgEntry2."Document Type" = CustLedgEntry2."Document Type"::Invoice) AND
+           (LineAmount2 >= RemainingAmount2)) OR
+          ((CustLedgEntry2."Document Type" = CustLedgEntry2."Document Type"::"Credit Memo") AND
+           (LineAmount2 <= RemainingAmount2))) AND
+          (GenJnlLine."Posting Date" <= CustLedgEntry2."Pmt. Discount Date")) OR
+          CustLedgEntry2."Accepted Pmt. Disc. Tolerance"
+      THEN BEGIN
+        LineDiscount := -CustLedgEntry2."Remaining Pmt. Disc. Possible";
+        IF CustLedgEntry2."Accepted Payment Tolerance" <> 0 THEN
+          LineDiscount := LineDiscount - CustLedgEntry2."Accepted Payment Tolerance";
+      END ELSE BEGIN
+        IF RemainingAmount2 >=
+           ROUND(
+            -(ExchangeAmt(CustLedgEntry2."Posting Date",GenJnlLine."Currency Code",CustLedgEntry2."Currency Code",
+              CustLedgEntry2."Remaining Amount")),Currency."Amount Rounding Precision")
+        THEN
+          LineAmount2 :=
+            ROUND(
+              -(ExchangeAmt(CustLedgEntry2."Posting Date",GenJnlLine."Currency Code",CustLedgEntry2."Currency Code",
+                CustLedgEntry2."Remaining Amount")),Currency."Amount Rounding Precision")
+        ELSE BEGIN
+          LineAmount2 := RemainingAmount2;
+          LineAmount :=
+            ROUND(
+              ExchangeAmt(CustLedgEntry2."Posting Date",CustLedgEntry2."Currency Code",GenJnlLine."Currency Code",
+              LineAmount2),Currency."Amount Rounding Precision");
+        END;
+        LineDiscount := 0;
+      END;
+      RemainingAmount2 := RemainingAmount2 - LineAmount2;
+      tmpCustLedgerEntry.INIT;
+      tmpCustLedgerEntry.TRANSFERFIELDS(CustLedgEntry2);
+      tmpCustLedgerEntry."Sales (LCY)" :=  CustLedgEntry2."Original Amount";
+      tmpCustLedgerEntry."Profit (LCY)" := CustLedgEntry2."Remaining Amount";
+      tmpCustLedgerEntry."Closed by Amount" := CustLedgEntry2."Original Amt. (LCY)";
+      tmpCustLedgerEntry."Closed by Amount (LCY)" := CustLedgEntry2."Remaining Amt. (LCY)";
+      tmpCustLedgerEntry."Amount to Apply" := LineAmount2;
+      tmpCustLedgerEntry.INSERT;
+      //NC NCS-1108 < DP
+    END;
+
+    LOCAL PROCEDURE VendUpdateAmounts@4(GenJnlLine@1101495003 : Record 81;VAR VendLedgEntry2@1000 : Record 25;VAR RemainingAmount2@1001 : Decimal);
+    VAR
+      LineAmount@1101495000 : Decimal;
+      LineDiscount@1101495001 : Decimal;
+      LineAmount2@1101495002 : Decimal;
+    BEGIN
+      //NC NCS-1108 > DP
+      VendLedgEntry2.CALCFIELDS("Original Amount", "Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)");
+
+      LineAmount := -(VendLedgEntry2."Remaining Amount" - VendLedgEntry2."Remaining Pmt. Disc. Possible" -
+        VendLedgEntry2."Accepted Payment Tolerance");
+
+      LineAmount2 :=
+        ROUND(
+          ExchangeAmt(VendLedgEntry2."Posting Date",GenJnlLine."Currency Code",VendLedgEntry2."Currency Code",LineAmount),
+          Currency."Amount Rounding Precision");
+
+      IF ((((VendLedgEntry2."Document Type" = VendLedgEntry2."Document Type"::Invoice) AND
+            (LineAmount2 <= RemainingAmount2)) OR
+           ((VendLedgEntry2."Document Type" = VendLedgEntry2."Document Type"::"Credit Memo") AND
+            (LineAmount2 >= RemainingAmount2))) AND
+         (GenJnlLine."Posting Date" <= VendLedgEntry2."Pmt. Discount Date")) OR
+          VendLedgEntry2."Accepted Pmt. Disc. Tolerance"
+      THEN BEGIN
+        LineDiscount := -VendLedgEntry2."Remaining Pmt. Disc. Possible";
+        IF VendLedgEntry2."Accepted Payment Tolerance" <> 0 THEN
+          LineDiscount := LineDiscount - VendLedgEntry2."Accepted Payment Tolerance";
+      END ELSE BEGIN
+       IF RemainingAmount2 >=
+           ROUND(
+            -(ExchangeAmt(VendLedgEntry2."Posting Date",GenJnlLine."Currency Code",VendLedgEntry2."Currency Code",
+              VendLedgEntry2."Amount to Apply")),Currency."Amount Rounding Precision")
+        THEN BEGIN
+          LineAmount2 :=
+            ROUND(
+              -(ExchangeAmt(VendLedgEntry2."Posting Date",GenJnlLine."Currency Code",VendLedgEntry2."Currency Code",
+                VendLedgEntry2."Amount to Apply")),Currency."Amount Rounding Precision");
+          LineAmount :=
+            ROUND(
+              ExchangeAmt(VendLedgEntry2."Posting Date",VendLedgEntry2."Currency Code",GenJnlLine."Currency Code",
+              LineAmount2),Currency."Amount Rounding Precision");
+        END ELSE BEGIN
+          LineAmount2 := RemainingAmount2;
+          LineAmount :=
+            ROUND(
+              ExchangeAmt(VendLedgEntry2."Posting Date",VendLedgEntry2."Currency Code",GenJnlLine."Currency Code",
+              LineAmount2),Currency."Amount Rounding Precision");
+        END;
+        LineDiscount := 0;
+      END;
+      RemainingAmount2 := RemainingAmount2 - LineAmount2;
+      tmpCustLedgerEntry.INIT;
+      tmpCustLedgerEntry."Entry No." := VendLedgEntry2."Entry No.";
+      tmpCustLedgerEntry."Customer No." := VendLedgEntry2."Vendor No.";
+      tmpCustLedgerEntry."Posting Date" :=VendLedgEntry2."Posting Date";
+      tmpCustLedgerEntry."Document Type" := VendLedgEntry2."Document Type";
+      tmpCustLedgerEntry."Document No." :=  VendLedgEntry2."Document No.";
+      tmpCustLedgerEntry."External Document No." := VendLedgEntry2."External Document No.";
+      tmpCustLedgerEntry."Document Date" :=VendLedgEntry2."Document Date";
+      tmpCustLedgerEntry."Applies-to ID" := VendLedgEntry2."Applies-to ID";
+      tmpCustLedgerEntry."Applies-to Doc. No." := VendLedgEntry2."Applies-to Doc. No.";
+      tmpCustLedgerEntry."Original Amount":= VendLedgEntry2."Original Amount";
+      tmpCustLedgerEntry."Remaining Amount" := VendLedgEntry2."Remaining Amount";
+      tmpCustLedgerEntry."Sales (LCY)" :=  VendLedgEntry2."Original Amount";
+      tmpCustLedgerEntry."Profit (LCY)" := VendLedgEntry2."Remaining Amount";
+      tmpCustLedgerEntry."Closed by Amount" := VendLedgEntry2."Original Amt. (LCY)";
+      tmpCustLedgerEntry."Closed by Amount (LCY)" := VendLedgEntry2."Remaining Amt. (LCY)";
+      tmpCustLedgerEntry."Amount to Apply" := LineAmount2;
+      tmpCustLedgerEntry.INSERT;
+      //NC NCS-1108 < DP
+    END;
+
+    PROCEDURE ExchangeAmt@7(PostingDate@1000 : Date;CurrencyCode@1001 : Code[10];CurrencyCode2@1003 : Code[10];Amount@1002 : Decimal) Amount2 : Decimal;
+    VAR
+      CurrencyExchangeRate@1101495000 : Record 330;
+    BEGIN
+      //NC NCS-1108 > DP
+      IF (CurrencyCode <> '')  AND (CurrencyCode2 = '') THEN
+         Amount2 :=
+           CurrencyExchangeRate.ExchangeAmtLCYToFCY(
+             PostingDate,CurrencyCode,Amount,CurrencyExchangeRate.ExchangeRate(PostingDate,CurrencyCode))
+      ELSE IF (CurrencyCode = '') AND (CurrencyCode2 <> '') THEN
+        Amount2 :=
+          CurrencyExchangeRate.ExchangeAmtFCYToLCY(
+            PostingDate,CurrencyCode2,Amount,CurrencyExchangeRate.ExchangeRate(PostingDate,CurrencyCode2))
+      ELSE IF (CurrencyCode <> '') AND (CurrencyCode2 <> '') AND (CurrencyCode <> CurrencyCode2) THEN
+        Amount2 := CurrencyExchangeRate.ExchangeAmtFCYToFCY(PostingDate,CurrencyCode2,CurrencyCode,Amount)
+      ELSE
+        Amount2 := Amount;
+      //NC NCS-1108 < DP
+    END;
+
+    LOCAL PROCEDURE FindRec@59(VAR CLE@1001 : Record 21;Which@1002 : Text[250]) : Boolean;
+    VAR
+      GLAcc@1003 : Record 15;
+      BusUnit@1004 : Record 220;
+      Period@1005 : Record 2000000007;
+      DimVal@1006 : Record 349;
+      PeriodFormMgt@1007 : Codeunit 359;
+      Found@1008 : Boolean;
+    BEGIN
+      //NC NCS-1108 > DP
+      tmpCustLedgerEntry."Entry No." := CLE."Entry No.";
+      Found := tmpCustLedgerEntry.FIND(Which);
+      IF Found THEN
+        CopyCVToBuf(tmpCustLedgerEntry,CLE);
+      EXIT(Found);
+      //NC NCS-1108 < DP
+    END;
+
+    LOCAL PROCEDURE NextRec@60(VAR CLE@1001 : Record 21;Steps@1002 : Integer) : Integer;
+    VAR
+      GLAcc@1003 : Record 15;
+      BusUnit@1004 : Record 220;
+      Period@1005 : Record 2000000007;
+      DimVal@1006 : Record 349;
+      PeriodFormMgt@1007 : Codeunit 359;
+      ResultSteps@1008 : Integer;
+    BEGIN
+      //NC NCS-1108 > DP
+      tmpCustLedgerEntry."Entry No." := CLE."Entry No.";
+      ResultSteps := tmpCustLedgerEntry.NEXT(Steps);
+      IF ResultSteps <> 0 THEN
+        CopyCVToBuf(tmpCustLedgerEntry,CLE);
+      EXIT(ResultSteps);
+      //NC NCS-1108 < DP
+    END;
+
+    LOCAL PROCEDURE CopyCVToBuf@1000000001(VAR CLE1@1000 : Record 21;VAR CLE2@1001 : Record 21);
+    BEGIN
+      //NC NCS-1108 > DP
+      WITH CLE2 DO BEGIN
+        INIT;
+        //CLE2.TRANSFERFIELDS(CLE1)
+        CLE2.COPY(CLE1); // NC NOS-26 SPA более оптимальный вариант, т.к. это одна и та же таблица
+      END;
+      //NC NCS-1108 < DP
+    END;
+
+    BEGIN
+    {
+      NC NCS-1108 Новая форма для применяемых к чеку документов
+      -------------------------
+      NC NOS-26 SPA Перенос на новую функциональность
+    }
+    END.
+  }
+}
+

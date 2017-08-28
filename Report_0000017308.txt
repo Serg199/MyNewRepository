@@ -1,0 +1,244 @@
+OBJECT Report 17308 Calc. Tax Diff.- Depr. Bonus
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calc. Tax Diff.- Depr. Bonus;
+               RUS=Расчет налог. разниц по аморт. премии];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   TaxRegisterSetup.GET;
+                   TaxRegisterSetup.TESTFIELD("Use Group Depr. Method from",0D);
+                   TaxRegisterSetup.TESTFIELD("Tax Depreciation Book");
+                   TaxRegisterSetup.TESTFIELD("Calculate TD for each FA",TRUE);
+                   FASetup.GET;
+                 END;
+
+    OnPreReport=BEGIN
+                  StartDate := DatePeriod."Period Start";
+                  EndDate := NORMALDATE(DatePeriod."Period End");
+
+                  IF TemplateName = '' THEN
+                    ERROR(Text001);
+
+                  IF BatchName = '' THEN
+                    ERROR(Text002);
+
+                  TaxDiffJnlBatch.GET(TemplateName,BatchName);
+                  TaxDiffJnlBatch.TESTFIELD("No. Series");
+                END;
+
+  }
+  DATASET
+  {
+    { 3794;    ;DataItem;                    ;
+               DataItemTable=Table5600;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(FA Type=FILTER(Fixed Assets|Intangible Asset),
+                                       Blocked=CONST(No),
+                                       Inactive=CONST(No));
+               OnPreDataItem=BEGIN
+                               TaxDiffJnlLine."Journal Template Name" := TemplateName;
+                               TaxDiffJnlLine."Journal Batch Name" := BatchName;
+                               TaxDiffJnlLine.SETRANGE("Journal Template Name",TemplateName);
+                               TaxDiffJnlLine.SETRANGE("Journal Batch Name",BatchName);
+                               IF TaxDiffJnlLine.FINDLAST THEN;
+                               LineNo := TaxDiffJnlLine."Line No." + 10000;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  TaxDeprBonusAmount@1210000 : Decimal;
+                                BEGIN
+                                  IF FADepreciationBook.GET("No.",TaxRegisterSetup."Tax Depreciation Book") THEN BEGIN
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",StartDate,EndDate);
+                                    FADepreciationBook.CALCFIELDS("Depreciation Bonus");
+                                    TaxDeprBonusAmount := FADepreciationBook."Depreciation Bonus";
+                                  END;
+
+                                  IF TaxDeprBonusAmount <> 0 THEN BEGIN
+                                    SourceType := GetTDESourceType;
+                                    IF NOT TaxDiffAlreadyPosted(
+                                         TaxRegisterSetup."Depr. Bonus TD Code",
+                                         SourceType,
+                                         "No.",
+                                         EndDate)
+                                    THEN
+                                      CreateJnlLine(
+                                        STRSUBSTNO(Text003,"No."),
+                                        EndDate,
+                                        TaxRegisterSetup."Depr. Bonus TD Code",
+                                        0,
+                                        -TaxDeprBonusAmount,
+                                        TaxDiffJnlLine."Source Type"::"Fixed Asset",
+                                        "No.");
+                                  END;
+                                END;
+
+               ReqFilterFields=No. }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210003;2;Field     ;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,FALSE);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE }
+
+      { 1210009;2;Field     ;
+                  CaptionML=[ENU=Jnl. Template Name;
+                             RUS=Имя шаблона журнала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=TemplateName;
+                  TableRelation="Tax Diff. Journal Template" }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Jnl. Batch Name;
+                             RUS=Код раздела журнала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BatchName;
+                  OnLookup=BEGIN
+                             IF TemplateName <> '' THEN BEGIN
+                               TaxDiffJnlBatch.SETRANGE("Journal Template Name",TemplateName);
+                               TaxDiffJnlBatch.SETRANGE(Name,BatchName);
+                               IF TaxDiffJnlBatch.FINDFIRST THEN ;
+                               TaxDiffJnlBatch.SETRANGE(Name);
+                               IF ACTION::LookupOK = PAGE.RUNMODAL(0,TaxDiffJnlBatch) THEN BEGIN
+                                 TemplateName := TaxDiffJnlBatch."Journal Template Name";
+                                 BatchName := TaxDiffJnlBatch.Name;
+                               END;
+                             END;
+                           END;
+                            }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FASetup@1210011 : Record 5603;
+      FADepreciationBook@1210012 : Record 5612;
+      TaxRegisterSetup@1210000 : Record 17236;
+      TaxDiffJnlBatch@1210008 : Record 17304;
+      TaxDiffJnlLine@1210007 : Record 17305;
+      xRecTaxDiffJnlLine@1470000 : Record 17305;
+      TaxDiffLedgerEntry@1210021 : Record 17306;
+      CalendarPeriod@1210005 : Record 2000000007;
+      DatePeriod@1210004 : Record 2000000007;
+      NoSeriesMgt@1210028 : Codeunit 396;
+      PeriodReportManagement@1210003 : Codeunit 12406;
+      StartDate@1210018 : Date;
+      EndDate@1210019 : Date;
+      AccountPeriod@1210001 : Text[30];
+      TemplateName@1210010 : Code[10];
+      BatchName@1210009 : Code[10];
+      LineNo@1210020 : Integer;
+      Text001@1210002 : TextConst 'ENU=Please enter a journal template name.;RUS=Введите имя шаблона журнала.';
+      Text002@1210027 : TextConst 'ENU=Please enter a journal batch name.;RUS=Введите код раздела журнала.';
+      SourceType@1210031 : ' ,Future Expense,Fixed Asset,Intangible Asset';
+      Text003@1210013 : TextConst 'ENU=Depreciation Bonus for %1;RUS=Амортизационная премия для %1';
+
+    PROCEDURE CreateJnlLine@1210006(Description@1210000 : Text[80];PostingDate@1210001 : Date;TaxDiffCode@1210002 : Code[10];AmountBase@1210003 : Decimal;AmountTax@1210004 : Decimal;SourceType@1210005 : Option;SourceNo@1210006 : Code[20]);
+    BEGIN
+      xRecTaxDiffJnlLine := TaxDiffJnlLine;
+      TaxDiffJnlLine.INIT;
+      TaxDiffJnlLine.SetUpNewLine(xRecTaxDiffJnlLine);
+      TaxDiffJnlLine."Journal Template Name" := TemplateName;
+      TaxDiffJnlLine."Journal Batch Name" := BatchName;
+      TaxDiffJnlLine."Line No." := LineNo;
+      TaxDiffJnlLine.Description := COPYSTR(Description,1,MAXSTRLEN(TaxDiffJnlLine.Description));
+      TaxDiffJnlLine."Document No." := NoSeriesMgt.GetNextNo(TaxDiffJnlBatch."No. Series",EndDate,TRUE);
+      TaxDiffJnlLine."Posting Date" := PostingDate;
+      TaxDiffJnlLine."Source Type" := SourceType;
+      TaxDiffJnlLine.VALIDATE("Source No.",SourceNo);
+      TaxDiffJnlLine.VALIDATE("Tax Diff. Code",TaxDiffCode);
+      TaxDiffJnlLine.VALIDATE("Amount (Base)",AmountBase);
+      TaxDiffJnlLine.VALIDATE("Amount (Tax)",AmountTax);
+      TaxDiffJnlLine."Source Entry Type" := TaxDiffJnlLine."Source Entry Type"::"Depr. Bonus";
+      TaxDiffJnlLine.INSERT;
+      LineNo += 10000;
+    END;
+
+    PROCEDURE TaxDiffAlreadyPosted@1210003(TaxDiffCode@1210000 : Code[10];SourceType@1210001 : Option;SourceNo@1210002 : Code[20];PostingDate@1210003 : Date) : Boolean;
+    BEGIN
+      TaxDiffLedgerEntry.SETCURRENTKEY("Tax Diff. Code","Source Type","Source No.","Posting Date");
+      TaxDiffLedgerEntry.SETRANGE("Posting Date",PostingDate);
+      TaxDiffLedgerEntry.SETRANGE("Source Type",SourceType);
+      TaxDiffLedgerEntry.SETRANGE("Source No.",SourceNo);
+      TaxDiffLedgerEntry.SETRANGE("Tax Diff. Code",TaxDiffCode);
+      TaxDiffLedgerEntry.SETRANGE(Reversed,FALSE);
+      TaxDiffLedgerEntry.SETRANGE("Source Entry Type",TaxDiffLedgerEntry."Source Entry Type"::"Depr. Bonus");
+      EXIT(NOT TaxDiffLedgerEntry.ISEMPTY);
+    END;
+
+    PROCEDURE InitializeRequest@1210000(StartDate@1210000 : Date;EndDate@1210001 : Date;TaxDiffJnlTemplateName@1210002 : Code[10];TaxDiffJnlBatchName@1210003 : Code[10]);
+    BEGIN
+      DatePeriod."Period Start" := StartDate;
+      DatePeriod."Period End" := EndDate;
+      TemplateName := TaxDiffJnlTemplateName;
+      BatchName := TaxDiffJnlBatchName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

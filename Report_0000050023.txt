@@ -1,0 +1,264 @@
+OBJECT Report 50023 PartPostLine
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:02;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    CaptionML=RUS=Пакетный Учет Фин. Журнала;
+    ProcessingOnly=Yes;
+  }
+  DATASET
+  {
+    { 5444;    ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 ORDER(Ascending);
+               MaxIteration=1 }
+
+    { 7024;1   ;DataItem;                    ;
+               DataItemTable=Table81;
+               OnPreDataItem=BEGIN
+                               IF FINDFIRST THEN BEGIN
+                                 lCount := "Line No.";
+                                 SETRANGE("Line No.",lCount);
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  StepIteration;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.");
+                                SETRANGE("Line No.");
+                                IF FINDFIRST THEN
+                                  lCount := "Line No.";
+                                IF FINDLAST THEN
+                                  TotalCount := "Line No.";
+
+                                OldlCount := lCount;
+                                EndPack := OldlCount;
+
+                                REPEAT
+
+                                  RESET;
+                                  SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.");
+                                  SETFILTER("Journal Template Name","Journal Template Name");
+                                  SETFILTER("Journal Batch Name","Journal Batch Name");
+                                  //подбор полупроводок в пакеты по полям: дата учета, тип документа, документ номер
+                                  SETRANGE("Line No.",OldlCount,TotalCount);
+                                  FIND('-');
+                                  isExit := FALSE;
+                                  OldPostingDate := "Posting Date";
+                                  OldDocType := "Document Type";
+                                  OldDocNo := "Document No.";
+                                  i := 0;
+                                  REPEAT
+                                    i += 1;
+                                    lCount := "Line No.";
+
+                                    IF NEXT = 0 THEN
+                                      isExit := TRUE;
+
+                                    IF (OldPostingDate <> "Posting Date") OR
+                                       (OldDocType <> "Document Type") OR
+                                       (OldDocNo <> "Document No.") THEN BEGIN
+                                      OldPostingDate := "Posting Date";
+                                      OldDocType := "Document Type";
+                                      OldDocNo := "Document No.";
+                                      IF i >= MovingDataSetup."Operations of Part Post" THEN
+                                        isExit := TRUE;
+                                    END;
+
+                                  UNTIL isExit;
+
+                                  SETRANGE("Line No.",OldlCount,lCount);
+                                  CALCSUMS("Balance (LCY)");
+
+                                  COMMIT;
+                                  IF CODEUNIT.RUN(CODEUNIT::PostPartJnl,"Gen. Journal Line") THEN
+                                    isExit := FALSE;
+                                  IF isExit THEN BEGIN
+                                    // Учет по проводкам
+                                    isExit := FALSE;
+                                    LineFrom := OldlCount;
+                                    LineTo := LineFrom;
+
+                                    REPEAT
+
+                                      GenJnlLine.RESET;
+                                      GenJnlLine.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.");
+                                      GenJnlLine.SETFILTER("Journal Template Name","Journal Template Name");
+                                      GenJnlLine.SETFILTER("Journal Batch Name","Journal Batch Name");
+
+                                      //подбор полупроводок в проводки по полям: дата учета, тип документа, документ номер
+                                      GenJnlLine.SETRANGE("Line No.",LineFrom,lCount);
+                                      GenJnlLine.FINDSET;
+                                      OldPostingDate := GenJnlLine."Posting Date";
+                                      OldDocType := GenJnlLine."Document Type";
+                                      OldDocNo := GenJnlLine."Document No.";
+                                      REPEAT
+                                        LineTo := GenJnlLine."Line No.";
+
+                                        IF GenJnlLine.NEXT = 0 THEN
+                                          isExit := TRUE;
+
+                                      UNTIL (OldPostingDate <> GenJnlLine."Posting Date") OR
+                                            (OldDocType <> GenJnlLine."Document Type") OR
+                                            (OldDocNo <> GenJnlLine."Document No.") OR
+                                            isExit;
+                                      GenJnlLine.SETRANGE("Line No.",LineFrom,LineTo);
+                                      COMMIT;
+                                      IF NOT CODEUNIT.RUN(CODEUNIT::PostPartJnl,GenJnlLine) THEN BEGIN
+                                        isErr := TRUE;
+                                      //NC S1185.1 > PCH
+                                        IF LineJobProcNo <> 0 THEN BEGIN
+                                          JobProcStatus2.GET(LineJobProcNo);
+                                          RecRefJobProcStatus2.GETTABLE(JobProcStatus2);
+                                          ErrorJournal.AddLastError1(JobProcStatus2."Company No.",ErrorJournal."Error Group"::Post,ErrorJournal.Type::Error,
+                                                                     JobProcStatus2.Processor,JobProcStatus2."Cons. Register",
+                                                                     STRSUBSTNO(Text003,GETFILTER("Journal Template Name"),
+                                                                                        GETFILTER("Journal Batch Name"),
+                                                                                        LineFrom,LineTo),
+                                                                     RecRefJobProcStatus2,JobProcStatus2."Line No.");
+                                        END;
+                                      END;
+                                      //NC S1185.1 > PCH
+
+                                      GenJnlLine.SETRANGE("Line No.", LineTo + 1, lCount);
+                                      IF NOT GenJnlLine.FINDFIRST THEN
+                                        isExit := TRUE;
+                                      LineFrom := GenJnlLine."Line No.";
+                                      LineTo := LineFrom;
+
+                                    UNTIL (lCount < LineTo) OR isExit;
+
+                                  END;
+
+                                  //поиск следующей строки
+                                  SETRANGE("Line No.", lCount + 1, TotalCount);
+                                  IF FINDFIRST THEN BEGIN
+                                    OldlCount := "Line No.";
+                                    lCount := "Line No.";
+                                  END ELSE
+                                    lCount := TotalCount + 1;  // ВЫХОД
+
+                                UNTIL TotalCount < lCount;
+
+                                IF isErr THEN BEGIN
+                                  IF LineJobProcNo = 0 THEN
+                                    MESSAGE(Text002,"Journal Template Name","Journal Batch Name")
+                                  ELSE BEGIN
+                                    //NC S1185.1 > PCH
+                                    {
+                                    JobProcStatus2.GET(LineJobProcNo);
+                                    RecRefJobProcStatus2.GETTABLE(JobProcStatus2);
+                                    ErrorJournal.AddLastError1(JobProcStatus2."Company No.",ErrorJournal."Error Group"::Post,ErrorJournal.Type::Error,
+                                                               JobProcStatus2.Processor,JobProcStatus2."Cons. Register",
+                                                               STRSUBSTNO(Text002,GETFILTER("Journal Template Name"),GETFILTER("Journal Batch Name")),
+                                                               RecRefJobProcStatus2,JobProcStatus2."Line No.");
+                                    }
+                                    //NC S1185.1 < PCH
+                                  END;
+                                END;
+                              END;
+
+               ReqFilterFields=Journal Template Name,Journal Batch Name }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      lCount@1000000000 : Integer;
+      GenJnlManagement@1000000001 : Codeunit 230;
+      TotalCount@1000000002 : Integer;
+      i@1000000003 : Integer;
+      GenJnlPost@1000000004 : Codeunit 231;
+      Iteration@1000000005 : Integer;
+      OldlCount@1000000006 : Integer;
+      EndPack@1000000008 : Integer;
+      Step@1000000007 : Integer;
+      Text001@1101495000 : TextConst 'ENU=Fin. Journal Title %1 %2 is not balanced.;RUS=Фин. Журнал %1 Раздел %2 не балансирует.';
+      MovingDataSetup@1101495001 : Record 50064;
+      GenJnlLine@1101495002 : Record 81;
+      LineFrom@1101495003 : Integer;
+      LineTo@1101495004 : Integer;
+      isErr@1101495006 : Boolean;
+      isExit@1101495005 : Boolean;
+      LineJobProcNo@1101495010 : Integer;
+      RecRefJobProcStatus2@1101495007 : RecordRef;
+      JobProcStatus2@1101495008 : Record 50063;
+      Text002@1101495009 : TextConst 'ENU=There are not posted lines. Fin. Journal Title %1 %2.;RUS=Не все строки журнала учтены. Фин. Журнал %1 Раздел %2.';
+      ErrorJournal@1101495011 : Record 50023;
+      OldPostingDate@1101495012 : Date;
+      OldDocType@1101495013 : Integer;
+      OldDocNo@1101495014 : Code[20];
+      Text003@1101495015 : TextConst 'ENU=Fin. Journal Title %1 %2  Lines %3..%4.;RUS=Фин. Журнал %1 Раздел %2 Строки %3..%4.';
+
+    PROCEDURE PostLine@1000000005();
+    BEGIN
+    END;
+
+    PROCEDURE StepIteration@1000000000();
+    VAR
+      GenJnlLine1@1000000000 : Record 81;
+      lfrom@1000000001 : Integer;
+      lto@1000000002 : Integer;
+      lcount@1101495000 : Integer;
+    BEGIN
+      MovingDataSetup.GET;
+      MovingDataSetup.TESTFIELD("Operations of Part Post");
+
+      GenJnlLine1.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.");
+      GenJnlLine1.COPYFILTERS("Gen. Journal Line");
+      GenJnlLine1.SETRANGE("Line No.");
+      IF GenJnlLine1.FINDFIRST THEN BEGIN
+        lfrom := GenJnlLine1."Line No.";
+        lcount := GenJnlLine1.COUNT;
+        IF lcount = 0 THEN
+          CurrReport.QUIT;
+        GenJnlLine1.FINDLAST;
+        lto := GenJnlLine1."Line No.";
+        Iteration := ROUND((lto - lfrom) / lcount * MovingDataSetup."Operations of Part Post", 1);
+        IF Iteration = 0 THEN
+          Iteration := lto;
+        IF Iteration = 0 THEN
+          Iteration := lfrom;
+        Step := ROUND((lto - lfrom) / lcount, 1);
+      END;
+    END;
+
+    PROCEDURE SetLineJobProcNo@1101495015(NewLineJobProcNo@1101495000 : Integer);
+    BEGIN
+      LineJobProcNo := NewLineJobProcNo;
+    END;
+
+    BEGIN
+    {
+      NC S1185 PCH ПОЛНОСТЬЮ ПЕРЕРАБОТАНО ПАКЕТНОЕ ЗАДАНИЕ
+      NC S1185.1 PCH Логирование всех ошибок
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

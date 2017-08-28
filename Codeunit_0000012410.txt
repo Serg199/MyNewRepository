@@ -1,0 +1,742 @@
+OBJECT Codeunit 12410 VAT Prepayment-Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30.06.17;
+    Time=16:04:38;
+    Modified=Yes;
+    Version List=NAVRU7.10,NOS-26;
+  }
+  PROPERTIES
+  {
+    TableNo=21;
+    Permissions=TableData 112=rim,
+                TableData 113=rim,
+                TableData 122=rim,
+                TableData 123=rim;
+    OnRun=BEGIN
+            TESTFIELD("Document Type","Document Type"::Payment);
+            TESTFIELD(Open,TRUE);
+            TESTFIELD(Prepayment,PostingType = PostingType::Reset);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SourceCodeSetup@1470003 : Record 242;
+      GenJnlLine@1470032 : Record 81;
+      GenJnlPostLine@1470019 : Codeunit 12;
+      NoSeriesManagement@1470018 : Codeunit 396;
+      PostingType@1470016 : 'Set,Reset';
+      PostingDate@1470015 : Date;
+      UseDocNo@1470013 : Code[20];
+      PostDescription@1470004 : Text[50];
+      PostingDocNo@1470005 : Code[20];
+      EntryType@1210001 : 'Sale,Purchase';
+      Text001@1210002 : TextConst 'ENU="There is already posted %1 %2 %3 related to %4 %5 %6.   ";RUS="Уже учт. %1 %2 %3, связанные с %4 %5 %6.   "';
+
+    LOCAL PROCEDURE InitGenJnlLines@1(CVLedgEntryBuf@1210000 : Record 382);
+    VAR
+      CustAgr@1210001 : Record 14902;
+      VendAgr@1210002 : Record 14901;
+    BEGIN
+      WITH CVLedgEntryBuf DO BEGIN
+        GenJnlLine.INIT;
+        IF PostingDate = 0D THEN
+          GenJnlLine."Posting Date" := "Posting Date"
+        ELSE
+          GenJnlLine."Posting Date" := PostingDate;
+        IF EntryType = EntryType::Sale THEN BEGIN
+          GenJnlLine."Account Type" := GenJnlLine."Account Type"::Customer;
+          GenJnlLine."Source Code" := SourceCodeSetup."Customer Prepayments";
+        END ELSE BEGIN
+          GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+          GenJnlLine."Source Code" := SourceCodeSetup."Vendor Prepayments";
+        END;
+        GenJnlLine.VALIDATE("Account No.","CV No.");
+        GenJnlLine.VALIDATE("Currency Code","Currency Code");
+        GenJnlLine.Description := STRSUBSTNO(PostDescription,"Document No.","Posting Date");
+        GenJnlLine."System-Created Entry" := TRUE;
+        GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        GenJnlLine."Dimension Set ID" := "Dimension Set ID";
+        GenJnlLine."Prepayment Document No." := UseDocNo;
+        //NC S1893 > PCH
+        GenJnlLine."Business Unit Code" := "Business Unit Code";
+        //NC S1893 < PCH
+
+        IF "Agreement No." <> '' THEN BEGIN
+          GenJnlLine."Agreement No." := "Agreement No.";
+          IF EntryType = EntryType::Sale THEN BEGIN
+            CustAgr.GET(GenJnlLine."Account No.",GenJnlLine."Agreement No.");
+            IF GenJnlLine."Posting Date" <= CustAgr."Expire Date" THEN
+              GenJnlLine."Posting Group" := CustAgr."Customer Posting Group";
+          END ELSE BEGIN
+            VendAgr.GET(GenJnlLine."Account No.",GenJnlLine."Agreement No.");
+            IF GenJnlLine."Posting Date" <= VendAgr."Expire Date" THEN
+              GenJnlLine."Posting Group" := VendAgr."Vendor Posting Group";
+          END;
+        END;
+        GenJnlLine."External Document No." := "External Document No.";
+      END;
+    END;
+
+    PROCEDURE Initialize@1210000(NewPostingType@1210000 : 'Set,Reset';NewPostingDate@1210001 : Date;NewPostDescription@1470000 : Text[50];NewPostingDocNo@1470001 : Code[20];Type@1210002 : Option);
+    BEGIN
+      PostingType := NewPostingType;
+      PostingDate := NewPostingDate;
+      PostDescription := NewPostDescription;
+      PostingDocNo := NewPostingDocNo;
+      EntryType := Type;
+    END;
+
+    PROCEDURE PostPrepayment@1210002(CVLedgEntryBuf@1210000 : Record 382);
+    VAR
+      SalesSetup@1210004 : Record 311;
+      CustPostingGr@1470000 : Record 92;
+      VendPostingGr@1210003 : Record 93;
+      Amount@1210001 : Decimal;
+      AmountLCY@1210002 : Decimal;
+    BEGIN
+      SourceCodeSetup.GET;
+      IF PostingDate = 0D THEN
+        PostingDate := CVLedgEntryBuf."Posting Date";
+      Amount := -CVLedgEntryBuf."Remaining Amount";
+      AmountLCY := -CVLedgEntryBuf."Remaining Amt. (LCY)";
+      IF EntryType = EntryType::Sale THEN BEGIN
+        CustPostingGr.GET(CVLedgEntryBuf."CV Posting Group");
+        CustPostingGr.TESTFIELD("Receivables Account");
+        CustPostingGr.TESTFIELD("Prepayment Account");
+        IF PostingDocNo = '' THEN BEGIN
+          SalesSetup.GET;
+          SalesSetup.TESTFIELD("Posted Prepayment Nos.");
+          UseDocNo := NoSeriesManagement.GetNextNo(SalesSetup."Posted Prepayment Nos.",PostingDate,TRUE);
+        END;
+      END ELSE BEGIN // Purchase
+        VendPostingGr.GET(CVLedgEntryBuf."CV Posting Group");
+        VendPostingGr.TESTFIELD("Payables Account");
+        VendPostingGr.TESTFIELD("Prepayment Account");
+        UseDocNo := CVLedgEntryBuf."Document No.";
+      END;
+      IF PostingDocNo <> '' THEN
+        UseDocNo := PostingDocNo;
+
+      // Post refund
+      InitGenJnlLines(CVLedgEntryBuf);
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::" ";
+      GenJnlLine."Document No." := CVLedgEntryBuf."Document No.";
+      GenJnlLine."Posting Group" := CVLedgEntryBuf."CV Posting Group";
+      IF PostingType = PostingType::Reset THEN BEGIN
+        GenJnlLine.Prepayment := TRUE;
+        GenJnlLine."Prepayment Status" := GenJnlLine."Prepayment Status"::Reset;
+        IF NOT CVLedgEntryBuf.Positive THEN BEGIN
+          GenJnlLine."Additional VAT Ledger Sheet" := TRUE;
+          GenJnlLine."Corrected Document Date" := CVLedgEntryBuf."Posting Date";
+        END;
+      END;
+      GenJnlLine.VALIDATE(Amount,Amount);
+      GenJnlLine.VALIDATE("Amount (LCY)",AmountLCY);
+      GenJnlLine."Applies-to Doc. Type" := CVLedgEntryBuf."Document Type";
+      GenJnlLine."Applies-to Doc. No." := CVLedgEntryBuf."Document No.";
+      GenJnlLine."Unrealized VAT Entry No." := CVLedgEntryBuf."Entry No.";
+      GenJnlPostLine.RunWithCheck(GenJnlLine);
+
+      // Post New Payment
+      InitGenJnlLines(CVLedgEntryBuf);
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Payment;
+      GenJnlLine."Document No." := UseDocNo;
+      IF PostingType = PostingType::Set THEN BEGIN
+        GenJnlLine.Prepayment := TRUE;
+        GenJnlLine."Prepayment Status" := GenJnlLine."Prepayment Status"::Set;
+      END;
+      GenJnlLine.VALIDATE(Amount,-Amount);
+      GenJnlLine.VALIDATE("Amount (LCY)",-AmountLCY);
+      GenJnlPostLine.SpecialRunWithCheck(GenJnlLine);
+    END;
+
+    PROCEDURE InsertSalesInvoice@1210003(VAR GenJnlLine@1210003 : Record 81) : Code[20];
+    VAR
+      SalesSetup@1210000 : Record 311;
+      SalesInvHeader@1470001 : Record 112;
+      SalesHeader@1210005 : Record 36;
+      SalesLine@1210004 : Record 37;
+      Currency@1210006 : Record 4;
+      VATPostingSetup@1210009 : Record 325;
+      TemplateDocumentNo@1210001 : Code[20];
+      TemplateDocumentType@1210007 : Integer;
+      PrepmtFactor@1210008 : Decimal;
+    BEGIN
+      IF (GenJnlLine."Prepayment Document No." = '') OR
+         (GenJnlLine."Prepayment Status" = GenJnlLine."Prepayment Status"::" ")
+      THEN BEGIN
+        TemplateDocumentNo := GenJnlLine."Prepayment Document No.";
+        SalesSetup.GET;
+        SalesSetup.TESTFIELD("Posted Prepayment Nos.");
+        UseDocNo := NoSeriesManagement.GetNextNo(SalesSetup."Posted Prepayment Nos.",GenJnlLine."Posting Date",TRUE);
+      END ELSE
+        UseDocNo := GenJnlLine."Prepayment Document No.";
+
+      IF TemplateDocumentNo <> '' THEN BEGIN
+        IF SalesHeader.GET(SalesHeader."Document Type"::Order,TemplateDocumentNo) THEN
+          TemplateDocumentType := SalesHeader."Document Type"::Order
+        ELSE BEGIN
+          SalesHeader.GET(SalesHeader."Document Type"::Invoice,TemplateDocumentNo);
+          TemplateDocumentType := SalesHeader."Document Type"::Invoice;
+        END;
+        SalesInvHeader.TRANSFERFIELDS(SalesHeader);
+        SalesInvHeader."Currency Code" := '';
+      END ELSE BEGIN
+        SalesInvHeader.INIT;
+        FillSalesInvHeader(SalesInvHeader,GenJnlLine."Bill-to/Pay-to No.");
+        SalesInvHeader."Tax Area Code" := GenJnlLine."Tax Area Code";
+        SalesInvHeader."Tax Liable" := GenJnlLine."Tax Liable";
+        SalesInvHeader."Posting Description" := GenJnlLine.Description;
+      END;
+      SalesInvHeader."No." := UseDocNo;
+      SalesInvHeader."External Document No." := GenJnlLine."Document No.";
+      SalesInvHeader."External Document Text" := GenJnlLine."External Document No.";
+      SalesInvHeader."Order No." := TemplateDocumentNo;
+      IF PostingDate = 0D THEN BEGIN
+        SalesInvHeader."Posting Date" := GenJnlLine."Posting Date";
+        SalesInvHeader."Order Date" := GenJnlLine."Posting Date";
+        SalesInvHeader."Document Date" := GenJnlLine."Posting Date";
+      END ELSE BEGIN
+        SalesInvHeader."Posting Date" := PostingDate;
+        SalesInvHeader."Order Date" := PostingDate;
+        SalesInvHeader."Document Date" := PostingDate;
+      END;
+      SalesInvHeader."Prices Including VAT" := TRUE;
+      SalesInvHeader."Prepayment Invoice" := TRUE;
+      SalesInvHeader.INSERT;
+
+      GenJnlLine."Document No." := UseDocNo;
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+
+      // Create Lines
+      IF TemplateDocumentNo <> '' THEN BEGIN
+        VATPostingSetup.GET(GenJnlLine."VAT Bus. Posting Group",GenJnlLine."VAT Prod. Posting Group");
+        SalesLine.SETRANGE("Document Type",TemplateDocumentType);
+        SalesLine.SETRANGE("Document No.",TemplateDocumentNo);
+        SalesLine.SETFILTER(Type,'<>%1',SalesLine.Type::" ");
+        SalesLine.SETFILTER("VAT %",'<>%1',GenJnlLine."VAT %");
+        IF SalesLine.FINDFIRST THEN
+          SalesLine.TESTFIELD("VAT %",GenJnlLine."VAT %");
+        SalesLine.SETRANGE("VAT %");
+
+        IF SalesHeader."Currency Code" = '' THEN
+          Currency.InitRoundingPrecision
+        ELSE BEGIN
+          Currency.GET(SalesHeader."Currency Code");
+          Currency.TESTFIELD("Amount Rounding Precision");
+        END;
+
+        SalesHeader.CALCFIELDS("Amount Including VAT");
+        PrepmtFactor := -GenJnlLine.Amount / SalesHeader."Amount Including VAT";
+        SalesLine.SETRANGE(Type);
+        CopySalesOrderLines(
+          SalesLine,SalesInvHeader,GenJnlLine,
+          Currency."Amount Rounding Precision",PrepmtFactor);
+      END ELSE
+        InsertSalesLine(GenJnlLine,SalesInvHeader);
+
+      EXIT(SalesInvHeader."No.");
+    END;
+
+    PROCEDURE CopySalesOrderLines@1210011(VAR SalesLine@1210001 : Record 37;SalesInvHeader@1210002 : Record 112;GenJnlLine@1210011 : Record 81;AmountRoundingPrecision@1210010 : Decimal;PrepmtFactor@1210008 : Decimal);
+    VAR
+      SalesInvLine@1210000 : Record 113;
+      PrevAmount@1210005 : Decimal;
+      BaseDiffLCY@1210004 : Decimal;
+      AmountDiffLCY@1210003 : Decimal;
+      TotalAmount@1210007 : Decimal;
+      TotalAmountInclVAT@1210006 : Decimal;
+    BEGIN
+      IF PrepmtFactor <> 1 THEN BEGIN
+        TotalAmountInclVAT := -GenJnlLine.Amount;
+        TotalAmount := -GenJnlLine.Amount + GenJnlLine."VAT Amount";
+      END;
+
+      IF SalesLine.FINDSET THEN
+        REPEAT
+          SalesInvLine.TRANSFERFIELDS(SalesLine);
+          SalesInvLine."Document No." := SalesInvHeader."No.";
+          IF PrepmtFactor <> 1 THEN BEGIN
+            PrevAmount := SalesInvLine."Amount Including VAT";
+            SalesInvLine."Amount Including VAT" :=
+              ROUND(SalesInvLine."Amount Including VAT" * PrepmtFactor + BaseDiffLCY,AmountRoundingPrecision);
+            BaseDiffLCY := PrevAmount * PrepmtFactor - SalesInvLine."Amount Including VAT";
+            TotalAmountInclVAT := TotalAmountInclVAT - SalesInvLine."Amount Including VAT";
+
+            PrevAmount := SalesInvLine.Amount;
+            SalesInvLine.Amount :=
+              ROUND(SalesInvLine.Amount * PrepmtFactor + AmountDiffLCY,AmountRoundingPrecision);
+            AmountDiffLCY := PrevAmount * PrepmtFactor - SalesInvLine.Amount;
+            TotalAmount := TotalAmount - SalesInvLine.Amount;
+
+            SalesInvLine."Amount Including VAT (LCY)" := SalesInvLine."Amount Including VAT";
+            SalesInvLine."Amount (LCY)" := SalesInvLine.Amount;
+            SalesInvLine."Line Amount" := SalesInvLine."Amount Including VAT";
+            SalesInvLine."VAT Base Amount" := SalesInvLine.Amount;
+          END;
+          SalesInvLine.INSERT;
+        UNTIL SalesLine.NEXT = 0;
+
+      // Final line update
+      IF TotalAmountInclVAT <> 0 THEN BEGIN
+        SalesInvLine."Amount Including VAT (LCY)" := SalesInvLine."Amount Including VAT (LCY)" + TotalAmountInclVAT;
+        SalesInvLine."Amount Including VAT" := SalesInvLine."Amount Including VAT (LCY)";
+      END;
+      IF TotalAmount <> 0 THEN BEGIN
+        SalesInvLine."Amount (LCY)" := SalesInvLine."Amount (LCY)" + TotalAmount;
+        SalesInvLine.Amount := SalesInvLine."Amount (LCY)";
+        SalesInvLine."Line Amount" := SalesInvLine."Amount Including VAT";
+        SalesInvLine."VAT Base Amount" := SalesInvLine.Amount;
+      END;
+      SalesInvLine.MODIFY;
+    END;
+
+    PROCEDURE InsertSalesLine@1210007(GenJnlLine@1210001 : Record 81;SalesInvHeader@1210000 : Record 112);
+    VAR
+      SalesInvLine@1210002 : Record 113;
+    BEGIN
+      SalesInvLine.INIT;
+      SalesInvLine."Document No." := SalesInvHeader."No.";
+      SalesInvLine."Line No." := 10000;
+      SalesInvLine."Sell-to Customer No." := SalesInvHeader."Sell-to Customer No.";
+      SalesInvLine."Bill-to Customer No." := SalesInvHeader."Bill-to Customer No.";
+      SalesInvLine.Type := SalesInvLine.Type::"G/L Account";
+      SalesInvLine."No." := GenJnlLine."Account No.";
+      SalesInvLine.Description := SalesInvHeader."Posting Description";
+      SalesInvLine."VAT Bus. Posting Group" := GenJnlLine."VAT Bus. Posting Group";
+      SalesInvLine."VAT Prod. Posting Group" := GenJnlLine."VAT Prod. Posting Group";
+      SalesInvLine."Gen. Bus. Posting Group" := GenJnlLine."Gen. Bus. Posting Group";
+      SalesInvLine."Gen. Prod. Posting Group" := GenJnlLine."Gen. Prod. Posting Group";
+      SalesInvLine."Dimension Set ID" := GenJnlLine."Dimension Set ID";
+      SalesInvLine."VAT Calculation Type" := GenJnlLine."VAT Calculation Type";
+      SalesInvLine."Tax Area Code" := GenJnlLine."Tax Area Code";
+      SalesInvLine."Tax Liable" := GenJnlLine."Tax Liable";
+      SalesInvLine."Tax Group Code" := GenJnlLine."Tax Group Code";
+      SalesInvLine.Quantity := 1;
+      SalesInvLine."Qty. per Unit of Measure" := 1;
+      SalesInvLine."Quantity (Base)" := 1;
+      SalesInvLine.Amount := -GenJnlLine."VAT Base Amount";
+      SalesInvLine."Line Amount" := -GenJnlLine.Amount;
+      SalesInvLine."VAT %" := GenJnlLine."VAT %";
+      SalesInvLine."Amount Including VAT" := -GenJnlLine.Amount;
+      SalesInvLine."VAT Base Amount" := -GenJnlLine."VAT Base Amount";
+      SalesInvLine."Unit Price" := -GenJnlLine.Amount;
+      SalesInvLine.INSERT;
+    END;
+
+    LOCAL PROCEDURE FillSalesInvHeader@1210006(VAR SalesInvHeader@1210002 : Record 112;CustNo@1210001 : Code[20]);
+    VAR
+      Customer@1210000 : Record 18;
+    BEGIN
+      Customer.GET(CustNo);
+      SalesInvHeader."Sell-to Customer No." := Customer."No.";
+      SalesInvHeader."Sell-to Customer Name" := Customer.Name;
+      SalesInvHeader."Sell-to Customer Name 2" := Customer."Name 2";
+      SalesInvHeader."Sell-to Address" := Customer.Address;
+      SalesInvHeader."Sell-to Address 2" := Customer."Address 2";
+      SalesInvHeader."Sell-to City" := Customer.City;
+      SalesInvHeader."Bill-to Customer No." := Customer."No.";
+      SalesInvHeader."Bill-to Name" := Customer.Name;
+      SalesInvHeader."Bill-to Name 2" := Customer."Name 2";
+      SalesInvHeader."Bill-to Address" := Customer.Address;
+      SalesInvHeader."Bill-to Address 2" := Customer."Address 2";
+      SalesInvHeader."Bill-to City" := Customer.City;
+      SalesInvHeader."Bill-to Contact" := Customer.Contact;
+      SalesInvHeader."Sell-to Post Code" := Customer."Post Code";
+      SalesInvHeader."Sell-to Country/Region Code" := Customer."Country/Region Code";
+      SalesInvHeader."Sell-to County" := Customer.County;
+      SalesInvHeader."Sell-to Contact" := Customer.Contact;
+      SalesInvHeader."Bill-to Post Code" := Customer."Post Code";
+      SalesInvHeader."Bill-to Country/Region Code" := Customer."Country/Region Code";
+      SalesInvHeader."Bill-to County" := Customer.County;
+      SalesInvHeader."Bill-to Contact" := Customer.Contact;
+      SalesInvHeader."Ship-to Name" := Customer.Name;
+      SalesInvHeader."Ship-to Name 2" := Customer."Name 2";
+      SalesInvHeader."Ship-to Address" := Customer.Address;
+      SalesInvHeader."Ship-to Address 2" := Customer."Address 2";
+      SalesInvHeader."Ship-to City" := Customer.City;
+      SalesInvHeader."Ship-to Post Code" := Customer."Post Code";
+      SalesInvHeader."Ship-to Country/Region Code" := Customer."Country/Region Code";
+      SalesInvHeader."Ship-to County" := Customer.County;
+      SalesInvHeader."Ship-to Contact" := Customer.Contact;
+    END;
+
+    PROCEDURE PostVendVAT@1210001(VAR VendLedgEntry@1210001 : Record 25;VATProdPostingGroup@1210004 : Code[10];VATBase@1210009 : Decimal;VATAmount@1210007 : Decimal);
+    VAR
+      GenJnlLine@1210000 : Record 81;
+      VATPostingSetup@1210003 : Record 325;
+      VendPostingGroup@1210005 : Record 93;
+      Vendor@1210006 : Record 23;
+      SourceCodeSetup@1210008 : Record 242;
+      PostingDate@1210002 : Date;
+    BEGIN
+      CheckForPostedVAT(VendLedgEntry."Entry No.");
+
+      SourceCodeSetup.GET;
+      VendPostingGroup.GET(VendLedgEntry."Vendor Posting Group");
+      VendPostingGroup.TESTFIELD("Prepayment Account");
+      Vendor.GET(VendLedgEntry."Vendor No.");
+      VATPostingSetup.GET(Vendor."VAT Bus. Posting Group",VATProdPostingGroup);
+      VATPostingSetup.TESTFIELD("Purchase VAT Account");
+
+      PostingDate := VendLedgEntry."Vendor VAT Invoice Date";
+      IF VendLedgEntry."Vendor VAT Invoice Rcvd Date" > PostingDate THEN
+        PostingDate := VendLedgEntry."Vendor VAT Invoice Rcvd Date";
+
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Batch Name" := Vendor."VAT Bus. Posting Group"; // For Reverse
+      GenJnlLine."Posting Date" := PostingDate;
+      GenJnlLine."Document Date" := VendLedgEntry."Vendor VAT Invoice Date";
+      GenJnlLine."Vendor VAT Invoice No." := VendLedgEntry."Vendor VAT Invoice No.";
+      GenJnlLine."Vendor VAT Invoice Date" := VendLedgEntry."Vendor VAT Invoice Date";
+      GenJnlLine."Vendor VAT Invoice Rcvd Date" := VendLedgEntry."Vendor VAT Invoice Rcvd Date";
+      GenJnlLine.Description := VendLedgEntry.Description;
+      GenJnlLine.Prepayment := TRUE;
+      GenJnlLine."Initial Entry No." := VendLedgEntry."Entry No.";
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+      GenJnlLine."Document No." := VendLedgEntry."Vendor VAT Invoice No.";
+      GenJnlLine."External Document No." := VendLedgEntry."Document No.";
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+      GenJnlLine."Account No." := VATPostingSetup."Purchase VAT Account";
+      GenJnlLine."Gen. Posting Type" := GenJnlLine."Gen. Posting Type"::Purchase;
+      GenJnlLine."Gen. Bus. Posting Group" := '';
+      GenJnlLine."Gen. Prod. Posting Group" := '';
+      GenJnlLine."VAT Bus. Posting Group" := Vendor."VAT Bus. Posting Group";
+      GenJnlLine.VALIDATE("VAT Prod. Posting Group",VATProdPostingGroup);
+      GenJnlLine.VALIDATE("Currency Code",'');
+      GenJnlLine.VALIDATE(Amount,VATAmount);
+      GenJnlLine."Advance VAT Base Amount" := VATBase;
+      GenJnlLine."Bal. Account Type" := GenJnlLine."Bal. Account Type"::"G/L Account";
+      GenJnlLine."Bal. Account No." := VATPostingSetup."Purchase VAT Account";
+      GenJnlLine."VAT Registration No." := Vendor."VAT Registration No.";
+      GenJnlLine."Tax Area Code" := Vendor."Tax Area Code";
+      GenJnlLine."Tax Liable" := Vendor."Tax Liable";
+      GenJnlLine."Shortcut Dimension 1 Code" := VendLedgEntry."Global Dimension 1 Code";
+      GenJnlLine."Shortcut Dimension 2 Code" := VendLedgEntry."Global Dimension 2 Code";
+      GenJnlLine."Bill-to/Pay-to No." := VendLedgEntry."Vendor No.";
+      GenJnlLine."Reason Code" := VendLedgEntry."Reason Code";
+      GenJnlLine."Source Code" := SourceCodeSetup."Vendor Prepayments";
+      GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+      GenJnlLine."Source No." := VendLedgEntry."Vendor No.";
+      GenJnlLine."IC Partner Code" := VendLedgEntry."IC Partner Code";
+      GenJnlLine."VAT Posting" := GenJnlLine."VAT Posting"::"Automatic VAT Entry";
+      GenJnlLine."Agreement No." := VendLedgEntry."Agreement No.";
+      GenJnlLine."Dimension Set ID" := VendLedgEntry."Dimension Set ID";
+      GenJnlLine."System-Created Entry" := TRUE;
+      InsertPurchInvoice(GenJnlLine);
+      GenJnlPostLine.RunWithCheck(GenJnlLine);
+    END;
+
+    LOCAL PROCEDURE FillPurchInvHeader@1210004(VAR PurchInvHeader@1210002 : Record 122;VendNo@1210001 : Code[20]);
+    VAR
+      Vendor@1210000 : Record 23;
+    BEGIN
+      Vendor.GET(VendNo);
+
+      PurchInvHeader."Buy-from Vendor No." := Vendor."No.";
+      PurchInvHeader."Buy-from Vendor Name" := Vendor.Name;
+      PurchInvHeader."Buy-from Vendor Name 2" := Vendor."Name 2";
+      PurchInvHeader."Buy-from Address" := Vendor.Address;
+      PurchInvHeader."Buy-from Address 2" := Vendor."Address 2";
+      PurchInvHeader."Buy-from City" := Vendor.City;
+      PurchInvHeader."Pay-to Vendor No." := Vendor."No.";
+      PurchInvHeader."Pay-to Name" := Vendor.Name;
+      PurchInvHeader."Pay-to Name 2" := Vendor."Name 2";
+      PurchInvHeader."Pay-to Address" := Vendor.Address;
+      PurchInvHeader."Pay-to Address 2" := Vendor."Address 2";
+      PurchInvHeader."Pay-to City" := Vendor.City;
+      PurchInvHeader."Pay-to Contact" := Vendor.Contact;
+      PurchInvHeader."Buy-from Post Code" := Vendor."Post Code";
+      PurchInvHeader."Buy-from Country/Region Code" := Vendor."Country/Region Code";
+      PurchInvHeader."Buy-from County" := Vendor.County;
+      PurchInvHeader."Buy-from Contact" := Vendor.Contact;
+      PurchInvHeader."Pay-to Post Code" := Vendor."Post Code";
+      PurchInvHeader."Pay-to Country/Region Code" := Vendor."Country/Region Code";
+      PurchInvHeader."Pay-to County" := Vendor.County;
+      PurchInvHeader."Pay-to Contact" := Vendor.Contact;
+      PurchInvHeader."Ship-to Name" := Vendor.Name;
+      PurchInvHeader."Ship-to Name 2" := Vendor."Name 2";
+      PurchInvHeader."Ship-to Address" := Vendor.Address;
+      PurchInvHeader."Ship-to Address 2" := Vendor."Address 2";
+      PurchInvHeader."Ship-to City" := Vendor.City;
+      PurchInvHeader."Ship-to Post Code" := Vendor."Post Code";
+      PurchInvHeader."Ship-to Country/Region Code" := Vendor."Country/Region Code";
+      PurchInvHeader."Ship-to County" := Vendor.County;
+      PurchInvHeader."Ship-to Contact" := Vendor.Contact;
+    END;
+
+    PROCEDURE InsertPurchInvoice@1210009(VAR GenJnlLine@1210003 : Record 81) : Code[20];
+    VAR
+      PurchSetup@1210000 : Record 312;
+      PurchInvHeader@1470001 : Record 122;
+    BEGIN
+      PurchSetup.GET;
+      PurchSetup.TESTFIELD("Posted Invoice Nos.");
+      GenJnlLine."Document No." :=
+        NoSeriesManagement.GetNextNo(PurchSetup."Posted Invoice Nos.",GenJnlLine."Posting Date",TRUE);
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+
+      PurchInvHeader.INIT;
+      FillPurchInvHeader(PurchInvHeader,GenJnlLine."Bill-to/Pay-to No.");
+      PurchInvHeader."Prepayment Invoice" := TRUE;
+      PurchInvHeader."Vendor Invoice No." := GenJnlLine."Vendor VAT Invoice No.";
+      PurchInvHeader."Posting Date" := GenJnlLine."Posting Date";
+      PurchInvHeader."Document Date" := GenJnlLine."Vendor VAT Invoice Date";
+      PurchInvHeader."Tax Area Code" := GenJnlLine."Tax Area Code";
+      PurchInvHeader."Tax Liable" := GenJnlLine."Tax Liable";
+      PurchInvHeader."Posting Description" := GenJnlLine.Description;
+      PurchInvHeader."No." := GenJnlLine."Document No.";
+      PurchInvHeader."Prices Including VAT" := TRUE;
+      PurchInvHeader."Currency Code" := '';
+      PurchInvHeader."Dimension Set ID" := GenJnlLine."Dimension Set ID";
+      PurchInvHeader.INSERT;
+
+      InsertPurchLine(GenJnlLine,PurchInvHeader);
+
+      EXIT(PurchInvHeader."No.");
+    END;
+
+    PROCEDURE InsertPurchLine@1210014(GenJnlLine@1210001 : Record 81;PurchInvHeader@1210000 : Record 122);
+    VAR
+      CurrExchRate@1210005 : Record 330;
+      PurchInvLine@1210002 : Record 123;
+      VATPostingSetup@1210004 : Record 325;
+    BEGIN
+      PurchInvLine.INIT;
+      PurchInvLine."Document No." := PurchInvHeader."No.";
+      PurchInvLine."Line No." := 10000;
+      PurchInvLine."Buy-from Vendor No." := PurchInvHeader."Pay-to Vendor No.";
+      PurchInvLine.Type := PurchInvLine.Type::"G/L Account";
+      PurchInvLine."No." := GenJnlLine."Bal. Account No.";
+      PurchInvLine.Description := PurchInvHeader."Posting Description";
+      PurchInvLine."VAT Bus. Posting Group" := GenJnlLine."VAT Bus. Posting Group";
+      PurchInvLine."VAT Prod. Posting Group" := GenJnlLine."VAT Prod. Posting Group";
+      PurchInvLine."Gen. Bus. Posting Group" := GenJnlLine."Gen. Bus. Posting Group";
+      PurchInvLine."Gen. Prod. Posting Group" := GenJnlLine."Gen. Prod. Posting Group";
+      PurchInvLine."VAT Calculation Type" := GenJnlLine."VAT Calculation Type";
+      PurchInvLine."Tax Area Code" := GenJnlLine."Tax Area Code";
+      PurchInvLine."Tax Liable" := GenJnlLine."Tax Liable";
+      PurchInvLine."Tax Group Code" := GenJnlLine."Tax Group Code";
+      PurchInvLine.Quantity := 1;
+      PurchInvLine."Qty. per Unit of Measure" := 1;
+      PurchInvLine."Quantity (Base)" := 1;
+      PurchInvLine."Direct Unit Cost" := GenJnlLine."Advance VAT Base Amount" + GenJnlLine.Amount;
+      PurchInvLine.Amount := GenJnlLine."Advance VAT Base Amount";
+      PurchInvLine."Line Amount" := PurchInvLine."Direct Unit Cost";
+      IF VATPostingSetup.GET(PurchInvLine."VAT Bus. Posting Group",PurchInvLine."VAT Prod. Posting Group") THEN
+        PurchInvLine."VAT %" := VATPostingSetup."VAT %";
+      PurchInvLine."Amount Including VAT" := PurchInvLine."Direct Unit Cost";
+      PurchInvLine."VAT Base Amount" := GenJnlLine."Advance VAT Base Amount";
+      IF PurchInvHeader."Currency Code" = '' THEN BEGIN
+        PurchInvLine."Amount (LCY)" := PurchInvLine.Amount;
+        PurchInvLine."Amount Including VAT (LCY)" := PurchInvLine."Amount Including VAT";
+      END ELSE BEGIN
+        PurchInvLine."Amount (LCY)" :=
+          CurrExchRate.ExchangeAmtFCYToLCY(
+            PurchInvHeader."Posting Date",PurchInvHeader."Currency Code",PurchInvLine.Amount,PurchInvHeader."Currency Factor");
+        PurchInvLine."Amount Including VAT (LCY)" :=
+          CurrExchRate.ExchangeAmtFCYToLCY(
+            PurchInvHeader."Posting Date",PurchInvHeader."Currency Code",
+              PurchInvLine."Amount Including VAT",PurchInvHeader."Currency Factor");
+      END;
+      PurchInvLine."Dimension Set ID" := GenJnlLine."Dimension Set ID";
+      PurchInvLine.INSERT;
+    END;
+
+    PROCEDURE CheckForPostedVAT@1210005(EntryNo@1210000 : Integer);
+    VAR
+      VATEntry@1210001 : Record 254;
+      VendLedgEntry@1210002 : Record 25;
+    BEGIN
+      VATEntry.SETCURRENTKEY("Transaction No.","CV Ledg. Entry No.");
+      VATEntry.SETRANGE("CV Ledg. Entry No.",EntryNo);
+      VATEntry.SETRANGE("Unrealized VAT Entry No.",0);
+      VATEntry.SETRANGE(Reversed,FALSE);
+      IF VATEntry.FINDFIRST THEN
+        ERROR(Text001,
+          VATEntry.TABLECAPTION,VATEntry.FIELDCAPTION("Entry No."),VATEntry."Entry No.",
+          VendLedgEntry.TABLECAPTION,VendLedgEntry.FIELDCAPTION("Entry No."),EntryNo);
+    END;
+
+    PROCEDURE InsertVATAgentPurchInvoice@1210008(VAR GenJnlLine@1210000 : Record 81;VATAmountLCY@1210007 : Decimal;VATAmountFCY@1210012 : Decimal);
+    VAR
+      PurchSetup@1210002 : Record 312;
+      PurchInvHeader@1210001 : Record 122;
+      OrigPurchInvHeader@1210003 : Record 122;
+      OrigPurchInvLine@1210004 : Record 123;
+      TempOrigPurchInvHeader@1210008 : TEMPORARY Record 122;
+      TempOrigPurchInvLine@1210009 : TEMPORARY Record 123;
+      PurchHeader@1210010 : Record 38;
+      PurchLine@1210011 : Record 39;
+      PurchHeaderAmount@1210022 : Decimal;
+    BEGIN
+      IF GenJnlLine.Prepayment THEN
+        GenJnlLine.TESTFIELD("Prepayment Document No.")
+      ELSE
+        GenJnlLine.TESTFIELD("Initial Document No.");
+
+      PurchSetup.GET;
+      PurchSetup.TESTFIELD("Posted VAT Agent Invoice Nos.");
+
+      IF GenJnlLine.Prepayment THEN BEGIN
+        IF PurchHeader.GET(PurchHeader."Document Type"::Order,GenJnlLine."Prepayment Document No.") THEN BEGIN
+          PurchHeader.TESTFIELD(Status,PurchHeader.Status::Released);
+          TempOrigPurchInvHeader.INIT;
+          TempOrigPurchInvHeader.TRANSFERFIELDS(PurchHeader);
+          TempOrigPurchInvHeader.INSERT;
+          PurchLine.SETRANGE("Document Type",PurchHeader."Document Type"::Order);
+        END ELSE BEGIN
+          PurchHeader.GET(PurchHeader."Document Type"::Invoice,GenJnlLine."Prepayment Document No.");
+          PurchHeader.TESTFIELD(Status,PurchHeader.Status::Released);
+          TempOrigPurchInvHeader.INIT;
+          TempOrigPurchInvHeader.TRANSFERFIELDS(PurchHeader);
+          TempOrigPurchInvHeader.INSERT;
+          PurchLine.SETRANGE("Document Type",PurchHeader."Document Type"::Invoice);
+        END;
+        PurchHeader.CALCFIELDS(Amount);
+        PurchHeaderAmount := PurchHeader.Amount;
+        PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+        IF PurchLine.FINDSET THEN
+          REPEAT
+            TempOrigPurchInvLine.INIT;
+            TempOrigPurchInvLine.TRANSFERFIELDS(PurchLine);
+            TempOrigPurchInvLine.INSERT;
+          UNTIL PurchLine.NEXT = 0;
+      END ELSE BEGIN
+        OrigPurchInvHeader.GET(GenJnlLine."Initial Document No.");
+        TempOrigPurchInvHeader.INIT;
+        TempOrigPurchInvHeader.TRANSFERFIELDS(OrigPurchInvHeader);
+        TempOrigPurchInvHeader.INSERT;
+        OrigPurchInvLine.SETRANGE("Document No.",GenJnlLine."Initial Document No.");
+        IF OrigPurchInvLine.FINDSET THEN
+          REPEAT
+            TempOrigPurchInvLine.INIT;
+            TempOrigPurchInvLine.TRANSFERFIELDS(OrigPurchInvLine);
+            TempOrigPurchInvLine.INSERT;
+          UNTIL OrigPurchInvLine.NEXT = 0;
+      END;
+
+      PurchInvHeader.INIT;
+      PurchInvHeader.TRANSFERFIELDS(TempOrigPurchInvHeader);
+      PurchInvHeader."Posting Date" := GenJnlLine."Posting Date";
+      PurchInvHeader."Document Date" := GenJnlLine."Document Date";
+      PurchInvHeader."Posting Description" := GenJnlLine.Description;
+      PurchInvHeader."Vendor Invoice No." := GenJnlLine."External Document No.";
+      PurchInvHeader."No." :=
+        NoSeriesManagement.GetNextNo(
+          PurchSetup."Posted VAT Agent Invoice Nos.",GenJnlLine."Posting Date",TRUE);
+      PurchInvHeader."Dimension Set ID" := GenJnlLine."Dimension Set ID";
+      PurchInvHeader.INSERT;
+
+      CopyVATAgentPurchInvLine(
+        TempOrigPurchInvHeader,TempOrigPurchInvLine,
+        PurchInvHeader,GenJnlLine,VATAmountLCY,VATAmountFCY,PurchHeaderAmount);
+
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Invoice;
+      GenJnlLine."Document No." := PurchInvHeader."No.";
+    END;
+
+    LOCAL PROCEDURE CopyVATAgentPurchInvLine@1210012(VAR InitialPurchInvHeader@1210007 : Record 122;VAR InitialPurchInvLine@1210001 : Record 123;VAR PurchInvHeader@1210002 : Record 122;GenJnlLine@1210003 : Record 81;VATAmountLCY@1210021 : Decimal;VATAmountFCY@1210022 : Decimal;InitialPurchHeaderAmount@1210023 : Decimal);
+    VAR
+      PurchInvLine@1210000 : Record 123;
+      Currency@1210009 : Record 4;
+      CurrencyLCY@1210019 : Record 4;
+      VATPostingSetup@1210018 : Record 325;
+      PmtFactor@1210004 : Decimal;
+      PmtFactorInclVAT@1210024 : Decimal;
+      AmountRoundingPrecision@1210008 : Decimal;
+      AmountRoundingPrecisionLCY@1210020 : Decimal;
+      PrevAmount@1210006 : Decimal;
+      BaseDiff@1210005 : Decimal;
+      AmountDiff@1210011 : Decimal;
+      RemTotalAmount@1210015 : Decimal;
+      RemTotalAmountInclVAT@1210014 : Decimal;
+      BaseDiffLCY@1210013 : Decimal;
+      AmountDiffLCY@1210012 : Decimal;
+      RemTotalAmountLCY@1210017 : Decimal;
+      RemTotalAmountInclVATLCY@1210016 : Decimal;
+    BEGIN
+      IF InitialPurchHeaderAmount = 0 THEN BEGIN
+        InitialPurchInvHeader.CALCFIELDS(Amount);
+        InitialPurchHeaderAmount := InitialPurchInvHeader.Amount;
+      END;
+      PmtFactor := (GenJnlLine.Amount - VATAmountFCY) / InitialPurchHeaderAmount;
+      PmtFactorInclVAT := GenJnlLine.Amount / InitialPurchHeaderAmount;
+
+      IF PurchInvHeader."Currency Code" = '' THEN
+        Currency.InitRoundingPrecision
+      ELSE BEGIN
+        Currency.GET(PurchInvHeader."Currency Code");
+        Currency.TESTFIELD("Amount Rounding Precision");
+      END;
+      AmountRoundingPrecision := Currency."Amount Rounding Precision";
+      CurrencyLCY.InitRoundingPrecision;
+      AmountRoundingPrecisionLCY := CurrencyLCY."Amount Rounding Precision";
+
+      RemTotalAmount := GenJnlLine.Amount - VATAmountFCY;
+      RemTotalAmountInclVAT := GenJnlLine.Amount;
+      RemTotalAmountLCY := GenJnlLine."Amount (LCY)" - VATAmountLCY;
+      RemTotalAmountInclVATLCY := GenJnlLine."Amount (LCY)";
+
+      VATPostingSetup.GET(GenJnlLine."VAT Bus. Posting Group",GenJnlLine."VAT Prod. Posting Group");
+      IF InitialPurchInvLine.FINDSET THEN
+        REPEAT
+          PurchInvLine.INIT;
+          PurchInvLine.TRANSFERFIELDS(InitialPurchInvLine);
+          PurchInvLine."Document No." := PurchInvHeader."No.";
+          PurchInvLine."VAT %" := VATPostingSetup."VAT %";
+
+          PrevAmount := PurchInvLine."Amount Including VAT";
+          PurchInvLine."Amount Including VAT" :=
+            ROUND(PurchInvLine."Amount Including VAT" * PmtFactorInclVAT + BaseDiff,AmountRoundingPrecision);
+          BaseDiff := PrevAmount * PmtFactorInclVAT - PurchInvLine."Amount Including VAT";
+          RemTotalAmountInclVAT -= PurchInvLine."Amount Including VAT";
+
+          PrevAmount := PurchInvLine.Amount;
+          PurchInvLine.Amount :=
+            ROUND(PurchInvLine.Amount * PmtFactor + AmountDiff,AmountRoundingPrecision);
+          AmountDiff := PrevAmount * PmtFactor - PurchInvLine.Amount;
+          RemTotalAmount -= PurchInvLine.Amount;
+
+          PrevAmount := PurchInvLine."Amount Including VAT (LCY)";
+          PurchInvLine."Amount Including VAT (LCY)" :=
+            ROUND(PurchInvLine."Amount Including VAT (LCY)" * PmtFactorInclVAT + BaseDiffLCY,AmountRoundingPrecisionLCY);
+          BaseDiffLCY := PrevAmount * PmtFactorInclVAT - PurchInvLine."Amount Including VAT (LCY)";
+          RemTotalAmountInclVATLCY -= PurchInvLine."Amount Including VAT (LCY)";
+
+          PrevAmount := PurchInvLine."Amount (LCY)";
+          PurchInvLine."Amount (LCY)" :=
+            ROUND(PurchInvLine."Amount (LCY)" * PmtFactor + AmountDiffLCY,AmountRoundingPrecisionLCY);
+          AmountDiffLCY := PrevAmount * PmtFactor - PurchInvLine."Amount (LCY)";
+          RemTotalAmountLCY -= PurchInvLine."Amount (LCY)";
+
+          PurchInvLine."Line Amount" := PurchInvLine."Amount Including VAT";
+          PurchInvLine."VAT Base Amount" := PurchInvLine.Amount;
+          PurchInvLine."Dimension Set ID" := GenJnlLine."Dimension Set ID";
+          PurchInvLine.INSERT;
+        UNTIL InitialPurchInvLine.NEXT = 0;
+
+      PurchInvLine."Amount Including VAT" += RemTotalAmountInclVAT;
+      PurchInvLine.Amount += RemTotalAmount;
+      PurchInvLine."Amount Including VAT (LCY)" += RemTotalAmountInclVATLCY;
+      PurchInvLine."Amount (LCY)" += RemTotalAmountLCY;
+      PurchInvLine."Line Amount" := PurchInvLine."Amount Including VAT";
+      PurchInvLine."VAT Base Amount" := PurchInvLine.Amount;
+      PurchInvLine.MODIFY;
+    END;
+
+    BEGIN
+    {
+      NC S1893 PCH
+      -----
+      NC NOS-26 ENK
+    }
+    END.
+  }
+}
+

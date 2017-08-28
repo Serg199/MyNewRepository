@@ -1,0 +1,141 @@
+OBJECT Codeunit 17368 Staff List Order-Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    TableNo=17373;
+    Permissions=TableData 17377=rim,
+                TableData 17378=rim;
+    OnRun=VAR
+            RecordLinkManagement@1210000 : Codeunit 447;
+          BEGIN
+            HRSetup.GET;
+            HRSetup.TESTFIELD("Use Staff List Change Orders",TRUE);
+
+            CLEARALL;
+            StaffOrderHeader := Rec;
+            WITH StaffOrderHeader DO BEGIN
+              TESTFIELD("No.");
+              TESTFIELD("Document Date");
+
+              Window.OPEN(
+                '#1#################################\\' +
+                Text000);
+
+              Window.UPDATE(1,STRSUBSTNO('%1 %2',TABLECAPTION,"No."));
+
+              IF Status = Status::Open THEN
+                CODEUNIT.RUN(CODEUNIT::"Release Staff List Order",StaffOrderHeader);
+
+              StaffOrderLine.LOCKTABLE;
+              LOCKTABLE;
+
+              SourceCodeSetup.GET;
+              SourceCodeSetup.TESTFIELD("Vacation Order");
+
+              // Insert posted absence header
+              PostedStaffOrderHeader.LOCKTABLE;
+              PostedStaffOrderHeader.INIT;
+              PostedStaffOrderHeader.TRANSFERFIELDS(StaffOrderHeader);
+              PostedStaffOrderHeader.INSERT;
+
+              CopyCommentLines("No.",PostedStaffOrderHeader."No.");
+              RecordLinkManagement.CopyLinks(Rec,PostedStaffOrderHeader);
+
+              // Lines
+              PostedStaffOrderLine.LOCKTABLE;
+
+              LineCount := 0;
+              StaffOrderLine.RESET;
+              StaffOrderLine.SETRANGE("Document No.","No.");
+              IF StaffOrderLine.FINDSET THEN
+                REPEAT
+                  LineCount := LineCount + 1;
+                  Window.UPDATE(2,LineCount);
+
+                  // insert posted lines
+                  PostedStaffOrderLine.INIT;
+                  PostedStaffOrderLine.TRANSFERFIELDS(StaffOrderLine);
+                  PostedStaffOrderLine.INSERT;
+
+                  CASE StaffOrderLine.Type OF
+                    StaffOrderLine.Type::Position:
+                      BEGIN
+                        Position.GET(StaffOrderLine.Code);
+                        CASE StaffOrderLine.Action OF
+                          StaffOrderLine.Action::Approve:
+                            BEGIN
+                              Position."Starting Date" := "Posting Date";
+                              Position.Approve(TRUE);
+                            END;
+                          StaffOrderLine.Action::Reopen:
+                            Position.Reopen(TRUE);
+                          StaffOrderLine.Action::Close:
+                            Position.Close(TRUE);
+                        END;
+                      END;
+                    StaffOrderLine.Type::"Org. Unit":
+                      BEGIN
+                        OrgUnit.GET(StaffOrderLine.Code);
+                        CASE StaffOrderLine.Action OF
+                          StaffOrderLine.Action::Approve:
+                            OrgUnit.Approve(TRUE);
+                          StaffOrderLine.Action::Reopen:
+                            OrgUnit.Reopen(TRUE);
+                          StaffOrderLine.Action::Close:
+                            OrgUnit.Close(TRUE);
+                        END;
+                      END;
+                  END;
+                UNTIL StaffOrderLine.NEXT = 0;
+
+              // Delete posted order
+              StaffOrderLine.DELETEALL;
+              DELETE;
+
+              COMMIT;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HRSetup@1210003 : Record 5218;
+      StaffOrderHeader@1210004 : Record 17373;
+      StaffOrderLine@1210002 : Record 17374;
+      PostedStaffOrderHeader@1210015 : Record 17377;
+      PostedStaffOrderLine@1210016 : Record 17378;
+      Text000@1210005 : TextConst 'ENU=Posting              #2######;RUS=Учет              #2######';
+      SourceCodeSetup@1210011 : Record 242;
+      HROrderComment@1210017 : Record 17368;
+      Position@1210000 : Record 17370;
+      OrgUnit@1210001 : Record 12422;
+      Window@1210006 : Dialog;
+      LineCount@1210007 : Integer;
+
+    LOCAL PROCEDURE CopyCommentLines@22(FromNumber@1002 : Code[20];ToNumber@1003 : Code[20]);
+    VAR
+      HROrderComment2@1210000 : Record 17368;
+    BEGIN
+      HROrderComment.SETRANGE("Table Name",HROrderComment."Table Name"::"SL Order");
+      HROrderComment.SETRANGE("No.",FromNumber);
+      IF HROrderComment.FINDSET THEN
+        REPEAT
+          HROrderComment2 := HROrderComment;
+          HROrderComment2."Table Name" := HROrderComment2."Table Name"::"P.SL Order";
+          HROrderComment2."No." := ToNumber;
+          HROrderComment2.INSERT;
+        UNTIL HROrderComment.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

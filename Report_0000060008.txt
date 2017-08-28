@@ -1,0 +1,209 @@
+OBJECT Report 60008 Posting Agreement Correction
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:19;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  // Для всех строк фин. журнала просаживаем Договор Но. = DEAL
+                  UpdateAgreementNo('GENJL', 'GJNEW_S', FALSE);
+
+                  // Для все строк фин. журнала с типом Клиет или Поставщик просаживаем учетную группу если она пуста
+                  InsertPostingGroup('GENJL', 'GJNEW_S', FALSE);
+
+                  // удаление строк из ГК и откат операаций в буфере
+                  //DeleteGL('DIASOFT', '1-76-OFFSET');
+                END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+
+    PROCEDURE UpdateAgreementNo@1101495000(JournalTemplateName@1101495002 : Code[20];JournalBatchName@1101495001 : Code[20];IsIncTax@1101495006 : Boolean);
+    VAR
+      GenJournalLine@1101495000 : Record 81;
+      JournalLineDimension@1101495003 : Record 356;
+      Vendor@1101495004 : Record 23;
+      Customer@1101495005 : Record 18;
+    BEGIN
+      GenJournalLine.RESET;
+      GenJournalLine.SETRANGE("Journal Template Name", JournalTemplateName);
+      GenJournalLine.SETRANGE("Journal Batch Name", JournalBatchName);
+      GenJournalLine.SETRANGE("Is Inc. Tax", IsIncTax);
+      IF GenJournalLine.FINDSET THEN
+      REPEAT
+        IF (GenJournalLine."Account Type" = GenJournalLine."Account Type"::Vendor) OR
+           (GenJournalLine."Account Type" = GenJournalLine."Account Type"::Customer) AND
+           (JournalLineDimension.GET(81, GenJournalLine."Journal Template Name",
+                                      GenJournalLine."Journal Batch Name", GenJournalLine."Line No.",0,'DEAL')) THEN
+        BEGIN
+          IF GenJournalLine."Account Type" = GenJournalLine."Account Type"::Vendor THEN BEGIN
+            Vendor.GET(GenJournalLine."Account No.");
+            IF Vendor."Agreement Posting" = Vendor."Agreement Posting"::"No Agreement" THEN BEGIN
+              {
+              GenJournalLine."Agreement No." := '';
+              GenJournalLine.MODIFY;
+              }
+            END ELSE BEGIN
+              GenJournalLine."Agreement No." := JournalLineDimension."Dimension Value Code";
+              GenJournalLine.MODIFY;
+            END;
+          END;
+          IF GenJournalLine."Account Type" = GenJournalLine."Account Type"::Customer THEN BEGIN
+            Customer.GET(GenJournalLine."Account No.");
+            IF Customer."Agreement Posting" = Customer."Agreement Posting"::"No Agreement" THEN BEGIN
+              {
+              GenJournalLine."Agreement No." := '';
+              GenJournalLine.MODIFY;
+              }
+            END ELSE BEGIN
+              GenJournalLine."Agreement No." := JournalLineDimension."Dimension Value Code";
+              GenJournalLine.MODIFY;
+            END;
+          END;
+        END;
+      UNTIL GenJournalLine.NEXT = 0;
+    END;
+
+    PROCEDURE InsertPostingGroup@1101495001(JournalTemplateName@1101495002 : Code[20];JournalBatchName@1101495001 : Code[20];IsIncTax@1101495000 : Boolean);
+    VAR
+      GenJournalLine@1101495005 : Record 81;
+      RecID@1101495009 : RecordID;
+      RecRef@1101495003 : RecordRef;
+      GLMapp@1101495004 : Record 50002;
+      Vendor@1101495006 : Record 23;
+      Customer@1101495007 : Record 18;
+      ConsDataBuffer@1101495008 : Record 50008;
+      FieldRef@1101495010 : FieldRef;
+      iField@1101495011 : Integer;
+      MappingCode@1101495012 : Code[20];
+      LineNo@1101495013 : Integer;
+      VendorPostingGroup@1101495014 : Record 93;
+      CustomerPostingGroup@1101495015 : Record 92;
+    BEGIN
+      GenJournalLine.RESET;
+      GenJournalLine.SETRANGE("Journal Template Name", JournalTemplateName);
+      GenJournalLine.SETRANGE("Journal Batch Name", JournalBatchName);
+      GenJournalLine.SETRANGE("Is Inc. Tax", IsIncTax);
+      GenJournalLine.SETRANGE("Posting Group", '');
+      IF GenJournalLine.FINDSET THEN
+      REPEAT
+        IF GenJournalLine."Account Type" = GenJournalLine."Account Type"::Vendor THEN BEGIN
+          Vendor.GET(GenJournalLine."Account No.");
+          IF Vendor."Vendor Posting Group" = '' THEN BEGIN
+            ConsDataBuffer.GET(GenJournalLine."Cons. Source Code", GenJournalLine."Buffer Entry No.");
+
+            IF GenJournalLine."Debit Amount" <> 0 THEN
+              RecID := ConsDataBuffer."Debit CoA Mapping ID";
+
+            IF GenJournalLine."Credit Amount" <> 0 THEN
+              RecID := ConsDataBuffer."Credit CoA Mapping ID";
+
+            RecRef := RecID.GETRECORD;
+
+            FieldRef := RecRef.FIELDINDEX(1);
+            MappingCode := FieldRef.VALUE;
+            FieldRef := RecRef.FIELDINDEX(2);
+            LineNo := FieldRef.VALUE;
+            GLMapp.GET(MappingCode, LineNo);
+
+            VendorPostingGroup.RESET;
+            VendorPostingGroup.SETRANGE("Payables Account", GLMapp."Receiver Account Code");
+            IF VendorPostingGroup.FINDFIRST THEN BEGIN
+              GenJournalLine."Posting Group" := VendorPostingGroup.Code;
+              GenJournalLine.MODIFY;
+            END;
+          END;
+        END;
+        IF GenJournalLine."Account Type" = GenJournalLine."Account Type"::Customer THEN BEGIN
+          Customer.GET(GenJournalLine."Account No.");
+          IF Customer."Customer Posting Group" = '' THEN BEGIN
+            ConsDataBuffer.GET(GenJournalLine."Cons. Source Code", GenJournalLine."Buffer Entry No.");
+
+            IF GenJournalLine."Debit Amount" <> 0 THEN
+              RecID := ConsDataBuffer."Debit CoA Mapping ID";
+
+            IF GenJournalLine."Credit Amount" <> 0 THEN
+              RecID := ConsDataBuffer."Credit CoA Mapping ID";
+
+            RecRef := RecID.GETRECORD;
+
+            FieldRef := RecRef.FIELDINDEX(1);
+            MappingCode := FieldRef.VALUE;
+            FieldRef := RecRef.FIELDINDEX(2);
+            LineNo := FieldRef.VALUE;
+            GLMapp.GET(MappingCode, LineNo);
+
+            CustomerPostingGroup.RESET;
+            CustomerPostingGroup.SETRANGE("Receivables Account", GLMapp."Receiver Account Code");
+            IF CustomerPostingGroup.FINDFIRST THEN BEGIN
+              GenJournalLine."Posting Group" := VendorPostingGroup.Code;
+              GenJournalLine.MODIFY;
+            END;
+          END;
+        END;
+
+      UNTIL GenJournalLine.NEXT = 0;
+    END;
+
+    PROCEDURE DeleteGL@1101495002(ConsSourceCode@1101495001 : Code[20];GLAcc@1101495000 : Code[20]);
+    VAR
+      GLEntry@1101495002 : Record 17;
+      GLEntry1@1101495003 : Record 17;
+      ConsDataBuffer@1101495004 : Record 50008;
+      VendorLedgerEntry@1101495005 : Record 25;
+      CustLedgerEntry@1101495006 : Record 21;
+    BEGIN
+      GLEntry.RESET;
+      GLEntry.SETCURRENTKEY("Cons. Source Code","Buffer Entry No.",Reposted,Removed);
+      GLEntry.SETRANGE("Cons. Source Code", ConsSourceCode);
+      GLEntry.SETRANGE("Local G/L Account", GLAcc);
+      IF GLEntry.FINDSET THEN REPEAT
+        GLEntry1.RESET;
+        GLEntry1.SETCURRENTKEY("Cons. Source Code","Buffer Entry No.",Reposted,Removed);
+        GLEntry1.SETRANGE("Cons. Source Code", GLEntry."Cons. Source Code");
+        GLEntry1.SETRANGE("Buffer Entry No.", GLEntry."Buffer Entry No.");
+        IF GLEntry1.FINDSET THEN REPEAT
+          IF VendorLedgerEntry.GET(GLEntry1."Entry No.") THEN
+            VendorLedgerEntry.DELETE(TRUE);
+
+          IF CustLedgerEntry.GET(GLEntry1."Entry No.") THEN
+            CustLedgerEntry.DELETE(TRUE);
+
+          GLEntry1.DELETE(TRUE);
+        UNTIL GLEntry1.NEXT = 0;
+        ConsDataBuffer.GET(GLEntry."Cons. Source Code", GLEntry."Buffer Entry No.");
+        ConsDataBuffer."Export Consolidation Register" := 0;
+        ConsDataBuffer.MODIFY;
+      UNTIL GLEntry.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

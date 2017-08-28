@@ -1,0 +1,327 @@
+OBJECT Codeunit 17209 Lookup Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text1001@1000 : TextConst 'ENU=" - Option List";RUS=" - Список параметров"';
+      Text1002@1001 : TextConst 'ENU=" - Key List";RUS=" - Список ключей"';
+      Text1003@1002 : TextConst 'ENU=Description;RUS=Описание';
+      Text1004@1003 : TextConst 'ENU=Name;RUS=Название';
+      Text1010@1210001 : TextConst 'ENU=Illegal using of symbol `point`.;RUS=Недопустимое использование символа `точка`.';
+      Text1011@1210000 : TextConst 'ENU=Illegal Value\%1;RUS=Недопустимое значение\%1';
+
+    PROCEDURE BuildLookupBuffer@1(VAR TempLookupBuffer@1000 : TEMPORARY Record 17223;TableID@1001 : Integer;FieldID@1002 : Integer);
+    VAR
+      Field@1003 : Record 2000000041;
+      xRecordRef@1004 : RecordRef;
+      xFieldRef@1005 : FieldRef;
+      xOptionString@1006 : Text[1024];
+      xPosition@1008 : Integer;
+    BEGIN
+      TempLookupBuffer.RESET;
+      TempLookupBuffer.DELETEALL;
+
+      xRecordRef.OPEN(TableID,TRUE);
+      xFieldRef := xRecordRef.FIELD(FieldID);
+      Field.Type := Field.Type::Option;
+      IF FORMAT(xFieldRef.TYPE) = FORMAT(Field.Type) THEN
+        xOptionString := xFieldRef.OPTIONCAPTION;
+      xRecordRef.CLOSE;
+
+      WHILE xOptionString <> '' DO BEGIN
+        xPosition := STRPOS(xOptionString,',');
+        TempLookupBuffer.INIT;
+        IF xPosition = 0 THEN BEGIN
+          TempLookupBuffer.Text := COPYSTR(xOptionString,1,MAXSTRLEN(TempLookupBuffer.Text));
+          xOptionString := '';
+        END ELSE
+          IF xPosition = 1 THEN BEGIN
+            TempLookupBuffer.Text := '';
+            xOptionString := COPYSTR(xOptionString,xPosition + 1);
+          END ELSE BEGIN
+            TempLookupBuffer.Text := COPYSTR(xOptionString,1,xPosition - 1);
+            xOptionString := COPYSTR(xOptionString,xPosition + 1)
+          END;
+        IF TempLookupBuffer.Text <> '' THEN
+          TempLookupBuffer.INSERT;
+        TempLookupBuffer.Integer += 1;
+      END;
+    END;
+
+    PROCEDURE FormatOptionTotaling@2(TableID@1000 : Integer;FieldID@1001 : Integer;TotalingString@1002 : Text[250]) ResultText : Text[250];
+    VAR
+      TempLookupBuffer@1003 : TEMPORARY Record 17223;
+      RestText@1004 : Text[250];
+      NextPart@1005 : Text[250];
+      NextString@1006 : Text[250];
+      NextCount@1007 : Integer;
+      PointPosition@1008 : Integer;
+      ORPosition@1009 : Integer;
+      FindPoint@1012 : Boolean;
+    BEGIN
+      IF TotalingString = '' THEN
+        EXIT;
+
+      BuildLookupBuffer(TempLookupBuffer,TableID,FieldID);
+
+      TempLookupBuffer.RESET;
+      RestText := TotalingString;
+      WHILE STRLEN(RestText) <> 0 DO BEGIN
+        PointPosition := STRPOS(RestText,'.');
+        IF PointPosition <> STRPOS(RestText,'..') THEN
+          ERROR(Text1010);
+        ORPosition := STRPOS(RestText,'|');
+        IF (PointPosition <> 0) OR (ORPosition <> 0) THEN BEGIN
+          FindPoint :=
+            ((PointPosition <> 0) AND ((ORPosition = 0) OR ((ORPosition <> 0) AND (PointPosition < ORPosition))));
+          IF FindPoint THEN
+            NextPart := COPYSTR(RestText,1,PointPosition - 1)
+          ELSE
+            NextPart := COPYSTR(RestText,1,ORPosition - 1);
+          IF (NextPart <> '') OR (RestText <> TotalingString) THEN BEGIN
+            IF NOT EVALUATE(NextCount,NextPart) THEN
+              ERROR(Text1011,ResultText + RestText);
+            TempLookupBuffer.SETRANGE(Integer,NextCount);
+            IF TempLookupBuffer.FIND('-') THEN
+              NextString := TempLookupBuffer.Text
+            ELSE
+              NextString := NextPart;
+            ResultText := ResultText + NextString;
+          END;
+          IF FindPoint THEN BEGIN
+            RestText := COPYSTR(RestText,PointPosition + 2);
+            ResultText := ResultText + '..';
+          END ELSE BEGIN
+            RestText := COPYSTR(RestText,ORPosition + 1);
+            ResultText := ResultText + '|';
+            IF RestText = '' THEN
+              ERROR(Text1011,ResultText);
+          END;
+        END ELSE BEGIN
+          IF NOT EVALUATE(NextCount,RestText) THEN
+            ERROR(Text1011,ResultText + RestText);
+          TempLookupBuffer.SETRANGE(Integer,NextCount);
+          IF TempLookupBuffer.FIND('-') THEN
+            NextString := TempLookupBuffer.Text
+          ELSE
+            NextString := RestText;
+          ResultText := ResultText + NextString;
+          RestText := '';
+        END;
+      END;
+    END;
+
+    PROCEDURE LookupOptionList@3(TableID@1000 : Integer;FieldID@1001 : Integer;VAR Text@1002 : Text[250]) : Boolean;
+    VAR
+      TempLookupBuffer@1003 : TEMPORARY Record 17223;
+      ChoiceOptionValues@1004 : Page 17245;
+      xRecordRef@1005 : RecordRef;
+      xFieldRef@1006 : FieldRef;
+    BEGIN
+      CLEAR(ChoiceOptionValues);
+      ChoiceOptionValues.CreateLookupBuffer(TableID,FieldID);
+      ChoiceOptionValues.LOOKUPMODE := TRUE;
+      xRecordRef.OPEN(TableID,TRUE);
+      xFieldRef := xRecordRef.FIELD(FieldID);
+      ChoiceOptionValues.SetFormTitle(xFieldRef.CAPTION);
+      xRecordRef.CLOSE;
+      IF ACTION::LookupOK = ChoiceOptionValues.RUNMODAL THEN BEGIN
+        ChoiceOptionValues.GETRECORD(TempLookupBuffer);
+        Text := FORMAT(TempLookupBuffer.Integer);
+        EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE DrillDownOptionList@4(TableID@1000 : Integer;FieldID@1001 : Integer;Totaling@1002 : Text[250]);
+    VAR
+      TempLookupBuffer@1003 : TEMPORARY Record 17223;
+      ChoiceOptionValues@1004 : Page 17245;
+      xRecordRef@1005 : RecordRef;
+      xFieldRef@1006 : FieldRef;
+    BEGIN
+      CLEAR(ChoiceOptionValues);
+      ChoiceOptionValues.CreateLookupBuffer(TableID,FieldID);
+      TempLookupBuffer.SETFILTER(Integer,Totaling);
+      ChoiceOptionValues.SETTABLEVIEW(TempLookupBuffer);
+      xRecordRef.OPEN(TableID,TRUE);
+      xFieldRef := xRecordRef.FIELD(FieldID);
+      ChoiceOptionValues.SetFormTitle(xFieldRef.CAPTION + Text1001);
+      xRecordRef.CLOSE;
+      ChoiceOptionValues.RUN;
+    END;
+
+    PROCEDURE MergeOptionLists@5(TableID@1000 : Integer;FieldID@1001 : Integer;Totaling1@1002 : Text[250];Totaling2@1003 : Text[250];VAR Totaling@1004 : Text[250]) : Boolean;
+    VAR
+      TempLookupBuffer@1005 : TEMPORARY Record 17223;
+      Node1@1006 : Text[30];
+      Node2@1007 : Text[30];
+    BEGIN
+      Totaling := '';
+      CASE TRUE OF
+        Totaling1 = Totaling2,
+        Totaling1 = '':
+          Totaling := Totaling2;
+        Totaling2 = '':
+          Totaling := Totaling1;
+      END;
+      IF Totaling <> '' THEN
+        EXIT(TRUE);
+
+      BuildLookupBuffer(TempLookupBuffer,TableID,FieldID);
+      TempLookupBuffer.RESET;
+      TempLookupBuffer.SETFILTER(Integer,Totaling1);
+      IF TempLookupBuffer.FIND('-') THEN BEGIN
+        REPEAT
+          TempLookupBuffer.MARK := TRUE;
+        UNTIL TempLookupBuffer.NEXT(1) = 0;
+        TempLookupBuffer.MARKEDONLY := TRUE;
+        IF NOT TempLookupBuffer.FIND('-') THEN
+          EXIT(FALSE);
+        REPEAT
+          TempLookupBuffer.SETFILTER(Integer,Totaling2);
+          IF NOT TempLookupBuffer.FIND THEN
+            TempLookupBuffer.MARK := FALSE;
+          TempLookupBuffer.SETRANGE(Integer);
+        UNTIL TempLookupBuffer.NEXT(1) = 0;
+        IF NOT TempLookupBuffer.FIND('-') THEN
+          EXIT(FALSE);
+        Node1 := FORMAT(TempLookupBuffer.Integer);
+        Node2 := Node1;
+        TempLookupBuffer.MARKEDONLY := FALSE;
+        REPEAT
+          IF TempLookupBuffer.MARK THEN
+            Node2 := FORMAT(TempLookupBuffer.Integer)
+          ELSE BEGIN
+            AddNextFragment(Totaling,Node1,Node2);
+            Node1 := '';
+            Node2 := Node1;
+            TempLookupBuffer.MARKEDONLY := TRUE;
+            IF TempLookupBuffer.NEXT(1) <> 0 THEN BEGIN
+              Node1 := FORMAT(TempLookupBuffer.Integer);
+              Node2 := Node1;
+              TempLookupBuffer.MARKEDONLY := FALSE;
+            END;
+          END;
+        UNTIL TempLookupBuffer.NEXT(1) = 0;
+        AddNextFragment(Totaling,Node1,Node2);
+        EXIT(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE AddNextFragment@6(VAR Total@1000 : Text[250];Node1@1001 : Text[30];Node2@1002 : Text[30]);
+    BEGIN
+      IF Node1 <> '' THEN
+        IF Node1 = Node2 THEN
+          IF Total = '' THEN
+            Total := Node1
+          ELSE
+            Total := STRSUBSTNO('%1|%2',Total,Node1)
+        ELSE
+          IF Total = '' THEN
+            Total := STRSUBSTNO('%1..%2',Node1,Node2)
+          ELSE
+            Total := STRSUBSTNO('%1|%2..%3',Total,Node1,Node2);
+    END;
+
+    PROCEDURE BuildKeyList@7(VAR TmpKeyList@1000 : TEMPORARY Record 17223;TableID@1001 : Integer);
+    VAR
+      xRecordRef@1002 : RecordRef;
+      xFieldRef@1003 : FieldRef;
+      xKeyRef@1004 : KeyRef;
+      xCountKey@1005 : Integer;
+      xCountNo@1006 : Integer;
+    BEGIN
+      TmpKeyList.RESET;
+      TmpKeyList.DELETEALL;
+      CLEAR(TmpKeyList);
+
+      xRecordRef.OPEN(TableID,TRUE);
+      FOR xCountKey := 1 TO xRecordRef.KEYCOUNT DO BEGIN
+        xKeyRef := xRecordRef.KEYINDEX(xCountKey);
+        IF xKeyRef.ACTIVE THEN BEGIN
+          FOR xCountNo := 1 TO xKeyRef.FIELDCOUNT DO BEGIN
+            xFieldRef := xKeyRef.FIELDINDEX(xCountNo);
+            IF TmpKeyList.Text = '' THEN
+              TmpKeyList.Text := xFieldRef.CAPTION
+            ELSE
+              TmpKeyList.Text :=
+                COPYSTR(STRSUBSTNO('%1,%2',TmpKeyList.Text,xFieldRef.CAPTION),1,MAXSTRLEN(TmpKeyList.Text));
+          END;
+          TmpKeyList.Integer := xCountKey;
+          TmpKeyList.INSERT;
+          TmpKeyList.Text := '';
+        END;
+      END;
+      xRecordRef.CLOSE;
+    END;
+
+    PROCEDURE PrepeareLookupCode@10(TableID@1000 : Integer;FieldID@1001 : Integer;VAR IDRecordRef@1002 : Integer;VAR IDFieldRefCode@1003 : Integer;VAR IDFieldRefText@1004 : Integer;TableRelationID@1005 : Integer;FieldRelationNo@1006 : Integer) : Boolean;
+    VAR
+      Field@1007 : Record 2000000041;
+      xRecordRef@1008 : RecordRef;
+      xFieldRef@1009 : FieldRef;
+      xKeyRef@1010 : KeyRef;
+    BEGIN
+      IF Field.GET(TableID,FieldID) THEN
+        IF (Field.Type = Field.Type::Code) AND
+           ((TableRelationID <> 0) OR (Field.RelationTableNo <> 0))
+        THEN BEGIN
+          IF Field.RelationTableNo <> 0 THEN BEGIN
+            xRecordRef.OPEN(Field.RelationTableNo,TRUE);
+            IF Field.RelationFieldNo = 0 THEN BEGIN
+              xKeyRef := xRecordRef.KEYINDEX(1);
+              xFieldRef := xKeyRef.FIELDINDEX(1);
+            END ELSE
+              xFieldRef := xRecordRef.FIELD(Field.RelationFieldNo);
+            IDRecordRef := Field.RelationTableNo;
+          END ELSE BEGIN
+            xRecordRef.OPEN(TableRelationID,TRUE);
+            IF FieldRelationNo = 0 THEN BEGIN
+              xKeyRef := xRecordRef.KEYINDEX(1);
+              xFieldRef := xKeyRef.FIELDINDEX(1);
+            END ELSE
+              xFieldRef := xRecordRef.FIELD(FieldRelationNo);
+            IDRecordRef := TableRelationID;
+          END;
+          IF FORMAT(xFieldRef.TYPE) = FORMAT(Field.Type) THEN BEGIN
+            Field.SETRANGE(TableNo,IDRecordRef);
+            Field.SETRANGE(Type,Field.Type::Text);
+            Field.SETRANGE(Enabled,TRUE);
+            Field.SETRANGE(FieldName,Text1003);   // 'Description'
+            Field."No." := 0;
+            IF NOT Field.FINDFIRST THEN BEGIN
+              Field.SETRANGE(FieldName,Text1004); // 'Name'
+              IF NOT Field.FINDFIRST THEN BEGIN
+                Field.SETRANGE(FieldName);
+                IF NOT Field.FINDFIRST THEN
+                  Field."No." := xFieldRef.NUMBER;
+              END;
+            END;
+            IF Field."No." <> 0 THEN BEGIN
+              IDFieldRefCode := xFieldRef.NUMBER;
+              IDFieldRefText := Field."No.";
+              xRecordRef.CLOSE;
+              EXIT(TRUE);
+            END;
+          END;
+          xRecordRef.CLOSE;
+        END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

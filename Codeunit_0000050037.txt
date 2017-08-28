@@ -1,0 +1,260 @@
+OBJECT Codeunit 50037 FI Get G/L Account No.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16.02.11;
+    Time=11:33:00;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FIPostingSetup@1000 : Record 50105;
+      GenPostingSetup@1000000000 : Record 252;
+      SkipCheckPosting@1101495000 : Boolean;
+
+    PROCEDURE GetAccNo@1(VAR FILedgEntry@1000 : Record 50106) : Code[20];
+    VAR
+      GLAccNo@1101495000 : Code[20];
+      TempGenJnlLine@1101495001 : TEMPORARY Record 81;
+    BEGIN
+      WITH FILedgEntry DO BEGIN
+        GLAccNo := '';
+        // TESTFIELD("FI EntryType"); С пустым типом могут быть операции коррекции сумм по телу / купону
+        FILedgerEntry2GenJnlLine(FILedgEntry, TempGenJnlLine);
+        GLAccNo := FIGetGLAccountNo(TempGenJnlLine);
+      {
+        CASE "FI EntryType" OF
+          "FI EntryType"::Purchase:
+            BEGIN
+              CASE "Amount Type" OF
+                "Amount Type"::Principal:
+                  BEGIN
+                    IF "Short Position" = FALSE THEN BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("FI Account");
+                      GLAccNo := FIPostingSetup."FI Account";
+                    END ELSE BEGIN
+                      GenPostingSetup.GET("Gen. Bus. Posting Group", "Gen. Prod. Posting Group");
+                      GenPostingSetup.TESTFIELD("Sales Account");
+                      GLAccNo := GenPostingSetup."Sales Account";
+                    END;
+                  END;
+                "Amount Type"::Interest:
+                  BEGIN
+                    IF "Short Position" = FALSE THEN BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("Coupon Account");
+                      GLAccNo := FIPostingSetup."Coupon Account";
+                    END ELSE BEGIN
+                      GenPostingSetup.GET("Gen. Bus. Posting Group", "Gen. Prod. Posting Group");
+                      GenPostingSetup.TESTFIELD("Sales Account");
+                      GLAccNo := GenPostingSetup."Sales Account";
+                    END;
+                  END;
+              END;
+            END;
+          "FI EntryType"::Sale:
+            BEGIN
+              CASE "Amount Type" OF
+                "Amount Type"::Principal:
+                  BEGIN
+                    IF "Short Position" = FALSE THEN BEGIN
+                      GenPostingSetup.GET("Gen. Bus. Posting Group", "Gen. Prod. Posting Group");
+                      GenPostingSetup.TESTFIELD("Sales Account");
+                      GLAccNo := GenPostingSetup."Sales Account";
+                    END ELSE BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("Short Account");
+                      GLAccNo := FIPostingSetup."Short Account";
+                    END;
+                  END;
+                "Amount Type"::Interest:
+                  BEGIN
+                    IF "Short Position" = FALSE THEN BEGIN
+                      GenPostingSetup.GET("Gen. Bus. Posting Group", "Gen. Prod. Posting Group");
+                      GenPostingSetup.TESTFIELD("Sales Account");
+                      GLAccNo := GenPostingSetup."Sales Account";
+                    END ELSE BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("Coupon Short Account");
+                      GLAccNo := FIPostingSetup."Coupon Short Account";
+                    END;
+                  END;
+              END;
+            END;
+          "FI EntryType"::"Positive Adjmt.","FI EntryType"::"Negative Adjmt.":
+            BEGIN
+              CASE "Amount Type" OF
+                "Amount Type"::Principal:
+                  BEGIN
+                    IF "Short Position" = FALSE THEN BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("FI Account");
+                      GLAccNo := FIPostingSetup."FI Account";
+                    END ELSE BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("Short Account");
+                      GLAccNo := FIPostingSetup."Short Account";
+                    END;
+                  END;
+                "Amount Type"::Interest:
+                  BEGIN
+                    IF "Short Position" = FALSE THEN BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("Coupon Account");
+                      GLAccNo := FIPostingSetup."Coupon Account";
+                    END ELSE BEGIN
+                      FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                      FIPostingSetup.TESTFIELD("Coupon Short Account");
+                      GLAccNo := FIPostingSetup."Coupon Short Account";
+                    END;
+                  END;
+              END;
+            END;
+          "FI EntryType"::"Charging%", "FI EntryType"::"Payment%":
+            BEGIN
+              IF "Short Position" = FALSE THEN BEGIN
+                FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                FIPostingSetup.TESTFIELD("Coupon Account");
+                GLAccNo := FIPostingSetup."Coupon Account";
+              END ELSE BEGIN
+                FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+                FIPostingSetup.TESTFIELD("Coupon Short Account");
+                GLAccNo := FIPostingSetup."Coupon Short Account";
+              END;
+            END;
+        ELSE
+          ERROR('Неизвестный тип операции');
+        END;
+        }
+      END;
+      EXIT(GLAccNo);
+    END;
+
+    PROCEDURE FIGetGLAccountNo@1101495000(VAR GenJnlLine@1101495000 : Record 81) GLAccNo : Code[20];
+    BEGIN
+      GLAccNo := '';
+      WITH GenJnlLine DO BEGIN
+        IF ("Account Type" <> "Account Type"::"6") AND
+           ("Bal. Account Type" <> "Bal. Account Type"::"6") THEN
+          EXIT(GLAccNo);
+
+        IF SkipCheckPosting THEN BEGIN
+          IF (("FI EntryType" = "FI EntryType"::Purchase) AND "Short Position") OR
+             (("FI EntryType" = "FI EntryType"::Sale) AND (NOT "Short Position")) THEN BEGIN
+            IF NOT GenPostingSetup.GET("Gen. Bus. Posting Group", "Gen. Prod. Posting Group") THEN
+              EXIT(GLAccNo);
+          END ELSE
+            IF NOT FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio") THEN
+              EXIT(GLAccNo);
+        END ELSE
+          CheckFIPostingSetup(GenJnlLine);
+
+        IF (("FI EntryType" = "FI EntryType"::Purchase) AND "Short Position") OR
+           (("FI EntryType" = "FI EntryType"::Sale) AND (NOT "Short Position")) THEN BEGIN
+          GLAccNo := GenPostingSetup."Sales Account";
+          EXIT(GLAccNo);
+        END;
+
+        CASE "Amount Type" OF
+          "Amount Type"::Principal:
+            BEGIN
+              IF "Short Position" = FALSE THEN
+                GLAccNo := FIPostingSetup."FI Account"
+              ELSE
+                GLAccNo := FIPostingSetup."Short Account"
+            END;
+          "Amount Type"::Interest:
+            BEGIN
+              IF "Short Position" = FALSE THEN
+                GLAccNo := FIPostingSetup."Coupon Account"
+              ELSE
+                GLAccNo := FIPostingSetup."Coupon Short Account";
+            END;
+        END;
+      END;
+      EXIT(GLAccNo);
+    END;
+
+    PROCEDURE CheckFIPostingSetup@1101495002(VAR GenJnlLine@1101495000 : Record 81);
+    BEGIN
+      // Проверка настройки учета
+      WITH GenJnlLine DO BEGIN
+        IF ("Account Type" <> "Account Type"::"6") AND
+           ("Bal. Account Type" <> "Bal. Account Type"::"6") THEN
+          EXIT;
+
+        IF (("FI EntryType" = "FI EntryType"::Purchase) AND "Short Position") OR
+           (("FI EntryType" = "FI EntryType"::Sale) AND (NOT "Short Position")) THEN BEGIN
+          GenPostingSetup.GET("Gen. Bus. Posting Group", "Gen. Prod. Posting Group");
+          GenPostingSetup.TESTFIELD("Sales Account");
+          EXIT;
+        END;
+
+        FIPostingSetup.GET("FI Posting Group","FI Posting Book","FI Portfolio");
+        CASE "Amount Type" OF
+          "Amount Type"::Principal:
+            BEGIN
+              IF "Short Position" = FALSE THEN
+                FIPostingSetup.TESTFIELD("FI Account")
+              ELSE
+                FIPostingSetup.TESTFIELD("Short Account");
+            END;
+          "Amount Type"::Interest:
+            BEGIN
+              IF "Short Position" = FALSE THEN
+                FIPostingSetup.TESTFIELD("Coupon Account")
+              ELSE
+                FIPostingSetup.TESTFIELD("Coupon Short Account");
+            END;
+        END;
+      END;
+      EXIT;
+    END;
+
+    PROCEDURE FILedgerEntry2GenJnlLine@1101495003(VAR FromFILedgerEntry@1101495000 : Record 50106;VAR ToGenJnlLine@1101495001 : Record 81);
+    BEGIN
+      // Копирование данных из "FI Ledger Entry" в "Gen. Journal Line"
+      WITH ToGenJnlLine DO BEGIN
+        "Account Type" := "Account Type"::"6";
+        "Account No." := FromFILedgerEntry."FI No.";
+        "Posting Date" := FromFILedgerEntry."Posting Date";
+        "FI EntryType" := FromFILedgerEntry."FI EntryType";
+        Quantity := FromFILedgerEntry.Quantity;
+        Description := FromFILedgerEntry.Description;
+        "Currency Code" := FromFILedgerEntry."FI Currency Code";
+        "FI Posting Book" := FromFILedgerEntry."FI Posting Book";
+        "FI Portfolio" := FromFILedgerEntry."FI Portfolio";
+        "FI Posting Group" := FromFILedgerEntry."FI Posting Group";
+        "Amount Type" := FromFILedgerEntry."Amount Type";
+        Conversation := FromFILedgerEntry.Conversation;
+        "Conversation ID" := FromFILedgerEntry."Conversation ID";
+        "Short Position" := FromFILedgerEntry."Short Position";
+        "Gen. Bus. Posting Group" := FromFILedgerEntry."Gen. Bus. Posting Group";
+        "Gen. Prod. Posting Group" := FromFILedgerEntry."Gen. Prod. Posting Group";
+        "Shortcut Dimension 1 Code" := FromFILedgerEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FromFILedgerEntry."Global Dimension 2 Code";
+      END;
+    END;
+
+    PROCEDURE SetSkipCheckPosting@1101495004(NewValue@1101495000 : Boolean);
+    BEGIN
+      SkipCheckPosting := NewValue;
+    END;
+
+    BEGIN
+    {
+      NC MTF02 AKU Учет ФИ. Определение фин. счета учета операции с ФИ
+    }
+    END.
+  }
+}
+

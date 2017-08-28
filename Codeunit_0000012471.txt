@@ -1,0 +1,824 @@
+OBJECT Codeunit 12471 FA Document-Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.08.17;
+    Time=17:24:19;
+    Modified=Yes;
+    Version List=NAVRU9.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    TableNo=12470;
+    Permissions=TableData 5601=rimd,
+                TableData 12471=rimd,
+                TableData 12472=rimd;
+    OnRun=BEGIN
+            FADocHeader.COPY(Rec);
+
+            FASetup.GET;
+            GLSetup.GET;
+            TaxRegisterSetup.GET;
+
+            CheckDim;
+
+            // Header
+            PostedFADocHeader.INIT;
+            PostedFADocHeader.TRANSFERFIELDS(FADocHeader);
+
+            IF FADocHeader."Posting No." <> '' THEN
+              PostedFADocHeader."No." := FADocHeader."Posting No."
+            ELSE
+              IF FADocHeader."No. Series" = FADocHeader."Posting No. Series" THEN
+                PostedFADocHeader."No." := FADocHeader."No."
+              ELSE
+                PostedFADocHeader."No." :=
+                  NoSeriesMgt.GetNextNo(FADocHeader."Posting No. Series","Posting Date",TRUE);
+
+            DocSignMgt.CheckDocSignatures(DATABASE::"FA Document Header","Document Type","No.");
+
+            DocSignMgt.MoveDocSignToPostedDocSign(
+              DocSign,DATABASE::"FA Document Header",
+              FADocHeader."Document Type",FADocHeader."No.",
+              DATABASE::"Posted FA Doc. Header",PostedFADocHeader."No.");
+
+            CopyCommentLines(
+              FADocHeader."Document Type",FADocHeader."No.",PostedFADocHeader."No.");
+
+            PostedFADocHeader."User ID" := USERID;
+            PostedFADocHeader."Creation Date" := WORKDATE;
+            PostedFADocHeader.INSERT;
+
+            // Lines
+            FADocLine.RESET;
+            FADocLine.SETRANGE("Document Type",FADocHeader."Document Type");
+            FADocLine.SETRANGE("Document No.",FADocHeader."No.");
+            IF FADocLine.FINDSET THEN
+              REPEAT
+                IF FoundLateEntries(
+                     FADocLine."FA No.",
+                     FADocLine."Depreciation Book Code",
+                     FADocLine."Posting Date")
+                THEN
+                  ERROR(Text001,"Document Type");
+
+                FADocLine.TESTFIELD("Depreciation Book Code");
+                FA.GET(FADocLine."FA No.");
+
+                CASE "Document Type" OF
+                  "Document Type"::Writeoff:
+                    PostFAWriteOff;
+                  "Document Type"::Release,
+                  "Document Type"::Movement:
+                    PostFAReleaseMovement("Document Type");
+                END;
+
+                InsertFADocLine(FADocLine,PostedFADocHeader."No.");
+
+                CLEAR(GenJnlPostLine);
+                CLEAR(FAJnlPostLine);
+              UNTIL FADocLine.NEXT = 0;
+
+            IF PreviewMode THEN
+              ERROR('');
+
+            FADocHeader.DELETE(TRUE);
+            Rec := FADocHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FADocHeader@1003 : Record 12470;
+      FADocLine@1470000 : Record 12477;
+      PostedFADocHeader@1210000 : Record 12471;
+      PostedFADocLine@1210001 : Record 12472;
+      FASetup@1210003 : Record 5603;
+      FAJnlLine@1210019 : Record 5621;
+      GenJnlLine@1470017 : Record 81;
+      FALedgEntry@1470016 : Record 5601;
+      FAReclassJnlLine@1470012 : Record 5624;
+      FAJnlSetup@1470023 : Record 5605;
+      FADeprBook@1470022 : Record 5612;
+      FADeprBook2@1470021 : Record 5612;
+      DepreciationBook@1470019 : Record 5611;
+      FA@1470018 : Record 5600;
+      FAComment@1470010 : Record 12478;
+      PostedFAComment@1470024 : Record 12479;
+      ItemDocHeader@1470025 : Record 12450;
+      TaxRegisterSetup@1210002 : Record 17236;
+      DocSign@1210007 : Record 12420;
+      GLSetup@1210004 : Record 98;
+      FAJnlPostLine@1210020 : Codeunit 5632;
+      GenJnlPostLine@1210021 : Codeunit 12;
+      DimMgt@1470011 : Codeunit 408;
+      FAReclassTransferLine@1470003 : Codeunit 5642;
+      FAReclassCheckLine@1470002 : Codeunit 5641;
+      Text001@1210028 : TextConst 'ENU=%1 must be last Operation.;RUS=%1 должна быть последней операцией';
+      NoSeriesMgt@1210037 : Codeunit 396;
+      DocSignMgt@1470009 : Codeunit 12420;
+      ItemRcptPost@1470015 : Codeunit 12460;
+      ReclassDone@1470004 : Boolean;
+      PreviewMode@1210009 : Boolean;
+      Text005@1210111 : TextConst 'ENU=The combination of dimensions used in %1 %2 is blocked. %3;RUS=Комбинация измерений, использованная в %1 %2, заблокирована. %3';
+      Text006@1470013 : TextConst 'ENU=The combination of dimensions used in %1 %2 is blocked. %3.;RUS=Комбинация измерений, использованная в %1 %2, заблокирована. %3.';
+      Text007@1210109 : TextConst 'ENU=The dimensions used in %1 %2, line no. %3 are invalid. %4;RUS=Измерения, использованные в %1 %2, в строке ном. %3, недопустимы. %4';
+      "NCV>"@1101495000 : Integer;
+      DimensionSetEntry@1101495001 : Record 480;
+      DefDim@1101495002 : Record 352;
+
+    PROCEDURE InsertFADocLine@1470000(FADocLine@1470000 : Record 12477;PostedDocNo@1470001 : Code[20]);
+    BEGIN
+      WITH PostedFADocLine DO BEGIN
+        INIT;
+        TRANSFERFIELDS(FADocLine);
+        "Document No." := PostedDocNo;
+        INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyCommentLines@22(DocType@1000 : Integer;DocNo@1002 : Code[20];ToDocNo@1470000 : Code[20]);
+    BEGIN
+      FAComment.SETRANGE("Document Type",DocType);
+      FAComment.SETRANGE("Document No.",DocNo);
+      IF FAComment.FINDSET THEN
+        REPEAT
+          PostedFAComment.TRANSFERFIELDS(FAComment);
+          PostedFAComment."Document No." := ToDocNo;
+          PostedFAComment.INSERT;
+        UNTIL FAComment.NEXT = 0;
+    END;
+
+    PROCEDURE FoundLateEntries@1470001(FANo@1470000 : Code[20];FADeprBookCode@1470001 : Code[10];PostingDate@1470002 : Date) : Boolean;
+    VAR
+      FALedgEntry@1470003 : Record 5601;
+    BEGIN
+      WITH FALedgEntry DO BEGIN
+        RESET;
+        SETCURRENTKEY("FA No.","Depreciation Book Code","FA Posting Date");
+        SETRANGE("FA No.",FANo);
+        SETRANGE("Depreciation Book Code",FADeprBookCode);
+        SETRANGE(Reversed,FALSE);
+        SETFILTER("FA Posting Date",'>%1',PostingDate);
+        IF FINDSET THEN
+          REPEAT
+            IF "Canceled from FA No." = '' THEN
+              EXIT(TRUE);
+          UNTIL NEXT = 0;
+        EXIT(FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckDim@1210002();
+    BEGIN
+      FADocLine."Line No." := 0;
+      CheckDimComb(FADocHeader,FADocLine);
+      CheckDimValuePosting(FADocHeader,FADocLine);
+
+      FADocLine.SETRANGE("Document Type",FADocHeader."Document Type");
+      FADocLine.SETRANGE("Document No.",FADocHeader."No.");
+      IF FADocLine.FINDFIRST THEN BEGIN
+        CheckDimComb(FADocHeader,FADocLine);
+        CheckDimValuePosting(FADocHeader,FADocLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckDimComb@1210001(FADocHeader@1001 : Record 12470;FADocLine@1000 : Record 12477);
+    BEGIN
+      IF FADocLine."Line No." = 0 THEN
+        IF NOT DimMgt.CheckDimIDComb(FADocHeader."Dimension Set ID") THEN
+          ERROR(
+            Text005,
+            FADocHeader."No.",DimMgt.GetDimCombErr);
+      IF FADocLine."Line No." <> 0 THEN
+        IF NOT DimMgt.CheckDimIDComb(FADocLine."Dimension Set ID") THEN
+          ERROR(
+            Text006,
+            FADocHeader."No.",FADocLine."Line No.",DimMgt.GetDimCombErr);
+    END;
+
+    LOCAL PROCEDURE CheckDimValuePosting@1210000(FADocHeader@1000 : Record 12470;FADocLine@1004 : Record 12477);
+    VAR
+      TableIDArr@1002 : ARRAY [10] OF Integer;
+      NumberArr@1003 : ARRAY [10] OF Code[20];
+    BEGIN
+      TableIDArr[1] := DATABASE::"Fixed Asset";
+      NumberArr[1] := FADocLine."FA No.";
+      IF FADocLine."Line No." = 0 THEN
+        IF NOT DimMgt.CheckDimValuePosting(TableIDArr,NumberArr,FADocHeader."Dimension Set ID") THEN
+          ERROR(
+            Text007,
+            FADocHeader."No.",FADocLine."Line No.",DimMgt.GetDimValuePostingErr);
+
+      IF FADocLine."Line No." <> 0 THEN
+        IF NOT DimMgt.CheckDimValuePosting(TableIDArr,NumberArr,FADocLine."Dimension Set ID") THEN
+          ERROR(
+            Text007,
+            FADocHeader."No.",FADocLine."Line No.",DimMgt.GetDimValuePostingErr);
+    END;
+
+    PROCEDURE FAPostTransfer@1210003(FADocLine@1210000 : Record 12477;CheckLine@1210005 : Boolean);
+    VAR
+      FADepreciationBook@1210003 : Record 5612;
+      MakeFALedgEntry@1470000 : Codeunit 5604;
+      i@1210004 : Integer;
+      Rate@1210006 : Integer;
+    BEGIN
+      WITH FADocLine DO BEGIN
+        IF "FA No." = '' THEN
+          EXIT;
+        IF "Posting Date" = 0D THEN
+          "Posting Date" := "FA Posting Date";
+
+        FA.LOCKTABLE;
+        DepreciationBook.GET("Depreciation Book Code");
+        FA.GET("FA No.");
+        FA.TESTFIELD(Blocked,FALSE);
+        FA.TESTFIELD(Inactive,FALSE);
+        FADepreciationBook.GET("FA No.","Depreciation Book Code");
+        FADepreciationBook.SETFILTER("FA Posting Date Filter",'..%1',"FA Posting Date");
+        FADepreciationBook.CALCFIELDS(
+          "Acquisition Cost",Depreciation,"Proceeds on Disposal","Gain/Loss",
+          "Write-Down",Appreciation,"Custom 1","Custom 2","Salvage Value",
+          "Book Value on Disposal");
+
+        Rate := -1;
+        FOR i := 0 TO 1 DO BEGIN
+          IF i = 1 THEN
+            Rate := 1;
+
+          MakeFALedgEntry.CopyFromFADocLine(FALedgEntry,FADocLine);
+          IF i = 0 THEN BEGIN
+            FALedgEntry."FA Location Code" := '';
+            FALedgEntry."Employee No." := '';
+          END;
+          MakeFALedgEntry.CopyFromFACard(FALedgEntry,FA,FADepreciationBook);
+          FALedgEntry."Document No." := PostedFADocHeader."No.";
+
+          IF FADepreciationBook."Acquisition Cost" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Acquisition Cost";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Acquisition Cost";
+            FALedgEntry.Quantity := Rate * Quantity;
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          FALedgEntry.Quantity := 0;
+
+          IF FADepreciationBook.Depreciation <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::Depreciation;
+            FALedgEntry.Amount := Rate * FADepreciationBook.Depreciation;
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Proceeds on Disposal" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Proceeds on Disposal";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Proceeds on Disposal";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Gain/Loss" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Gain/Loss";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Gain/Loss";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Write-Down" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Write-Down";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Write-Down";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook.Appreciation <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::Appreciation;
+            FALedgEntry.Amount := Rate * FADepreciationBook.Appreciation;
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Custom 1" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Custom 1";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Custom 1";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Custom 2" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Custom 2";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Custom 2";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Salvage Value" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::" ";
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Salvage Value";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Salvage Value";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+          IF FADepreciationBook."Book Value on Disposal" <> 0 THEN BEGIN
+            FALedgEntry."FA Posting Category" := FALedgEntry."FA Posting Category"::Disposal;
+            FALedgEntry."FA Posting Type" := FALedgEntry."FA Posting Type"::"Book Value on Disposal";
+            FALedgEntry.Amount := Rate * FADepreciationBook."Book Value on Disposal";
+            InsertTransferFALedgEntry(FALedgEntry,Rate);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetJnlName@1210019(VAR GenJnlLine2@1210003 : Record 81;BudgetedAsset@1210005 : Boolean);
+    VAR
+      FAGetJnl@1210002 : Codeunit 5639;
+      TemplateName@1210001 : Code[10];
+      BatchName@1210000 : Code[10];
+      GLIntegration@1210004 : Boolean;
+    BEGIN
+      FAGetJnl.JnlName(
+        GenJnlLine2."Depreciation Book Code",BudgetedAsset,GenJnlLine2."FA Posting Type",
+        GLIntegration,TemplateName,BatchName);
+
+      GenJnlLine2."Journal Template Name" := TemplateName;
+      GenJnlLine2."Journal Batch Name" := BatchName;
+    END;
+
+    PROCEDURE SetPreviewMode@1210100(NewPreviewMode@1210000 : Boolean);
+    BEGIN
+      PreviewMode := NewPreviewMode;
+    END;
+
+    LOCAL PROCEDURE GetFADefaultDim@1210004(FANo@1210006 : Code[20];VAR GlobalDimCode1@1210003 : Code[20];VAR GlobalDimCode2@1210004 : Code[20];VAR DimSetID@1210005 : Integer;SourceCode@1210002 : Code[20]);
+    VAR
+      TableID@1210001 : ARRAY [10] OF Integer;
+      No@1210000 : ARRAY [10] OF Code[20];
+    BEGIN
+      TableID[1] := DATABASE::"Fixed Asset";
+      No[1] := FANo;
+      GlobalDimCode1 := '';
+      GlobalDimCode2 := '';
+      DimSetID := DimMgt.GetDefaultDimID(TableID,No,SourceCode,GlobalDimCode1,GlobalDimCode2,0,0);
+    END;
+
+    LOCAL PROCEDURE InsertTransferFALedgEntry@1210007(VAR FALedgEntry@1210000 : Record 5601;Rate@1210001 : Integer);
+    VAR
+      FAInsertLedgEntry@1210002 : Codeunit 5600;
+    BEGIN
+      IF Rate = -1 THEN
+        GetFADefaultDim(
+          FALedgEntry."FA No.",
+          FALedgEntry."Global Dimension 1 Code",
+          FALedgEntry."Global Dimension 2 Code",
+          FALedgEntry."Dimension Set ID",
+          FALedgEntry."Source Code");
+      FAInsertLedgEntry.InsertTransfer(FALedgEntry)
+    END;
+
+    LOCAL PROCEDURE PostFAWriteOff@1210005();
+    VAR
+      OperationTypeLoc@1101495000 : ',Depreciation,Release,Movement,Writeoff,Reclass,Gen.Jnl';
+      FAConsExceptionSetup@1101495001 : Record 50115;
+    BEGIN
+      GenJnlLine.INIT;
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::"Fixed Asset";
+      GenJnlLine."Account No." := FADocLine."FA No.";
+      GenJnlLine."Posting Date" := FADocLine."Posting Date";
+      GenJnlLine."Document No." := PostedFADocHeader."No.";
+      GenJnlLine.Description := FADocLine.Description;
+      GenJnlLine."FA Posting Date" := FADocLine."FA Posting Date";
+      GenJnlLine."FA Posting Type" := GenJnlLine."FA Posting Type"::Disposal;
+      GenJnlLine."Depreciation Book Code" := FADocLine."Depreciation Book Code";
+      GenJnlLine."FA Location Code" := FADocLine."FA Location Code";
+      GenJnlLine."Employee No." := FADocLine."FA Employee No.";
+      GenJnlLine."Depr. until FA Posting Date" := TRUE;
+      GenJnlLine."Shortcut Dimension 1 Code" := FADocLine."Shortcut Dimension 1 Code";
+      GenJnlLine."Shortcut Dimension 2 Code" := FADocLine."Shortcut Dimension 2 Code";
+      GenJnlLine."Dimension Set ID" := FADocLine."Dimension Set ID";
+      GenJnlLine."Reason Code" := FADocLine."Reason Code";
+      //NC TR066 > EB
+      GenJnlLine."Posting Group" := FADocLine."FA Posting Group";
+      //NC TR066 < EB
+      //NC TR060 > EB
+      GenJnlLine."External Document No." := FADocHeader."External Document No.";
+      //NC TR060 < EB
+
+      GetJnlName(GenJnlLine,FA."Budgeted Asset");
+
+      //NC MFA22 > DP
+      OperationTypeLoc := OperationTypeLoc::Writeoff;
+      GenJnlLine."Not Consolidate" := SetFANotConsolidate(FADocLine."Depreciation Book Code",OperationTypeLoc);
+      FAConsExceptionSetup.RESET;
+      FAConsExceptionSetup.SETRANGE(FAConsExceptionSetup."Depr. Book Code",FADocLine."Depreciation Book Code");
+      FAConsExceptionSetup.SETRANGE(FAConsExceptionSetup."FA Posting Type",FAConsExceptionSetup."FA Posting Type"::Disposal);
+      IF FAConsExceptionSetup.FINDFIRST THEN
+        GenJnlLine."Cons. FA Export Type" := FAConsExceptionSetup."Cons. Export Type";
+      //NC MFA22 < DP
+
+      //NC OFA003 > DP
+      SetFAOperTypeDim(GenJnlLine."FA Posting Type",GenJnlLine);
+      //NC OFA003 < DP
+
+      GenJnlPostLine.SetPreviewMode(PreviewMode);
+      GenJnlPostLine.RunWithCheck(GenJnlLine);
+
+      FA.Status := FA.Status::WrittenOff;
+      FA."Status Date" := PostedFADocHeader."FA Posting Date";
+      FA."Status Document No." := PostedFADocHeader."No.";
+      FA."Vehicle Writeoff Date" := PostedFADocHeader."FA Posting Date";
+      FA.MODIFY;
+
+      IF FADocLine."Item Receipt No." <> '' THEN BEGIN
+        ItemDocHeader.GET(ItemDocHeader."Document Type"::Receipt,FADocLine."Item Receipt No.");
+        CLEAR(ItemRcptPost);
+        ItemRcptPost.SetHideValidationDialog(TRUE);
+        ItemRcptPost.RUN(ItemDocHeader);
+        FADocLine."Item Receipt No." := ItemRcptPost.GetPostedItemReceipt;
+      END;
+    END;
+
+    LOCAL PROCEDURE PostFAReleaseMovement@1210010(DocType@1210000 : Option);
+    VAR
+      OperationTypeLoc@1101495000 : ',Depreciation,Release,Movement,Writeoff,Reclass,Gen.Jnl';
+      FADocHeader@1210001 : Record 12470;
+    BEGIN
+      IF (DocType = FADocHeader."Document Type"::Release) OR
+         (FADocLine."FA No." <> FADocLine."New FA No.") OR
+         (FADocLine."Depreciation Book Code" <> FADocLine."New Depreciation Book Code") // reclassification
+          //NC OFA005 > DP
+          OR (FADocLine."FA Dimension Value Code" <> FADocLine."New FA Dimension Value Code")
+          //NC OFA005 < DP
+      THEN BEGIN
+        FADeprBook.GET(FADocLine."FA No.",FADocLine."Depreciation Book Code");
+        FADeprBook2.GET(FADocLine."New FA No.",FADocLine."New Depreciation Book Code");
+
+        //NC OFA014 > DP
+        IF FADeprBook2."Depreciation Starting Date" = 0D THEN
+        //NC OFA014 > DP
+          IF DocType = FADocHeader."Document Type"::Release THEN BEGIN
+            FADeprBook2."Depreciation Starting Date" := CALCDATE('<CM+1D>',FADocLine."FA Posting Date");
+            IF FADeprBook."No. of Depreciation Years" > 0 THEN
+              FADeprBook2.VALIDATE("No. of Depreciation Years",FADeprBook."No. of Depreciation Years")
+            ELSE
+              FADeprBook2.VALIDATE("No. of Depreciation Years");
+          END;
+        FADeprBook2.MODIFY;
+
+        FAReclassJnlLine.INIT;
+        FAReclassJnlLine.VALIDATE("FA No.",FADocLine."FA No.");
+        IF FADocLine."New FA No." <> '' THEN
+          FAReclassJnlLine.VALIDATE("New FA No.",FADocLine."New FA No.")
+        ELSE
+          FAReclassJnlLine.VALIDATE("New FA No.",FADocLine."FA No.");
+        FAReclassJnlLine."FA Posting Date" := FADocLine."FA Posting Date";
+        FAReclassJnlLine."Posting Date" := FADocLine."Posting Date";
+        FAReclassJnlLine."Depreciation Book Code" := FADocLine."Depreciation Book Code";
+        FAReclassJnlLine."New Depreciation Book Code" := FADocLine."New Depreciation Book Code";
+        FAReclassJnlLine.Description := FADocLine.Description;
+        FAReclassJnlLine."Document No." := PostedFADocHeader."No.";
+        FAReclassJnlLine."FA Location Code" := FADocLine."FA Location Code";
+        FAReclassJnlLine."Employee No." := FADocLine."FA Employee No.";
+        FAReclassJnlLine."FA Posting Group" := FADocLine."FA Posting Group";
+        FAReclassJnlLine."New FA Posting Group" := FADocLine."New FA Posting Group";
+        FAReclassJnlLine.VALIDATE(Quantity,FADocLine.Quantity);
+        FAReclassJnlLine."Reclassify Acquisition Cost" := TRUE;
+        FAReclassJnlLine."Reclassify Write-Down" := TRUE;
+        FAReclassJnlLine."Reclassify Appreciation" := TRUE;
+
+        //NC OFA005 > DP
+        IF DocType = FADocHeader."Document Type"::Movement THEN BEGIN
+          FAReclassJnlLine."FA Dimension Code" := FADocLine."FA Dimension Code";
+          FAReclassJnlLine."FA Dimension Value Code" :=  FADocLine."FA Dimension Value Code";
+          FAReclassJnlLine."New FA Dimension Value Code" := FADocLine."New FA Dimension Value Code";
+        END;
+        //NC OFA005 < DP
+
+        FAReclassJnlLine."Reclassify Depreciation" := DocType = FADocHeader."Document Type"::Movement;
+        FAReclassCheckLine.RUN(FAReclassJnlLine);
+        FAReclassTransferLine.FAReclassLine(FAReclassJnlLine,ReclassDone);
+
+        // Post G/L or FA Journal Lines
+        CLEAR(FAJnlSetup);
+        IF NOT FAJnlSetup.GET(FADocLine."Depreciation Book Code",USERID) THEN
+          FAJnlSetup.GET(FADocLine."Depreciation Book Code",'');
+
+        GenJnlLine.SETRANGE("Document No.",PostedFADocHeader."No.");
+        GenJnlLine.SETRANGE("Object Type",GenJnlLine."Account Type"::"Fixed Asset");
+
+        //NC OFA004 > DP
+        IF FADocLine."FA No." <> FADocLine."New FA No." THEN
+          GenJnlLine.SETFILTER("Object No.",'%1|%2',FADocLine."FA No.", FADocLine."New FA No.")
+        ELSE
+        //NC OFA004 < DP
+          GenJnlLine.SETRANGE("Object No.",FADocLine."FA No.");
+        IF GenJnlLine.FINDSET THEN BEGIN
+          REPEAT
+            //NC TR060 > EB
+            GenJnlLine."External Document No." := FADocHeader."External Document No.";
+            //NC TR060 < EB
+            GenJnlLine."Shortcut Dimension 1 Code" := FADocLine."Shortcut Dimension 1 Code";
+            GenJnlLine."Shortcut Dimension 2 Code" := FADocLine."Shortcut Dimension 2 Code";
+            GenJnlLine."Dimension Set ID" := FADocLine."Dimension Set ID";
+
+            //NC MFA22 > DP
+            IF DocType = FADocHeader."Document Type"::Release THEN
+              OperationTypeLoc := OperationTypeLoc::Release
+            ELSE
+            IF DocType = FADocHeader."Document Type"::Movement THEN
+              OperationTypeLoc := OperationTypeLoc::Movement;
+            GenJnlLine."Not Consolidate" := SetFANotConsolidate(FADocLine."New Depreciation Book Code",OperationTypeLoc);
+            //NC MFA22 < DP
+
+            GenJnlLine."Reason Code" := FADocLine."Reason Code";
+            GenJnlLine."Tax Difference Code" := TaxRegisterSetup."Default FA TD Code";
+
+            IF ((GenJnlLine.Amount < 0) AND (GenJnlLine."FA Posting Type" = GenJnlLine."FA Posting Type"::"Acquisition Cost")) OR
+               ((GenJnlLine.Amount > 0) AND (GenJnlLine."FA Posting Type" = GenJnlLine."FA Posting Type"::Depreciation))
+            THEN BEGIN
+              //NC MFA22.1 > DP
+              GenJnlLine."Cons. FA Export Type" := GenJnlLine."Cons. FA Export Type"::"Not Export";
+              //NC MFA22.1 < DP
+           // IF GenJnlLine.Quantity < 1 THEN
+              GetFADefaultDim(
+                FA."No.",
+                GenJnlLine."Shortcut Dimension 1 Code",
+                GenJnlLine."Shortcut Dimension 2 Code",
+                GenJnlLine."Dimension Set ID",
+                FADocLine."Source Code");
+
+              //NC OFA005 > DP
+              IF DocType <> FADocHeader."Document Type"::Movement THEN
+                SetFAOperTypeDim(GenJnlLine."FA Posting Type",GenJnlLine)
+              ELSE
+                SetFAOperTypeDim(6,GenJnlLine);
+              //NC OFA005 < DP
+
+              GenJnlPostLine.SetPreviewMode(PreviewMode);
+              GenJnlPostLine.RunWithCheck(GenJnlLine);
+            END ELSE BEGIN
+              //NC OFA005 > DP
+              IF DocType <> FADocHeader."Document Type"::Movement THEN
+                SetFAOperTypeDim(GenJnlLine."FA Posting Type",GenJnlLine)
+              ELSE
+                SetFAOperTypeDim(6,GenJnlLine);
+
+              IF (FADocLine."FA No." <> FADocLine."New FA No.") THEN
+                IF ((GenJnlLine.Amount > 0) AND (GenJnlLine."FA Posting Type" = GenJnlLine."FA Posting Type"::"Acquisition Cost")) OR
+                  ((GenJnlLine.Amount < 0) AND (GenJnlLine."FA Posting Type" = GenJnlLine."FA Posting Type"::Depreciation))
+                THEN
+                  SetFANewDim(FADocLine,GenJnlLine);
+
+              IF (FADocLine."FA Dimension Value Code" <> FADocLine."New FA Dimension Value Code") THEN BEGIN
+                SetFANewReclassDim(FADocLine,GenJnlLine);
+
+                //NC MFA22.1 > DP
+                IF (FADocLine."FA Dimension Value Code" <> FADocLine."New FA Dimension Value Code") THEN
+                  IF ((GenJnlLine.Amount < 0) AND (GenJnlLine."FA Posting Type" = GenJnlLine."FA Posting Type"::Depreciation)) THEN
+                    GenJnlLine."Cons. FA Export Type" := GenJnlLine."Cons. FA Export Type"::"Not Export";
+                //NC MFA22.1 < DP
+
+                //NC OFA015 > DP
+                IF FADocLine."FA Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+                  GenJnlLine."Shortcut Dimension 1 Code" := FADocLine."New FA Dimension Value Code";
+                IF FADocLine."FA Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+                  GenJnlLine."Shortcut Dimension 2 Code" := FADocLine."New FA Dimension Value Code";
+
+                IF FADocLine."FA Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+                  FA.VALIDATE("Global Dimension 1 Code",FADocLine."New FA Dimension Value Code");
+                  FA.MODIFY;
+                END;
+                IF FADocLine."FA Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+                  FA.VALIDATE("Global Dimension 2 Code",FADocLine."New FA Dimension Value Code");
+                  FA.MODIFY;
+                END;
+                //NC OFA015 < DP
+              END;
+              //NC OFA005 < DP
+
+              GenJnlPostLine.SetPreviewMode(PreviewMode);
+              GenJnlPostLine.RunWithCheck(GenJnlLine);
+            END;
+          UNTIL GenJnlLine.NEXT = 0;
+          GenJnlLine.DELETEALL(TRUE);
+        END;
+
+        FAJnlLine.SETRANGE("Document No.",PostedFADocHeader."No.");
+        FAJnlLine.SETRANGE("FA No.",FADocLine."FA No.");
+        IF FAJnlLine.FINDSET THEN BEGIN
+          REPEAT
+            FAJnlLine."Shortcut Dimension 1 Code" := FADocLine."Shortcut Dimension 1 Code";
+            FAJnlLine."Shortcut Dimension 2 Code" := FADocLine."Shortcut Dimension 2 Code";
+            FAJnlLine."Dimension Set ID" := FADocLine."Dimension Set ID";
+            FAJnlPostLine.FAJnlPostLine(FAJnlLine,TRUE);
+          UNTIL FAJnlLine.NEXT = 0;
+          FAJnlLine.DELETEALL(TRUE);
+        END;
+      END ELSE // Just FA Entry posting
+        FAPostTransfer(FADocLine,TRUE);
+      FA.GET(FADocLine."FA No.");
+      FA.VALIDATE("Global Dimension 1 Code",FADocLine."Shortcut Dimension 1 Code");
+      FA.VALIDATE("Global Dimension 2 Code",FADocLine."Shortcut Dimension 2 Code");
+
+      //NC OFA015 > DP
+      IF FADocLine."New FA Dimension Value Code" <> FADocLine."FA Dimension Value Code" THEN BEGIN
+        IF FADocLine."FA Dimension Code" = GLSetup."Global Dimension 1 Code" THEN BEGIN
+          FA.VALIDATE("Global Dimension 1 Code", FADocLine."New FA Dimension Value Code");
+          FA.MODIFY;
+        END;
+        IF FADocLine."FA Dimension Code" = GLSetup."Global Dimension 2 Code" THEN BEGIN
+          FA.VALIDATE("Global Dimension 2 Code", FADocLine."New FA Dimension Value Code");
+          FA.MODIFY;
+        END;
+      END;
+      //NC OFA015 < DP
+      IF DocType = FADocHeader."Document Type"::Release THEN BEGIN
+        FA.Status := FA.Status::Operation;
+        FA."Initial Release Date" := PostedFADocHeader."FA Posting Date";
+      END;
+      IF DocType = FADocHeader."Document Type"::Movement THEN BEGIN
+        FA.Status := FADocLine.Status;
+        FA."Status Date" := PostedFADocHeader."FA Posting Date";
+
+        //NC OFA005 > DP
+        IF (FADocLine."FA Dimension Value Code" <> FADocLine."New FA Dimension Value Code") THEN BEGIN
+          IF DefDim.GET(5600,FADocLine."New FA No.",FADocLine."FA Dimension Code") THEN BEGIN
+            DefDim.VALIDATE("Dimension Value Code",FADocLine."New FA Dimension Value Code");
+            DefDim.VALIDATE("Value Posting",DefDim."Value Posting"::"Same Code");
+            DefDim.MODIFY(TRUE);
+          END ELSE BEGIN
+            DefDim.INIT;
+            DefDim."Table ID" :=5600;
+            DefDim.VALIDATE("No.",FADocLine."New FA No.");
+            DefDim.VALIDATE("Dimension Code",FADocLine."FA Dimension Code");
+            DefDim.VALIDATE("Dimension Value Code",FADocLine."New FA Dimension Value Code");
+            DefDim.VALIDATE("Value Posting",DefDim."Value Posting"::"Same Code");
+            DefDim.INSERT(TRUE);
+          END;
+        END;
+        //NC OFA005 > DP
+      END;
+      FA."Status Document No." := PostedFADocHeader."No.";
+      FA.MODIFY;
+    END;
+
+    PROCEDURE "NCF>"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE SetFAOperTypeDim@1000000004(FAOperType@1000000000 : ' ,Acquisition Cost,Depreciation,Write-Down,Appreciation,Custom 1,Custom 2,Disposal,Maintenance';VAR GJnlLine@1000000006 : Record 81);
+    VAR
+      FASetup@1000000002 : Record 5603;
+      DeprBook@1000000003 : Record 5611;
+      FADimValueCode@1000000004 : Code[20];
+      TempDimSetEntry@1101495000 : TEMPORARY Record 480;
+    BEGIN
+      //NC MFA01 > DP
+      FADimValueCode := '';
+      IF FAOperType <> FAOperType::" " THEN BEGIN
+        IF (GJnlLine."Depreciation Book Code" <> '') AND DeprBook.GET(GJnlLine."Depreciation Book Code") THEN BEGIN
+          FASetup.GET;
+          FASetup.TESTFIELD("FA Operation Type Dim. Code");
+          CASE FAOperType OF
+            FAOperType::"Acquisition Cost":
+              FADimValueCode := DeprBook."Acq. Cost Dim. Value Code";
+            FAOperType::Depreciation:
+              FADimValueCode := DeprBook."Depreciation Dim. Value Code";
+            FAOperType::"Write-Down":
+              FADimValueCode := DeprBook."Write-Down Dim. Value Code";
+            FAOperType::Appreciation:
+              FADimValueCode := DeprBook."Appreciation Dim. Value Code";
+            FAOperType::"Custom 1":
+              FADimValueCode := DeprBook."Custom 1 Dim. Value Code";
+            FAOperType::"Custom 2":
+              FADimValueCode := DeprBook."Custom 2 Dim. Value Code";
+            FAOperType::Disposal:
+              FADimValueCode := DeprBook."Disposal Dim. Value Code";
+            FAOperType::Maintenance:
+              FADimValueCode := DeprBook."Maintenance Dim. Value Code"
+          END;
+
+          IF FADimValueCode <> '' THEN BEGIN
+            //NC NOS-26 > SPA
+            IF DimensionSetEntry.GET(GJnlLine."Dimension Set ID",FASetup."FA Operation Type Dim. Code") AND
+               (DimensionSetEntry."Dimension Value Code" = FADimValueCode)
+            THEN
+              // такое измерение уже есть в наборе
+              EXIT;
+
+            // если измерения нет -> создать его либо модифицировать запись
+            DimMgt.GetDimensionSet(TempDimSetEntry,GJnlLine."Dimension Set ID");
+            TempDimSetEntry.VALIDATE("Dimension Code",FASetup."FA Operation Type Dim. Code");
+            IF TempDimSetEntry.FIND THEN
+              TempDimSetEntry.DELETE;
+            TempDimSetEntry.VALIDATE("Dimension Value Code",FADimValueCode);
+            TempDimSetEntry.SetObject(GJnlLine);
+            TempDimSetEntry.INSERT(TRUE);
+            DimMgt.UpdateGenJnlLineDim(GJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+            GJnlLine.MODIFY(TRUE);
+            //NC NOS-26 < SPA
+          END;
+        END;
+      END;
+      //NC MFA01 > DP
+    END;
+
+    PROCEDURE SetFANewReclassDim@1000000005(FADocLine@1000000000 : Record 12477;VAR GJnlLine@1000000001 : Record 81);
+    VAR
+      TempDimSetEntry@1101495000 : TEMPORARY Record 480;
+    BEGIN
+      IF FADocLine."New FA Dimension Value Code" <> '' THEN BEGIN
+        //NC NOS-26 > SPA
+        DimMgt.GetDimensionSet(TempDimSetEntry,GJnlLine."Dimension Set ID");
+        TempDimSetEntry.VALIDATE("Dimension Code",FADocLine."FA Dimension Code");
+        IF TempDimSetEntry.FIND THEN
+          TempDimSetEntry.DELETE;
+        TempDimSetEntry.VALIDATE("Dimension Value Code",FADocLine."New FA Dimension Value Code");
+        TempDimSetEntry.SetObject(GJnlLine);
+        TempDimSetEntry.INSERT(TRUE);
+        DimMgt.UpdateGenJnlLineDim(GJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+        GJnlLine.MODIFY(TRUE);
+        //NC NOS-26 < SPA
+      END;
+    END;
+
+    PROCEDURE SetFAOldReclassDim@1000000007(FADocLine@1000000000 : Record 12477;VAR GJnlLine@1000000001 : Record 81);
+    VAR
+      TempDimSetEntry@1101495000 : TEMPORARY Record 480;
+    BEGIN
+      IF FADocLine."FA Dimension Value Code" <> '' THEN BEGIN
+        //NC NOS-26 > SPA
+        DimMgt.GetDimensionSet(TempDimSetEntry,GJnlLine."Dimension Set ID");
+        TempDimSetEntry.VALIDATE("Dimension Code",FADocLine."FA Dimension Code");
+        IF TempDimSetEntry.FIND THEN
+          TempDimSetEntry.DELETE;
+        TempDimSetEntry.VALIDATE("Dimension Value Code",FADocLine."FA Dimension Value Code");
+        TempDimSetEntry.SetObject(GJnlLine);
+        TempDimSetEntry.INSERT(TRUE);
+        DimMgt.UpdateGenJnlLineDim(GJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+        GJnlLine.MODIFY(TRUE);
+        //NC NOS-26 < SPA
+      END;
+    END;
+
+    PROCEDURE SetFANewDim@1000000006(FADocLine@1000000000 : Record 12477;VAR GJnlLine@1000000001 : Record 81);
+    VAR
+      DefDim@1000000003 : Record 352;
+      MovingDataSetup@1000000004 : Record 50064;
+      rFA@1000000005 : Record 5600;
+      TempDimSetEntry@1101495000 : TEMPORARY Record 480;
+      FADimCode@1000000006 : Code[20];
+    BEGIN
+      IF FADocLine."New FA No." <>'' THEN BEGIN
+        DefDim.RESET;
+        DefDim.SETRANGE("Table ID",5600);
+        DefDim.SETRANGE("No.", FADocLine."New FA No.");
+        IF DefDim.FINDSET THEN BEGIN
+          //NC NOS-26 > SPA
+          DimMgt.GetDimensionSet(TempDimSetEntry,GJnlLine."Dimension Set ID");
+          REPEAT
+            TempDimSetEntry.VALIDATE("Dimension Code",DefDim."Dimension Code");
+            IF TempDimSetEntry.FIND THEN
+              TempDimSetEntry.DELETE;
+            TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+            TempDimSetEntry.SetObject(GJnlLine);
+            TempDimSetEntry.INSERT(TRUE);
+          UNTIL DefDim.NEXT = 0;
+          DimMgt.UpdateGenJnlLineDim(GJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+          GJnlLine.MODIFY(TRUE);
+          //NC NOS-26 < SPA
+        END;
+      END;
+    END;
+
+    PROCEDURE SetFANotConsolidate@1210011("Depr. Book"@1210003 : Code[10];OperationTypeLoc@1210002 : ',Depreciation,Release,Movement,Writeoff,Reclass,Gen.Jnl') : Boolean;
+    VAR
+      CompanyLoc@1210000 : Record 2000000006;
+      FAConsExceptionSetup@1210001 : Record 50115;
+    BEGIN
+      //NC PIF048 > DP
+      CompanyLoc.GET(COMPANYNAME);
+      IF CompanyLoc."Company Type" = CompanyLoc."Company Type"::Standalone THEN BEGIN
+        FAConsExceptionSetup.RESET;
+        FAConsExceptionSetup.SETRANGE("Depr. Book Code","Depr. Book");
+        FAConsExceptionSetup.SETRANGE("Operation Type",OperationTypeLoc);
+        EXIT(FAConsExceptionSetup.FINDFIRST);
+      END;
+      //NC PIF048 < DP
+    END;
+
+    PROCEDURE "NCF<"@1000000002();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      NC TR066 EB При учете акта списания ОС берется ОС учет.группа из строки документа
+      NC TR060 EB "Внешний Документ Но" из заголовка документа в ФинКнигу Операций
+      NC TR272 DP Предпросмотр учета
+      NC OFA004 DP Ввод в эксплаутацию иного объекта ОС
+      NC OFA005 DP Перемещение между аналитикой COSTCENTER
+      NC OFA014 DP Дооценка с помощью акта ввода в эксплуатацию (не изменяется дата начала начисления амортизации)
+      NC OFA015 DP Указание аналитики COSTCENTER в карточке ОС
+      NC MFA22 DP Консолидация ОС
+      -------------------
+      NC NOS-26 SPA Миграция на NAV2017
+                      Предпросмотр не перенесён
+    }
+    END.
+  }
+}
+

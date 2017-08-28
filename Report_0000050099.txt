@@ -1,0 +1,678 @@
+OBJECT Report 50099 Counterparties Offset
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:10;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Counterparties Offset;
+               RUS=Зачет Контрагентов];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   DateBeg := DMY2DATE(1,DATE2DMY(WORKDATE,2),DATE2DMY(WORKDATE,3));
+                   DateEnd := CALCDATE('<CM>',WORKDATE);
+                   IF SourceCounterpartyType = SourceCounterpartyType::Customer THEN
+                     ReceiverCounterpartyType := ReceiverCounterpartyType::Vendor
+                   ELSE
+                     ReceiverCounterpartyType := ReceiverCounterpartyType::Customer;
+                 END;
+
+    OnPreReport=BEGIN
+                    IF NOT GJTemplate.GET('GENJL') THEN BEGIN
+                      GJTemplate.INIT;
+                      GJTemplate.Name := 'GENJL';
+                      GJTemplate.Description := 'Общий шаблон';
+                      GJTemplate."Source Code" := 'ФИНЖУР';
+                      GJTemplate."Force Doc. Balance" := TRUE;
+                      GJTemplate.INSERT(TRUE);
+                      COMMIT;
+                    END;
+
+                    IF NOT GJBatch.GET('GENJL', 'OFFSETCV') THEN BEGIN
+                      GJBatch."Journal Template Name" := 'GENJL';
+                      GJBatch.Name := 'OFFSETCV';
+                      GJBatch.Description := 'Журнал зачета операций контрагентов';
+                      GJBatch.INSERT(TRUE);
+                      COMMIT;
+                    END;
+
+                    GJLine.RESET;
+                    GJLine.SETRANGE("Journal Template Name", 'GENJL');
+                    GJLine.SETRANGE("Journal Batch Name", 'OFFSETCV');
+                    LineNo := 0;
+                    IF GJLine.FINDLAST THEN
+                      LineNo := GJLine."Line No.";
+                  GLSetup.GET;
+                END;
+
+    OnPostReport=VAR
+                   IsProcess@1101495000 : Boolean;
+                 BEGIN
+                   CVLedgEntryBuf.DELETEALL;
+                   dlgIndicator.OPEN(TextDlg001);
+                   intIndicatorCounter := 1;
+
+                   IF SourcePGFilter='' THEN ERROR(Text001);
+                   IF ReceiverPGFilter='' THEN ERROR(Text002);
+                   CASE SourceCounterpartyType OF
+                    SourceCounterpartyType::Customer:
+                      BEGIN
+                        CustLE.RESET;
+                        CustLE.SETCURRENTKEY("Customer No.","Posting Date","Currency Code","Agreement No.",Open,
+                        "Customer Posting Group",Positive,"Agreement Condition No.");
+                        CustLE.SETFILTER("Posting Date",'%1..%2',DateBeg,DateEnd);
+                        CustLE.SETRANGE("Customer Posting Group",SourcePGFilter);
+                        IF SourceCounterpartyFilter<>'' THEN
+                          CustLE.SETRANGE("Customer No.",SourceCounterpartyFilter);
+                        IF SourceAgreementFilter<>'' THEN
+                          CustLE.SETRANGE("Agreement No.",SourceAgreementFilter);
+                        CustLE.SETFILTER("Date Filter",'..%1',DateEnd);
+                        LEDim.RESET;
+                        LEDim.SETRANGE("Table ID", 21);
+                        intIndicatorTotal := CustLE.COUNT;
+                        IF CustLE.FINDSET THEN
+                          REPEAT
+                            intIndicatorCounter += 1;
+                            dlgIndicator.UPDATE(1, ROUND((intIndicatorCounter * 999) / intIndicatorTotal*9, 1));
+                            CustLE.CALCFIELDS("Remaining Amount");
+                            IF CustLE."Remaining Amount"<>0 THEN BEGIN
+
+                              IsProcess := TRUE;
+                              IF (ExternGLAccount<>'') AND GLEntry.GET(CustLE."Entry No.") THEN BEGIN
+                                IF GLEntry."Local G/L Account"<> ExternGLAccount THEN
+                                  IsProcess:=FALSE;
+                              END;
+
+                              IF IsProcess THEN BEGIN
+                                TransferCustLedgEntry(CVLedgEntryBuf,CustLE);
+                                LEDim.SETRANGE("Entry No.", CustLE."Entry No.");
+                                CreateGenJnlLines(SourceCounterpartyType,ReceiverCounterpartyType,CVLedgEntryBuf,LEDim);
+                              END;
+
+                            END;
+                          UNTIL CustLE.NEXT=0;
+                      END;
+                    SourceCounterpartyType::Vendor:
+                      BEGIN
+                        VendLE.RESET;
+                        VendLE.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code","Agreement No.",Open,
+                        "Vendor Posting Group",Positive,"Agreement Condition No.");
+                        VendLE.SETFILTER("Posting Date",'%1..%2',DateBeg,DateEnd);
+                        VendLE.SETRANGE("Vendor Posting Group",SourcePGFilter);
+                        IF SourceCounterpartyFilter<>'' THEN
+                          VendLE.SETRANGE("Vendor No.",SourceCounterpartyFilter);
+                        IF SourceAgreementFilter<>'' THEN
+                          VendLE.SETRANGE("Agreement No.",SourceAgreementFilter);
+                        VendLE.SETFILTER("Date Filter",'..%1',DateEnd);
+                        LEDim.RESET;
+                        LEDim.SETRANGE("Table ID", 25);
+                        intIndicatorTotal := VendLE.COUNT;
+                        IF VendLE.FINDSET THEN
+                          REPEAT
+                            intIndicatorCounter += 1;
+                            dlgIndicator.UPDATE(1, ROUND((intIndicatorCounter * 999) / intIndicatorTotal*9, 1));
+                            VendLE.CALCFIELDS("Remaining Amount");
+                            IF VendLE."Remaining Amount"<>0 THEN BEGIN
+
+                              IsProcess := TRUE;
+                              IF (ExternGLAccount<>'') AND GLEntry.GET(VendLE."Entry No.") THEN BEGIN
+                                IF GLEntry."Local G/L Account"<> ExternGLAccount THEN
+                                  IsProcess:=FALSE;
+                              END;
+
+                              IF IsProcess THEN BEGIN
+                                TransferVendLedgEntry(CVLedgEntryBuf,VendLE);
+                                LEDim.SETRANGE("Entry No.", VendLE."Entry No.");
+                                CreateGenJnlLines(SourceCounterpartyType,ReceiverCounterpartyType,CVLedgEntryBuf,LEDim);
+                              END;
+
+                            END;
+                          UNTIL VendLE.NEXT=0;
+
+                      END;
+                   END;
+                   dlgIndicator.CLOSE;
+                   GJLine.RESET;
+                   GJLine.SETRANGE("Journal Template Name", 'GENJL');
+                   GJLine.SETRANGE("Journal Batch Name", 'OFFSETCV');
+                   CASE Selected OF
+                    Selected::"Create Journal Lines":
+                      BEGIN
+                        MESSAGE('Сформирован фин. журнал в разделе "OFFSETCV"!');
+                      END;
+                    Selected::"Create&Post Journal Lines":
+                      BEGIN
+                        CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post", GJLine);
+                      END;
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      SourceCounterpartyType@1101495000 : 'Customer,Vendor';
+      SourceCounterpartyFilter@1101495001 : Code[20];
+      SourcePGFilter@1101495002 : Code[20];
+      ReceiverCounterpartyType@1101495003 : 'Customer,Vendor';
+      ReceiverCounterpartyFilter@1101495004 : Code[20];
+      ReceiverPGFilter@1101495005 : Code[20];
+      SourceAgreementFilter@1101495041 : Code[20];
+      CustPostingGroup@1101495006 : Record 92;
+      VendPostingGroup@1101495007 : Record 93;
+      VendLE@1101495008 : Record 25;
+      CustLE@1101495009 : Record 21;
+      GenJnlLine@1101495010 : Record 81;
+      JnlLineDim@1101495011 : Record 356;
+      LEDim@1101495012 : Record 355;
+      DateBeg@1101495013 : Date;
+      DateEnd@1101495014 : Date;
+      Cust@1101495015 : Record 18;
+      Vend@1101495016 : Record 23;
+      Text001@1101495017 : TextConst 'RUS=Укажите Исходную Учетную Группу';
+      Text002@1101495018 : TextConst 'RUS=Укажите Новую Учетную Группу';
+      CVLedgEntryBuf@1101495038 : TEMPORARY Record 382;
+      LineNo@1101495037 : Integer;
+      GJTemplate@1101495036 : Record 80;
+      GJBatch@1101495035 : Record 232;
+      CVType@1101495034 : 'Customer,Vendor';
+      GJLine@1101495033 : Record 81;
+      StandardParam@1101495032 : Record 50076;
+      VendAgreement@1101495025 : Record 14901;
+      AgreeDetail@1101495024 : Record 50096;
+      CustAgreement@1101495021 : Record 14902;
+      Text003@1101495028 : TextConst 'RUS=Обратная операция %1';
+      Selected@1101495019 : 'Create Journal Lines,Create&Post Journal Lines';
+      NewCustAgreement@1101495020 : Record 14902;
+      NewVendAgreement@1101495022 : Record 14901;
+      DefDimAdv@1101495023 : Record 50128;
+      NewDefDimAdv@1101495026 : Record 50128;
+      NewAgreeDetail@1101495027 : Record 50096;
+      dlgIndicator@1101495039 : Dialog;
+      intIndicatorCounter@1101495030 : Integer;
+      intIndicatorTotal@1101495029 : Integer;
+      TextDlg001@1101495040 : TextConst 'ENU=Ledger Entry Processing...\ Executed @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка Книги Операций...\Выполено @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      NewVendor@1101495042 : Record 23;
+      DefDimCust@1101495043 : Record 352;
+      DefDimVend@1101495044 : Record 352;
+      GLSetup@1000000000 : Record 98;
+      ExternGLAccount@1101495045 : Code[20];
+      GLEntry@1101495046 : Record 17;
+
+    PROCEDURE TransferVendLedgEntry@5(VAR CVLedgEntryBuf@1000 : Record 382;VAR VendLedgEntry@1001 : Record 25);
+    BEGIN
+        VendLedgEntry.CALCFIELDS(Amount, "Amount (LCY)");
+        CVLedgEntryBuf."Entry No." := VendLedgEntry."Entry No.";
+        CVLedgEntryBuf."CV No." := VendLedgEntry."Vendor No.";
+        CVLedgEntryBuf."Posting Date" := VendLedgEntry."Posting Date";
+        CVLedgEntryBuf."Document Type" := VendLedgEntry."Document Type";
+        CVLedgEntryBuf."Document No." := VendLedgEntry."Document No.";
+        CVLedgEntryBuf.Description := VendLedgEntry.Description;
+        CVLedgEntryBuf."Currency Code" := VendLedgEntry."Currency Code";
+        CVLedgEntryBuf.Amount := VendLedgEntry.Amount;
+        CVLedgEntryBuf."Remaining Amount" := VendLedgEntry."Remaining Amount";
+        CVLedgEntryBuf."Original Amount" := VendLedgEntry."Original Amount";
+        CVLedgEntryBuf."Original Amt. (LCY)" := VendLedgEntry."Original Amt. (LCY)";
+        CVLedgEntryBuf."Remaining Amt. (LCY)" := VendLedgEntry."Remaining Amt. (LCY)";
+        CVLedgEntryBuf."Amount (LCY)" := VendLedgEntry."Amount (LCY)";
+        CVLedgEntryBuf."Sales/Purchase (LCY)" := VendLedgEntry."Purchase (LCY)";
+        CVLedgEntryBuf."Inv. Discount (LCY)" := VendLedgEntry."Inv. Discount (LCY)";
+        CVLedgEntryBuf."Bill-to/Pay-to CV No." := VendLedgEntry."Buy-from Vendor No.";
+        CVLedgEntryBuf."CV Posting Group" := VendLedgEntry."Vendor Posting Group";
+        CVLedgEntryBuf."Global Dimension 1 Code" := VendLedgEntry."Global Dimension 1 Code";
+        CVLedgEntryBuf."Global Dimension 2 Code" := VendLedgEntry."Global Dimension 2 Code";
+        CVLedgEntryBuf."Salesperson Code" := VendLedgEntry."Purchaser Code";
+        CVLedgEntryBuf."User ID" := VendLedgEntry."User ID";
+        CVLedgEntryBuf."Source Code" := VendLedgEntry."Source Code";
+        CVLedgEntryBuf."On Hold" := VendLedgEntry."On Hold";
+        CVLedgEntryBuf."Applies-to Doc. Type" := VendLedgEntry."Applies-to Doc. Type";
+        CVLedgEntryBuf."Applies-to Doc. No." := VendLedgEntry."Applies-to Doc. No.";
+        CVLedgEntryBuf.Open := VendLedgEntry.Open;
+        CVLedgEntryBuf."Due Date" := VendLedgEntry."Due Date" ;
+        CVLedgEntryBuf."Pmt. Discount Date" := VendLedgEntry."Pmt. Discount Date";
+        CVLedgEntryBuf."Original Pmt. Disc. Possible" := VendLedgEntry."Original Pmt. Disc. Possible";
+        CVLedgEntryBuf."Remaining Pmt. Disc. Possible" := VendLedgEntry."Remaining Pmt. Disc. Possible";
+        CVLedgEntryBuf."Pmt. Disc. Given (LCY)" := VendLedgEntry."Pmt. Disc. Rcd.(LCY)";
+        CVLedgEntryBuf.Positive := VendLedgEntry.Positive;
+        CVLedgEntryBuf."Closed by Entry No." := VendLedgEntry."Closed by Entry No.";
+        CVLedgEntryBuf."Closed at Date" := VendLedgEntry."Closed at Date";
+        CVLedgEntryBuf."Closed by Amount" := VendLedgEntry."Closed by Amount";
+        CVLedgEntryBuf."Applies-to ID" := VendLedgEntry."Applies-to ID";
+        CVLedgEntryBuf."Journal Batch Name" := VendLedgEntry."Journal Batch Name";
+        CVLedgEntryBuf."Reason Code" := VendLedgEntry."Reason Code";
+        CVLedgEntryBuf."Bal. Account Type" := VendLedgEntry."Bal. Account Type";
+        CVLedgEntryBuf."Bal. Account No." := VendLedgEntry."Bal. Account No.";
+        CVLedgEntryBuf."Transaction No." := VendLedgEntry."Transaction No.";
+        CVLedgEntryBuf."Closed by Amount (LCY)" := VendLedgEntry."Closed by Amount (LCY)";
+        CVLedgEntryBuf."Debit Amount" := VendLedgEntry."Debit Amount";
+        CVLedgEntryBuf."Credit Amount" := VendLedgEntry."Credit Amount";
+        CVLedgEntryBuf."Debit Amount (LCY)" := VendLedgEntry."Debit Amount (LCY)";
+        CVLedgEntryBuf."Credit Amount (LCY)" := VendLedgEntry."Credit Amount (LCY)";
+        CVLedgEntryBuf."Document Date" := VendLedgEntry."Document Date";
+        CVLedgEntryBuf."External Document No." := VendLedgEntry."External Document No.";
+        CVLedgEntryBuf."No. Series" := VendLedgEntry."No. Series";
+        CVLedgEntryBuf."Closed by Currency Code" := VendLedgEntry."Closed by Currency Code";
+        CVLedgEntryBuf."Closed by Currency Amount" := VendLedgEntry."Closed by Currency Amount";
+        CVLedgEntryBuf."Adjusted Currency Factor" := VendLedgEntry."Adjusted Currency Factor";
+        CVLedgEntryBuf."Original Currency Factor" := VendLedgEntry."Original Currency Factor";
+        CVLedgEntryBuf."Pmt. Disc. Tolerance Date" := VendLedgEntry."Pmt. Disc. Tolerance Date";
+        CVLedgEntryBuf."Max. Payment Tolerance" := VendLedgEntry."Max. Payment Tolerance";
+        CVLedgEntryBuf."Accepted Payment Tolerance" := VendLedgEntry."Accepted Payment Tolerance";
+        CVLedgEntryBuf."Accepted Pmt. Disc. Tolerance" := VendLedgEntry."Accepted Pmt. Disc. Tolerance";
+        CVLedgEntryBuf."Amount to Apply" := VendLedgEntry."Amount to Apply";
+        CVLedgEntryBuf.Prepayment := VendLedgEntry.Prepayment;
+        CVLedgEntryBuf."Prepmt. Diff. Appln. Entry No." := VendLedgEntry."Prepmt. Diff. Appln. Entry No."; //11155
+        CVLedgEntryBuf."Agreement No." := VendLedgEntry."Agreement No.";
+        CVLedgEntryBuf."Agreement Condition No." := VendLedgEntry."Agreement Condition No.";
+        CVLedgEntryBuf."Amount Type" := VendLedgEntry."Amount Type";
+    END;
+
+    PROCEDURE TransferCustLedgEntry@8(VAR CVLedgEntryBuf@1000 : Record 382;VAR CustLedgEntry@1001 : Record 21);
+    BEGIN
+
+        CVLedgEntryBuf.TRANSFERFIELDS(CustLedgEntry);
+        CustLedgEntry.CALCFIELDS(Amount, "Amount (LCY)");
+        CVLedgEntryBuf.Amount := CustLedgEntry.Amount;
+        CVLedgEntryBuf."Amount (LCY)" := CustLedgEntry."Amount (LCY)";
+        CVLedgEntryBuf."Remaining Amount" := CustLedgEntry."Remaining Amount";
+        CVLedgEntryBuf."Remaining Amt. (LCY)" := CustLedgEntry."Remaining Amt. (LCY)";
+        CVLedgEntryBuf."Original Amount" := CustLedgEntry."Original Amount";
+        CVLedgEntryBuf."Original Amt. (LCY)" := CustLedgEntry."Original Amt. (LCY)";
+        CVLedgEntryBuf.Prepayment := CustLedgEntry.Prepayment;
+        CVLedgEntryBuf."Prepmt. Diff. Appln. Entry No." := CustLedgEntry."Prepmt. Diff. Appln. Entry No.";
+    END;
+
+    PROCEDURE CreateGenJnlLines@1101495002(CVType@1101495000 : 'Customer,Vendor';NewCVType@1101495005 : 'Customer,Vendor';CVLedgEntryBuf@1101495001 : Record 382;VAR LedgerDim@1101495002 : Record 355);
+    VAR
+      GJLine@1101495004 : Record 81;
+      JrnlDim@1101495003 : Record 356;
+      NewAgreementNo@1101495006 : Code[20];
+    BEGIN
+          JrnlDim.RESET;
+          LineNo += 1000;                 // Обратная операция
+          GJLine.INIT;
+          GJLine."Journal Template Name" := GJBatch."Journal Template Name";
+          GJLine."Journal Batch Name" := GJBatch.Name;
+          GJLine."Line No." := LineNo;
+          IF CVType = CVType::Vendor THEN
+            GJLine."Account Type" := GJLine."Account Type"::Vendor
+          ELSE
+            GJLine."Account Type" := GJLine."Account Type"::Customer;
+
+          GJLine."Account No." := CVLedgEntryBuf."CV No.";
+          GJLine."Posting Date" := CVLedgEntryBuf."Posting Date";
+          GJLine."Document Type" := 0;
+          GJLine."Document No." := CVLedgEntryBuf."Document No.";
+          GJLine."Document Date" := CVLedgEntryBuf."Document Date";
+          GJLine."External Document No." := CVLedgEntryBuf."External Document No.";
+          GJLine.Description := STRSUBSTNO(Text003,CVLedgEntryBuf."Entry No.");
+          IF CVLedgEntryBuf."Currency Code"=GLSetup."LCY Code" THEN
+            GJLine."Currency Code" := ''
+          ELSE
+            GJLine."Currency Code" := CVLedgEntryBuf."Currency Code";
+
+          GJLine."Currency Factor" := CVLedgEntryBuf."Original Currency Factor";  // ???  или Adjusted Curr Factor?
+          GJLine."Amount Type" := CVLedgEntryBuf."Amount Type";
+          GJLine.VALIDATE(Amount, - CVLedgEntryBuf.Amount);
+          GJLine.VALIDATE("Amount (LCY)", - CVLedgEntryBuf."Amount (LCY)");
+
+          GJLine."Posting Group" := CVLedgEntryBuf."CV Posting Group";
+          GJLine."Shortcut Dimension 1 Code" := CVLedgEntryBuf."Global Dimension 1 Code";
+          GJLine."Shortcut Dimension 2 Code" := CVLedgEntryBuf."Global Dimension 2 Code";
+          GJLine."Salespers./Purch. Code" := CVLedgEntryBuf."Salesperson Code";
+          GJLine."Source Code" := CVLedgEntryBuf."Source Code";
+          GJLine.Quantity := 1;
+          GJLine."Agreement No." := CVLedgEntryBuf."Agreement No.";
+          IF CVLedgEntryBuf."Agreement Condition No."<>0 THEN
+            GJLine."Agreement Condition No." := CVLedgEntryBuf."Agreement Condition No.";
+          GJLine."Applies-to Doc. No." := CVLedgEntryBuf."Document No.";
+          GJLine.INSERT(TRUE);
+
+
+          IF LEDim.FINDFIRST THEN REPEAT
+            JrnlDim.INIT;
+            JrnlDim."Table ID" := 81;
+            JrnlDim."Journal Template Name" := GJBatch."Journal Template Name";
+            JrnlDim."Journal Batch Name" := GJBatch.Name;
+            JrnlDim."Journal Line No." := GJLine."Line No.";
+            JrnlDim."Dimension Code" := LEDim."Dimension Code";
+            JrnlDim."Dimension Value Code" := LEDim."Dimension Value Code";
+            IF NOT JrnlDim.INSERT(TRUE) THEN
+              JrnlDim.MODIFY(TRUE);
+          UNTIL LEDim.NEXT = 0;
+
+          LineNo += 1000;                 //  Новая операция
+          GJLine.INIT;
+          GJLine."Journal Template Name" := GJBatch."Journal Template Name";
+          GJLine."Journal Batch Name" := GJBatch.Name;
+          GJLine."Line No." := LineNo;
+
+          IF NewCVType = NewCVType::Vendor THEN
+            GJLine."Account Type" := GJLine."Account Type"::Vendor
+          ELSE
+            GJLine."Account Type" := GJLine."Account Type"::Customer;
+
+          IF ReceiverCounterpartyFilter='' THEN
+            GJLine."Account No." := CVLedgEntryBuf."CV No."
+          ELSE
+            GJLine."Account No." := ReceiverCounterpartyFilter;
+
+          IF NewCVType = NewCVType::Vendor THEN BEGIN
+            CreateVendor(GJLine."Account No.");
+            NewAgreementNo :=
+            CreateVendAgreement(GJLine."Account No.",CVLedgEntryBuf."CV No.",CVLedgEntryBuf."Agreement No.")
+          END ELSE
+            NewAgreementNo :=
+            CreateCustAgreement(GJLine."Account No.",CVLedgEntryBuf."CV No.",CVLedgEntryBuf."Agreement No.");
+
+          GJLine."Posting Date" := CVLedgEntryBuf."Posting Date";
+          GJLine."Document Type" := 0;
+          GJLine."Document No." := CVLedgEntryBuf."Document No.";
+          GJLine."Document Date" := CVLedgEntryBuf."Document Date";
+          GJLine."External Document No." := CVLedgEntryBuf."External Document No.";
+          GJLine.Description := CVLedgEntryBuf.Description;
+          IF CVLedgEntryBuf."Currency Code"=GLSetup."LCY Code" THEN
+            GJLine."Currency Code" := ''
+          ELSE
+            GJLine."Currency Code" := CVLedgEntryBuf."Currency Code";
+          GJLine."Currency Factor" := CVLedgEntryBuf."Original Currency Factor";
+          GJLine."Posting Group" := ReceiverPGFilter;
+          GJLine.VALIDATE("Amount Type",CVLedgEntryBuf."Amount Type");
+          GJLine.VALIDATE(Amount, CVLedgEntryBuf.Amount);
+          GJLine.VALIDATE("Amount (LCY)", CVLedgEntryBuf."Amount (LCY)");
+          GJLine.VALIDATE("Agreement No.",NewAgreementNo);
+          IF CVLedgEntryBuf."Agreement Condition No."<>0 THEN BEGIN
+          CreateCVAgreementDetail(CVType,CVLedgEntryBuf."CV No.",CVLedgEntryBuf."Agreement No.",CVLedgEntryBuf."Agreement Condition No.",
+            NewCVType,GJLine."Account No.");
+            GJLine.VALIDATE("Agreement Condition No.",CVLedgEntryBuf."Agreement Condition No.");
+          END;
+          GJLine."Posting Group" := ReceiverPGFilter;
+          GJLine."Shortcut Dimension 1 Code" := CVLedgEntryBuf."Global Dimension 1 Code";
+          GJLine."Shortcut Dimension 2 Code" := CVLedgEntryBuf."Global Dimension 2 Code";
+          GJLine."Salespers./Purch. Code" := CVLedgEntryBuf."Salesperson Code";
+          GJLine."Source Code" := CVLedgEntryBuf."Source Code";
+          GJLine.Quantity := 1;
+
+          GJLine.INSERT(TRUE);
+
+
+          IF LEDim.FINDFIRST THEN REPEAT
+            JrnlDim.INIT;
+            JrnlDim."Table ID" := 81;
+            JrnlDim."Journal Template Name" := GJBatch."Journal Template Name";
+            JrnlDim."Journal Batch Name" := GJBatch.Name;
+            JrnlDim."Journal Line No." := GJLine."Line No.";
+            JrnlDim."Dimension Code" := LEDim."Dimension Code";
+            JrnlDim."Dimension Value Code" := LEDim."Dimension Value Code";
+
+            IF (LEDim."Dimension Code"='COUNTERPARTY') AND (ReceiverCounterpartyFilter<>'') THEN
+              JrnlDim."Dimension Value Code" := ReceiverCounterpartyFilter;
+
+            IF NOT JrnlDim.INSERT(TRUE) THEN
+              JrnlDim.MODIFY(TRUE);
+          UNTIL LEDim.NEXT = 0;
+    END;
+
+    PROCEDURE CreateCustAgreement@1101495000(CustNo@1101495000 : Code[20];SourceNo@1101495006 : Code[20];SourceAgrNo@1101495005 : Code[20]) : Code[20];
+    VAR
+      CustAgrNo@1101495001 : Code[20];
+    BEGIN
+      CustAgrNo :=SourceAgrNo;
+      IF NOT NewCustAgreement.GET(CustNo,SourceAgrNo) THEN BEGIN
+        CASE SourceCounterpartyType OF
+          SourceCounterpartyType::Customer:
+          BEGIN
+            IF CustAgreement.GET(SourceNo,SourceAgrNo) THEN;
+            NewCustAgreement.INIT;
+            NewCustAgreement.TRANSFERFIELDS(CustAgreement);
+            IF ReceiverCounterpartyFilter<>'' THEN
+              NewCustAgreement.VALIDATE("Customer No.",ReceiverCounterpartyFilter)
+            ELSE
+              NewCustAgreement.VALIDATE("Customer No.",CustAgreement."Customer No.");
+            NewCustAgreement."No." := '';
+
+            IF CustAgreement."Currency Code"=GLSetup."LCY Code" THEN
+              NewCustAgreement."Currency Code" := ''
+            ELSE
+              NewCustAgreement."Currency Code" := CustAgreement."Currency Code";
+
+            NewCustAgreement.INSERT(TRUE);
+            NewCustAgreement."Customer Posting Group" := ReceiverPGFilter;
+
+            NewCustAgreement.Active := TRUE;
+            NewCustAgreement.MODIFY;
+            CustAgrNo :=NewCustAgreement."No.";
+            DefDimAdv.RESET;
+            DefDimAdv.SETRANGE("Table ID",14902);
+            DefDimAdv.SETRANGE("Source No.",CustAgreement."Customer No.");
+            DefDimAdv.SETRANGE("No.",CustAgreement."No.");
+            IF DefDimAdv.FINDSET THEN
+              REPEAT
+                NewDefDimAdv.INIT;
+                NewDefDimAdv.TRANSFERFIELDS(DefDimAdv);
+                NewDefDimAdv."Source No." := NewCustAgreement."Customer No.";
+                NewDefDimAdv."No." := NewCustAgreement."No.";
+                IF NOT NewDefDimAdv.INSERT THEN NewDefDimAdv.MODIFY;
+              UNTIL DefDimAdv.NEXT=0;
+          END;
+
+          SourceCounterpartyType::Vendor:
+          BEGIN
+            IF VendAgreement.GET(SourceNo,SourceAgrNo) THEN;
+            NewCustAgreement.INIT;
+            NewCustAgreement.Description := VendAgreement.Description;
+            NewCustAgreement."External Agreement No." := VendAgreement."External Agreement No.";
+            NewCustAgreement."Agreement Date" := VendAgreement."Agreement Date";
+            NewCustAgreement."Starting Date" := VendAgreement."Starting Date";
+            NewCustAgreement."Expire Date" := VendAgreement."Expire Date";
+            NewCustAgreement."Agreement Group" := VendAgreement."Agreement Group";
+            NewCustAgreement.Contact := VendAgreement.Contact;
+            NewCustAgreement."Phone No." := VendAgreement."Phone No.";
+            NewCustAgreement."Global Dimension 1 Code" := VendAgreement."Global Dimension 1 Code";
+            NewCustAgreement."Global Dimension 2 Code" := VendAgreement."Global Dimension 2 Code";
+
+            IF VendAgreement."Currency Code"=GLSetup."LCY Code" THEN
+              NewCustAgreement."Currency Code" := ''
+            ELSE
+              NewCustAgreement."Currency Code" := VendAgreement."Currency Code";
+
+            NewCustAgreement."Language Code" := VendAgreement."Language Code";
+            NewCustAgreement."Payment Terms Code" := VendAgreement."Payment Terms Code";
+            NewCustAgreement."Payment Method Code" := VendAgreement."Payment Method Code";
+            NewCustAgreement."Gen. Bus. Posting Group" := VendAgreement."Gen. Bus. Posting Group";
+            NewCustAgreement."VAT Bus. Posting Group" := VendAgreement."VAT Bus. Posting Group";
+            NewCustAgreement."Responsibility Center" := VendAgreement."Responsibility Center";
+            NewCustAgreement."Location Code" := VendAgreement."Location Code";
+            NewCustAgreement."Default Bank Code" := VendAgreement."Default Bank Code";
+            NewCustAgreement."Agreement Type" := VendAgreement."Agreement Type";
+            NewCustAgreement."Agreement Amount" := VendAgreement."Agreement Amount";
+            NewCustAgreement."Customer Posting Group" :=  ReceiverPGFilter;
+            NewCustAgreement.Active := TRUE;
+
+            IF ReceiverCounterpartyFilter<>'' THEN
+              NewCustAgreement.VALIDATE("Customer No.",ReceiverCounterpartyFilter)
+            ELSE
+              NewCustAgreement.VALIDATE("Customer No.",VendAgreement."Vendor No.");
+            NewCustAgreement."No." := VendAgreement."No.";
+            NewCustAgreement.INSERT(TRUE);
+            CustAgrNo :=NewCustAgreement."No.";
+            DefDimAdv.RESET;
+            DefDimAdv.SETRANGE("Table ID",14901);
+            DefDimAdv.SETRANGE("Source No.",VendAgreement."Vendor No.");
+            DefDimAdv.SETRANGE("No.",VendAgreement."No.");
+            IF DefDimAdv.FINDSET THEN
+              REPEAT
+                NewDefDimAdv.INIT;
+                NewDefDimAdv.TRANSFERFIELDS(DefDimAdv);
+                NewDefDimAdv."Source No." := NewCustAgreement."Customer No.";
+                NewDefDimAdv."No." := NewCustAgreement."No.";
+                IF NOT NewDefDimAdv.INSERT THEN NewDefDimAdv.MODIFY;
+              UNTIL DefDimAdv.NEXT=0;
+
+          END;
+
+        END;
+      END;
+      EXIT(CustAgrNo);
+    END;
+
+    PROCEDURE CreateVendAgreement@1101495001(VendNo@1101495003 : Code[20];SourceNo@1101495005 : Code[20];SourceAgrNo@1101495004 : Code[20]) : Code[20];
+    VAR
+      VendAgrNo@1101495000 : Code[20];
+    BEGIN
+      VendAgrNo :=SourceAgrNo;
+      IF NOT NewVendAgreement.GET(VendNo,SourceAgrNo) THEN BEGIN
+        CASE SourceCounterpartyType OF
+          SourceCounterpartyType::Vendor:
+          BEGIN
+            IF VendAgreement.GET(SourceNo,SourceAgrNo) THEN;
+            NewVendAgreement.INIT;
+            NewVendAgreement.TRANSFERFIELDS(VendAgreement);
+            IF ReceiverCounterpartyFilter<>'' THEN
+              NewVendAgreement.VALIDATE("Vendor No.",ReceiverCounterpartyFilter)
+            ELSE
+              NewVendAgreement.VALIDATE("Vendor No.",VendAgreement."Vendor No.");
+            NewVendAgreement."No." := '';
+            IF VendAgreement."Currency Code"=GLSetup."LCY Code" THEN
+              NewVendAgreement."Currency Code" := ''
+            ELSE
+              NewVendAgreement."Currency Code" := VendAgreement."Currency Code";
+
+            NewVendAgreement.INSERT(TRUE);
+            NewVendAgreement."Vendor Posting Group" := ReceiverPGFilter;
+            NewVendAgreement.Active := TRUE;
+            NewVendAgreement.MODIFY;
+            VendAgrNo :=NewVendAgreement."No.";
+            DefDimAdv.RESET;
+            DefDimAdv.SETRANGE("Table ID",14901);
+            DefDimAdv.SETRANGE("Source No.",VendAgreement."Vendor No.");
+            DefDimAdv.SETRANGE("No.",VendAgreement."No.");
+            IF DefDimAdv.FINDSET THEN
+              REPEAT
+                NewDefDimAdv.INIT;
+                NewDefDimAdv.TRANSFERFIELDS(DefDimAdv);
+                NewDefDimAdv."Source No." := NewVendAgreement."Vendor No.";
+                NewDefDimAdv."No." := NewVendAgreement."No.";
+                IF NOT NewDefDimAdv.INSERT THEN NewDefDimAdv.MODIFY;
+              UNTIL DefDimAdv.NEXT=0;
+          END;
+
+          SourceCounterpartyType::Customer:
+          BEGIN
+            IF CustAgreement.GET(SourceNo,SourceAgrNo) THEN;
+            NewVendAgreement.INIT;
+            NewVendAgreement.Description := CustAgreement.Description;
+            NewVendAgreement."External Agreement No." := CustAgreement."External Agreement No.";
+            NewVendAgreement."Agreement Date" := CustAgreement."Agreement Date";
+            NewVendAgreement."Starting Date" := CustAgreement."Starting Date";
+            NewVendAgreement."Expire Date" := CustAgreement."Expire Date";
+            NewVendAgreement."Agreement Group" := CustAgreement."Agreement Group";
+            NewVendAgreement.Contact := CustAgreement.Contact;
+            NewVendAgreement."Phone No." := CustAgreement."Phone No.";
+            NewVendAgreement."Global Dimension 1 Code" := CustAgreement."Global Dimension 1 Code";
+            NewVendAgreement."Global Dimension 2 Code" := CustAgreement."Global Dimension 2 Code";
+
+            IF CustAgreement."Currency Code"=GLSetup."LCY Code" THEN
+              NewVendAgreement."Currency Code" := ''
+            ELSE
+              NewVendAgreement."Currency Code" := CustAgreement."Currency Code";
+
+            NewVendAgreement."Language Code" := CustAgreement."Language Code";
+            NewVendAgreement."Payment Terms Code" := CustAgreement."Payment Terms Code";
+            NewVendAgreement."Payment Method Code" := CustAgreement."Payment Method Code";
+            NewVendAgreement."Gen. Bus. Posting Group" := CustAgreement."Gen. Bus. Posting Group";
+            NewVendAgreement."VAT Bus. Posting Group" := CustAgreement."VAT Bus. Posting Group";
+            NewVendAgreement."Responsibility Center" := CustAgreement."Responsibility Center";
+            NewVendAgreement."Location Code" := CustAgreement."Location Code";
+            NewVendAgreement."Default Bank Code" := CustAgreement."Default Bank Code";
+            NewVendAgreement."Agreement Type" := CustAgreement."Agreement Type";
+            NewVendAgreement."Agreement Amount" := CustAgreement."Agreement Amount";
+            NewVendAgreement."Vendor Posting Group" :=  ReceiverPGFilter;
+            NewVendAgreement.Active := TRUE;
+
+            IF ReceiverCounterpartyFilter<>'' THEN
+              NewVendAgreement.VALIDATE("Vendor No.",ReceiverCounterpartyFilter)
+            ELSE
+              NewVendAgreement.VALIDATE("Vendor No.",CustAgreement."Customer No.");
+            NewVendAgreement."No." := CustAgreement."No.";
+            NewVendAgreement.INSERT(TRUE);
+            VendAgrNo :=NewVendAgreement."No.";
+            DefDimAdv.RESET;
+            DefDimAdv.SETRANGE("Table ID",14902);
+            DefDimAdv.SETRANGE("Source No.",CustAgreement."Customer No.");
+            DefDimAdv.SETRANGE("No.",CustAgreement."No.");
+            IF DefDimAdv.FINDSET THEN
+              REPEAT
+                NewDefDimAdv.INIT;
+                NewDefDimAdv.TRANSFERFIELDS(DefDimAdv);
+                NewDefDimAdv."Source No." := NewVendAgreement."Vendor No.";
+                NewDefDimAdv."No." := NewVendAgreement."No.";
+                IF NOT NewDefDimAdv.INSERT THEN NewDefDimAdv.MODIFY;
+              UNTIL DefDimAdv.NEXT=0;
+
+          END;
+        END;
+      END;
+      EXIT(VendAgrNo);
+    END;
+
+    PROCEDURE CreateCVAgreementDetail@1101495003(SourceType@1101495000 : Option;SourceNo@1101495001 : Code[20];AgreementNo@1101495002 : Code[20];AgreementDetailNo@1101495003 : Integer;NewSourceType@1101495005 : Option;NewSourceNo@1101495004 : Code[20]);
+    BEGIN
+      IF AgreeDetail.GET(SourceType,SourceNo,AgreementNo,AgreementDetailNo) THEN BEGIN
+        NewAgreeDetail.INIT;
+        NewAgreeDetail.TRANSFERFIELDS(AgreeDetail);
+        NewAgreeDetail."Source Type" := NewSourceType;
+        NewAgreeDetail."Source No." := NewSourceNo;
+        IF NewAgreeDetail.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CreateVendor@1101495004(VendNo@1101495000 : Code[20]);
+    BEGIN
+      IF NOT Vend.GET(VendNo) THEN BEGIN
+        IF Cust.GET(VendNo) THEN BEGIN
+          NewVendor.INIT;
+          NewVendor."No." := VendNo;
+          NewVendor.CreateFromCustomer(Cust);
+          NewVendor.INSERT;
+          DefDimCust.RESET;
+          DefDimCust.SETRANGE("Table ID",18);
+          DefDimCust.SETRANGE("No.",VendNo);
+          IF DefDimCust.FINDSET THEN
+            REPEAT
+              DefDimVend.INIT;
+              DefDimVend.TRANSFERFIELDS(DefDimCust);
+              DefDimVend."Table ID":= 23;
+              IF DefDimVend.INSERT THEN;
+            UNTIL DefDimCust.NEXT=0;
+        END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

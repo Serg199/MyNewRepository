@@ -1,0 +1,745 @@
+OBJECT Report 12460 VAT Ledger Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=VAT Ledger Export;
+               RUS=Экспорт книги НДС];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CompanyInfo.GET;
+                  TaxRegSetup.GET;
+
+                  CASE VATLedgerType OF
+                    VATLedger.Type::Purchase:
+                      IF AddSheet THEN BEGIN
+                        TaxRegSetup.TESTFIELD("Purch. Add. Sheet Templ. Code");
+                        ExcelReportBuilderManager.InitTemplate(TaxRegSetup."Purch. Add. Sheet Templ. Code");
+                      END ELSE BEGIN
+                        TaxRegSetup.TESTFIELD("Purch. VAT Ledg. Template Code");
+                        ExcelReportBuilderManager.InitTemplate(TaxRegSetup."Purch. VAT Ledg. Template Code");
+                      END;
+                    VATLedger.Type::Sales:
+                      IF AddSheet THEN BEGIN
+                        TaxRegSetup.TESTFIELD("Sales Add. Sheet Templ. Code");
+                        ExcelReportBuilderManager.InitTemplate(TaxRegSetup."Sales Add. Sheet Templ. Code");
+                      END ELSE BEGIN
+                        TaxRegSetup.TESTFIELD("Sales VAT Ledg. Template Code");
+                        ExcelReportBuilderManager.InitTemplate(TaxRegSetup."Sales VAT Ledg. Template Code");
+                      END;
+                  END;
+
+                  ExcelReportBuilderManager.SetSheet('Sheet01');
+                  ExcelReportBuilderManager.AddSection('HEADER');
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileNameSilent <> '' THEN
+                     ExcelReportBuilderManager.ExportDataToClientFile(FileNameSilent)
+                   ELSE
+                     ExcelReportBuilderManager.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 4710;    ;DataItem;VATLedger           ;
+               DataItemTable=Table12404;
+               DataItemTableView=SORTING(Type,Code);
+               OnPreDataItem=BEGIN
+                               SETRANGE(Type,VATLedgerType);
+                               SETRANGE(Code,VATLedgerCode);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT AddSheet THEN
+                                    ExportVATLedgerHeader;
+                                END;
+                                 }
+
+    { 7765;1   ;DataItem;SalesVATLedgerLine  ;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Sales),
+                                       Additional Sheet=CONST(No));
+               OnPreDataItem=BEGIN
+                               IF AddSheet OR (VATLedgerType = VATLedger.Type::Purchase) THEN
+                                 CurrReport.BREAK;
+
+                               LineNo := 0;
+
+                               CASE Sorting OF
+                                 Sorting::"Document Date":
+                                   SETCURRENTKEY("Document Date");
+                                 Sorting::"Document No.":
+                                   SETCURRENTKEY("Document No.");
+                                 Sorting::"Customer No.":
+                                   SETCURRENTKEY("C/V No.");
+                                 ELSE
+                                   SETCURRENTKEY("Real. VAT Entry Date");
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  LineNo += 1;
+                                  ExcelReportBuilderManager.AddSection('BODY');
+                                  ExportSalesVATLedgerLine(SalesVATLedgerLine);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT AddSheet AND (VATLedgerType = VATLedger.Type::Sales)THEN
+                                  ExportSalesVATLedgerLineTotals;
+                              END;
+
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+    { 2061;1   ;DataItem;PurchVATLedgerLine  ;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Purchase),
+                                       Additional Sheet=CONST(No));
+               OnPreDataItem=BEGIN
+                               IF AddSheet OR (VATLedgerType = VATLedger.Type::Sales) THEN
+                                 CurrReport.BREAK;
+
+                               LineNo := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  LineNo += 1;
+                                  ExcelReportBuilderManager.AddSection('BODY');
+
+                                  ExportPurchVATLedgerLine(PurchVATLedgerLine,LineNo);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF AddSheet OR (VATLedgerType = VATLedger.Type::Sales) THEN
+                                  CurrReport.BREAK;
+
+                                ExportPurchVATLedgerLineTotals;
+                              END;
+
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+    { 5718;    ;DataItem;SalesAddSheetPeriod ;
+               DataItemTable=Table2000000007;
+               DataItemTableView=SORTING(Period Type,Period Start);
+               OnPreDataItem=VAR
+                               MinDate@1210000 : Date;
+                               MaxDate@1210001 : Date;
+                             BEGIN
+                               AddSheetCounter := 0;
+
+                               IF NOT AddSheet OR (VATLedgerType = VATLedger.Type::Purchase) THEN
+                                 CurrReport.BREAK;
+
+                               IF NOT SetPeriodFilter(SalesAddSheetPeriod) THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CLEAR(Totals);
+                                  IF SkipPeriod("Period Start","Period End") THEN
+                                    CurrReport.SKIP;
+
+                                  AddSheetCounter += 1;
+                                  StartNewAddSheetSection;
+                                  ExportSalesAddSheetHeader("Period End");
+                                END;
+                                 }
+
+    { 6469;1   ;DataItem;SalesVATLedgerLineAddSheet;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Sales),
+                                       Additional Sheet=CONST(Yes));
+               OnPreDataItem=BEGIN
+                               SETRANGE("Corr. VAT Entry Posting Date",SalesAddSheetPeriod."Period Start",SalesAddSheetPeriod."Period End");
+
+                               LineNo := 0;
+
+                               CASE Sorting OF
+                                 Sorting::"Document Date":
+                                   SETCURRENTKEY("Document Date");
+                                 Sorting::"Document No.":
+                                   SETCURRENTKEY("Document No.");
+                                 Sorting::"Customer No.":
+                                   SETCURRENTKEY("C/V No.");
+                                 ELSE
+                                   SETCURRENTKEY("Real. VAT Entry Date");
+                               END;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  SalesInvHeader@1210000 : Record 112;
+                                  SalesCrMemoHeader@1210001 : Record 114;
+                                  CorrDocAddSheet@1210002 : Boolean;
+                                BEGIN
+                                  IF SalesInvHeader.GET("Document No.") THEN
+                                    CorrDocAddSheet := SalesInvHeader."Additional VAT Ledger Sheet";
+                                  IF SalesCrMemoHeader.GET("Document No.") THEN
+                                    CorrDocAddSheet := SalesCrMemoHeader."Additional VAT Ledger Sheet";
+
+                                  IF CorrDocAddSheet THEN
+                                    "Document Date" := "Corr. VAT Entry Posting Date";
+
+                                  LineNo += 1;
+                                  ExcelReportBuilderManager.AddSection('BODY');
+                                  ExportSalesVATLedgerLine(SalesVATLedgerLineAddSheet);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExportSalesVATLedgerLineTotals;
+                              END;
+
+               DataItemLinkReference=VATLedger;
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+    { 7183;    ;DataItem;PurchAddSheetPeriod ;
+               DataItemTable=Table2000000007;
+               DataItemTableView=SORTING(Period Type,Period Start);
+               OnPreDataItem=BEGIN
+                               AddSheetCounter := 0;
+                               IF NOT AddSheet OR (VATLedgerType = VATLedger.Type::Sales) THEN
+                                 CurrReport.BREAK;
+
+                               IF NOT SetPeriodFilter(PurchAddSheetPeriod) THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CLEAR(Totals);
+                                  IF NOT FillGroupBuffer("Period Start","Period End") THEN
+                                    CurrReport.SKIP;
+
+                                  AddSheetCounter += 1;
+                                  StartNewAddSheetSection;
+                                  ExportPurchAddSheetHeader("Period End");
+                                END;
+                                 }
+
+    { 8171;1   ;DataItem;PurchVATLedgerLineAddSheet;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               SETRANGE(Number,1,GroupBuffer.COUNT);
+                               LineNo := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    GroupBuffer.FINDSET
+                                  ELSE
+                                    GroupBuffer.NEXT;
+
+                                  LineNo += 1;
+                                  ExcelReportBuilderManager.AddSection('BODY');
+
+                                  ExportPurchVATLedgerLine(GroupBuffer,LineNo);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExportPurchVATLedgerLineTotals;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Sorting;
+                             RUS=Сортировка];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Sorting }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Period Type;
+                             RUS=Тип периода];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PeriodType }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210000 : Record 79;
+      TaxRegSetup@1210002 : Record 17236;
+      GroupBuffer@1210017 : TEMPORARY Record 12405;
+      LocalReportMgt@1210006 : Codeunit 12401;
+      LocMgt@1210007 : Codeunit 12400;
+      VATInvJnlMgt@1210039 : Codeunit 12424;
+      ExcelReportBuilderManager@1210011 : Codeunit 14930;
+      VATLedgerType@1210003 : Option;
+      Sorting@1210013 : ' ,Document Date,Document No.,Customer No.';
+      PeriodType@1210014 : 'Day,Month,Quarter';
+      VATLedgerCode@1210004 : Code[20];
+      LineNo@1210010 : Integer;
+      AddSheetCounter@1210015 : Integer;
+      AddSheet@1210016 : Boolean;
+      Text12405@1210019 : TextConst 'ENU=Quarter;RUS=Квартал';
+      Text12406@1210018 : TextConst 'ENU=From %1 to %2.;RUS=От %1 до %2.';
+      Totals@1210020 : ARRAY [7,2] OF Decimal;
+      FileNameSilent@1210029 : Text;
+
+    PROCEDURE InitializeReport@1210007(NewVATLedgerType@1210000 : Option;NewVATLedgerCode@1210001 : Code[20];NewAddSheet@1210002 : Boolean);
+    BEGIN
+      VATLedgerType := NewVATLedgerType;
+      VATLedgerCode := NewVATLedgerCode;
+      AddSheet := NewAddSheet;
+    END;
+
+    LOCAL PROCEDURE ExportVATLedgerHeader@1210010();
+    BEGIN
+      IF VATLedger.Type = VATLedger.Type::Sales THEN
+        ExportSalesVATLedgerHeader
+      ELSE
+        ExportPurchVATLedgerHeader;
+    END;
+
+    LOCAL PROCEDURE ExportSalesVATLedgerHeader@1210008();
+    BEGIN
+      ExcelReportBuilderManager.AddDataToSection('CompanyName',LocalReportMgt.GetCompanyName);
+      ExcelReportBuilderManager.AddDataToSection('CompanyVATRegNo',
+        CompanyInfo."VAT Registration No." + ' / ' + CompanyInfo."KPP Code");
+      ExcelReportBuilderManager.AddDataToSection('StartDate',LocMgt.Date2Text(VATLedger."Start Date"));
+      ExcelReportBuilderManager.AddDataToSection('EndDate',LocMgt.Date2Text(VATLedger."End Date"));
+    END;
+
+    PROCEDURE ExportPurchVATLedgerHeader@1210009();
+    BEGIN
+      ExcelReportBuilderManager.AddDataToSection('CompanyName',LocalReportMgt.GetCompanyName);
+      ExcelReportBuilderManager.AddDataToSection('CompanyVATRegNo',
+        CompanyInfo."VAT Registration No." + ' / ' + CompanyInfo."KPP Code");
+      ExcelReportBuilderManager.AddDataToSection('StartDate',LocMgt.Date2Text(VATLedger."Start Date"));
+      ExcelReportBuilderManager.AddDataToSection('EndDate',LocMgt.Date2Text(VATLedger."End Date"));
+    END;
+
+    LOCAL PROCEDURE ExportSalesVATLedgerLine@1210029(VATLedgerLine@1210000 : Record 12405);
+    VAR
+      PartialText@1210002 : Text;
+    BEGIN
+      PartialText := '';
+      WITH VATLedgerLine DO BEGIN
+        IF Partial THEN
+          PartialText := LOWERCASE(FIELDCAPTION(Partial));
+        ExcelReportBuilderManager.AddDataToSection('LineNumber',FORMAT(LineNo));
+        ExcelReportBuilderManager.AddDataToSection('OperationTypeCode',"VAT Entry Type");
+        ExcelReportBuilderManager.AddDataToSection(
+          'DocumentNoAndDate',LocalReportMgt.FormatCompoundExpr("Document No.",FORMAT("Document Date")));
+        IF "Print Revision" THEN BEGIN
+          ExcelReportBuilderManager.AddDataToSection(
+            'RevisionNoAndDate',LocalReportMgt.FormatCompoundExpr("Revision No.",FORMAT("Revision Date")));
+          ExcelReportBuilderManager.AddDataToSection(
+            'RevisionOfCorrectionNoAndDate',
+            LocalReportMgt.FormatCompoundExpr("Revision of Corr. No.",FORMAT("Revision of Corr. Date")));
+        END;
+        ExcelReportBuilderManager.AddDataToSection(
+          'CorrectionNoAndDate',LocalReportMgt.FormatCompoundExpr("Correction No.",FORMAT("Correction Date")));
+        ExcelReportBuilderManager.AddDataToSection('Name',"C/V Name");
+        ExcelReportBuilderManager.AddDataToSection('VATRegNoAndKPP',VATInvJnlMgt.GetCVVATRegKPP("C/V No.","C/V Type",VATLedgerType));
+        IF Prepayment OR LocalReportMgt.IsVATAgentVendor("C/V No.","C/V Type") THEN
+          ExcelReportBuilderManager.AddDataToSection(
+            'ExternalDocNoAndDate',LocalReportMgt.FormatCompoundExpr("External Document No.",FORMAT("Payment Date")));
+        IF LocalReportMgt.IsForeignCurrency("Currency Code") AND
+           NOT LocalReportMgt.IsConventionalCurrency("Currency Code") AND
+           NOT LocalReportMgt.HasRelationalCurrCode("Currency Code","Document Date")
+        THEN BEGIN
+          ExcelReportBuilderManager.AddDataToSection('CurrencyInfo',GetCurrencyInfo("Currency Code"));
+          ExcelReportBuilderManager.AddDataToSection('AmountFCY',FormatValue(ABS(Amount)));
+        END;
+        ExcelReportBuilderManager.AddDataToSection(
+          'AmountLCY',LocalReportMgt.FormatCompoundExpr(FormatValue("Amount Including VAT"),PartialText));
+        ExcelReportBuilderManager.AddDataToSection('Base18',FormatBaseValue(Base18,Prepayment));
+        ExcelReportBuilderManager.AddDataToSection('Base10',FormatBaseValue(Base10,Prepayment));
+        ExcelReportBuilderManager.AddDataToSection('Amount18',FormatValue(Amount18));
+        ExcelReportBuilderManager.AddDataToSection('Amount10',FormatValue(Amount10));
+        ExcelReportBuilderManager.AddDataToSection('Base0',FormatBaseValue(Base0,Prepayment));
+        ExcelReportBuilderManager.AddDataToSection('BaseVATExempt',FormatValue("Base VAT Exempt"));
+      END;
+      UpdateTotals(VATLedgerLine);
+    END;
+
+    LOCAL PROCEDURE ExportPurchVATLedgerLine@1210030(VATLedgerLine@1210000 : Record 12405;LineNo@1210004 : Integer);
+    BEGIN
+      WITH VATLedgerLine DO BEGIN
+        ExcelReportBuilderManager.AddDataToSection('LineNumber',FORMAT(LineNo));
+        ExcelReportBuilderManager.AddDataToSection('OperationTypeCode',"VAT Entry Type");
+        ExcelReportBuilderManager.AddDataToSection(
+          'DocumentNoAndDate',LocalReportMgt.FormatCompoundExpr("Document No.",FORMAT("Document Date")));
+        IF "Print Revision" THEN BEGIN
+          ExcelReportBuilderManager.AddDataToSection(
+            'RevisionNoAndDate',LocalReportMgt.FormatCompoundExpr("Revision No.",FORMAT("Revision Date")));
+          ExcelReportBuilderManager.AddDataToSection(
+            'RevisionOfCorrectionNoAndDate',
+            LocalReportMgt.FormatCompoundExpr("Revision of Corr. No.",FORMAT("Revision of Corr. Date")));
+        END;
+        ExcelReportBuilderManager.AddDataToSection(
+          'CorrectionNoAndDate',LocalReportMgt.FormatCompoundExpr("Correction No.",FORMAT("Correction Date")));
+        IF Prepayment OR LocalReportMgt.IsVATAgentVendor("C/V No.","C/V Type") THEN
+          ExcelReportBuilderManager.AddDataToSection(
+            'ExternalDocNoAndDate',LocalReportMgt.FormatCompoundExpr("External Document No.",FORMAT("Payment Date")))
+        ELSE
+          IF "Full VAT Amount" <> 0 THEN
+            ExcelReportBuilderManager.AddDataToSection('ExternalDocNoAndDate',GetPurchasePaymentDocNoDate(VATLedgerLine));
+        ExcelReportBuilderManager.AddDataToSection(
+          'UnrealVATEntryDate',ShowDate(LocalReportMgt.GetVATLedgerItemRealizeDate(VATLedgerLine)));
+        ExcelReportBuilderManager.AddDataToSection('Name',"C/V Name");
+        ExcelReportBuilderManager.AddDataToSection('VATRegNoAndKPP',VATInvJnlMgt.GetCVVATRegKPP("C/V No.","C/V Type",VATLedgerType));
+        ExcelReportBuilderManager.AddDataToSection('CDNo',"CD No.");
+
+        CASE TRUE OF
+          LocalReportMgt.IsForeignCurrency("Currency Code") AND
+          NOT LocalReportMgt.IsConventionalCurrency("Currency Code") AND
+          NOT LocalReportMgt.HasRelationalCurrCode("Currency Code","Document Date"):
+            BEGIN
+              ExcelReportBuilderManager.AddDataToSection('CurrencyInfo',GetCurrencyInfo("Currency Code"));
+              ExcelReportBuilderManager.AddDataToSection('DocAmount',FormatValue(Amount));
+            END;
+          LocalReportMgt.IsCustomerPrepayment(VATLedgerLine):
+            ExcelReportBuilderManager.AddDataToSection('DocAmount',FormatValue(Amount));
+          ELSE
+            ExcelReportBuilderManager.AddDataToSection('DocAmount',FormatValue("Amount Including VAT"));
+        END;
+        ExcelReportBuilderManager.AddDataToSection('VATAmount',FormatValue(Amount10 + Amount18));
+      END;
+      UpdateTotals(VATLedgerLine);
+    END;
+
+    LOCAL PROCEDURE ExportSalesVATLedgerLineTotals@1210020();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('FOOTER');
+      ExcelReportBuilderManager.AddDataToSection('TotalBase18',FormatTotalValue(Totals[2][1],Totals[2][2]));
+      ExcelReportBuilderManager.AddDataToSection('TotalAmount18',FormatTotalValue(Totals[3][1],Totals[3][2]));
+      ExcelReportBuilderManager.AddDataToSection('TotalBase10',FormatTotalValue(Totals[4][1],Totals[4][2]));
+      ExcelReportBuilderManager.AddDataToSection('TotalAmount10',FormatTotalValue(Totals[5][1],Totals[5][2]));
+      ExcelReportBuilderManager.AddDataToSection('TotalBase0',FormatTotalValue(Totals[6][1],Totals[6][2]));
+      ExcelReportBuilderManager.AddDataToSection('TotalBaseVATExempt',FormatTotalValue(Totals[7][1],Totals[7][2]));
+    END;
+
+    LOCAL PROCEDURE ExportPurchVATLedgerLineTotals@1210027();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('FOOTER');
+      ExcelReportBuilderManager.AddDataToSection(
+        'TotalVATAmount',FormatTotalValue(
+          Totals[3][1] + Totals[5][1],Totals[3][2] + Totals[5][2]));
+    END;
+
+    LOCAL PROCEDURE ExportSalesAddSheetHeader@1210026(PeriodEnd@1210000 : Date);
+    BEGIN
+      ExcelReportBuilderManager.AddDataToSection('AddSheetCounter',FORMAT(AddSheetCounter));
+      ExcelReportBuilderManager.AddDataToSection('CompanyName',LocalReportMgt.GetCompanyName);
+      ExcelReportBuilderManager.AddDataToSection(
+        'CompanyVATRegNoAndKPP',CompanyInfo."VAT Registration No." + ' / ' + CompanyInfo."KPP Code");
+      ExcelReportBuilderManager.AddDataToSection('Period',GetMainPeriodDescription(VATLedger."Start Date",VATLedger."End Date"));
+      ExcelReportBuilderManager.AddDataToSection('AddSheetDate',FORMAT(NORMALDATE(PeriodEnd)));
+      ExcelReportBuilderManager.AddDataToSection('DirectorName',CompanyInfo."Director Name");
+    END;
+
+    LOCAL PROCEDURE ExportPurchAddSheetHeader@1210028(PeriodEnd@1210000 : Date);
+    BEGIN
+      ExcelReportBuilderManager.AddDataToSection('AddSheetCounter',FORMAT(AddSheetCounter));
+      ExcelReportBuilderManager.AddDataToSection('CompanyName',LocalReportMgt.GetCompanyName);
+      ExcelReportBuilderManager.AddDataToSection(
+        'CompanyVATRegNoAndKPP',CompanyInfo."VAT Registration No." + ' / ' + CompanyInfo."KPP Code");
+      ExcelReportBuilderManager.AddDataToSection('Period',GetMainPeriodDescription(VATLedger."Start Date",VATLedger."End Date"));
+      ExcelReportBuilderManager.AddDataToSection('AddSheetDate',FORMAT(NORMALDATE(PeriodEnd)));
+      ExcelReportBuilderManager.AddDataToSection('DirectorName',CompanyInfo."Director Name");
+    END;
+
+    LOCAL PROCEDURE FormatBaseValue@1210002(VAR VATBase@1210000 : Decimal;Prepayment@1210001 : Boolean) : Text;
+    BEGIN
+      IF VATBase <> 0 THEN BEGIN
+        IF Prepayment THEN BEGIN
+          VATBase := 0;
+          EXIT('-');
+        END ELSE
+          EXIT(FORMAT(VATBase,0,'<Precision,2:2><Standard Format,0>'));
+      END ELSE
+        EXIT('');
+    END;
+
+    LOCAL PROCEDURE FormatValue@1210048(Value@1210000 : Decimal) : Text;
+    BEGIN
+      IF Value <> 0 THEN
+        EXIT(LocalReportMgt.FormatReportValue(Value,2));
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE FormatTotalValue@1210044(FormatedValue@1210000 : Decimal;Value@1210001 : Decimal) : Text;
+    BEGIN
+      IF Value <> 0 THEN
+        EXIT(LocalReportMgt.FormatReportValue(FormatedValue,2));
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE ShowDate@1210004(Date@1210000 : Date) : Text;
+    BEGIN
+      IF Date = 0D THEN
+        EXIT('-');
+      EXIT(FORMAT(Date));
+    END;
+
+    LOCAL PROCEDURE GetCurrencyInfo@1210050(CurrencyCode@1210002 : Code[10]) CurrencyDescription : Text;
+    VAR
+      GLSetup@1210000 : Record 98;
+      Currency@1210001 : Record 4;
+    BEGIN
+      CurrencyDescription := '';
+      IF CurrencyCode = '' THEN BEGIN
+        GLSetup.GET;
+        CurrencyCode := GLSetup."LCY Code";
+      END;
+
+      IF Currency.GET(CurrencyCode) THEN BEGIN
+        CurrencyDescription :=
+          LOWERCASE(COPYSTR(Currency.Description,1,1)) + COPYSTR(Currency.Description,2);
+        IF Currency."RU Bank Digital Code" <> '' THEN BEGIN
+          IF CurrencyDescription <> '' THEN
+            CurrencyDescription := CurrencyDescription + '; ' + Currency."RU Bank Digital Code"
+          ELSE
+            CurrencyDescription := Currency."RU Bank Digital Code";
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE SetPeriodFilter@1210003(VAR Period@1210000 : Record 2000000007) : Boolean;
+    VAR
+      VATLedgerLine@1210002 : Record 12405;
+      MinDate@1210001 : Date;
+      MaxDate@1210003 : Date;
+    BEGIN
+      MinDate := 0D;
+      MaxDate := 0D;
+
+      VATLedgerLine.SETCURRENTKEY("Corr. VAT Entry Posting Date");
+      VATLedgerLine.SETRANGE(Type,VATLedgerType);
+      VATLedgerLine.SETRANGE(Code,VATLedgerCode);
+      VATLedgerLine.SETRANGE("Additional Sheet",TRUE);
+      IF VATLedgerLine.FINDFIRST THEN
+        MinDate := VATLedgerLine."Corr. VAT Entry Posting Date";
+      IF VATLedgerLine.FINDLAST THEN
+        MaxDate := VATLedgerLine."Corr. VAT Entry Posting Date";
+
+      IF MinDate <> 0D THEN
+        CASE PeriodType OF
+          PeriodType::Day:
+            Period.SETRANGE("Period Type",Period."Period Type"::Date);
+          PeriodType::Month:
+            BEGIN
+              Period.SETRANGE("Period Type",Period."Period Type"::Month);
+              MinDate := CALCDATE('<-CM>',MinDate);
+              MaxDate := CALCDATE('<CM>',MaxDate);
+            END;
+          PeriodType::Quarter:
+            BEGIN
+              Period.SETRANGE("Period Type",Period."Period Type"::Quarter);
+              MinDate := CALCDATE('<-CQ>',MinDate);
+              MaxDate := CALCDATE('<CQ>',MaxDate);
+            END;
+        END;
+
+      Period.SETRANGE("Period Start",MinDate,MaxDate);
+      EXIT(NOT Period.ISEMPTY);
+    END;
+
+    LOCAL PROCEDURE SkipPeriod@1210040(PeriodStartDate@1210001 : Date;PeriodEndDate@1210002 : Date) : Boolean;
+    VAR
+      VATLedgerLine@1210000 : Record 12405;
+    BEGIN
+      VATLedgerLine.SETRANGE(Type,VATLedger.Type);
+      VATLedgerLine.SETRANGE(Code,VATLedger.Code);
+      VATLedgerLine.SETRANGE("Additional Sheet",TRUE);
+      VATLedgerLine.SETRANGE("Corr. VAT Entry Posting Date",PeriodStartDate,PeriodEndDate);
+      EXIT(VATLedgerLine.ISEMPTY);
+    END;
+
+    LOCAL PROCEDURE FillGroupBuffer@1(PeriodStartDate@1210001 : Date;PeriodEndDate@1210002 : Date) : Boolean;
+    VAR
+      SourceVATEntry@1004 : Record 254;
+      AdjustingVATEntry@1003 : Record 254;
+      AdjustingVATEntryBuffer@1210000 : TEMPORARY Record 254;
+      VATLedgerConnection@1001 : Record 12406;
+      VATLedgerLine@1000 : Record 12405;
+      VATLedgerLineBuffer@1002 : TEMPORARY Record 12405;
+      AdjustingVATLedgerLine@1005 : Record 12405;
+    BEGIN
+      WITH VATLedgerLineBuffer DO BEGIN
+        VATLedgerLine.SETRANGE(Type,VATLedger.Type);
+        VATLedgerLine.SETRANGE(Code,VATLedger.Code);
+        VATLedgerLine.SETRANGE("Additional Sheet",TRUE);
+        VATLedgerLine.SETRANGE("Corr. VAT Entry Posting Date",PeriodStartDate,PeriodEndDate);
+        IF VATLedgerLine.FINDSET THEN
+          REPEAT
+            VATLedgerConnection.RESET;
+            VATLedgerConnection.SETRANGE("Connection Type",VATLedgerConnection."Connection Type"::Purchase);
+            VATLedgerConnection.SETRANGE("Purch. Ledger Code",VATLedger.Code);
+            VATLedgerConnection.SETRANGE("Purch. Ledger Line No.",VATLedgerLine."Line No.");
+            IF VATLedgerConnection.FINDFIRST THEN BEGIN
+              SourceVATEntry.GET(VATLedgerConnection."VAT Entry No.");
+              TRANSFERFIELDS(VATLedgerLine);
+
+              IF SourceVATEntry."Adjusted VAT Entry No." = 0 THEN BEGIN
+                AdjustingVATEntry.SETRANGE("Adjusted VAT Entry No.", SourceVATEntry."Entry No.");
+                AdjustingVATEntry.SETRANGE("Posting Date",PeriodStartDate,PeriodEndDate);
+                IF AdjustingVATEntry.FINDFIRST THEN BEGIN
+                  VATLedgerConnection.SETRANGE("Purch. Ledger Line No.");
+                  VATLedgerConnection.SETRANGE("VAT Entry No.",AdjustingVATEntry."Entry No.");
+                  IF VATLedgerConnection.FINDFIRST THEN BEGIN
+                    IF AdjustingVATLedgerLine.GET(
+                      VATLedger.Type,VATLedger.Code,VATLedgerConnection."Purch. Ledger Line No.")
+                    THEN BEGIN
+                      "Amount Including VAT" += AdjustingVATLedgerLine."Amount Including VAT";
+                      Base10 += AdjustingVATLedgerLine.Base10;
+                      Amount10 += AdjustingVATLedgerLine.Amount10;
+                      Base0 += AdjustingVATLedgerLine.Base0;
+                      "Base VAT Exempt" += AdjustingVATLedgerLine."Base VAT Exempt";
+                      "Full VAT Amount" += AdjustingVATLedgerLine."Full VAT Amount";
+                      Base18 += AdjustingVATLedgerLine.Base18;
+                      Amount18 += AdjustingVATLedgerLine.Amount18;
+                      AdjustingVATEntryBuffer.TRANSFERFIELDS(AdjustingVATEntry);
+                      AdjustingVATEntryBuffer.INSERT;
+                    END;
+                  END;
+                END;
+
+              END;
+
+              IF NOT AdjustingVATEntryBuffer.GET(SourceVATEntry."Entry No.") THEN
+                INSERT;
+            END;
+          UNTIL VATLedgerLine.NEXT = 0;
+      END;
+
+      WITH GroupBuffer DO BEGIN
+        RESET;
+        DELETEALL;
+
+        IF VATLedgerLineBuffer.FINDSET THEN
+          REPEAT
+            SETRANGE("Payment Date",VATLedgerLineBuffer."Payment Date");
+            SETRANGE("Document No.",VATLedgerLineBuffer."Document No.");
+            SETRANGE("C/V No.",VATLedgerLineBuffer."C/V No.");
+            SETRANGE(Correction,VATLedgerLineBuffer.Correction);
+            IF NOT FINDFIRST THEN BEGIN
+              TRANSFERFIELDS(VATLedgerLineBuffer);
+              INSERT;
+            END ELSE BEGIN
+              "Amount Including VAT" += VATLedgerLineBuffer."Amount Including VAT";
+              Base10 += VATLedgerLineBuffer.Base10;
+              Amount10 += VATLedgerLineBuffer.Amount10;
+              Base0 += VATLedgerLineBuffer.Base0;
+              "Base VAT Exempt" += VATLedgerLineBuffer."Base VAT Exempt";
+              "Full VAT Amount" += VATLedgerLineBuffer."Full VAT Amount";
+              Base18 += VATLedgerLineBuffer.Base18;
+              Amount18 += VATLedgerLineBuffer.Amount18;
+              MODIFY;
+            END;
+          UNTIL VATLedgerLineBuffer.NEXT = 0;
+      END;
+
+      GroupBuffer.RESET;
+      EXIT(NOT GroupBuffer.ISEMPTY);
+    END;
+
+    LOCAL PROCEDURE GetMainPeriodDescription@1210014(StartDate@1210002 : Date;EndDate@1210003 : Date) MainPeriodDescription : Text;
+    VAR
+      Period@1210000 : Record 2000000007;
+    BEGIN
+      Period.SETRANGE("Period Type",Period."Period Type"::Month);
+      Period.SETRANGE("Period Start",StartDate,EndDate);
+      IF Period.COUNT = 1 THEN BEGIN
+        Period.FINDFIRST;
+        MainPeriodDescription := Period."Period Name" + ' ' + FORMAT(DATE2DMY(EndDate,3));
+      END ELSE BEGIN
+        Period.SETRANGE("Period Type",Period."Period Type"::Quarter);
+        IF Period.COUNT = 1 THEN BEGIN
+          Period.FINDFIRST;
+          MainPeriodDescription :=
+            Period."Period Name" + ' ' + Text12405 + ' ' + FORMAT(DATE2DMY(EndDate,3));
+        END ELSE
+          MainPeriodDescription := STRSUBSTNO(Text12406,StartDate,EndDate);
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateTotals@1210024(VATLedgLine@1210000 : Record 12405);
+    BEGIN
+      WITH VATLedgLine DO BEGIN
+        Totals[1][1] += "Amount Including VAT";
+        Totals[1][2] += ABS("Amount Including VAT");
+        Totals[2][1] += Base18;
+        Totals[2][2] += ABS(Base18);
+        Totals[3][1] += Amount18;
+        Totals[3][2] += ABS(Amount18);
+        Totals[4][1] += Base10;
+        Totals[4][2] += ABS(Base10);
+        Totals[5][1] += Amount10;
+        Totals[5][2] += ABS(Amount10);
+        Totals[6][1] += Base0;
+        Totals[6][2] += ABS(Base0);
+        Totals[7][1] += "Base VAT Exempt";
+        Totals[7][2] += ABS("Base VAT Exempt");
+      END;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210001(NewFileNameSilent@1210000 : Text);
+    BEGIN
+      FileNameSilent := NewFileNameSilent;
+    END;
+
+    LOCAL PROCEDURE GetPurchasePaymentDocNoDate@1210005(VATLedgerLine@1210007 : Record 12405) : Text;
+    VAR
+      TempVendorLedgerEntry@1210000 : TEMPORARY Record 25;
+      PaymentDocNoDate@1210004 : Text;
+    BEGIN
+      VATLedgerLine.GetPmtVendorDtldLedgerLines(VATLedger."End Date",TempVendorLedgerEntry);
+      IF TempVendorLedgerEntry.FINDSET THEN
+        REPEAT
+          PaymentDocNoDate :=
+            LocalReportMgt.FormatCompoundExpr(
+              PaymentDocNoDate,
+              LocalReportMgt.FormatCompoundExpr(
+                TempVendorLedgerEntry."External Document No.",FORMAT(TempVendorLedgerEntry."Posting Date")));
+        UNTIL TempVendorLedgerEntry.NEXT = 0;
+      EXIT(PaymentDocNoDate);
+    END;
+
+    LOCAL PROCEDURE StartNewAddSheetSection@1210036();
+    BEGIN
+      IF AddSheetCounter > 1 THEN BEGIN
+        ExcelReportBuilderManager.AddPagebreak;
+        ExcelReportBuilderManager.AddSection('HEADER');
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

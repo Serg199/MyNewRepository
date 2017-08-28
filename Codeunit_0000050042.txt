@@ -1,0 +1,336 @@
+OBJECT Codeunit 50042 FI Calc & Post Avg Cost
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21.02.11;
+    Time=15:57:38;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GenJnlLineForFI@1000000000 : TEMPORARY Record 81;
+      GenJnlTemplate@1000000001 : Record 80;
+      GenJnlLinePost@1000000002 : Codeunit 12;
+      GLSetup@1000000003 : Record 98;
+      Currency@1000000004 : Record 4;
+      AmountRoundingPrecision@1000000005 : Decimal;
+      AmountRoundingPrecisionCFI@1000000006 : Decimal;
+      CurrencyCode@1101495000 : Code[10];
+      TempConversEntry@1101495001 : TEMPORARY Record 50106;
+
+    PROCEDURE SetAvgCostAdjmt@1000000004(FICode@1000000001 : Code[20];FIPortfolioCode@1000000004 : Code[10];FIPostingBookCode@1000000000 : Code[10];ValuationDate@1000000002 : Date);
+    VAR
+      FIAvgCostAdjmtEntryPoint@1000000003 : Record 50104;
+      ModifyFlag@1000000005 : Boolean;
+    BEGIN
+      FIAvgCostAdjmtEntryPoint.SETCURRENTKEY("Valuation Date","FI No.","FI Portfolio","FI Posting Book");
+
+      IF NOT FIAvgCostAdjmtEntryPoint.GET(ValuationDate, FICode, FIPortfolioCode, FIPostingBookCode)THEN BEGIN
+        FIAvgCostAdjmtEntryPoint."FI No." := FICode;
+        FIAvgCostAdjmtEntryPoint."FI Portfolio" := FIPortfolioCode;
+        FIAvgCostAdjmtEntryPoint."FI Posting Book" := FIPostingBookCode;
+        FIAvgCostAdjmtEntryPoint."Valuation Date" := ValuationDate;
+        FIAvgCostAdjmtEntryPoint."Cost Is Adjusted" := FALSE;
+        FIAvgCostAdjmtEntryPoint.INSERT;
+        ModifyFlag := TRUE;
+      END ELSE
+        IF FIAvgCostAdjmtEntryPoint."Cost Is Adjusted" = TRUE THEN
+          ModifyFlag := TRUE;
+
+      IF ModifyFlag THEN BEGIN
+        FIAvgCostAdjmtEntryPoint.SETRANGE("Valuation Date", ValuationDate, 31129999D);
+        FIAvgCostAdjmtEntryPoint.SETRANGE("FI No.", FICode);
+        FIAvgCostAdjmtEntryPoint.SETRANGE("FI Portfolio", FIPortfolioCode);
+        FIAvgCostAdjmtEntryPoint.SETRANGE("FI Posting Book", FIPostingBookCode);
+        IF NOT FIAvgCostAdjmtEntryPoint.ISEMPTY THEN
+          FIAvgCostAdjmtEntryPoint.MODIFYALL("Cost Is Adjusted", FALSE);
+      END;
+    END;
+
+    PROCEDURE CalcFIAvgCost@1000000015(FICodeFilter@1000000000 : Code[250];FIPortfolioCodeFilter@1000000002 : Code[100];FIPostingBookCodeFilter@1000000001 : Code[100];Manual@1000000008 : Boolean;ToDate@1000000009 : Date);
+    VAR
+      FILedgerEntry@1000000006 : Record 50106;
+      FIValueEntry@1000000003 : Record 50107;
+      FIAvgCostAdjmtEntryPoint@1000000004 : Record 50104;
+      StartDate@1000000005 : Date;
+      FIPostingBook@1000000007 : Record 50102;
+    BEGIN
+      GenJnlTemplate.SETRANGE(Type, GenJnlTemplate.Type::"VAT Reinstatement");
+      GenJnlTemplate.FINDFIRST;
+
+      WITH FIAvgCostAdjmtEntryPoint DO BEGIN
+        SETCURRENTKEY("Valuation Date","FI No.","FI Portfolio","FI Posting Book");
+        IF ToDate <> 0D THEN
+          SETRANGE("Valuation Date", 0D, ToDate);
+        IF FICodeFilter <> '' THEN
+          SETFILTER("FI No.", FICodeFilter);
+        IF FIPortfolioCodeFilter <> '' THEN
+          SETFILTER("FI Portfolio", FIPortfolioCodeFilter);
+        IF FIPostingBookCodeFilter <> '' THEN
+          SETFILTER("FI Posting Book", FIPostingBookCodeFilter);
+
+        SETRANGE("Cost Is Adjusted", FALSE);
+        IF FIND('-') THEN
+          REPEAT
+            FIPostingBook.GET("FI Posting Book");
+            IF FIPostingBook.AutoPostCost OR Manual THEN BEGIN
+              CalcFIAvgCostDate("FI No.", "FI Portfolio", "FI Posting Book", "Valuation Date");
+              "Cost Is Adjusted" := TRUE;
+              MODIFY;
+            END;
+          UNTIL NEXT = 0;
+
+        IF Manual THEN
+          GenJnlLinePost.PostCost(GenJnlTemplate.Name);
+      END;
+    END;
+
+    PROCEDURE CalcFIAvgCostDate@1000000028(FICode@1000000000 : Code[20];FIPortfolioCode@1000000002 : Code[10];FIPostingBookCode@1000000001 : Code[10];ValuationDate@1000000003 : Date);
+    VAR
+      FILedgerEntry2@1000000004 : Record 50106;
+      FILedgerEntry3@1101495000 : Record 50106;
+      FILedgerEntry4@1101495001 : Record 50106;
+      FIValueEntry2@1000000005 : Record 50107;
+      BalanceLong@1000000006 : Decimal;
+      BalanceLongCFI@1000000007 : Decimal;
+      BalanceLongQty@1000000010 : Integer;
+      AmountLong@1000000009 : Decimal;
+      AmountLongCFI@1000000008 : Decimal;
+      AmountLongQty@1000000011 : Integer;
+      CostLong@1000000012 : Decimal;
+      CostLongCFI@1000000013 : Decimal;
+      BalanceShort@1000000021 : Decimal;
+      BalanceShortCFI@1000000020 : Decimal;
+      BalanceShortQty@1000000019 : Integer;
+      AmountShort@1000000018 : Decimal;
+      AmountShortCFI@1000000017 : Decimal;
+      AmountShortQty@1000000016 : Integer;
+      CostShort@1000000015 : Decimal;
+      CostShortCFI@1000000014 : Decimal;
+      FlagLong@1000000022 : Boolean;
+      FlagShort@1000000023 : Boolean;
+      CostDiff@1000000024 : Decimal;
+      CostDiffCFI@1000000025 : Decimal;
+      ConvItselfAmount@1101495002 : Decimal;
+      ConvItselfAmountCFI@1101495003 : Decimal;
+      ConvItselfQty@1101495004 : Decimal;
+    BEGIN
+      GLSetup.GET;
+      AmountRoundingPrecision := GLSetup."Amount Rounding Precision";
+      AmountRoundingPrecisionCFI := AmountRoundingPrecision;
+
+      TempConversEntry.RESET;
+      TempConversEntry.DELETEALL;
+
+      FILedgerEntry2.RESET;
+      FILedgerEntry2.SETCURRENTKEY("FI No.","FI Posting Book","FI Portfolio","Amount Type",
+                                   "Posting Date",Reversed,"Short Position",Positive);
+      FILedgerEntry2.SETRANGE("FI No.", FICode);
+      FILedgerEntry2.SETRANGE("Posting Date", ValuationDate);
+      FILedgerEntry2.SETRANGE("FI Posting Book", FIPostingBookCode);
+      FILedgerEntry2.SETRANGE("FI Portfolio", FIPortfolioCode);
+      FILedgerEntry2.SETRANGE(Reversed, FALSE);
+      FILedgerEntry2.SETRANGE("Amount Type", FILedgerEntry2."Amount Type"::Principal);
+
+      FILedgerEntry2.SETRANGE("Short Position", FALSE);
+      FILedgerEntry2.SETRANGE(Positive, FALSE);
+      FlagLong := NOT FILedgerEntry2.ISEMPTY;
+
+      FILedgerEntry2.SETRANGE("Short Position", TRUE);
+      FILedgerEntry2.SETRANGE(Positive, TRUE);
+      FlagShort := NOT FILedgerEntry2.ISEMPTY;
+
+      FIValueEntry2.RESET;
+      WITH FIValueEntry2 DO BEGIN
+        SETCURRENTKEY("FI No.","FI Portfolio","FI Posting Book",Reversed,"Posting Date","Short Position",Positive,"Amount Type");
+        SETRANGE("FI No.", FICode);
+        SETRANGE("FI Portfolio", FIPortfolioCode);
+        SETRANGE("FI Posting Book", FIPostingBookCode);
+        SETRANGE("Amount Type", "Amount Type"::Principal);
+        SETRANGE(Reversed, FALSE);
+
+        // расчет с-сти длинной позиции
+        IF FlagLong THEN BEGIN
+          //Себестоимость остатков
+          SETRANGE("Posting Date", 0D, ValuationDate-1);
+          SETRANGE("Short Position", FALSE);
+          SETRANGE(Positive);
+          CALCSUMS("Cost Amount", "Cost Amount (CFI)", "FI Ledger Entry Quantity");
+          BalanceLong := "Cost Amount";
+          BalanceLongCFI := "Cost Amount (CFI)";
+          BalanceLongQty := "FI Ledger Entry Quantity";
+
+          //Стоимость приходов текущего дня
+          SETRANGE("Posting Date", ValuationDate);
+          SETRANGE(Positive, TRUE);
+          CALCSUMS("Cost Amount", "Cost Amount (CFI)", "FI Ledger Entry Quantity");
+          AmountLong := "Cost Amount";
+          AmountLongCFI := "Cost Amount (CFI)";
+          AmountLongQty := "FI Ledger Entry Quantity";
+
+          //Обработка конвертаций ФИ самого в себя (конвертация используется при погашении, дроблении, слиянии)
+          ConvItselfAmount := 0;
+          ConvItselfAmountCFI := 0;
+          ConvItselfQty := 0;
+          SETRANGE(Conversation, TRUE);
+          IF FINDSET THEN BEGIN //Найдены приход от конвертации за текущий день
+            FILedgerEntry3.COPY(FILedgerEntry2);
+            FILedgerEntry3.SETRANGE("Short Position", FALSE);
+            FILedgerEntry3.SETRANGE(Positive, FALSE);
+            REPEAT
+              FILedgerEntry4.GET(FIValueEntry2."FI Ledger Entry No.");
+              FILedgerEntry3.SETRANGE("Conversation ID", FILedgerEntry4."Conversation ID");
+              IF FILedgerEntry3.FINDSET THEN BEGIN
+                ConvItselfAmount += "Cost Amount";
+                ConvItselfAmountCFI += "Cost Amount (CFI)";
+                ConvItselfQty += "FI Ledger Entry Quantity";
+                REPEAT
+                  // Добавляем во временную таблицу и приходную и расходную операцию конвертации
+                  TempConversEntry := FILedgerEntry4;
+                  IF TempConversEntry.INSERT THEN;
+                  TempConversEntry := FILedgerEntry3;
+                  IF TempConversEntry.INSERT THEN;
+                UNTIL FILedgerEntry3.NEXT = 0;
+              END;
+            UNTIL NEXT = 0;
+          END;
+          SETRANGE(Conversation);
+
+          IF ConvItselfQty <> 0 THEN BEGIN
+            // Уменьшаем количество и суммы текущего дня на значения от внутренней конвертации
+            AmountLong -= ConvItselfAmount;
+            AmountLongCFI -= ConvItselfAmountCFI;
+            AmountLongQty -= ConvItselfQty;
+          END;
+        END;
+
+        // расчет с-сти короткой позиции
+        IF FlagShort THEN BEGIN
+          SETRANGE("Posting Date", 0D, ValuationDate-1);
+          SETRANGE("Short Position", TRUE);
+          SETRANGE(Positive);
+          CALCSUMS("Cost Amount", "Cost Amount (CFI)", "FI Ledger Entry Quantity");
+          BalanceShort := "Cost Amount";
+          BalanceShortCFI := "Cost Amount (CFI)";
+          BalanceShortQty := "FI Ledger Entry Quantity";
+
+          SETRANGE("Posting Date", ValuationDate);
+          SETRANGE(Positive, FALSE);
+          CALCSUMS("Cost Amount", "Cost Amount (CFI)", "FI Ledger Entry Quantity");
+          AmountShort := "Cost Amount";
+          AmountShortCFI := "Cost Amount (CFI)";
+          AmountShortQty := "FI Ledger Entry Quantity";
+
+          IF (BalanceShortQty + AmountShortQty) < 0 THEN BEGIN
+            CostShort := (BalanceShort + AmountShort) / (BalanceShortQty + AmountShortQty);
+            CostShortCFI := (BalanceShortCFI + AmountShortCFI) / (BalanceShortQty + AmountShortQty);
+          END;
+        END;
+      END;
+
+      // обрабатываем расходы длинных позиций
+      IF FlagLong THEN BEGIN
+
+        //Расчет себестоимости единицы длинной позиции
+        IF (BalanceLongQty + AmountLongQty) > 0 THEN BEGIN
+          CostLong := (BalanceLong + AmountLong) / (BalanceLongQty + AmountLongQty);
+          CostLongCFI := (BalanceLongCFI + AmountLongCFI) / (BalanceLongQty + AmountLongQty);
+        END;
+
+        FILedgerEntry2.SETRANGE("Short Position", FALSE);
+        FILedgerEntry2.SETRANGE(Positive, FALSE);
+        IF FILedgerEntry2.FIND('-') THEN
+          REPEAT
+            IF NOT TempConversEntry.GET(FILedgerEntry2."Entry No.") THEN BEGIN //Исключаем операции внутренней конвертации текущего дня
+              FILedgerEntry2.CALCFIELDS("Cost Amount", "Cost Amount (CFI)");
+
+              GetRoundingPrecisionCFI(FILedgerEntry2."FI Currency Code");
+              CostDiff := ROUND(FILedgerEntry2.Quantity * CostLong - FILedgerEntry2."Cost Amount",
+                                AmountRoundingPrecision);
+              CostDiffCFI := ROUND(FILedgerEntry2.Quantity * CostLongCFI - FILedgerEntry2."Cost Amount (CFI)",
+                                   AmountRoundingPrecisionCFI);
+
+              IF (CostDiff <> 0) OR (CostDiffCFI <> 0) THEN BEGIN
+                PostFIAvgCostDate(FILedgerEntry2, CostDiff, CostDiffCFI);
+              END;
+            END;
+          UNTIL FILedgerEntry2.NEXT = 0;
+      END;
+
+      // обрабатываем приходы коротких позиций
+      IF FlagShort THEN BEGIN
+        FILedgerEntry2.SETRANGE("Short Position", TRUE);
+        FILedgerEntry2.SETRANGE(Positive, TRUE);
+        IF FILedgerEntry2.FIND('-') THEN REPEAT
+          FILedgerEntry2.CALCFIELDS("Cost Amount", "Cost Amount (CFI)");
+
+          GetRoundingPrecisionCFI(FILedgerEntry2."FI Currency Code");
+
+          CostDiff := FILedgerEntry2.Quantity * CostShort - FILedgerEntry2."Cost Amount";
+          CostDiff := ROUND(CostDiff, AmountRoundingPrecision);
+          CostDiffCFI := FILedgerEntry2.Quantity * CostShortCFI - FILedgerEntry2."Cost Amount (CFI)";
+          CostDiffCFI := ROUND(CostDiffCFI, AmountRoundingPrecisionCFI);
+          IF (CostDiff <> 0) OR (CostDiffCFI <> 0) THEN BEGIN
+            PostFIAvgCostDate(FILedgerEntry2, CostDiff, CostDiffCFI);
+          END;
+        UNTIL FILedgerEntry2.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PostFIAvgCostDate@1000000024(FILedgerEntry3@1000000000 : Record 50106;CostDiff@1000000001 : Decimal;CostDiffCFI@1000000002 : Decimal);
+    VAR
+      FIValueEntry3@1000000003 : Record 50107;
+      NextValueEntryNo@1000000004 : Integer;
+    BEGIN
+      FIValueEntry3.LOCKTABLE;
+      IF FIValueEntry3.FIND('+') THEN
+        NextValueEntryNo := FIValueEntry3."Entry No.";
+      NextValueEntryNo := NextValueEntryNo + 1;
+
+      FIValueEntry3.INIT;
+      FIValueEntry3."Entry No." := NextValueEntryNo;
+      FIValueEntry3."FI No." := FILedgerEntry3."FI No.";
+      FIValueEntry3."Posting Date" := FILedgerEntry3."Posting Date";
+      FIValueEntry3."Document No." := FILedgerEntry3."Document No.";
+      FIValueEntry3."FI Ledger Entry No." := FILedgerEntry3."Entry No.";
+      FIValueEntry3."FI Currency Code" := FILedgerEntry3."FI Currency Code";
+      FIValueEntry3."Cost Amount" := CostDiff;
+      FIValueEntry3."Cost Amount (CFI)" := CostDiffCFI;
+      FIValueEntry3."FI Entry Type" := FILedgerEntry3."FI EntryType";
+      FIValueEntry3."FI Posting Book" := FILedgerEntry3."FI Posting Book";
+      FIValueEntry3."FI Portfolio" := FILedgerEntry3."FI Portfolio";
+      FIValueEntry3."Amount Type" := FILedgerEntry3."Amount Type";
+      FIValueEntry3.Conversation := FILedgerEntry3.Conversation;
+      FIValueEntry3."Short Position" := FILedgerEntry3."Short Position";
+      FIValueEntry3.Positive := FILedgerEntry3.Positive;
+      FIValueEntry3."Cost Not Post To GL" := TRUE;  //операции не попадающие в эту процедуру уже учтены в фин. книге (н-р, покупка в длин)
+      FIValueEntry3."Global Dimension 1 Code" := FILedgerEntry3."Global Dimension 1 Code";
+      FIValueEntry3."Global Dimension 2 Code" := FILedgerEntry3."Global Dimension 2 Code";
+      FIValueEntry3.INSERT;
+    END;
+
+    PROCEDURE GetRoundingPrecisionCFI@1101495001(NewCurrencyCode@1101495000 : Code[10]);
+    BEGIN
+      IF NewCurrencyCode <> Currency.Code THEN
+        IF Currency.GET(NewCurrencyCode) THEN
+          AmountRoundingPrecisionCFI := Currency."Amount Rounding Precision"
+        ELSE
+          AmountRoundingPrecisionCFI := AmountRoundingPrecision;
+    END;
+
+    BEGIN
+    {
+      NC MTF02 II Учет ФИ
+    }
+    END.
+  }
+}
+

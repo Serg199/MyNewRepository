@@ -1,0 +1,304 @@
+OBJECT Codeunit 12418 VAT Reinstatement Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      VATDocEntryBuffer@1210000 : Record 14927;
+      Text002@1210002 : TextConst 'ENU=The %1 must not be more than %2 in %3.;RUS=%1 не должно быть больше чем %2 в %3.';
+      Text003@1210001 : TextConst 'ENU=The %1 must not be less than %2 in %3.;RUS=%1 не должно быть меньше чем %2 в %3.';
+      Text004@1210004 : TextConst 'ENU="VAT has been already reinstated for %1 %2=%3.";RUS="НДС уже восстановлен для %1 %2=%3."';
+      GLSetup@1210006 : Record 98;
+
+    PROCEDURE CreateVATReinstFromFAWriteOff@1210024(FAWriteOffActNo@1210000 : Code[20]);
+    VAR
+      VATEntry@1210004 : Record 254;
+      GenJnlLine@1210007 : Record 81;
+      FALedgerEntry@1210010 : Record 5601;
+      PostedFADocHeader@1210009 : Record 12471;
+      PostedFADocLine@1210001 : Record 12472;
+      VATReinstJnlForm@1210002 : Page 14946;
+      AcqCostAmount@1210011 : Decimal;
+      BookValueAmount@1210012 : Decimal;
+    BEGIN
+      VATEntry.SETCURRENTKEY(Type,"Object Type","Object No.");
+
+      PostedFADocHeader.GET(PostedFADocHeader."Document Type"::Writeoff,FAWriteOffActNo);
+      PostedFADocLine.SETRANGE("Document Type",PostedFADocLine."Document Type"::Writeoff);
+      PostedFADocLine.SETRANGE("Document No.",FAWriteOffActNo);
+      IF PostedFADocLine.FINDSET THEN
+        REPEAT
+          FALedgerEntry.RESET;
+          FALedgerEntry.SETCURRENTKEY("FA No.","Depreciation Book Code","FA Posting Category");
+          FALedgerEntry.SETRANGE("FA No.",PostedFADocLine."FA No.");
+          FALedgerEntry.SETRANGE("Depreciation Book Code",PostedFADocLine."Depreciation Book Code");
+          FALedgerEntry.SETRANGE("FA Posting Category",FALedgerEntry."FA Posting Category"::" ");
+          FALedgerEntry.SETRANGE("Part of Book Value",TRUE);
+          FALedgerEntry.SETRANGE("FA Posting Type",FALedgerEntry."FA Posting Type"::"Acquisition Cost");
+          FALedgerEntry.CALCSUMS(Amount);
+          AcqCostAmount := FALedgerEntry.Amount;
+
+          FALedgerEntry.SETRANGE("FA Posting Type");
+          FALedgerEntry.SETFILTER("FA Posting Date",'..%1',PostedFADocHeader."Posting Date");
+          FALedgerEntry.CALCSUMS(Amount);
+          BookValueAmount := FALedgerEntry.Amount;
+
+          VATEntry.SETRANGE(Type,VATEntry.Type::Purchase);
+          VATEntry.SETRANGE("Object Type",VATEntry."Object Type"::"Fixed Asset");
+          VATEntry.SETRANGE("Object No.",PostedFADocLine."FA No.");
+          VATEntry.SETFILTER(Base,'<>0');
+          VATEntry.SETRANGE("Prepmt. Diff.",FALSE);
+          IF VATEntry.FINDSET THEN
+            REPEAT
+              CreateVATReinstatementJnlLine(
+                GenJnlLine,
+                VATEntry,
+                PostedFADocHeader."Posting Date",
+                ROUND(VATEntry.Amount * BookValueAmount / AcqCostAmount));
+            UNTIL VATEntry.NEXT = 0;
+        UNTIL PostedFADocLine.NEXT = 0;
+
+      VATReinstJnlForm.RUN;
+    END;
+
+    PROCEDURE CreateVATReinstatementJnlLine@1210026(VAR GenJnlLine@1210006 : Record 81;VATEntry@1210010 : Record 254;PostingDate@1210000 : Date;Amount@1210005 : Decimal);
+    VAR
+      VATPostingSetup@1210002 : Record 325;
+      VendorLedgerEntry@1210001 : Record 25;
+      LineNo@1210008 : Integer;
+    BEGIN
+      VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group");
+      VATPostingSetup.TESTFIELD("VAT Reinstatement Template");
+      VATPostingSetup.TESTFIELD("VAT Reinstatement Batch");
+
+      GLSetup.GET;
+
+      GenJnlLine.SETRANGE("Journal Template Name",VATPostingSetup."VAT Reinstatement Template");
+      GenJnlLine.SETRANGE("Journal Batch Name",VATPostingSetup."VAT Reinstatement Batch");
+      IF GenJnlLine.FINDLAST THEN;
+      LineNo := GenJnlLine."Line No." + 10000;
+
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Template Name" := VATPostingSetup."VAT Reinstatement Template";
+      GenJnlLine."Journal Batch Name" := VATPostingSetup."VAT Reinstatement Batch";
+      GenJnlLine."Line No." := LineNo;
+      GenJnlLine.VALIDATE("Reinstatement VAT Entry No.",VATEntry."Entry No.");
+      GenJnlLine.VALIDATE("Posting Date",PostingDate);
+      GenJnlLine.VALIDATE(Amount,Amount);
+      GenJnlLine.VALIDATE(Correction,
+        GLSetup."Red Storno VAT Reinstatement" XOR ((GenJnlLine.Amount < 0) AND VATEntry."Prepmt. Diff."));
+      VendorLedgerEntry.GET(VATEntry."CV Ledg. Entry No.");
+      GenJnlLine."Shortcut Dimension 1 Code" := VendorLedgerEntry."Global Dimension 1 Code";
+      GenJnlLine."Shortcut Dimension 2 Code" := VendorLedgerEntry."Global Dimension 2 Code";
+      GenJnlLine."Dimension Set ID" := VendorLedgerEntry."Dimension Set ID";
+      GenJnlLine.INSERT;
+    END;
+
+    PROCEDURE Generate@1210007(VAR TempVATDocBuf@1210001 : TEMPORARY Record 14927;DateFilter@1210010 : Text[30];VATBusPostingGroupFilter@1210009 : Text[250];VATProdPostingGroupFilter@1210002 : Text[250]);
+    VAR
+      VendLedgEntry@1470000 : Record 25;
+      VATEntry@1470001 : Record 254;
+      Vend@1210005 : Record 23;
+      VATPostingSetup@1210008 : Record 325;
+      Window@1210003 : Dialog;
+      VATCount@1470002 : Integer;
+      I@1470003 : Integer;
+      CVEntryNo@1210007 : Integer;
+      PostingDate@1470004 : Date;
+      CVEntryType@1210006 : ' ,Purchase,Sale';
+    BEGIN
+      WITH TempVATDocBuf DO BEGIN
+        VATDocEntryBuffer.COPYFILTERS(TempVATDocBuf);
+        DELETEALL;
+        Window.OPEN('@1@@@@@@@@@@@@@@@');
+
+        VATEntry.RESET;
+        VATEntry.SETRANGE(Type,VATEntry.Type::Purchase);
+        VATEntry.SETRANGE(Reversed,FALSE);
+        VATEntry.SETFILTER(Amount,'<>0');
+        IF DateFilter <> '' THEN
+          VATEntry.SETFILTER("Posting Date",DateFilter);
+        IF VATBusPostingGroupFilter <> '' THEN
+          VATEntry.SETFILTER("VAT Bus. Posting Group",VATBusPostingGroupFilter);
+        IF VATProdPostingGroupFilter <> '' THEN
+          VATEntry.SETFILTER("VAT Prod. Posting Group",VATProdPostingGroupFilter);
+        VATEntry.SETFILTER("Unrealized VAT Entry No.",'<>0');
+
+        I := 0;
+        VATCount := VATEntry.COUNT;// APPROX;
+        IF VATEntry.FINDSET THEN
+          REPEAT
+            I += 1;
+            Window.UPDATE(1,ROUND(I / VATCount * 10000,1));
+            IF DateFilter <> '' THEN BEGIN
+              SETFILTER("Date Filter",DateFilter);
+              PostingDate := GETRANGEMAX("Date Filter");
+            END ELSE
+              PostingDate := WORKDATE;
+            IF VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group") THEN
+              IF VATEntry.FindCVEntry(CVEntryType,CVEntryNo) AND
+                 IsAllowedVATCalcTypeForReinstatement(VATEntry.Base,VATPostingSetup."VAT Calculation Type")
+              THEN BEGIN
+                VendLedgEntry.GET(CVEntryNo);
+                VendLedgEntry.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+                TRANSFERFIELDS(VendLedgEntry);
+                "Entry Type" := CVEntryType;
+                CALCFIELDS("Realized VAT Amount");
+                IF "Realized VAT Amount" <> 0 THEN BEGIN
+                  "Amount (LCY)" := VendLedgEntry."Amount (LCY)";
+                  "Remaining Amt. (LCY)" := VendLedgEntry."Remaining Amt. (LCY)";
+                  "Table ID" := DATABASE::"Vendor Ledger Entry";
+                  Vend.GET(VendLedgEntry."Vendor No.");
+                  "CV Name" := Vend.Name;
+                  "Document Date" := "Posting Date";
+                  IF PostingDate > "Posting Date" THEN
+                    "Posting Date" := PostingDate;
+                  IF INSERT THEN;
+                END;
+              END;
+          UNTIL VATEntry.NEXT = 0;
+        Window.CLOSE;
+      END;
+    END;
+
+    PROCEDURE CopyToJnl@1210013(VAR LineToCopy@1210000 : TEMPORARY Record 14927;VAR VATEntry@1210002 : Record 254;VATAmountFactor@1210015 : Decimal;PostingDate@1210016 : Date;PostingDescription@1210017 : Text[50]);
+    VAR
+      GenJnlLine@1210001 : Record 81;
+      SalesCrMemoHeader@1210012 : Record 114;
+      PurchCrMemoHeader@1210013 : Record 124;
+      VATReinstJnlForm@1210018 : Page 14946;
+      IsCorrection@1210014 : Boolean;
+    BEGIN
+      VATDocEntryBuffer.COPYFILTERS(LineToCopy);
+      LineToCopy.FINDSET;
+      REPEAT
+        IsCorrection := FALSE;
+        IF LineToCopy."Document Type" = LineToCopy."Document Type"::"Credit Memo" THEN
+          CASE LineToCopy."Entry Type" OF
+            LineToCopy."Entry Type"::Purchase:
+              IF PurchCrMemoHeader.GET(LineToCopy."Document No.") THEN
+                IsCorrection := PurchCrMemoHeader.Correction;
+            LineToCopy."Entry Type"::Sale:
+              IF SalesCrMemoHeader.GET(LineToCopy."Document No.") THEN
+                IsCorrection := SalesCrMemoHeader.Correction;
+          END;
+        CreateVATReinstJnlLinesExclDuplicatedEntriesByUnrealVATEntryNo(
+          GenJnlLine,VATEntry,LineToCopy."Entry No.",PostingDate,VATAmountFactor,PostingDescription);
+      UNTIL LineToCopy.NEXT = 0;
+
+      VATReinstJnlForm.RUN;
+    END;
+
+    PROCEDURE CheckAmount@1210000(GenJournalLine@1210000 : Record 81);
+    VAR
+      VATEntry@1210001 : Record 254;
+      UnrealizedVATEntry@1210002 : Record 254;
+      AvailableAmount@1210003 : Decimal;
+    BEGIN
+      WITH GenJournalLine DO BEGIN
+        VATEntry.GET("Reinstatement VAT Entry No.");
+        TESTFIELD(Amount);
+
+        IF ABS(Amount) > ABS(VATEntry.Amount) THEN
+          ERROR(Text002,FIELDCAPTION(Amount),VATEntry.Amount,GetJnlLineDescription(GenJournalLine));
+        UnrealizedVATEntry.GET(VATEntry."Unrealized VAT Entry No.");
+        IF ABS(Amount) > ABS(UnrealizedVATEntry."Unrealized Amount") THEN
+          ERROR(Text002,FIELDCAPTION(Amount),UnrealizedVATEntry."Unrealized Amount",GetJnlLineDescription(GenJournalLine));
+        IF UnrealizedVATEntry."Unrealized Amount" = UnrealizedVATEntry."Remaining Unrealized Amount" THEN
+          ERROR(
+            Text004,
+            UnrealizedVATEntry.TABLECAPTION,
+            UnrealizedVATEntry.FIELDCAPTION("Entry No."),
+            UnrealizedVATEntry."Entry No.");
+        AvailableAmount := UnrealizedVATEntry."Unrealized Amount" - UnrealizedVATEntry."Remaining Unrealized Amount";
+        IF ABS(Amount) > ABS(AvailableAmount) THEN
+          ERROR(Text002,FIELDCAPTION(Amount),AvailableAmount,GetJnlLineDescription(GenJournalLine));
+      END;
+    END;
+
+    PROCEDURE CheckPostingDate@1210005(GenJournalLine@1210000 : Record 81);
+    VAR
+      VATEntry@1210001 : Record 254;
+    BEGIN
+      WITH GenJournalLine DO BEGIN
+        VATEntry.GET("Reinstatement VAT Entry No.");
+        IF "Posting Date" < VATEntry."Posting Date" THEN
+          ERROR(Text003,FIELDCAPTION("Posting Date"),VATEntry."Posting Date",GetJnlLineDescription(GenJournalLine));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetJnlLineDescription@1210001(GenJournalLine@1210000 : Record 81) : Text[250];
+    BEGIN
+      EXIT(
+        STRSUBSTNO('%1 %2=''%3'',%4=''%5'',%6=''%7''',
+          GenJournalLine.TABLECAPTION,
+          GenJournalLine.FIELDCAPTION("Journal Template Name"),
+          GenJournalLine."Journal Template Name",
+          GenJournalLine.FIELDCAPTION("Journal Batch Name"),
+          GenJournalLine."Journal Batch Name",
+          GenJournalLine.FIELDCAPTION("Line No."),
+          GenJournalLine."Line No."));
+    END;
+
+    LOCAL PROCEDURE IsAllowedVATCalcTypeForReinstatement@1210002(VATBase@1210001 : Decimal;VATCalculationType@1210002 : Option) : Boolean;
+    VAR
+      VATPostingSetup@1210000 : Record 325;
+    BEGIN
+      EXIT(
+        (VATCalculationType = VATPostingSetup."VAT Calculation Type"::"Normal VAT") OR
+        ((VATBase = 0) AND (VATCalculationType = VATPostingSetup."VAT Calculation Type"::"Full VAT")));
+    END;
+
+    LOCAL PROCEDURE CreateVATReinstJnlLinesExclDuplicatedEntriesByUnrealVATEntryNo@1210003(VAR GenJnlLine@1210000 : Record 81;VAR VATEntry@1210001 : Record 254;EntryNo@1210003 : Integer;PostingDate@1210004 : Date;VATAmountFactor@1210005 : Decimal;PostingDescription@1210006 : Text[50]);
+    VAR
+      TempVATEntry@1210002 : TEMPORARY Record 254;
+    BEGIN
+      VATEntry.SETCURRENTKEY(Type,"CV Ledg. Entry No.");
+      VATEntry.SETRANGE("CV Ledg. Entry No.",EntryNo);
+      VATEntry.SETFILTER("Unrealized VAT Entry No.",'<>0');
+      VATEntry.SETRANGE("Manual VAT Settlement",TRUE);
+      VATEntry.SETRANGE(Reversed,FALSE);
+      VATEntry.SETRANGE("VAT Reinstatement",FALSE);
+      VATEntry.SETRANGE("VAT Allocation Type",VATEntry."VAT Allocation Type"::VAT);
+      IF NOT VATEntry.FINDSET THEN
+        EXIT;
+
+      REPEAT
+        TempVATEntry.SETRANGE("Unrealized VAT Entry No.",VATEntry."Unrealized VAT Entry No.");
+        IF TempVATEntry.FINDFIRST THEN
+          TempVATEntry.DELETE;
+        TempVATEntry := VATEntry;
+        TempVATEntry.INSERT;
+      UNTIL VATEntry.NEXT = 0;
+      TempVATEntry.SETRANGE("Unrealized VAT Entry No.");
+
+      IF TempVATEntry.FINDSET THEN
+        REPEAT
+          CreateVATReinstatementJnlLine(
+            GenJnlLine,
+            TempVATEntry,
+            PostingDate,
+            ROUND(TempVATEntry.Amount * VATAmountFactor));
+          IF PostingDescription <> '' THEN BEGIN
+            GenJnlLine.Description := PostingDescription;
+            GenJnlLine.MODIFY;
+          END;
+        UNTIL TempVATEntry.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

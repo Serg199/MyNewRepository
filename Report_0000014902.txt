@@ -1,0 +1,606 @@
+OBJECT Report 14902 Cash Report CO-4
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Cash Report CO-4;
+               RUS=Кассовая книга КО-4];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   Preview := FALSE;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF CreateDate = 0D THEN
+                    ERROR(ReportDateErr);
+                  CompanyInfo.GET;
+
+                  InitReportTemplate;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     ExcelReportBuilderManager.ExportDataToClientFile(FileName)
+                   ELSE
+                     ExcelReportBuilderManager.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 4558;    ;DataItem;                    ;
+               DataItemTable=Table270;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               SETRANGE("No.",BankAccountFilter);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  OutgoingOrder := 0;
+                                  IngoingOrder := 0;
+                                  IF Employee.GET(CashierCode) THEN
+                                    Cashier := Employee."Last Name" + ' ' + Employee.Initials
+                                  ELSE
+                                    Cashier := '';
+                                  CurrReport.PAGENO := 1;
+
+                                  SETFILTER("Date Filter",'..%1',CALCDATE('<-1D>',CreateDate));
+                                  CALCFIELDS("Balance at Date (LCY)","Balance at Date");
+                                  StartingBalance := "Balance at Date (LCY)";
+                                  IF "Currency Code" <> '' THEN
+                                    StartingBalanceCurr2 := "Balance at Date";
+
+                                  PageNo := INCSTR("Last Cash Report Page No.");
+
+                                  CheckLedgEntry.SETCURRENTKEY("Document No.","Posting Date");
+                                  CheckLedgEntry.SETRANGE("Posting Date",CreateDate);
+                                  CheckLedgEntry.SETRANGE("Bank Account No.","No.");
+
+                                  IF CheckLedgEntry.FINDSET THEN
+                                    REPEAT
+                                      IF CheckLedgEntry."Cashier Report No." <> '' THEN
+                                        PageNo := CheckLedgEntry."Cashier Report No."
+                                    UNTIL (CheckLedgEntry."Cashier Report No." <> '') OR (CheckLedgEntry.NEXT = 0)
+                                  ELSE
+                                    IF Preview THEN
+                                      PageNo := 'XXXXX';
+
+                                  CashBookYear := FORMAT(DATE2DMY(CreateDate,3));
+                                END;
+                                 }
+
+    { 4920;1   ;DataItem;                    ;
+               DataItemTable=Table271;
+               DataItemTableView=SORTING(Bank Account No.,Posting Date);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Posting Date",CreateDate);
+                               SETRANGE(Reversed,FALSE);
+
+                               IF ISEMPTY THEN
+                                 CurrReport.BREAK;
+
+                               IF PrintTitleSheet AND (ReportType = ReportType::"Cash Report CO-4") THEN
+                                 FillReportTitle;
+
+                               FillHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF IsVoided THEN
+                                    CurrReport.SKIP;
+
+                                  IF "Debit Amount" <> 0 THEN
+                                    IngoingOrder := IngoingOrder + 1
+                                  ELSE
+                                    OutgoingOrder := OutgoingOrder + 1;
+                                  DebitTotal := DebitTotal + "Debit Amount (LCY)";
+                                  CreditTotal := CreditTotal + "Credit Amount (LCY)";
+
+                                  IF "Bal. Account No." = '' THEN
+                                    CheckMgt.GetVoidedCheckParameters("Bank Account Ledger Entry")
+                                  ELSE
+                                    CASE "Bal. Account Type" OF
+                                      "Bal. Account Type"::Customer:
+                                        GetSalesBalAccNo("Bal. Account No.","Agreement No.");
+                                      "Bal. Account Type"::Vendor:
+                                        GetPurchBalAccNo("Bal. Account No.","Agreement No.");
+                                      "Bal. Account Type"::"Bank Account":
+                                        BEGIN
+                                          BankAccount.GET("Bal. Account No.");
+                                          BankPostGroup.GET(BankAccount."Bank Acc. Posting Group");
+                                          CorrAccountNo := BankPostGroup."G/L Bank Account No.";
+                                        END;
+                                      "Bal. Account Type"::"G/L Account":
+                                        CorrAccountNo := "Bal. Account No.";
+                                    END;
+
+                                  DocumentNo := "Document No.";
+
+                                  DebitCurrencyCode := '';
+                                  CreditCurrencyCode := '';
+
+                                  IF "Currency Code" = '' THEN BEGIN
+                                    // for printing form only
+                                    "Debit Amount" := 0;
+                                    "Credit Amount" := 0;
+                                  END ELSE BEGIN
+                                    IF "Debit Amount" <> 0 THEN BEGIN
+                                      DebitCurrencyCode := "Currency Code";
+                                      TotalDebitCurr2 += "Debit Amount";
+                                    END;
+
+                                    IF "Credit Amount" <> 0 THEN BEGIN
+                                      CreditCurrencyCode := "Currency Code";
+                                      TotalCreditCurr2 += "Credit Amount";
+                                    END;
+                                  END;
+
+                                  IF NOT Preview THEN BEGIN
+                                    CheckLedgEntry.SETRANGE("Bank Account Ledger Entry No.","Entry No.");
+                                    IF CheckLedgEntry.FINDFIRST THEN BEGIN
+                                      CheckLedgEntry."Cashier Report No." := PageNo;
+                                      CheckLedgEntry."Cashier Report Printed" := CheckLedgEntry."Cashier Report Printed" + 1;
+                                      CheckMgt.ModifyCheckLedgEntry(CheckLedgEntry);
+                                    END;
+                                  END;
+
+                                  FillBody;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF ISEMPTY THEN
+                                  CurrReport.BREAK;
+
+                                IF ExcelReportBuilderManager.IsPageBreakRequired('CASHDAYTOTAL','RESTINCASHEND,FOOTER') THEN
+                                  AddPageBreak;
+
+                                FillDayTotal;
+                                FillRestTotal;
+                                FillFooter;
+
+                                IF NOT Preview THEN
+                                  IF ReportType = ReportType::"Cash Report CO-4" THEN BEGIN
+                                    "Bank Account"."Last Cash Report Page No." := PageNo;
+                                    "Bank Account".MODIFY;
+                                  END;
+
+                                IF PrintLastSheet THEN
+                                  FillLastPage;
+                              END;
+
+               DataItemLink=Bank Account No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnInit=BEGIN
+               PrintLastSheetEnable := TRUE;
+               PrintTitleSheetEnable := TRUE;
+               CashierEnable := TRUE;
+             END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210012;2;Field     ;
+                  CaptionML=[ENU=Cash Account No.;
+                             RUS=Код кассы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BankAccountFilter;
+                  TableRelation="Bank Account" WHERE (Account Type=CONST(Cash Account));
+                  LookupPageID=Bank Account List }
+
+      { 1210010;2;Field     ;
+                  CaptionML=[ENU=Report Type;
+                             RUS=Тип отчета];
+                  OptionCaptionML=[ENU=Cash Report CO-4,Cash Additional Sheet;
+                                   RUS=Кассовая книга КО-4,Кассовый дополнительный лист];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportType;
+                  OnValidate=BEGIN
+                               ReportTypeOnAfterValidate;
+                             END;
+                              }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Date;
+                             RUS=Дата];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CreateDate }
+
+      { 1210002;2;Field     ;
+                  Name=Cashier;
+                  CaptionML=[ENU=Cashier;
+                             RUS=Кассир];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CashierCode;
+                  TableRelation=Employee;
+                  Enabled=CashierEnable }
+
+      { 1210000;2;Field     ;
+                  Name=PrintTitleSheet;
+                  CaptionML=[ENU=Print Title Sheet;
+                             RUS=Печать титульного листа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PrintTitleSheet;
+                  Enabled=PrintTitleSheetEnable }
+
+      { 1210004;2;Field     ;
+                  Name=PrintLastSheet;
+                  CaptionML=[ENU=Print Last Sheet;
+                             RUS=Печать последнего листа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PrintLastSheet;
+                  Enabled=PrintLastSheetEnable }
+
+      { 1210001;2;Field     ;
+                  Name=PreviewMode;
+                  CaptionML=[ENU=Preview Without Page Numbering;
+                             RUS=Предварительный просмотр без нумерации страниц];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Preview }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      BankAccount@1210030 : Record 270;
+      BankPostGroup@1210001 : Record 277;
+      Customer@1210002 : Record 18;
+      CustPostGroup@1210003 : Record 92;
+      Vendor@1210004 : Record 23;
+      VendPostGroup@1210005 : Record 93;
+      CompanyInfo@1210006 : Record 79;
+      Employee@1210023 : Record 5200;
+      CheckLedgEntry@1210007 : Record 272;
+      CheckMgt@1210000 : Codeunit 367;
+      ExcelReportBuilderManager@1210009 : Codeunit 14930;
+      LocRepMgt@1210024 : Codeunit 12401;
+      CreateDate@1210008 : Date;
+      FileName@1210020 : Text;
+      Cashier@1210010 : Text[30];
+      CashierCode@1210028 : Code[20];
+      CorrAccountNo@1210012 : Code[20];
+      PageNo@1210013 : Code[20];
+      StartingBalance@1210015 : Decimal;
+      DebitTotal@1210016 : Decimal;
+      CreditTotal@1210017 : Decimal;
+      OutgoingOrder@1210018 : Integer;
+      IngoingOrder@1210019 : Integer;
+      DocumentNo@1210025 : Code[20];
+      ReportDateErr@1210031 : TextConst 'ENU=Report Date must be defined.;RUS=Не задана дата отчета.';
+      DebitCurrencyCode@1210033 : Code[10];
+      CreditCurrencyCode@1210034 : Code[10];
+      CashBookYear@1210036 : Text[10];
+      PrintTitleSheet@1210037 : Boolean;
+      PrintLastSheet@1210038 : Boolean;
+      TotalDebitCurr2@1210043 : Decimal;
+      TotalCreditCurr2@1210044 : Decimal;
+      ReportType@1210040 : 'Cash Report CO-4,Cash Additional Sheet';
+      StartingBalanceCurr2@1210032 : Decimal;
+      BankAccountFilter@1210055 : Code[20];
+      CashierEnable@19064661 : Boolean INDATASET;
+      PrintTitleSheetEnable@19021572 : Boolean INDATASET;
+      PrintLastSheetEnable@19052534 : Boolean INDATASET;
+      CashAccountForDateTxt@1210011 : TextConst 'ENU=%1 at %2;RUS=%1 за %2';
+      PageTxt@1210014 : TextConst 'ENU=Page %1;RUS=Лист %1';
+      Preview@1210021 : Boolean;
+      CashReportCO4Txt@1210022 : TextConst 'ENU=Loose-leaf cashbook;RUS=Вкладной лист кассовой книги';
+      CashAdditionalSheetTxt@1210026 : TextConst 'ENU=Cashier report;RUS=Отчет кассира';
+
+    LOCAL PROCEDURE AddPageBreak@1210018();
+    BEGIN
+      ExcelReportBuilderManager.AddPagebreak;
+      IF NOT Preview THEN
+        PageNo := INCSTR(PageNo);
+      FillTop;
+    END;
+
+    LOCAL PROCEDURE GetPageNumber@1210014() : Integer;
+    VAR
+      Result@1210000 : Integer;
+      NumberText@1210001 : Text;
+    BEGIN
+      Result := 0;
+      NumberText := DELCHR(PageNo,'=',DELCHR(PageNo,'<>','0123456789'));
+      IF NumberText <> '' THEN
+        EVALUATE(Result,NumberText);
+
+      EXIT(Result);
+    END;
+
+    LOCAL PROCEDURE GetSalesBalAccNo@1210010(CustNo@1210001 : Code[20];AgreementCode@1210000 : Code[20]);
+    BEGIN
+      IF AgreementCode = '' THEN
+        CorrAccountNo := GetAccNoFromCust(CustNo)
+      ELSE
+        CorrAccountNo := GetAccNoFromCustAgreement(CustNo,AgreementCode);
+    END;
+
+    LOCAL PROCEDURE GetAccNoFromCust@1210006(CustNo@1210000 : Code[20]) : Code[20];
+    BEGIN
+      WITH Customer DO BEGIN
+        GET(CustNo);
+        TESTFIELD("Customer Posting Group");
+        EXIT(GetAccNoFromCustPostGroup("Customer Posting Group"));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetAccNoFromCustAgreement@1210000(CustNo@1210003 : Code[20];AgreementCode@1210002 : Code[20]) : Code[20];
+    VAR
+      CustAgreement@1210001 : Record 14902;
+    BEGIN
+      WITH CustAgreement DO BEGIN
+        GET(CustNo,AgreementCode);
+        TESTFIELD("Customer Posting Group");
+        EXIT(GetAccNoFromCustPostGroup("Customer Posting Group"));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetAccNoFromCustPostGroup@1210001(CustPostGroupCode@1210000 : Code[10]) : Code[20];
+    BEGIN
+      CustPostGroup.GET(CustPostGroupCode);
+      EXIT(CustPostGroup."Receivables Account");
+    END;
+
+    LOCAL PROCEDURE GetPurchBalAccNo@1210011(VendNo@1210001 : Code[20];AgreementCode@1210000 : Code[20]);
+    BEGIN
+      IF AgreementCode = '' THEN
+        CorrAccountNo := GetAccNoFromVend(VendNo)
+      ELSE
+        CorrAccountNo := GetAccNoFromVendAgreement(VendNo,AgreementCode);
+    END;
+
+    LOCAL PROCEDURE GetAccNoFromVend@1210008(VendNo@1210000 : Code[20]) : Code[20];
+    BEGIN
+      WITH Vendor DO BEGIN
+        GET(VendNo);
+        TESTFIELD("Vendor Posting Group");
+        EXIT(GetAccNoFromVendPostGroup("Vendor Posting Group"));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetAccNoFromVendAgreement@1210005(VendNo@1210000 : Code[20];AgreementCode@1210002 : Code[20]) : Code[20];
+    VAR
+      VendAgreement@1210003 : Record 14901;
+    BEGIN
+      WITH VendAgreement DO BEGIN
+        GET(VendNo,AgreementCode);
+        TESTFIELD("Vendor Posting Group");
+        EXIT(GetAccNoFromVendPostGroup("Vendor Posting Group"));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetAccNoFromVendPostGroup@1210002(VendPostGroupCode@1210000 : Code[10]) : Code[20];
+    BEGIN
+      VendPostGroup.GET(VendPostGroupCode);
+      EXIT(VendPostGroup."Payables Account");
+    END;
+
+    LOCAL PROCEDURE ReportTypeOnAfterValidate@19028208();
+    BEGIN
+      IF ReportType = ReportType::"Cash Report CO-4" THEN BEGIN
+        CashierEnable := TRUE;
+        PrintTitleSheetEnable := TRUE;
+        PrintLastSheetEnable := TRUE;
+      END ELSE BEGIN
+        CashierEnable := FALSE;
+        PrintTitleSheetEnable := FALSE;
+        PrintLastSheetEnable := FALSE;
+      END
+    END;
+
+    LOCAL PROCEDURE InitReportTemplate@1210004();
+    VAR
+      GeneralLedgerSetup@1210000 : Record 98;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      GeneralLedgerSetup.TESTFIELD("Cash Order KO4 Template Code");
+      ExcelReportBuilderManager.InitTemplate(GeneralLedgerSetup."Cash Order KO4 Template Code");
+      ExcelReportBuilderManager.SetSheet('Sheet1');
+    END;
+
+    LOCAL PROCEDURE FillReportTitle@1210003();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('PROLOG');
+
+      ExcelReportBuilderManager.AddDataToSection('CompanyName',CompanyInfo.Name);
+      ExcelReportBuilderManager.AddDataToSection('CodeOKPO',CompanyInfo."OKPO Code");
+      ExcelReportBuilderManager.AddDataToSection('Year',CashBookYear);
+
+      ExcelReportBuilderManager.AddPagebreak;
+    END;
+
+    LOCAL PROCEDURE FillTop@1210033();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('TOP');
+      ExcelReportBuilderManager.AddDataToSection('CashAccountName',GetPageTitle);
+      ExcelReportBuilderManager.AddDataToSection(
+        'CashDate',STRSUBSTNO(CashAccountForDateTxt,"Bank Account".Name,
+          FORMAT(CreateDate,0,'<Day,2>.<Month,2>.<Year4>')));
+
+      ExcelReportBuilderManager.AddDataToSection('CashBookPage',STRSUBSTNO(PageTxt,GetPageNumber))
+    END;
+
+    LOCAL PROCEDURE FillHeader@1210017();
+    BEGIN
+      FillTop;
+      ExcelReportBuilderManager.AddSection('HEADER');
+      ExcelReportBuilderManager.AddSection('RESTINCASH');
+      ExcelReportBuilderManager.AddDataToSection(
+        'RestInCashCashAmountDebet',FormatAmount(StartingBalance,FALSE));
+    END;
+
+    LOCAL PROCEDURE FillBody@1210019();
+    VAR
+      LocalisationManagement@1210000 : Codeunit 12400;
+    BEGIN
+      IF NOT ExcelReportBuilderManager.TryAddSectionWithPlaceForFooter('BODY','BODY') THEN BEGIN
+        AddPageBreak;
+
+        ExcelReportBuilderManager.AddSection('HEADER');
+        ExcelReportBuilderManager.AddSection('BODY');
+      END;
+
+      ExcelReportBuilderManager.AddDataToSection(
+        'BodyCashVoucher',LocalisationManagement.DigitalPartCode(DocumentNo));
+      ExcelReportBuilderManager.AddDataToSection(
+        'BodyCashNotes',"Bank Account Ledger Entry".Description);
+      ExcelReportBuilderManager.AddDataToSection('BodyCashAccountNum',CorrAccountNo);
+      ExcelReportBuilderManager.AddDataToSection(
+        'BodyCashAmountDebet',FormatAmount("Bank Account Ledger Entry"."Debit Amount (LCY)",TRUE));
+      ExcelReportBuilderManager.AddDataToSection(
+        'BodyCashAmountCredit',FormatAmount("Bank Account Ledger Entry"."Credit Amount (LCY)",TRUE));
+
+      IF ("Bank Account Ledger Entry"."Debit Amount" <> 0) OR ("Bank Account Ledger Entry"."Credit Amount" <> 0) THEN BEGIN
+        ExcelReportBuilderManager.AddSection('BODY');
+        ExcelReportBuilderManager.AddDataToSection(
+          'BodyCashAmountDebet',FormatAmount("Bank Account Ledger Entry"."Debit Amount",TRUE) +
+          ' ' + DebitCurrencyCode);
+        ExcelReportBuilderManager.AddDataToSection(
+          'BodyCashAmountCredit',FormatAmount("Bank Account Ledger Entry"."Credit Amount",TRUE) +
+          ' ' + CreditCurrencyCode);
+      END;
+    END;
+
+    LOCAL PROCEDURE FillDayTotal@1210028();
+    BEGIN
+      IF DebitCurrencyCode <> '' THEN
+        CreditCurrencyCode := DebitCurrencyCode
+      ELSE
+        DebitCurrencyCode := CreditCurrencyCode;
+
+      IF TotalDebitCurr2 = 0 THEN
+        DebitCurrencyCode := '';
+
+      IF TotalCreditCurr2 = 0 THEN
+        CreditCurrencyCode := '';
+
+      ExcelReportBuilderManager.AddSection('CASHDAYTOTAL');
+      ExcelReportBuilderManager.AddDataToSection(
+        'CashDayTotalCashAmountDebet',FormatAmount(DebitTotal,FALSE));
+      ExcelReportBuilderManager.AddDataToSection(
+        'CashDayTotalCashAmountCredit',FormatAmount(CreditTotal,FALSE));
+
+      IF "Bank Account"."Currency Code" <> '' THEN BEGIN
+        ExcelReportBuilderManager.AddSection('CASHDAYTOTALCUR');
+        IF TotalDebitCurr2 <> 0 THEN
+          ExcelReportBuilderManager.AddDataToSection(
+            'CashDayTotalCurDebet',FormatAmount(TotalDebitCurr2,FALSE) + ' ' + DebitCurrencyCode);
+        IF TotalCreditCurr2 <> 0 THEN
+          ExcelReportBuilderManager.AddDataToSection(
+            'CashDayTotalCurCredit',FormatAmount(TotalCreditCurr2,FALSE) + ' ' + CreditCurrencyCode);
+      END;
+    END;
+
+    LOCAL PROCEDURE FillRestTotal@1210029();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('RESTINCASHEND');
+      ExcelReportBuilderManager.AddDataToSection(
+        'RestInCashEndBodyCashAmountDebet',
+        FormatAmount(StartingBalance + DebitTotal - CreditTotal,FALSE));
+
+      IF "Bank Account"."Currency Code" <> '' THEN BEGIN
+        ExcelReportBuilderManager.AddSection('RESTINCASHENDCUR');
+        IF StartingBalanceCurr2 + TotalDebitCurr2 - TotalCreditCurr2 <> 0 THEN
+          ExcelReportBuilderManager.AddDataToSection(
+            'RestInCashEndCurAmount',
+            FORMAT(StartingBalanceCurr2 + TotalDebitCurr2 - TotalCreditCurr2,0,
+              '<Sign><Integer Thousand><Decimals,3>') +
+            ' ' + "Bank Account"."Currency Code");
+      END;
+    END;
+
+    LOCAL PROCEDURE FillFooter@1210030();
+    VAR
+      LocalisationManagement@1210000 : Codeunit 12400;
+    BEGIN
+      ExcelReportBuilderManager.AddSection('FOOTER');
+      ExcelReportBuilderManager.AddDataToSection('CashierName',Cashier);
+      ExcelReportBuilderManager.AddDataToSection('IncomeOrder',LocalisationManagement.Integer2Text(IngoingOrder,1,'','',''));
+      ExcelReportBuilderManager.AddDataToSection('OutgoingOrder',LocalisationManagement.Integer2Text(OutgoingOrder,1,'','',''));
+      ExcelReportBuilderManager.AddDataToSection('AccountantNameFooter',CompanyInfo."Accountant Name");
+    END;
+
+    LOCAL PROCEDURE FillLastPage@1210031();
+    VAR
+      LastPageNo@1210000 : Integer;
+    BEGIN
+      ExcelReportBuilderManager.AddPagebreak;
+      ExcelReportBuilderManager.AddSection('EPILOG');
+      LastPageNo := GetPageNumber;
+      IF LastPageNo <> 0 THEN
+        ExcelReportBuilderManager.AddDataToSection('NumberOfList',FORMAT(LastPageNo));
+    END;
+
+    PROCEDURE InitializeRequest@1210009(CashAccountNo@1210000 : Code[20];NewCreateDate@1210001 : Date;NewPrintTitleSheet@1210002 : Boolean;NewPrintLastSheet@1210003 : Boolean;NewReportType@1210004 : Option);
+    BEGIN
+      BankAccountFilter := CashAccountNo;
+      CreateDate := NewCreateDate;
+      PrintTitleSheet := NewPrintTitleSheet;
+      PrintLastSheet := NewPrintLastSheet;
+      ReportType := NewReportType;
+    END;
+
+    LOCAL PROCEDURE IsVoided@1210015() : Boolean;
+    VAR
+      CheckLedgerEntry@1210000 : Record 272;
+    BEGIN
+      WITH CheckLedgerEntry DO BEGIN
+        SETRANGE("Bank Account No.","Bank Account Ledger Entry"."Bank Account No.");
+        SETRANGE("Posting Date","Bank Account Ledger Entry"."Posting Date");
+        SETRANGE("Document No.","Bank Account Ledger Entry"."Document No.");
+        SETRANGE("Entry Status","Entry Status"::"Financially Voided");
+        EXIT(NOT ISEMPTY);
+      END;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210007(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    LOCAL PROCEDURE FormatAmount@1210012(Amount@1210000 : Decimal;BlankZero@1210001 : Boolean) : Text;
+    BEGIN
+      IF BlankZero AND (Amount = 0) THEN
+        EXIT('');
+
+      EXIT(LocRepMgt.FormatReportValue(Amount,2));
+    END;
+
+    LOCAL PROCEDURE GetPageTitle@1210013() : Text;
+    BEGIN
+      CASE ReportType OF
+        ReportType::"Cash Report CO-4":
+          EXIT(CashReportCO4Txt);
+        ReportType::"Cash Additional Sheet":
+          EXIT(CashAdditionalSheetTxt);
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

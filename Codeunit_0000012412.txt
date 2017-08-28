@@ -1,0 +1,338 @@
+OBJECT Codeunit 12412 PrepmtDiffManagement
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1001 : Record 98;
+      SalesSetup@1002 : Record 311;
+      PurchSetup@1003 : Record 312;
+      AdvAdjmtEntryBuff@1210001 : TEMPORARY Record 383;
+      DimMgt@1210000 : Codeunit 408;
+      InitialVATTransactionNo@1210003 : Integer;
+
+    PROCEDURE Init@1();
+    BEGIN
+      GLSetup.GET;
+      SalesSetup.GET;
+      PurchSetup.GET;
+
+      AdvAdjmtEntryBuff.DELETEALL;
+    END;
+
+    PROCEDURE UpdateCurrFactor@1470028(VAR NewCVLedgEntryBuf@1470001 : Record 382;VAR OldCVLedgEntryBuf@1470000 : Record 382);
+    BEGIN
+      OldCVLedgEntryBuf."Adjusted Currency Factor" := NewCVLedgEntryBuf."Adjusted Currency Factor";
+      OldCVLedgEntryBuf."Original Currency Factor" := NewCVLedgEntryBuf."Original Currency Factor";
+      NewCVLedgEntryBuf."Adjusted Currency Factor" := 1;
+      NewCVLedgEntryBuf."Original Currency Factor" := 1;
+    END;
+
+    PROCEDURE LookupTaxDim@1210000(Type@1210001 : 'Condition,Kind';VAR Value@1210003 : Code[20]);
+    VAR
+      TaxRegSetup@1210000 : Record 17236;
+      DimValue@1210002 : Record 349;
+      DimCode@1210004 : Code[20];
+    BEGIN
+      DimCode := TaxRegSetup.GetDimCode(Type);
+      DimValue.SETFILTER("Dimension Code",DimCode);
+      IF DimValue.GET(DimCode,Value) THEN;
+      IF PAGE.RUNMODAL(PAGE::"Dimension Value List",DimValue) = ACTION::LookupOK THEN BEGIN
+        DimValue.GET(DimCode,DimValue.Code);
+        Value := DimValue.Code;
+      END;
+    END;
+
+    PROCEDURE ValidateTaxDim@1210001(Type@1210001 : 'Condition,Kind';Value@1210000 : Code[20]);
+    VAR
+      TaxRegSetup@1210003 : Record 17236;
+      DimValue@1210002 : Record 349;
+    BEGIN
+      IF Value <> '' THEN
+        DimValue.GET(TaxRegSetup.GetDimCode(Type),Value);
+    END;
+
+    PROCEDURE UpdateCorrDocDimSetID@1210003(AccountType@1210001 : 'Vendor,Customer';VAR DimSetID@1210000 : Integer;CorrType@1210004 : 'Loss,Gain';PrepAdjmt@1210007 : Boolean);
+    VAR
+      TempDimSetEntry@1210002 : TEMPORARY Record 480;
+      DimType@1210005 : 'Condition,Kind';
+      DimCode@1210003 : Code[20];
+      DimValueCode@1210008 : Code[20];
+    BEGIN
+      DimMgt.GetDimensionSet(TempDimSetEntry,DimSetID);
+
+      FOR DimType := 0 TO 1 DO BEGIN
+        GetTaxDimCodes(AccountType,CorrType,DimType,DimCode,DimValueCode,PrepAdjmt);
+        UpdateDimSet(TempDimSetEntry,DimSetID,DimCode,DimValueCode);
+      END;
+
+      DimSetID := DimMgt.GetDimensionSetID(TempDimSetEntry);
+    END;
+
+    PROCEDURE GetTaxDimCodes@1210008(AccountType@1210004 : 'Vendor,Customer';CorrType@1210003 : 'Loss,Gain';DimType@1210007 : 'Condition,Kind';VAR DimCode@1210005 : Code[20];VAR DimValueCode@1210006 : Code[20];PrepAdjmt@1210008 : Boolean);
+    VAR
+      TaxRegSetup@1210002 : Record 17236;
+      SalesSetup@1210001 : Record 311;
+      PurchSetup@1210000 : Record 312;
+    BEGIN
+      DimCode := TaxRegSetup.GetDimCode(DimType);
+      CASE AccountType OF
+        AccountType::Customer:
+          DimValueCode := SalesSetup.GetTaxDimValue(CorrType,DimType,PrepAdjmt);
+        AccountType::Vendor:
+          DimValueCode := PurchSetup.GetTaxDimValue(CorrType,DimType,PrepAdjmt);
+      END;
+    END;
+
+    PROCEDURE InsertPrepmtDiffBufEntry@1210010(DtldCVLedgEntryBuf@1210000 : Record 383;PostingType@1210001 : ',Purchase,Sale';InitialVATTransactionNo@1210002 : Integer);
+    BEGIN
+      AdvAdjmtEntryBuff.INIT;
+      AdvAdjmtEntryBuff := DtldCVLedgEntryBuf;
+      AdvAdjmtEntryBuff."Gen. Posting Type" := PostingType;
+      AdvAdjmtEntryBuff."Transaction No." := InitialVATTransactionNo;
+      AdvAdjmtEntryBuff.INSERT;
+      AdvAdjmtEntryBuff.RESET;
+    END;
+
+    PROCEDURE PrepmtDiffProcessing@1210013(Unapply@1210003 : Boolean;PreviewMode@1210002 : Boolean);
+    VAR
+      SalesPost@1210000 : Codeunit 80;
+      PurchPost@1210001 : Codeunit 90;
+    BEGIN
+      WITH AdvAdjmtEntryBuff DO BEGIN
+        RESET;
+        IF FINDSET THEN
+          REPEAT
+            CASE "Gen. Posting Type" OF
+              "Gen. Posting Type"::Purchase:
+                BEGIN
+                  PurchPost.SetPreviewMode(PreviewMode);
+                  PurchPost.SetIndirectCall(TRUE);
+                  IF Unapply THEN BEGIN
+                    "Transaction No." := InitialVATTransactionNo;
+                    PurchPost.CreatePDDocForUnapply(AdvAdjmtEntryBuff);
+                  END ELSE
+                    PurchPost.CreateCorrDoc(AdvAdjmtEntryBuff,TRUE);
+                END;
+              "Gen. Posting Type"::Sale:
+                BEGIN
+                  PurchPost.SetPreviewMode(PreviewMode);
+                  PurchPost.SetIndirectCall(TRUE);
+                  IF Unapply THEN BEGIN
+                    "Transaction No." := InitialVATTransactionNo;
+                    SalesPost.CreatePDDocForUnapply(AdvAdjmtEntryBuff);
+                  END ELSE
+                    SalesPost.CreateCorrDoc(AdvAdjmtEntryBuff,TRUE);
+                END;
+            END;
+          UNTIL NEXT = 0;
+        DELETEALL;
+      END;
+    END;
+
+    PROCEDURE CheckCalcPrepDiff@1210011(NewCVLedgEntry@1210009 : Record 382;OldCVLedgEntry@1210008 : Record 382) : Boolean;
+    VAR
+      Currency@1210000 : Record 4;
+    BEGIN
+      IF NOT GLSetup."Enable Russian Accounting" THEN
+        EXIT(FALSE);
+
+      IF NOT GLSetup."Cancel Curr. Prepmt. Adjmt." THEN
+        EXIT(FALSE);
+
+      IF (NOT NewCVLedgEntry.Prepayment) AND (NOT OldCVLedgEntry.Prepayment) THEN
+        EXIT(FALSE);
+
+      IF (NewCVLedgEntry."Currency Code" <> OldCVLedgEntry."Currency Code") AND
+         (NewCVLedgEntry."Currency Code" <> '') AND (OldCVLedgEntry."Currency Code" <> '')
+      THEN
+        EXIT(FALSE);
+
+      IF NOT CheckAllowedDocComb(NewCVLedgEntry,OldCVLedgEntry) THEN
+        EXIT(FALSE);
+
+      IF NewCVLedgEntry.Prepayment THEN BEGIN
+        Currency.GET(NewCVLedgEntry."Currency Code");
+        EXIT((NOT Currency.Conventional) AND (OldCVLedgEntry."Currency Code" <> ''));
+      END;
+
+      IF OldCVLedgEntry.Prepayment THEN
+        IF OldCVLedgEntry."Currency Code" <> '' THEN BEGIN
+          Currency.GET(OldCVLedgEntry."Currency Code");
+          EXIT(NOT Currency.Conventional);
+        END ELSE
+          EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE UpdatePDDocPostingNo@1210014(VAR PostingSeries@1000 : Code[10];VAR PostingNo@1001 : Code[20];PrepmtDiffEntryNo@1002 : Integer;AccountType@1210000 : 'Cust,Vend';DocType@1470000 : 'Invoice,Credit Memo');
+    BEGIN
+      CASE AccountType OF
+        AccountType::Cust:
+          BEGIN
+            SalesSetup.GET;
+            CASE SalesSetup."PD Doc. Nos. Type" OF
+              SalesSetup."PD Doc. Nos. Type"::"Use No. Series":
+                BEGIN
+                  SalesSetup.TESTFIELD("Posted PD Doc. Nos.");
+                  PostingSeries := SalesSetup."Posted PD Doc. Nos.";
+                  PostingNo := '';
+                END;
+              SalesSetup."PD Doc. Nos. Type"::"Add Symbol":
+                BEGIN
+                  PostingSeries := '';
+                  UpdatePDDocPostingNoAddSmbl(PostingNo,PrepmtDiffEntryNo,0,DocType);
+                END;
+            END;
+          END;
+        AccountType::Vend:
+          BEGIN
+            PurchSetup.GET;
+            CASE PurchSetup."PD Doc. Nos. Type" OF
+              PurchSetup."PD Doc. Nos. Type"::"Use No. Series":
+                BEGIN
+                  PurchSetup.TESTFIELD("Posted PD Doc. Nos.");
+                  PostingSeries := PurchSetup."Posted PD Doc. Nos.";
+                  PostingNo := '';
+                END;
+              PurchSetup."PD Doc. Nos. Type"::"Add Symbol":
+                BEGIN
+                  PostingSeries := '';
+                  UpdatePDDocPostingNoAddSmbl(PostingNo,PrepmtDiffEntryNo,1,DocType);
+                END;
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE UpdatePDDocPostingNoAddSmbl@1210025(VAR PostingNo@1001 : Code[20];PrepmtDiffEntryNo@1002 : Integer;AccountType@1210003 : 'Cust,Vend';DocType@1470000 : 'Invoice,Credit Memo');
+    VAR
+      SalesInvHeader@1470001 : Record 112;
+      SalesCrMemoHeader@1470002 : Record 114;
+      PurchInvHeader@1470004 : Record 122;
+      PurchCrMemoHeader@1470003 : Record 124;
+      PDDocCount@1210004 : Integer;
+      SymbolForPDDoc@1210002 : Code[10];
+    BEGIN
+      CASE AccountType OF
+        AccountType::Cust:
+          BEGIN
+            SalesSetup.GET;
+            SalesSetup.TESTFIELD("Symbol for PD Doc.");
+            SymbolForPDDoc := SalesSetup."Symbol for PD Doc.";
+            PostingNo := COPYSTR(PostingNo + SymbolForPDDoc,1,MAXSTRLEN(PostingNo));
+            PDDocCount := 0;
+
+            CASE DocType OF
+              DocType::Invoice:
+                BEGIN
+                  SalesInvHeader.RESET;
+                  SalesInvHeader.SETFILTER("No.",'%1',PostingNo + '*');
+                  PDDocCount := SalesInvHeader.COUNT;
+                END;
+              DocType::"Credit Memo":
+                BEGIN
+                  SalesCrMemoHeader.RESET;
+                  SalesCrMemoHeader.SETFILTER("No.",'%1',PostingNo + '*');
+                  PDDocCount := SalesCrMemoHeader.COUNT;
+                END;
+            END;
+          END;
+        AccountType::Vend:
+          BEGIN
+            PurchSetup.GET;
+            PurchSetup.TESTFIELD("Symbol for PD Doc.");
+            SymbolForPDDoc := PurchSetup."Symbol for PD Doc.";
+            PostingNo := COPYSTR(PostingNo + SymbolForPDDoc,1,MAXSTRLEN(PostingNo));
+            PDDocCount := 0;
+
+            CASE DocType OF
+              DocType::Invoice:
+                BEGIN
+                  PurchInvHeader.RESET;
+                  PurchInvHeader.SETFILTER("No.",'%1',PostingNo + '*');
+                  PDDocCount := PurchInvHeader.COUNT;
+                END;
+              DocType::"Credit Memo":
+                BEGIN
+                  PurchCrMemoHeader.RESET;
+                  PurchCrMemoHeader.SETFILTER("No.",'%1',PostingNo + '*');
+                  PDDocCount := PurchCrMemoHeader.COUNT;
+                END;
+            END;
+          END;
+      END;
+
+      IF PDDocCount > 0 THEN
+        PostingNo := COPYSTR(PostingNo + FORMAT(PDDocCount),1,MAXSTRLEN(PostingNo));
+    END;
+
+    PROCEDURE CheckAllowedDocComb@1210016(NewCVLedgEntry@1210009 : Record 382;OldCVLedgEntry@1210008 : Record 382) : Boolean;
+    BEGIN
+      IF NewCVLedgEntry.Prepayment THEN
+        EXIT(
+          ((NewCVLedgEntry."Document Type" = NewCVLedgEntry."Document Type"::Payment) AND
+           (OldCVLedgEntry."Document Type" = OldCVLedgEntry."Document Type"::Invoice)) OR
+          ((NewCVLedgEntry."Document Type" = NewCVLedgEntry."Document Type"::Refund) AND
+           (OldCVLedgEntry."Document Type" = OldCVLedgEntry."Document Type"::"Credit Memo")));
+
+      EXIT(
+        ((NewCVLedgEntry."Document Type" = NewCVLedgEntry."Document Type"::Invoice) AND
+         (OldCVLedgEntry."Document Type" = OldCVLedgEntry."Document Type"::Payment)) OR
+        ((NewCVLedgEntry."Document Type" = NewCVLedgEntry."Document Type"::"Credit Memo") AND
+         (OldCVLedgEntry."Document Type" = OldCVLedgEntry."Document Type"::Refund)));
+    END;
+
+    PROCEDURE SetInitialVATTransactionNo@1210018(SavedInitialVATTransactionNo@1210000 : Integer);
+    BEGIN
+      InitialVATTransactionNo := SavedInitialVATTransactionNo;
+    END;
+
+    PROCEDURE IsDifferentTaxPeriod@1210017(InvDocPostingDate@1210001 : Date;CorrDocPostingDate@1210002 : Date) : Boolean;
+    VAR
+      TaxPeriod@1210003 : ARRAY [2] OF Integer;
+    BEGIN
+      TaxPeriod[1] := ROUND(DATE2DMY(InvDocPostingDate,2) / 3,1,'>');
+      TaxPeriod[2] := ROUND(DATE2DMY(CorrDocPostingDate,2) / 3,1,'>');
+      IF TaxPeriod[1] <> TaxPeriod[2] THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE UpdateDimSet@1210026(VAR TempDimSetEntry@1210002 : TEMPORARY Record 480;DimSetID@1210003 : Integer;DimCode@1210001 : Code[20];DimValueCode@1210000 : Code[20]);
+    VAR
+      DimVal@1210004 : Record 349;
+    BEGIN
+      IF DimCode = '' THEN
+        EXIT;
+      IF TempDimSetEntry.GET(DimSetID,DimCode) THEN
+        TempDimSetEntry.DELETE;
+      IF DimValueCode <> '' THEN BEGIN
+        DimVal.GET(DimCode,DimValueCode);
+        TempDimSetEntry.INIT;
+        TempDimSetEntry."Dimension Set ID" := DimSetID;
+        TempDimSetEntry."Dimension Code" := DimCode;
+        TempDimSetEntry."Dimension Value Code" := DimValueCode;
+        TempDimSetEntry."Dimension Value ID" := DimVal."Dimension Value ID";
+        TempDimSetEntry.INSERT;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

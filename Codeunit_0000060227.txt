@@ -1,0 +1,650 @@
+OBJECT Codeunit 60227 VendEntry-Apply Posted Entrie1
+{
+  OBJECT-PROPERTIES
+  {
+    Date=08.07.10;
+    Time=21:38:33;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=25;
+    Permissions=TableData 25=rimd;
+    OnRun=VAR
+            EntriesToApply@1000 : Record 25;
+            ApplicationDate@1001 : Date;
+            "NCV>"@1000000003 : Integer;
+            GLRegister@1000000002 : Record 45;
+            iOutputType@1000000001 : Integer;
+            "NCV<"@1000000000 : Integer;
+          BEGIN
+            //NC PIF052 > DP
+            CLEAR(PostApplication);
+            PostApplication.ClearOldSelectedDim(2);
+            COMMIT;
+            iOutputType := STRMENU(Text50001,1);
+            IF iOutputType = 0 THEN
+              EXIT;
+            IF iOutputType < 3 THEN
+              blnCommit := TRUE;
+            //NC PIF052 < DP
+
+            WITH Rec DO BEGIN
+              IF NOT PaymentToleranceMgt.PmtTolVend(Rec) THEN
+                EXIT;
+              GET("Entry No.");
+
+              ApplicationDate := 0D;
+              EntriesToApply.SETCURRENTKEY("Vendor No.","Applies-to ID");
+              EntriesToApply.SETRANGE("Vendor No.","Vendor No.");
+              EntriesToApply.SETRANGE("Applies-to ID","Applies-to ID");
+              EntriesToApply.FIND('-');
+              REPEAT
+                IF EntriesToApply."Posting Date" > ApplicationDate THEN
+                  ApplicationDate := EntriesToApply."Posting Date";
+              UNTIL EntriesToApply.NEXT = 0;
+              PostApplication.SetValues("Document No.",ApplicationDate,"External Document No.");
+
+              //NC PIF052 > DP
+              PostApplication.SetValues2(2);
+              //NC PIF052 < DP
+
+              PostApplication.LOOKUPMODE(TRUE);
+              IF ACTION::LookupOK = PostApplication.RUNMODAL THEN BEGIN
+                GenJnlLine.INIT;
+                PostApplication.GetValues(GenJnlLine."Document No.",GenJnlLine."Posting Date",GenJnlLine."External Document No.");
+
+                //NC PIF052 > DP
+                PostApplication.GetValues2(ColumnDimPos,ColumnDimNeg);
+                //NC PIF052 < DP
+
+                IF GenJnlLine."Posting Date" < ApplicationDate THEN
+                  ERROR(
+                    Text003,
+                    GenJnlLine.FIELDCAPTION("Posting Date"),FIELDCAPTION("Posting Date"),TABLECAPTION);
+              END ELSE
+                EXIT;
+
+              //NC PIF052 > DP
+              IF ColumnDimPos <> '' THEN
+                DimSelectionBuf.CompareDimText(2,FORM::Page50029,'',ColumnDimPos,Text50000);
+              IF ColumnDimNeg <> '' THEN
+                DimSelectionBuf.CompareDimText(2,-FORM::Page50029,'',ColumnDimNeg,Text50000);
+              SelectedDim.GetSelectedDim(USERID,2,FORM::Page50029,'',TempSelectedDimPos);
+              SelectedDim.GetSelectedDim(USERID,2,-FORM::Page50029,'',TempSelectedDimNeg);
+              TempSelectedDimPos.SETFILTER("New Dimension Value Code", '<>%1', '');
+              TempSelectedDimNeg.SETFILTER("New Dimension Value Code", '<>%1', '');
+              //NC PIF052 < DP
+
+              Window.OPEN(Text001);
+
+              SourceCodeSetup.GET;
+
+              GenJnlLine."Document Date" := GenJnlLine."Posting Date";
+              GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+              GenJnlLine."Account No." := "Vendor No.";
+              CALCFIELDS("Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+              GenJnlLine.Correction :=
+                ("Debit Amount" < 0) OR ("Credit Amount" < 0) OR
+                ("Debit Amount (LCY)" < 0) OR ("Credit Amount (LCY)" < 0);
+              GenJnlLine."Document Type" := "Document Type";
+              GenJnlLine.Description := Description;
+              GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+              GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+              GenJnlLine."Posting Group" := "Vendor Posting Group";
+              GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+              GenJnlLine."Source No." := "Vendor No.";
+              GenJnlLine."Source Code" := SourceCodeSetup."Purchase Entry Application";
+              GenJnlLine."System-Created Entry" := TRUE;
+              GenJnlLine."Vendor VAT Invoice No." := "Vendor VAT Invoice No.";
+              GenJnlLine."Vendor VAT Invoice Date" := "Vendor VAT Invoice Date";
+              GenJnlLine."Vendor VAT Invoice Rcvd Date" := "Vendor VAT Invoice Rcvd Date";
+              GenJnlLine.Prepayment := Prepayment;
+              GenJnlLine."Agreement No." := "Agreement No.";
+
+
+              //NC PIF066 > DP
+              IF "VAT Return Payment" THEN BEGIN
+                GenJnlLine."VAT Settlement Part" := GenJnlLine."VAT Settlement Part"::Full;
+                GenJnlLine."VAT Return Payment":= "VAT Return Payment";
+              END;
+              //NC PIF066 < DP
+
+
+              EntryNoBeforeApplication := FindLastApplDtldVendLedgEntry;
+
+              //NC PIF052 > DP
+              GenJnlPostLine.InsertNegDim(TempSelectedDimPos,TempSelectedDimNeg);
+              //NC PIF052 < DP
+
+              GenJnlPostLine.VendPostApplyVendLedgEntry(GenJnlLine,Rec);
+
+              EntryNoAfterApplication := FindLastApplDtldVendLedgEntry;
+              IF EntryNoAfterApplication = EntryNoBeforeApplication THEN
+                ERROR(Text004);
+
+              //NC PIF052 > DP
+              IF NOT blnCommit THEN
+              //NC PIF052 < DP
+
+              COMMIT;
+              Window.CLOSE;
+
+              //NC PIF052 > DP
+              IF iOutputType <3 THEN
+                BEGIN
+                  blnUnapply :=FALSE;
+                  PrintGLReport("Entry No.",iOutputType);
+                END;
+              IF NOT blnCommit THEN
+              //NC PIF052 < DP
+
+              MESSAGE(Text002);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000 : TextConst 'ENU=Posting application...;RUS=Учет применения...';
+      Text002@1001 : TextConst 'ENU=The application was successfully posted.;RUS=Применение было успешно учтено.';
+      Text003@1002 : TextConst 'ENU=The %1 entered must not be before the %2 on the %3.;RUS=Введенная %1 не должно быть раньше %2 в %3.';
+      Text004@1003 : TextConst 'ENU=The application was successfully posted though no entries have been applied.;RUS=Приложение было успешно учтено, но ни одна из операций не была применена.';
+      SourceCodeSetup@1004 : Record 242;
+      GenJnlLine@1005 : Record 81;
+      GenJnlCheckLine@1022 : Codeunit 11;
+      GenJnlPostLine@1007 : Codeunit 12;
+      PaymentToleranceMgt@1011 : Codeunit 426;
+      AmtDiffManagement@1210000 : Codeunit 12412;
+      Window@1008 : Dialog;
+      EntryNoBeforeApplication@1009 : Integer;
+      EntryNoAfterApplication@1010 : Integer;
+      Text005@1018 : TextConst 'ENU=Before you can unapply this entry, you must first unapply all application entries that were posted after this entry.;RUS=Перед отменой данной операции необходимо отменить все операции применения, учтенные после этой операции.';
+      Text006@1017 : TextConst 'ENU=%1 No. %2 does not have an application entry.;RUS=%1 Но. %2 не имеет операции применения.';
+      Text007@1016 : TextConst 'ENU=Do you want to unapply the entries?;RUS=Вы хотите отменить операции?';
+      Text008@1015 : TextConst 'ENU=Unapplying and posting...;RUS=Выполняется отмена и учет...';
+      Text009@1014 : TextConst 'ENU=The entries were successfully unapplied.;RUS=Операции успешно отменены.';
+      Text010@1013 : TextConst 'ENU="There is nothing to unapply. ";RUS="Нечего отменять. "';
+      Text011@1012 : TextConst 'ENU=To unapply these entries, the program will post correcting entries.\;RUS=Чтобы отменить эти операции, программа проведет корректирующие операции.\';
+      Text012@1021 : TextConst 'ENU=Before you can unapply this entry, you must first unapply all application entries in %1 No. %2 that were posted after this entry.;RUS=Перед отменой этой операции необходимо отменить все операции применения в %1 номер %2, учтенные после этой операции.';
+      Text013@1020 : TextConst 'ENU=%1 is not within your range of allowed posting dates in %2 No. %3.;RUS=%1 находится вне диапазона разрешенных дат учета в %2 Но. %3.';
+      Text014@1019 : TextConst 'ENU=%1 is not within your range of allowed posting dates.;RUS=%1 за пределами вашего разрешенного периода учета.';
+      Text015@1023 : TextConst 'ENU=The latest %3 must be an application in %1 No. %2.;RUS=Самый последний %3 должен быть применением в %1 Но. %2.';
+      Text016@1025 : TextConst 'ENU="You cannot unapply the entry with the posting date %1, because the exchange rate for the additional reporting currency has been changed. ";RUS="Невозможно отменить операцию с датой учета %1, поскольку изменился курс дополнительной учетной валюты. "';
+      MaxPostingDate@1024 : Date;
+      Text017@1026 : TextConst 'ENU=You cannot unapply %1 No. %2 because the entry has been involved in a reversal.;RUS=Невозможно отменить %1 Но. %2, поскольку эта операция участвовала в аннулировании.';
+      Text12400@1470000 : TextConst 'ENU="This entry will be unapplied automatically if you first unapply %1 No. %2. ";RUS="Эта операция будет отменена автоматически, если сначала отменяется %1 Но. %2. "';
+      AllowAmtDiffUnapply@1470001 : Boolean;
+      "NCT >"@1000000003 : TextConst;
+      Text50000@1000000002 : TextConst 'ENU=Dimensions;RUS=Измерения';
+      Text50001@1000000001 : TextConst 'ENU=&View, &Print, Post;RUS=&Просмотреть, &Напечатать, Учесть';
+      "NCT <"@1000000000 : TextConst;
+      "NCV >"@1000000015 : Integer;
+      SelectedDim@1000000014 : Record 369;
+      TempSelectedDimPos@1000000013 : TEMPORARY Record 369;
+      TempSelectedDimNeg@1000000012 : TEMPORARY Record 369;
+      ColumnDimPos@1000000011 : Text[250];
+      ColumnDimNeg@1000000010 : Text[250];
+      DimSelectionBuf@1000000009 : Record 368;
+      blnCommit@1000000008 : Boolean;
+      CurrExchRate@1000000007 : Record 330;
+      GLSetup@1000000006 : Record 98;
+      blnUnapply@1000000005 : Boolean;
+      iOutputType@1100066000 : Integer;
+      "NCV <"@1000000004 : Integer;
+
+    LOCAL PROCEDURE FindLastApplDtldVendLedgEntry@1() : Integer;
+    VAR
+      DtldVendLedgEntry@1000 : Record 380;
+    BEGIN
+      DtldVendLedgEntry.LOCKTABLE;
+      IF DtldVendLedgEntry.FIND('+') THEN
+        EXIT(DtldVendLedgEntry."Entry No.")
+      ELSE
+        EXIT(0);
+    END;
+
+    LOCAL PROCEDURE FindLastApplEntry@2(VendLedgEntryNo@1002 : Integer) : Integer;
+    VAR
+      DtldVendLedgEntry@1001 : Record 380;
+      ApplicationEntryNo@1000 : Integer;
+    BEGIN
+      DtldVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",VendLedgEntryNo);
+      DtldVendLedgEntry.SETRANGE("Entry Type",DtldVendLedgEntry."Entry Type"::Application);
+      ApplicationEntryNo := 0;
+      IF DtldVendLedgEntry.FIND('-') THEN
+        REPEAT
+          IF (AllowAmtDiffUnapply OR (NOT DtldVendLedgEntry."Amount Difference")) AND
+             (NOT DtldVendLedgEntry."Prepmt. Diff.")
+          THEN
+          IF (DtldVendLedgEntry."Entry No." > ApplicationEntryNo) AND NOT DtldVendLedgEntry.Unapplied THEN
+            ApplicationEntryNo := DtldVendLedgEntry."Entry No.";
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+      EXIT(ApplicationEntryNo);
+    END;
+
+    LOCAL PROCEDURE FindLastTransactionNo@6(VendLedgEntryNo@1002 : Integer) : Integer;
+    VAR
+      DtldVendLedgEntry@1001 : Record 380;
+      LastTransactionNo@1000 : Integer;
+    BEGIN
+      DtldVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",VendLedgEntryNo);
+      LastTransactionNo := 0;
+      IF DtldVendLedgEntry.FIND('-') THEN
+        REPEAT
+          IF AllowAmtDiffUnapply OR (NOT DtldVendLedgEntry."Amount Difference") THEN
+          IF (DtldVendLedgEntry."Transaction No." > LastTransactionNo) AND NOT DtldVendLedgEntry.Unapplied THEN
+            LastTransactionNo := DtldVendLedgEntry."Transaction No.";
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+      EXIT(LastTransactionNo);
+    END;
+
+    PROCEDURE UnApplyDtldVendLedgEntry@3(DtldVendLedgEntry@1000 : Record 380);
+    VAR
+      ApplicationEntryNo@1001 : Integer;
+    BEGIN
+      DtldVendLedgEntry.TESTFIELD("Entry Type",DtldVendLedgEntry."Entry Type"::Application);
+      DtldVendLedgEntry.TESTFIELD(Unapplied,FALSE);
+      ApplicationEntryNo := FindLastApplEntry(DtldVendLedgEntry."Vendor Ledger Entry No.");
+
+      IF DtldVendLedgEntry."Entry No." <> ApplicationEntryNo THEN
+        ERROR(Text005);
+      CheckReversal(DtldVendLedgEntry."Vendor Ledger Entry No.");
+      UnApplyVendor(DtldVendLedgEntry);
+    END;
+
+    PROCEDURE UnApplyVendLedgEntry@7(VendLedgEntryNo@1000 : Integer);
+    VAR
+      VendLedgentry@1003 : Record 25;
+      DtldVendLedgEntry@1002 : Record 380;
+      ApplicationEntryNo@1001 : Integer;
+    BEGIN
+      CheckReversal(VendLedgEntryNo);
+      ApplicationEntryNo := FindLastApplEntry(VendLedgEntryNo);
+      IF ApplicationEntryNo = 0 THEN
+        ERROR(Text006,VendLedgentry.TABLECAPTION,VendLedgEntryNo);
+      DtldVendLedgEntry.GET(ApplicationEntryNo);
+      UnApplyVendor(DtldVendLedgEntry);
+    END;
+
+    LOCAL PROCEDURE UnApplyVendor@19(DtldVendLedgEntry@1000000000 : Record 380);
+    BEGIN
+      WITH DtldVendLedgEntry DO BEGIN
+        TESTFIELD("Entry Type","Entry Type"::Application);
+        TESTFIELD(Unapplied,FALSE);
+        UnapplyVendEntries.SetDtldVendLedgEntry("Entry No.");
+        UnapplyVendEntries.LOOKUPMODE(TRUE);
+        UnapplyVendEntries.RUNMODAL;
+      END;
+    END;
+
+    PROCEDURE PostUnApplyVendor@4(VAR DtldVendLedgEntryBuf@1008 : Record 380;DtldVendLedgEntry2@1007 : Record 380;VAR DocNo@1000 : Code[20];VAR PostingDate@1001 : Date);
+    VAR
+      GLEntry@1013 : Record 17;
+      VendLedgEntry@1004 : Record 25;
+      DtldVendLedgEntry@1010 : Record 380;
+      SourceCodeSetup@1006 : Record 242;
+      GenJnlLine@1005 : Record 81;
+      DateComprReg@1014 : Record 87;
+      GenJnlPostLine@1003 : Codeunit 12;
+      Window@1002 : Dialog;
+      ApplicationEntryNo@1011 : Integer;
+      LastTransactionNo@1009 : Integer;
+      AddCurrChecked@1012 : Boolean;
+      PostingDateChecked@1470000 : Boolean;
+      VendLedgEntry1@1470001 : Record 25;
+      DtldVendLedgEntry1@1470002 : Record 380;
+      AmtDiffEntryBuffer@1470003 : TEMPORARY Record 382;
+      "NCV>"@1000000003 : Integer;
+      GLRegister@1000000002 : Record 45;
+      "NCV<"@1000000000 : Integer;
+    BEGIN
+      IF NOT DtldVendLedgEntryBuf.FIND('-') THEN
+        ERROR(Text010);
+
+      //NC PIF052 > DP
+      COMMIT;
+      iOutputType := STRMENU(Text50001,1);
+      IF iOutputType = 0 THEN
+        EXIT;
+      IF iOutputType < 3 THEN
+        blnCommit := TRUE;
+      //NC PIF052 < DP
+
+      IF NOT AllowAmtDiffUnapply THEN
+      IF NOT CONFIRM(Text011 + Text007,FALSE) THEN
+        EXIT;
+      MaxPostingDate := 0D;
+      GLEntry.LOCKTABLE;
+      DtldVendLedgEntry.LOCKTABLE;
+      VendLedgEntry.LOCKTABLE;
+      VendLedgEntry.GET(DtldVendLedgEntry2."Vendor Ledger Entry No.");
+      CheckPostingDate(PostingDate,'',0);
+      IF PostingDate < DtldVendLedgEntry2."Posting Date" THEN
+        ERROR(Text003,
+          DtldVendLedgEntry2.FIELDCAPTION("Posting Date"),
+          DtldVendLedgEntry2.FIELDCAPTION("Posting Date"),
+          DtldVendLedgEntry2.TABLECAPTION);
+      DtldVendLedgEntry.SETCURRENTKEY("Transaction No.","Vendor No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Transaction No.",DtldVendLedgEntry2."Transaction No.");
+      DtldVendLedgEntry.SETRANGE("Vendor No.",DtldVendLedgEntry2."Vendor No.");
+      IF DtldVendLedgEntry.FIND('-') THEN
+        REPEAT
+          IF (DtldVendLedgEntry."Entry Type" <> DtldVendLedgEntry."Entry Type"::"Initial Entry") AND
+             (NOT DtldVendLedgEntry.Unapplied) AND (NOT DtldVendLedgEntry."Prepmt. Diff.")
+          THEN BEGIN
+            IF NOT PostingDateChecked THEN BEGIN
+              CheckPostingDate(
+                DtldVendLedgEntry."Posting Date",
+                DtldVendLedgEntry.TABLECAPTION,
+                DtldVendLedgEntry."Entry No.");
+                CheckAdditionalCurrency(PostingDate,DtldVendLedgEntry."Posting Date");
+                PostingDateChecked := TRUE;
+            END;
+            IF NOT AddCurrChecked THEN BEGIN
+              CheckAdditionalCurrency(PostingDate,DtldVendLedgEntry."Posting Date");
+              AddCurrChecked := TRUE;
+            END;
+            CheckReversal(DtldVendLedgEntry."Vendor Ledger Entry No.");
+            IF DtldVendLedgEntry."Entry Type" = DtldVendLedgEntry."Entry Type"::Application THEN BEGIN
+              ApplicationEntryNo :=
+                FindLastApplEntry(DtldVendLedgEntry."Vendor Ledger Entry No.");
+              IF (ApplicationEntryNo <> 0) AND (ApplicationEntryNo <> DtldVendLedgEntry."Entry No.") THEN
+                ERROR(Text012,VendLedgEntry.TABLECAPTION,DtldVendLedgEntry."Vendor Ledger Entry No.");
+            END;
+            LastTransactionNo := FindLastTransactionNo(DtldVendLedgEntry."Vendor Ledger Entry No.");
+            IF (LastTransactionNo <> 0) AND (LastTransactionNo <> DtldVendLedgEntry."Transaction No.") THEN
+              ERROR(
+                Text015,
+                VendLedgEntry.TABLECAPTION,
+                DtldVendLedgEntry."Vendor Ledger Entry No.",
+                VendLedgEntry.FIELDCAPTION("Transaction No."));
+
+            IF NOT AllowAmtDiffUnapply THEN BEGIN
+              VendLedgEntry1.GET(DtldVendLedgEntry."Vendor Ledger Entry No.");
+              IF DtldVendLedgEntry1.GET(VendLedgEntry1."Amt. Diff. Appln. Entry No.") THEN
+                ERROR(Text12400,VendLedgEntry1.TABLECAPTION,DtldVendLedgEntry1."Vendor Ledger Entry No.");
+              FindAmtDiffEntry(DtldVendLedgEntry."Entry No.",AmtDiffEntryBuffer);
+            END;
+          END;
+          IF DtldVendLedgEntry."Prepmt. Diff." THEN
+            FillPrepmtDiffEntryBuff(DtldVendLedgEntry."Entry No.",PostingDate);
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+
+      UnapplyAmtDiffEntry(AmtDiffEntryBuffer,DocNo,PostingDate);
+
+      DateComprReg.CheckMaxDateCompressed(MaxPostingDate,0);
+
+      WITH DtldVendLedgEntry2 DO BEGIN
+        SourceCodeSetup.GET;
+        VendLedgEntry.GET("Vendor Ledger Entry No.");
+        GenJnlLine."Document No." := DocNo;
+        GenJnlLine."Posting Date" := PostingDate;
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+        GenJnlLine."Account No." := "Vendor No.";
+        GenJnlLine.Correction := TRUE;
+        GenJnlLine."Document Type" := GenJnlLine."Document Type"::" ";
+        GenJnlLine.Description := VendLedgEntry.Description;
+        GenJnlLine."Shortcut Dimension 1 Code" := VendLedgEntry."Global Dimension 1 Code";
+        GenJnlLine."Shortcut Dimension 2 Code" := VendLedgEntry."Global Dimension 2 Code";
+        GenJnlLine."Posting Group" := VendLedgEntry."Vendor Posting Group";
+        GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+        GenJnlLine."Source No." := "Vendor No.";
+        GenJnlLine."Source Code" := SourceCodeSetup."Unapplied Purch. Entry Appln.";
+        GenJnlLine."System-Created Entry" := TRUE;
+        Window.OPEN(Text008);
+        GenJnlPostLine.UnapplyVendLedgEntry(GenJnlLine,DtldVendLedgEntry2);
+        //NC PIF052.1 > DP
+        IF NOT blnCommit THEN BEGIN
+        //NC PIF052.1 < DP
+
+        DtldVendLedgEntryBuf.DELETEALL;
+        DocNo := '';
+        PostingDate := 0D;
+
+        //NC PIF052.1 > DP
+        END;
+        //NC PIF052.1 < DP
+        AmtDiffManagement.SetInitialVATTransactionNo(DtldVendLedgEntry2."Transaction No.");
+        AmtDiffManagement.PrepmtDiffProcessing(TRUE);
+
+
+
+        IF NOT AllowAmtDiffUnapply THEN
+
+          //NC PIF052 > DP
+          IF NOT blnCommit THEN
+          //NC PIF052 < DP
+
+          COMMIT;
+        Window.CLOSE;
+        IF NOT AllowAmtDiffUnapply THEN
+          //NC PIF052 > DP
+          BEGIN
+            IF iOutputType < 3 THEN
+              BEGIN
+                blnUnapply :=TRUE;
+                PrintGLReport(DtldVendLedgEntry."Vendor Ledger Entry No.",iOutputType);
+              END;
+            IF NOT blnCommit THEN
+          //NC PIF052 < DP
+
+          MESSAGE(Text009);
+
+          //NC PIF052 > DP
+          END;
+          //NC PIF052 < DP
+
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckPostingDate@5(PostingDate@1001 : Date;Caption@1002 : Text[50];EntryNo@1003 : Integer);
+    VAR
+      VendLedgEntry@1004 : Record 25;
+    BEGIN
+      IF GenJnlCheckLine.DateNotAllowed(PostingDate) THEN BEGIN
+        IF Caption <> '' THEN
+          ERROR(Text013,VendLedgEntry.FIELDCAPTION("Posting Date"),Caption,EntryNo)
+        ELSE
+          ERROR(Text014,VendLedgEntry.FIELDCAPTION("Posting Date"));
+      END;
+      IF PostingDate > MaxPostingDate THEN
+        MaxPostingDate := PostingDate;
+    END;
+
+    LOCAL PROCEDURE CheckAdditionalCurrency@8(OldPostingDate@1000 : Date;NewPostingDate@1001 : Date);
+    VAR
+      GLSetup@1002 : Record 98;
+      CurrExchRate@1003 : Record 330;
+    BEGIN
+      IF OldPostingDate = NewPostingDate THEN
+        EXIT;
+      GLSetup.GET;
+      IF GLSetup."Additional Reporting Currency" <> '' THEN
+        IF CurrExchRate.ExchangeRate(OldPostingDate,GLSetup."Additional Reporting Currency") <>
+           CurrExchRate.ExchangeRate(NewPostingDate,GLSetup."Additional Reporting Currency")
+        THEN
+          ERROR(Text016,NewPostingDate);
+    END;
+
+    PROCEDURE CheckReversal@9(VendLedgEntryNo@1000 : Integer);
+    VAR
+      VendLedgEntry@1001 : Record 25;
+    BEGIN
+      VendLedgEntry.GET(VendLedgEntryNo);
+      IF VendLedgEntry.Reversed THEN
+        ERROR(Text017,VendLedgEntry.TABLECAPTION,VendLedgEntryNo);
+    END;
+
+    PROCEDURE SetAllowAmtDiffUnapply@1470002(AllowUnapply@1470000 : Boolean);
+    BEGIN
+      AllowAmtDiffUnapply := AllowUnapply;
+    END;
+
+    PROCEDURE UnapplyAmtDiffEntry@1470003(VAR AmtDiffEntryBuffer@1470005 : Record 382;DocNo@1470003 : Code[20];PostingDate@1470002 : Date);
+    VAR
+      VendUnapply@1470000 : Codeunit 227;
+      DtldVendLedgEntry@1470001 : Record 380;
+      DtldVendLedgEntryBuf@1470004 : TEMPORARY Record 380;
+      PurchPost@1470006 : Codeunit 90;
+      PostDateForUnapply@1470007 : Date;
+    BEGIN
+      IF AmtDiffEntryBuffer.FIND('-') THEN
+        REPEAT
+          DtldVendLedgEntry.SETCURRENTKEY("Transaction No.","Vendor No.","Entry Type");
+          DtldVendLedgEntry.SETRANGE("Transaction No.",AmtDiffEntryBuffer."Transaction No.");
+          DtldVendLedgEntry.SETRANGE("Vendor No.",AmtDiffEntryBuffer."CV No.");
+          DtldVendLedgEntryBuf.DELETEALL;
+          IF DtldVendLedgEntry.FIND('-') THEN
+            REPEAT
+              IF (DtldVendLedgEntry."Entry Type" <> DtldVendLedgEntry."Entry Type"::"Initial Entry") AND
+                NOT DtldVendLedgEntry.Unapplied
+              THEN BEGIN
+                DtldVendLedgEntryBuf := DtldVendLedgEntry;
+                DtldVendLedgEntryBuf.INSERT;
+              END;
+            UNTIL DtldVendLedgEntry.NEXT = 0;
+
+          AmtDiffManagement.CheckForUnapply(AmtDiffEntryBuffer."Entry No.");
+
+          VendUnapply.SetAllowAmtDiffUnapply(TRUE);
+          PostDateForUnapply := PostingDate;
+          VendUnapply.PostUnApplyVendor(DtldVendLedgEntryBuf,DtldVendLedgEntry,DocNo,PostDateForUnapply);
+          PurchPost.CreateDocForUnapply(AmtDiffEntryBuffer."Entry No.",PostingDate);
+        UNTIL AmtDiffEntryBuffer.NEXT = 0;
+
+      AmtDiffEntryBuffer.RESET;
+      //NC PIF052 > DP
+      IF NOT blnCommit THEN
+      //NC PIF052 < DP
+
+      AmtDiffEntryBuffer.DELETEALL;
+    END;
+
+    PROCEDURE FindAmtDiffEntry@1470006(EntryNo@1470000 : Integer;VAR AmtDiffEntryBuffer@1470002 : Record 382);
+    VAR
+      VendLedgEntry@1470001 : Record 25;
+      DtldVendLedgEntry@1470003 : Record 380;
+    BEGIN
+      DtldVendLedgEntry.GET(EntryNo);
+      VendLedgEntry.SETCURRENTKEY("Amt. Diff. Vend. Entry No.","Amt. Diff. Appln. Entry No.");
+      VendLedgEntry.SETRANGE("Amt. Diff. Appln. Entry No.",EntryNo);
+      IF NOT VendLedgEntry.FIND('-') THEN
+        EXIT;
+
+      IF NOT AmtDiffEntryBuffer.GET(VendLedgEntry."Entry No.") THEN BEGIN
+        AmtDiffEntryBuffer."Entry No." := VendLedgEntry."Entry No.";
+        AmtDiffEntryBuffer."CV No." := VendLedgEntry."Vendor No.";
+        AmtDiffEntryBuffer."Transaction No." := VendLedgEntry."Transaction No.";
+        AmtDiffEntryBuffer.INSERT;
+      END;
+    END;
+
+    PROCEDURE FillPrepmtDiffEntryBuff@1210000(EntryNo@1210000 : Integer;PostingDate@1210001 : Date);
+    VAR
+      DtldVendLedgEntry@1470003 : Record 380;
+      DtldCVLedgEntryBuf@1210002 : Record 383;
+    BEGIN
+      DtldVendLedgEntry.GET(EntryNo);
+
+      DtldCVLedgEntryBuf.TRANSFERFIELDS(DtldVendLedgEntry);
+      DtldCVLedgEntryBuf."Posting Date" := PostingDate;
+      DtldCVLedgEntryBuf."Cust. Ledger Entry No." := DtldVendLedgEntry."Vendor Ledger Entry No.";
+      DtldCVLedgEntryBuf."Gen. Posting Type" := DtldCVLedgEntryBuf."Gen. Posting Type"::Purchase;
+
+      AmtDiffManagement.InsertPrepmtDiffBufEntry(
+        DtldCVLedgEntryBuf,DtldCVLedgEntryBuf."Gen. Posting Type"::Purchase,0);
+    END;
+
+    PROCEDURE "NCF>"@1210003();
+    BEGIN
+    END;
+
+    PROCEDURE SetTransactionJournalMode@1210002(blnJournal@1210000 : Boolean);
+    BEGIN
+      //NC PIF052 > DP
+      blnCommit := blnJournal;
+      //NC PIF052 < DP
+    END;
+
+    PROCEDURE PrintGLReport@1210001(VendLedgEntryNo@1210000 : Integer;iOutputType@1210002 : Integer);
+    VAR
+      GLReg@1210006 : Record 45;
+      GLEntry@1210005 : Record 17;
+      StartGLNo@1210004 : Integer;
+      EndGLNo@1210003 : Integer;
+      TrnNo@1210001 : Integer;
+    BEGIN
+      //NC PIF052 > DP
+      IF blnUnapply THEN
+      TrnNo := FindLastUnapplyTransactionNo(VendLedgEntryNo)
+      ELSE
+      TrnNo := FindLastTransactionNo(VendLedgEntryNo);
+
+      GLEntry.SETCURRENTKEY("Transaction No.");
+
+      IF TrnNo<>0 THEN BEGIN
+        GLEntry.SETRANGE("Transaction No.", TrnNo);
+        IF GLEntry.FIND('-') THEN BEGIN
+          GLReg.SETFILTER("From Entry No.", '>=%1', GLEntry."Entry No.");
+          GLEntry.FIND('+');
+          GLReg.SETFILTER("To Entry No.", '<=%1', GLEntry."Entry No.");
+          IF GLReg.FIND('-') THEN BEGIN
+            //GLReg.SETRECFILTER;
+            IF iOutputType = 1 THEN BEGIN
+              REPORT.SAVEASHTML(REPORT::"G/L Register",'C:\Documents and Settings\' + USERID() + '\My Documents\'+
+              USERID()+'_ap.html',FALSE,GLReg);
+              HYPERLINK('C:\Documents and Settings\' + USERID() + '\My Documents\'+USERID()+'_ap.html');
+            END ELSE REPORT.RUN(REPORT::"G/L Register",FALSE,TRUE,GLReg);
+          END;
+          ERROR('');
+        END;
+      END;
+      //NC PIF052 < DP
+    END;
+
+    LOCAL PROCEDURE FindLastUnapplyTransactionNo@1210004(VendLedgEntryNo@1002 : Integer) : Integer;
+    VAR
+      DtldVendLedgEntry@1001 : Record 380;
+      LastTransactionNo@1000 : Integer;
+    BEGIN
+      //NC PIF052 > DP
+      DtldVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",VendLedgEntryNo);
+      LastTransactionNo := 0;
+      IF DtldVendLedgEntry.FIND('-') THEN
+        REPEAT
+          IF AllowAmtDiffUnapply OR (NOT DtldVendLedgEntry."Amount Difference") THEN
+          IF (DtldVendLedgEntry."Transaction No." > LastTransactionNo) AND DtldVendLedgEntry.Unapplied THEN
+            LastTransactionNo := DtldVendLedgEntry."Transaction No.";
+        UNTIL DtldVendLedgEntry.NEXT = 0;
+      EXIT(LastTransactionNo);
+      //NC PIF052 < DP
+    END;
+
+    PROCEDURE GetiOutputType@1000000000() : Integer;
+    BEGIN
+      //NC PIF052.2 > DP
+      EXIT(iOutputType);
+      //NC PIF052.2 < DP
+    END;
+
+    PROCEDURE "NCF<"@1470007();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      NC PIF052 DP Перенос функциональности по доп. измерениям при применении
+      NC PIF059 DP Перенос функциональности Договора
+      NC PIF066 DP Модификация зачет НДС по возврату
+      NC PIF052.2 DP Добавлена функция GetiOutputType
+    }
+    END.
+  }
+}
+

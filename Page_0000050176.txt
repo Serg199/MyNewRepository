@@ -1,0 +1,683 @@
+OBJECT Page 50176 Import NAV FA Operation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.07.17;
+    Time=13:36:02;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 50119=rimd;
+    CaptionML=[ENU=FA Consolidation;
+               RUS=Консолидация ОС Операций];
+    SaveValues=No;
+    InsertAllowed=No;
+    DeleteAllowed=No;
+    SourceTable=Table50119;
+    SourceTableView=SORTING(Posting Date,FA Export Type,Processed)
+                    ORDER(Ascending);
+    PageType=List;
+    OnOpenPage=BEGIN
+                 ConsSetup.GET;
+
+                 ConsolidationSource.SETRANGE("FA Source",TRUE);
+                 ConsolidationSource.SETRANGE("Import Format",ConsolidationSource."Import Format"::FromBufferNAV);
+                 IF ConsolidationSource.FINDFIRST THEN BEGIN
+                   RESET;
+                   SETCURRENTKEY("Posting Date","FA Export Type",Processed);
+
+                   FILTERGROUP(2);
+
+                   FAOperationType := FAOperationType::Acquisition;
+                   ShowOperation := ShowOperation::Unloaded;
+                   Reverse := Reverse::No;
+                   SETRANGE("FA Export Type", FAOperationType);
+                   SETRANGE("Id Legal Entity", ConsolidationSource."Business Unit Code");
+                   SETRANGE("External System ID",ConsolidationSource."External System");
+                   CASE ShowOperation OF
+                      ShowOperation::All: SETRANGE(Processed);
+                      ShowOperation::Loaded: SETRANGE(Processed, TRUE);
+                      ShowOperation::Unloaded: SETRANGE(Processed, FALSE);
+                   END;
+                   CASE Reverse OF
+                      Reverse::All: SETRANGE(Reversed);
+                      Reverse::Yes: SETRANGE(Reversed, TRUE);
+                      Reverse::No: SETRANGE(Reversed, FALSE);
+                   END;
+                   FILTERGROUP(0);
+                 END ELSE
+                   ERROR(Text005);
+
+                 IF ConsSetup."FA Oper. Type Auto Update" THEN
+                   UpdateFAOperationType;
+               END;
+
+    ActionList=ACTIONS
+    {
+      { 1101495041;  ;ActionContainer;
+                      ActionContainerType=RelatedInformation }
+      { 1101495042;1 ;Action    ;
+                      ShortCutKey=Shift+Ctrl+D;
+                      CaptionML=[ENU=Dimensions;
+                                 RUS=Измерения];
+                      RunObject=Page 50232;
+                      RunPageLink=Table ID=CONST(5601),
+                                  Entry No.=FIELD(Entry No.),
+                                  Id Legal Entity=FIELD(Id Legal Entity);
+                      Promoted=Yes;
+                      Image=Dimensions;
+                      PromotedCategory=Process }
+      { 1101495043;0 ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 1101495044;1 ;Action    ;
+                      ShortCutKey=F11;
+                      CaptionML=[ENU=Load to FA Journals;
+                                 RUS=Загрузить в Журналы];
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=Journals;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 ImportType@1101495002 : 'Загрузка в Журнал,Загрузка и Учет';
+                                 ImportOperation@1101495001 : 'Приобретение,Ввод в Эксплуатацию,Амортизация,Реклассификация,Выбытие';
+                                 Selection@1101495000 : Integer;
+                               BEGIN
+                                 CLEAR(FAConsol);
+                                 IF FAOperationType = FAOperationType::"Not Export" THEN
+                                   ERROR(Text002);
+
+                                 IF FAOperationType = FAOperationType::All THEN
+                                   ERROR(Text003);
+
+                                 IF FAOperationType = FAOperationType::" " THEN
+                                   ERROR(Text004);
+
+                                 Selection := STRMENU(Text001);
+                                 IF Selection <> 0 THEN BEGIN
+                                   ImportType := Selection -1;
+                                   FAConsol.NAVSetShowReqForm(FALSE);
+                                   FAConsol.NAVStartFAConsolidation(ImportType, FAOperationType-2, DocumentDateFilter);
+                                 END;
+                                 CurrPage.UPDATE(FALSE);
+                               END;
+                                }
+      { 1101495050;1 ;Action    ;
+                      CaptionML=RUS=Править Колонку В Строках;
+                      Promoted=Yes;
+                      Image=Change;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 // TD BMN 26.03.2013 NCS-863 >
+                                 MARKEDONLY(TRUE);
+                                 IF NOT FINDSET THEN BEGIN
+                                   MESSAGE('Нажатием Ctrl F1 выберите строки для массовой правки колонки!');
+                                   MARKEDONLY(FALSE);
+                                 END
+                                 ELSE BEGIN
+                                   fn_UpdateColumns(Rec);
+
+                                   FAOperationType := FAOperationType::All;
+                                   ShowOperation := ShowOperation::All;
+                                   Reverse := Reverse::All;
+                                   DocumentDateFilter := '';
+                                   //NC NCS-863 > DP
+                                   {
+                                   FILTERGROUP(2);
+                                   SETRANGE("FA Export Type");
+                                   SETRANGE(Processed);
+                                   SETRANGE(Reversed);
+                                   SETRANGE("FA Posting Date");
+                                   FILTERGROUP(0);
+                                   }
+                                   //NC NCS-863 < DP
+
+                                 END;
+                                 CurrPage.UPDATE(FALSE);
+                                 // TD BMN 26.03.2013 NCS-863 <
+                               END;
+                                }
+      { 1101495049;1 ;Action    ;
+                      ShortCutKey=F5;
+                      CaptionML=[ENU=Refresh FA Operation Type;
+                                 RUS=Обновить ОС Тип Операции];
+                      Promoted=Yes;
+                      Image=RefreshLines;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 UpdateFAOperationType;
+                               END;
+                                }
+      { 1101495045;1 ;Action    ;
+                      ShortCutKey=F9;
+                      CaptionML=[ENU=Accept All Lines;
+                                 RUS=Принять Все Строки];
+                      Promoted=Yes;
+                      Image=Completed;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 FALedgerEntry.RESET;
+                                 FALedgerEntry.SETCURRENTKEY("Posting Date","FA Export Type",Processed);
+                                 FALedgerEntry.COPYFILTERS(Rec);
+                                 IF FALedgerEntry.FINDSET(TRUE,FALSE) THEN
+                                 REPEAT
+                                   FALedgerEntry.VALIDATE(Accept,TRUE);
+                                   FALedgerEntry.MODIFY(TRUE);
+                                 UNTIL FALedgerEntry.NEXT = 0;
+                                 CurrPage.UPDATE;
+                               END;
+                                }
+      { 1101495046;1 ;Action    ;
+                      ShortCutKey=Ctrl+F9;
+                      CaptionML=[ENU=Cancel Acceptions;
+                                 RUS=Отменить Принятие Всех Строк];
+                      Promoted=Yes;
+                      Image=ResetStatus;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 FALedgerEntry.RESET;
+                                 FALedgerEntry.SETCURRENTKEY("Posting Date","FA Export Type",Processed);
+                                 FALedgerEntry.COPYFILTERS(Rec);
+                                 FALedgerEntry.MODIFYALL(Accept,FALSE);
+                                 CurrPage.UPDATE;
+                               END;
+                                }
+      { 1101495047;1 ;Action    ;
+                      ShortCutKey=F4;
+                      CaptionML=[ENU=Reverse;
+                                 RUS=Аннулировать];
+                      Promoted=Yes;
+                      Image=ReverseLines;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 FABufferReverse@1101495000 : Record 50119;
+                               BEGIN
+                                 IF NOT CONFIRM(Text007) THEN BEGIN
+                                     EXIT;
+                                   END;
+
+                                 FABufferReverse.COPY(Rec);
+                                 CurrPage.SETSELECTIONFILTER(FABufferReverse);
+                                 //TDRANCS-1100>
+                                 IF FABufferReverse.FINDSET THEN REPEAT
+                                   CancelFATranslation(FABufferReverse);
+                                 UNTIL FABufferReverse.NEXT = 0;
+                                 CurrPage.UPDATE;
+                                 //TDRANCS-1100<
+                               END;
+                                }
+      { 1101495048;1 ;Action    ;
+                      ShortCutKey=Ctrl+F5;
+                      CaptionML=[ENU=Loading Errors;
+                                 RUS=Журнал Ошибок Загрузки];
+                      Promoted=Yes;
+                      Image=ErrorLog;
+                      PromotedCategory=Process }
+    }
+  }
+  CONTROLS
+  {
+    { 1101495000;0;Container;
+                ContainerType=ContentArea }
+
+    { 1101495035;1;Group  ;
+                CaptionML=[ENU=Parameters;
+                           RUS=Параметры];
+                GroupType=Group }
+
+    { 1101495040;2;Field  ;
+                CaptionML=[ENU=View by;
+                           RUS=Просмотр по];
+                OptionCaptionML=[ENU=Day,Week,Month,Quarter,Year;
+                                 RUS=День,Неделя,Месяц,Квартал,Год];
+                SourceExpr=PeriodLength;
+                OnValidate=BEGIN
+                             FindPeriod('');
+                           END;
+                            }
+
+    { 1101495036;2;Field  ;
+                CaptionML=[ENU=Document Date Filter;
+                           RUS=Дата Документа Фильтр];
+                SourceExpr=DocumentDateFilter;
+                OnValidate=BEGIN
+                             FILTERGROUP(2);
+                             IF DocumentDateFilter <> '' THEN BEGIN
+                               SETFILTER("FA Posting Date",DocumentDateFilter);
+                               DocumentDateFilter := GETFILTER("FA Posting Date");
+                             END ELSE BEGIN
+                               SETRANGE("FA Posting Date");
+                             END;
+                             FILTERGROUP(0);
+                             CurrPage.UPDATE;
+                           END;
+                            }
+
+    { 1101495037;2;Field  ;
+                CaptionML=[ENU=Type Operation Filter;
+                           RUS=Тип Операции Фильтр];
+                OptionCaptionML=[ENU=" ,Not Export,Acquisition,Release,Disposal,Reverse Acquisition,Depreciation,Transfer,All";
+                                 RUS=" ,Не Экспортировать,Приобретение,Ввод в Эксплуатацию,Реализация,Отмена Приобретения,Амортизация,Перемещение,НДС Приобретение,НДС Ввод в Эксплуатацию,Все"];
+                SourceExpr=FAOperationType;
+                OnValidate=BEGIN
+                             IF FAOperationType = FAOperationType::All THEN
+                               BEGIN
+                                 FILTERGROUP(2);
+                                 SETRANGE("FA Export Type");
+                                 FILTERGROUP(0);
+                               END
+                             ELSE
+                               BEGIN
+                                 FILTERGROUP(2);
+                                 SETRANGE("FA Export Type", FAOperationType);
+                                 FILTERGROUP(0);
+                               END;
+                             CurrPage.UPDATE;
+                           END;
+                            }
+
+    { 1101495038;2;Field  ;
+                CaptionML=[ENU=Show Operation;
+                           RUS=Показывать Операции];
+                OptionCaptionML=[ENU=All,Loaded,Unloaded;
+                                 RUS=Все,Загруженные,Незагруженные];
+                SourceExpr=ShowOperation;
+                OnValidate=BEGIN
+                             FILTERGROUP(2);
+                             CASE ShowOperation OF
+                                  ShowOperation::All: SETRANGE(Processed);
+                                  ShowOperation::Loaded: SETRANGE(Processed, TRUE);
+                                  ShowOperation::Unloaded: SETRANGE(Processed, FALSE);
+                             END;
+                             FILTERGROUP(0);
+                             CurrPage.UPDATE;
+                           END;
+                            }
+
+    { 1101495039;2;Field  ;
+                CaptionML=[ENU=Removing Operation;
+                           RUS=Удаляющие Операции];
+                OptionCaptionML=[ENU=Yes,No,All;
+                                 RUS=Да,Нет,Все];
+                SourceExpr=Reverse;
+                OnValidate=BEGIN
+                             FILTERGROUP(2);
+                             CASE Reverse OF
+                                  Reverse::All: SETRANGE(Reversed);
+                                  Reverse::Yes: SETRANGE(Reversed, TRUE);
+                                  Reverse::No: SETRANGE(Reversed, FALSE);
+                             END;
+                             FILTERGROUP(0);
+                             CurrPage.UPDATE;
+                           END;
+                            }
+
+    { 1101495001;1;Group  ;
+                Name=Group;
+                GroupType=Repeater }
+
+    { 1101495002;2;Field  ;
+                SourceExpr=Accept }
+
+    { 1101495003;2;Field  ;
+                SourceExpr="Entry No.";
+                Visible=FALSE }
+
+    { 1101495004;2;Field  ;
+                SourceExpr="FA Posting Date";
+                Editable=FALSE }
+
+    { 1101495005;2;Field  ;
+                SourceExpr="Posting Date";
+                Editable=FALSE }
+
+    { 1101495006;2;Field  ;
+                SourceExpr="Document Type";
+                Editable=FALSE }
+
+    { 1101495007;2;Field  ;
+                SourceExpr="Document Date";
+                Editable=FALSE }
+
+    { 1101495008;2;Field  ;
+                SourceExpr="Document No.";
+                Editable=FALSE }
+
+    { 1101495009;2;Field  ;
+                SourceExpr="FA No.";
+                Editable=FALSE }
+
+    { 1101495010;2;Field  ;
+                SourceExpr="Depreciation Book Code";
+                Editable=FALSE }
+
+    { 1101495011;2;Field  ;
+                SourceExpr="FA Subclass Code";
+                Visible=FALSE;
+                Editable=FALSE }
+
+    { 1101495012;2;Field  ;
+                SourceExpr="Error in Import";
+                Editable=FALSE }
+
+    { 1101495013;2;Field  ;
+                SourceExpr="FA Location Code";
+                Editable=FALSE }
+
+    { 1101495014;2;Field  ;
+                SourceExpr="FA Posting Group";
+                Editable=FALSE }
+
+    { 1101495015;2;Field  ;
+                SourceExpr=Description;
+                Editable=FALSE }
+
+    { 1101495016;2;Field  ;
+                SourceExpr="FA Posting Type";
+                Editable=FALSE }
+
+    { 1101495017;2;Field  ;
+                SourceExpr=Amount;
+                Editable=FALSE }
+
+    { 1101495018;2;Field  ;
+                SourceExpr="Debit Amount";
+                Editable=FALSE }
+
+    { 1101495019;2;Field  ;
+                SourceExpr="Credit Amount";
+                Editable=FALSE }
+
+    { 1101495020;2;Field  ;
+                SourceExpr="Reclassification Entry";
+                Editable=FALSE }
+
+    { 1101495021;2;Field  ;
+                SourceExpr="Employee No.";
+                Editable=FALSE }
+
+    { 1101495022;2;Field  ;
+                SourceExpr="G/L Entry No.";
+                Visible=FALSE }
+
+    { 1101495023;2;Field  ;
+                SourceExpr="FA Posting Category";
+                Editable=FALSE }
+
+    { 1101495024;2;Field  ;
+                SourceExpr="Not Consolidate";
+                Editable=FALSE }
+
+    { 1101495025;2;Field  ;
+                SourceExpr=Processed;
+                Editable=FALSE }
+
+    { 1101495026;2;Field  ;
+                SourceExpr="Cons. Source FA Entry No.";
+                Visible=FALSE;
+                Editable=FALSE }
+
+    { 1101495027;2;Field  ;
+                SourceExpr="FA Reclassification" }
+
+    { 1101495028;2;Field  ;
+                SourceExpr="FA Reclassification No." }
+
+    { 1101495029;2;Field  ;
+                SourceExpr="Canceled from FA No." }
+
+    { 1101495030;2;Field  ;
+                SourceExpr=Consolidated;
+                Editable=FALSE }
+
+    { 1101495031;2;Field  ;
+                SourceExpr="FA Export Type" }
+
+    { 1101495032;2;Field  ;
+                SourceExpr="Cons. FA Export Type" }
+
+    { 1101495033;2;Field  ;
+                SourceExpr="FA Def. Dim. Change" }
+
+    { 1101495034;2;Field  ;
+                SourceExpr="FA Def. Dim. Code" }
+
+  }
+  CODE
+  {
+    VAR
+      ConsSourceFilter@1101495011 : Text[1000];
+      DocumentDateFilter@1101495010 : Text[100];
+      FAOperationType@1101495009 : ' ,Not Export,Acquisition,Release,Disposal,Reverse Acquisition,Depreciation,Transfer,VAT Acquisition,VAT Release,All';
+      ShowOperation@1101495008 : 'All,Loaded,Unloaded';
+      ConsolidationSource@1101495007 : Record 50001;
+      FALedgerEntry@1101495006 : Record 50119;
+      Reverse@1101495004 : 'Yes,No,All';
+      PeriodLength@1101495003 : 'Day,Week,Month,Quarter,Year,Accounting Period';
+      ConsSetup@1101495002 : Record 50000;
+      MovingDataSetup@1101495001 : Record 50064;
+      RecPos@1101495000 : Text[1024];
+      Text001@1101495017 : TextConst 'ENU=Translate to Journals,Translate and Post;RUS=Загрузка в журнал,Загрузка и Учет';
+      Text002@1101495016 : TextConst 'ENU=Operation Type Filter should not be "Not Translate";RUS=Тип Операции Фильтр не должно быть равно "Не Импортировать"';
+      Text003@1101495015 : TextConst 'ENU=Operation Type Filter should not be "All";RUS=Тип Операции Фильтр не должно быть "Все"';
+      Text004@1101495014 : TextConst 'ENU=Operation Type Filter should not be " ";RUS=Тип Операции Фильтр не должно быть равно " "';
+      Text005@1101495013 : TextConst 'ENU=FA Consolidation source was not found;RUS=Не найдены источники консолидации ОС операций';
+      Text007@1101495012 : TextConst 'ENU=Reverse selected Buffer FA Ledger Entries?;RUS=Аннулировать выделенные строки буфера?';
+      Text008@1101495005 : TextConst 'ENU=Buffer Entry was reversed.;RUS=Строка Буфера аннулирована.';
+      FAConsol@1101495018 : Report 50024;
+
+    LOCAL PROCEDURE FindPeriod@1(SearchText@1210000 : Code[10]);
+    VAR
+      Calendar@1210001 : Record 2000000007;
+      AccountingPeriod@1210002 : Record 50;
+      PeriodFormManagement@1210003 : Codeunit 359;
+    BEGIN
+      IF DocumentDateFilter <> '' THEN BEGIN
+        Calendar.SETFILTER("Period Start",DocumentDateFilter);
+        IF NOT PeriodFormManagement.FindDate('+',Calendar,PeriodLength) THEN
+          PeriodFormManagement.FindDate('+',Calendar,PeriodLength::Day);
+        Calendar.SETRANGE("Period Start");
+      END;
+      PeriodFormManagement.FindDate(SearchText,Calendar,PeriodLength);
+      IF Calendar."Period Start" = Calendar."Period End" THEN BEGIN
+        FILTERGROUP(2);
+        SETRANGE("FA Posting Date",Calendar."Period Start");
+        FILTERGROUP(0);
+        DocumentDateFilter := FORMAT(Calendar."Period Start");
+      END ELSE BEGIN
+        FILTERGROUP(2);
+        SETRANGE("FA Posting Date",Calendar."Period Start",Calendar."Period End");
+        FILTERGROUP(0);
+        DocumentDateFilter := FORMAT(Calendar."Period Start") + '..' + FORMAT(Calendar."Period End");
+      END;
+    END;
+
+    PROCEDURE UpdateFAOperationType@1000000000();
+    VAR
+      SetupType@1000000002 : 'Debit,Credit';
+      TempMapping@1000000003 : TEMPORARY Record 50022;
+      OneMapping@1000000004 : Boolean;
+      ConsolidationMgt@1000000005 : Codeunit 50000;
+      BufferFALE@1101495001 : Record 50119;
+      BufferFALE1@1101495000 : Record 50119;
+      MappingFALE@1101495002 : Record 50120;
+      IsFATransSetupFound@1101495003 : Boolean;
+    BEGIN
+      BufferFALE.RESET;
+      BufferFALE.SETCURRENTKEY("Posting Date","FA Export Type",Processed);
+      BufferFALE.SETRANGE("Id Legal Entity",ConsolidationSource."Business Unit Code");
+      BufferFALE.SETRANGE("External System ID",ConsolidationSource."External System");
+      BufferFALE.SETFILTER("Document Date",DocumentDateFilter);
+      BufferFALE.SETRANGE(Processed,FALSE);
+      BufferFALE.SETRANGE("FA Export Type",0);
+      IF BufferFALE.FINDSET(TRUE,TRUE) THEN
+      REPEAT
+        IsFATransSetupFound := FALSE;
+        TempMapping.RESET;
+        TempMapping.DELETEALL;
+        ConsolidationMgt.CheckUseOfMask(TempMapping,ConsolidationSource."Mapping Code",1,OneMapping);
+        ConsolidationMgt.GetMapping(BufferFALE."Document Date",TempMapping);
+
+        MappingFALE.RESET;
+        MappingFALE.SETCURRENTKEY("Company Name","Source Depreciation Book","Source Cons. FA LE Type","Source FA Posting Group");
+        MappingFALE.SETRANGE("Mapping Code",TempMapping.Code);
+        MappingFALE.SETFILTER("Company Name",COMPANYNAME);
+        MappingFALE.SETRANGE("Source Depreciation Book",BufferFALE."Depreciation Book Code");
+        IF BufferFALE."Cons. FA Export Type"<>BufferFALE."Cons. FA Export Type"::" " THEN
+          MappingFALE.SETRANGE("Source Cons. FA LE Type",BufferFALE."Cons. FA Export Type");
+        IF BufferFALE."FA Posting Group"<>'' THEN
+          MappingFALE.SETRANGE("Source FA Posting Group",BufferFALE."FA Posting Group");
+        IF MappingFALE.FINDFIRST THEN BEGIN
+          IsFATransSetupFound := TRUE;
+        END ELSE BEGIN
+          MappingFALE.SETRANGE("Company Name");
+          IF MappingFALE.FINDFIRST THEN
+          BEGIN
+            IsFATransSetupFound := TRUE;
+          END ELSE BEGIN
+            MappingFALE.SETRANGE("Source FA Posting Group");
+            IF MappingFALE.FINDFIRST THEN
+              IsFATransSetupFound := TRUE;
+          END;
+        END;
+
+        IF IsFATransSetupFound THEN BEGIN
+          BufferFALE1.GET(BufferFALE."External System ID",BufferFALE."Id Legal Entity",BufferFALE."Entry No.");
+          BufferFALE1."FA Export Type" := MappingFALE."Receiver Cons. FA LE Type";
+          IF BufferFALE1."FA Export Type" = BufferFALE1."FA Export Type"::"Not Export" THEN BEGIN
+            BufferFALE1.Exported:= TRUE;
+            BufferFALE1.Consolidated :=TRUE;
+            BufferFALE1.Processed :=TRUE;
+          END;
+
+          IF (BufferFALE1."FA Export Type" = BufferFALE1."FA Export Type"::Transfer) AND NOT BufferFALE."FA Reclassification" THEN BEGIN
+            MovingDataSetup.GET;
+            BufferFALE1."FA Def. Dim. Change" := TRUE;
+            BufferFALE1."FA Def. Dim. Code" :=MovingDataSetup."PROFIT CENTER Dimension Code";
+          END;
+          BufferFALE1.MODIFY;
+        END;
+
+      UNTIL BufferFALE.NEXT = 0;
+      //NC FA013 < DP
+    END;
+
+    PROCEDURE fn_UpdateColumns@1000000004(VAR p_recBFALE@1000000016 : Record 50119);
+    VAR
+      l_txtRecPos@1000000000 : Text[1024];
+      l_intFieldNo@1000000002 : Integer;
+      l_txtMenu@1000000003 : Text[250];
+      l_RecRefDest@1000000005 : RecordRef;
+      l_FieldRefDest@1000000006 : FieldRef;
+      l_intLength@1000000007 : Integer;
+      l_intRelTabNo@1000000008 : Integer;
+      l_formComment@1000000009 : Page 50230;
+      l_intVar@1000000004 : Integer;
+      l_txtVar@1000000010 : Text[250];
+      l_decVar@1000000011 : Decimal;
+      l_boolVar@1000000015 : Boolean;
+      l_boolChanged@1000000012 : Boolean;
+      l_recDim@1000000013 : Record 348;
+      l_formDim@1000000014 : Page 536;
+    BEGIN
+      // TD BMN 26.03.2013 NCS-863
+      // Правка выбранного поля в нескольких строках сразу
+
+
+      l_txtMenu := p_recBFALE.FIELDCAPTION("FA Def. Dim. Change") + ',' +
+                   p_recBFALE.FIELDCAPTION("FA Def. Dim. Code") + ',' +
+                   p_recBFALE.FIELDCAPTION("FA Export Type") + ',' +
+                   p_recBFALE.FIELDCAPTION("Cons. FA Export Type") ;
+
+      CASE STRMENU(l_txtMenu) OF
+        0: EXIT;
+        1: l_intFieldNo := p_recBFALE.FIELDNO("FA Def. Dim. Change");
+        2: l_intFieldNo := p_recBFALE.FIELDNO("FA Def. Dim. Code");
+        3: l_intFieldNo := p_recBFALE.FIELDNO("FA Export Type");
+        4: l_intFieldNo := p_recBFALE.FIELDNO("Cons. FA Export Type");
+      END;
+
+      l_RecRefDest.GETTABLE(p_recBFALE);
+      l_RecRefDest.CURRENTKEYINDEX(1);    // Без сортировки по первичному ключу не все записи обновляет :(
+
+      l_RecRefDest.FINDFIRST;
+      l_FieldRefDest := l_RecRefDest.FIELD(l_intFieldNo);
+      l_intLength    := l_FieldRefDest.LENGTH;
+      l_intRelTabNo  := l_FieldRefDest.RELATION;
+      CLEAR(l_formComment);
+
+      l_boolChanged := FALSE;
+
+      CASE FORMAT(l_FieldRefDest.TYPE) OF
+        'Text':     BEGIN
+                      l_formComment.SetMode(0);
+                      l_formComment.SetCaption('Введите текст');
+                    END;
+        'Integer':  BEGIN
+                      l_formComment.SetMode(1);
+                      l_formComment.SetCaption('Введите целочисленное значение');
+                    END;
+        'Decimal':  BEGIN
+                      l_formComment.SetMode(2);
+                      l_formComment.SetCaption('Введите значение (десятичную дробь)');
+                    END;
+        'Boolean':  BEGIN
+                      l_formComment.SetMode(3);
+                      l_formComment.SetCaption('Введите значение "Да/Нет"');
+                    END;
+        'Option':   BEGIN
+                      l_intVar := STRMENU(l_FieldRefDest.OPTIONCAPTION);
+                      IF l_intVar > 0 THEN BEGIN
+                        l_intVar := l_intVar - 1;
+                        l_boolChanged := TRUE;
+                      END;
+                    END;
+        'Code':     IF l_intRelTabNo = 348 THEN BEGIN  // Dimension
+                      l_recDim.RESET;
+                      l_formDim.SETTABLEVIEW(l_recDim);
+                      l_formDim.LOOKUPMODE(TRUE);
+                      IF l_formDim.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                        l_formDim.GETRECORD(l_recDim);
+                        l_txtVar := l_recDim.Code;
+                        l_boolChanged := TRUE;
+                      END;
+                    END;
+      END;
+
+      IF FORMAT(l_FieldRefDest.TYPE) IN ['Text', 'Integer', 'Decimal', 'Boolean'] THEN BEGIN
+        IF l_formComment.RUNMODAL = ACTION::OK THEN BEGIN
+          l_txtVar := l_formComment.GetResult;
+          l_txtVar := DELCHR(l_txtVar, '>');
+          l_txtVar := COPYSTR(l_txtVar,1, l_intLength);
+          l_boolChanged := TRUE;
+        END;
+      END;
+
+      IF (l_boolChanged = TRUE) THEN BEGIN
+        IF l_RecRefDest.FINDFIRST THEN REPEAT
+          l_FieldRefDest := l_RecRefDest.FIELD(l_intFieldNo);
+          CASE FORMAT(l_FieldRefDest.TYPE) OF
+            'Code':    l_FieldRefDest.VALIDATE(l_txtVar);
+            'Text':    l_FieldRefDest.VALIDATE(l_txtVar);
+            'Integer': IF EVALUATE(l_intVar, l_txtVar) THEN l_FieldRefDest.VALIDATE(l_intVar);
+            'Decimal': IF EVALUATE(l_decVar, l_txtVar) THEN l_FieldRefDest.VALIDATE(l_decVar);
+            'Boolean': IF EVALUATE(l_boolVar, l_txtVar) THEN l_FieldRefDest.VALIDATE(l_boolVar);
+            'Option':  l_FieldRefDest.VALIDATE(l_intVar);
+          END;
+          l_RecRefDest.MODIFY(TRUE);
+        UNTIL l_RecRefDest.NEXT = 0;
+      END;
+
+      COMMIT;
+      l_RecRefDest.CLOSE;
+    END;
+
+    BEGIN
+    {
+      NC NCMIO-9 DP Перенос функциональности IFRS
+    }
+    END.
+  }
+}
+

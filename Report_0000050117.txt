@@ -1,0 +1,691 @@
+OBJECT Report 50117 Update Inc. Tax
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.08.17;
+    Time=11:59:19;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Update Inc. Tax;
+               RUS=Обновление Inc. Tax];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   isSourceFI := TRUE;
+                   isSourceMapping := TRUE;
+                   isUpdateIncTax := FALSE;
+                   isPost := FALSE;
+
+
+                   //NC NCS-1000 > DP
+                   StandParam.RESET;
+                   StandParam.SETRANGE("Report ID",REPORT::"Update Inc. Tax");
+                   IF StandParam.FINDFIRST THEN BEGIN
+                     IF StandParam."Gen. Journal Template"<>'' THEN
+                       Template:=StandParam."Gen. Journal Template";
+                     IF StandParam."Gen. Journal Batch"<>'' THEN
+                       Batch:=StandParam."Gen. Journal Batch";
+                     isPost:=StandParam.Post;
+                   END
+                   ELSE
+                     ERROR(Text50002+StandParam.TABLECAPTION);
+                   //NC NCS-1000 < DP
+                 END;
+
+    OnPreReport=BEGIN
+                  GLSetup.GET;
+                  MovingDataSetup.GET;
+
+                  //NC NCS-1000 > DP
+                  StandParam.RESET;
+                  StandParam.SETRANGE("Report ID",REPORT::"Update Inc. Tax");
+                  IF StandParam.FINDFIRST THEN BEGIN
+                    IF StandParam."Gen. Journal Template"<>'' THEN
+                      Template:=StandParam."Gen. Journal Template";
+                    IF StandParam."Gen. Journal Batch"<>'' THEN
+                      Batch:=StandParam."Gen. Journal Batch";
+                    isPost:=StandParam.Post;
+                  END
+                  ELSE
+                    ERROR(Text50002+StandParam.TABLECAPTION);
+                  //NC NCS-1000 < DP
+                END;
+
+    OnPostReport=BEGIN
+                   IF isPost THEN BEGIN
+                     COMMIT;
+                     "Gen. Journal Line".SETRANGE("Is Inc. Tax",TRUE);
+                     IF "Gen. Journal Line".FINDFIRST THEN BEGIN
+                         GenJnlPost.SetNoMessage(TRUE);
+                         GenJnlPost.RUN("Gen. Journal Line");
+                        // CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post","Gen. Journal Line");
+                     END;
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7024;    ;DataItem;                    ;
+               DataItemTable=Table81;
+               OnPreDataItem=BEGIN
+                               //NC NCS-1000 > DP
+                               IF Template<>'' THEN
+                                 SETFILTER("Journal Template Name",'%1',Template);
+                               IF Batch<>'' THEN
+                                 SETFILTER("Journal Batch Name",'%1',Batch);
+                               //NC NCS-1000 < DP
+
+                               IF COUNT = 0 THEN
+                                 CurrReport.QUIT;
+
+                               OldDocNo :='';
+                               SETFILTER("Financial Instrument No.",'<>%1&<>%2','','DUMMY');
+                               SETFILTER("Is Inc. Tax",'%1',FALSE);
+
+                               //NC NCS-1000 > DP
+                               IF GUIALLOWED THEN BEGIN
+                               //NC NCS-1000 < DP
+
+                               Indicator.OPEN(Text003 + '#1### / #2###');
+                               Indicator.UPDATE(2,COUNT);
+
+                               //NC NCS-1000 > DP
+                               END;
+                               //NC NCS-1000 < DP
+
+                               LineCounter :=0;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  FinInstr@1000000000 : Record 50021;
+                                  DimSetEntry@1101495000 : Record 480;
+                                  DimSetEntry1@1101495001 : Record 480;
+                                  TempDimSetEntry@1101495002 : TEMPORARY Record 480;
+                                  TempDimSetEntry1@1101495003 : TEMPORARY Record 480;
+                                BEGIN
+                                  IF NOT isSourceFI THEN
+                                    CurrReport.BREAK;
+
+                                  IF "Document No." <> OldDocNo THEN BEGIN
+                                    //NC NOS-26 > SPA
+                                    IF DimSetEntry.GET("Dimension Set ID",MovingDataSetup."FI Dimension Code") THEN BEGIN
+                                      IF NOT DimSetEntry1.GET("Dimension Set ID",GLSetup."Taxable Dimension Code")
+                                    {
+                                    IF JnlLineDim.GET(81,"Journal Template Name",
+                                                          "Journal Batch Name",
+                                                             "Line No.",0,
+                                                      MovingDataSetup."FI Dimension Code")
+                                    THEN BEGIN
+                                      IF NOT JnlLineDim1.GET(81,"Journal Template Name",
+                                                                "Journal Batch Name",
+                                                                "Line No.",0,
+                                                              GLSetup."Taxable Dimension Code")
+                                    }
+                                    //NC NOS-26 < SPA
+                                      THEN BEGIN
+                                        IF DefDim.GET(50021,DimSetEntry."Dimension Value Code",GLSetup."Taxable Dimension Code") THEN BEGIN
+                                          //NC NOS-26 > SPA
+                                          DimMgt.GetDimensionSet(TempDimSetEntry,"Dimension Set ID");
+                                          TempDimSetEntry.VALIDATE("Dimension Code",DefDim."Dimension Code");
+                                          IF TempDimSetEntry.FIND THEN
+                                            TempDimSetEntry.DELETE;
+                                          TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                                          TempDimSetEntry.INSERT;
+                                          TempDimSetEntry1 := TempDimSetEntry;
+                                          DimMgt.UpdateGenJnlLineDim("Gen. Journal Line",DimMgt.GetDimensionSetID(TempDimSetEntry));
+                                          {
+                                          JnlLineDim1.INIT;
+                                          JnlLineDim1.TRANSFERFIELDS(JnlLineDim);
+                                          JnlLineDim1."Dimension Code" := DefDim."Dimension Code";
+                                          JnlLineDim1."Dimension Value Code" := DefDim."Dimension Value Code";
+                                          IF NOT JnlLineDim1.INSERT THEN JnlLineDim1.MODIFY;
+                                          }
+                                          //NC NOS-26 < SPA
+                                          IF FinInstr.GET(DimSetEntry."Dimension Value Code") THEN
+                                            "Gen. Journal Line"."Reason Code" := FinInstr."Reason Code";
+                                          "Is Inc. Tax" := TRUE;
+                                          MODIFY;
+                                          SetDimValFIPerDoc("Gen. Journal Line",TempDimSetEntry1);
+                                        END;
+                                      END ELSE BEGIN // Уже есть inc.tax
+                                          SetDimValPerDoc("Gen. Journal Line",DimSetEntry1);
+                                      END;
+                                      OldDocNo := "Document No.";
+                                    END;
+                                  END;
+
+                                  LineCounter += 1;
+
+                                  //NC NCS-1000 > DP
+                                  IF GUIALLOWED THEN
+                                  //NC NCS-1000 < DP
+
+                                      Indicator.UPDATE(1, LineCounter);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                //NC NCS-1000 > DP
+                                IF GUIALLOWED THEN
+                                //NC NCS-1000 < DP
+
+                                Indicator.CLOSE;
+                                SETFILTER("Financial Instrument No.",'');
+                              END;
+
+               ReqFilterFields=Journal Template Name,Journal Batch Name }
+
+    { 2685;    ;DataItem;                    ;
+               DataItemTable=Table50137;
+               DataItemTableView=SORTING(Line No.)
+                                 WHERE(Blocked=CONST(No));
+               OnPreDataItem=BEGIN
+                               //NC NCS-1000 > DP
+                               IF GUIALLOWED THEN BEGIN
+                               //NC NCS-1000 < DP
+
+                               Indicator.OPEN(Text001 + ' #1### / #2### \' +
+                                              '#5##################################################################### \' +
+                                              Text002 + ' #3### / #4### ');
+
+                               Indicator.UPDATE(2,COUNT);
+
+                               //NC NCS-1000 > DP
+                               END;
+                               //NC NCS-1000 < DP
+
+                               LineCounter := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT isSourceMapping THEN
+                                    CurrReport.BREAK;
+
+                                  LineCounter += 1;
+
+                                  //NC NCS-1000 > DP
+                                  IF GUIALLOWED THEN BEGIN
+                                  //NC NCS-1000 < DP
+
+                                  Indicator.UPDATE(1,LineCounter);
+
+                                  Indicator.UPDATE(5,STRSUBSTNO('%1/%2/%3 - %4/%5/%6',
+                                                                "Debit Account Type","Debit Account No.","Debit Posting Group",
+                                                                "Credit Account Type","Credit Account No.","Credit Posting Group"));
+                                  //NC NCS-1000 > DP
+                                  END;
+                                  //NC NCS-1000 < DP
+
+                                  UpdateTax("Gen. Journal Line","Debit Account Type","Debit Account No.","Debit Posting Group",
+                                                                "Credit Account Type","Credit Account No.","Credit Posting Group",
+                                                                "Dim. Inc. Tax Value","Use FI From Deal");
+                                END;
+
+               OnPostDataItem=BEGIN
+                                //NC NCS-1000 > DP
+                                IF GUIALLOWED THEN
+                                //NC NCS-1000 < DP
+
+                                Indicator.CLOSE;
+                              END;
+                               }
+
+    { 2414;    ;DataItem;Gen. Journal Line 2 ;
+               DataItemTable=Table81;
+               DataItemTableView=SORTING(Journal Template Name,Journal Batch Name,Posting Date,Document No.);
+               OnPreDataItem=BEGIN
+                               COPYFILTERS("Gen. Journal Line");
+                               SETRANGE("Is Inc. Tax");
+
+                               OldDocNo :='';
+
+                               //NC NCS-1000 > DP
+                               IF GUIALLOWED THEN BEGIN
+                               //NC NCS-1000 < DP
+
+                               Indicator.OPEN(Text004 + '#1### / #2###');
+                               Indicator.UPDATE(2,COUNT);
+
+                               //NC NCS-1000 > DP
+                               END;
+                               //NC NCS-1000 < DP
+
+                               LineCounter :=0;
+                               TrueEntry := TRUE;
+                               OldDocNo := '';
+
+                               IF isUpdateIncTax THEN
+                                 MODIFYALL("Is Inc. Tax",FALSE);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  DimSetEntry@1101495000 : Record 480;
+                                BEGIN
+                                  IF NOT isUpdateIncTax THEN
+                                    CurrReport.BREAK;
+
+                                    IF ("Document No."<>OldDocNo) AND (OldDocNo <> '') THEN BEGIN
+                                      IF TrueEntry THEN BEGIN
+                                         // если по всем строкам в рамках одного документа все OK, то проставляем признак
+                                         GenJnlLine1.RESET;
+                                         GenJnlLine1.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Posting Date","Document No.");
+                                         GenJnlLine1.SETRANGE("Journal Template Name","Journal Template Name");
+                                         GenJnlLine1.SETRANGE("Journal Batch Name","Journal Batch Name");
+                                         GenJnlLine1.SETRANGE("Posting Date", OldPostingDate);
+                                         GenJnlLine1.SETRANGE("Document No.", OldDocNo);
+                                         IF GenJnlLine1.FINDSET THEN
+                                         REPEAT
+                                           GenJnlLine1."Is Inc. Tax" := TRUE;
+                                           GenJnlLine1.MODIFY;
+                                         UNTIL GenJnlLine1.NEXT=0;
+                                      END;
+                                      TrueEntry := TRUE;
+                                    END;
+                                    OldDocNo := "Document No.";
+                                    OldPostingDate := "Posting Date";
+                                    //NC NOS-26 > SPA
+                                    {
+                                    IF NOT JnlLineDim.GET(81,"Journal Template Name","Journal Batch Name",
+                                                          "Line No.",0,GLSetup."Taxable Dimension Code") THEN
+                                    }
+                                    IF NOT DimSetEntry.GET("Dimension Set ID",GLSetup."Taxable Dimension Code") THEN
+                                    //NC NOS-26 < SPA
+                                      TrueEntry := FALSE
+                                    ELSE
+                                      IF DimSetEntry."Dimension Value Code" = '' THEN
+                                        TrueEntry := FALSE;
+                                    LineCounter += 1;
+
+                                    //NC NCS-1000 > DP
+                                    IF GUIALLOWED THEN
+                                    //NC NCS-1000 < DP
+
+                                    Indicator.UPDATE(1, LineCounter);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF OldDocNo <> '' THEN BEGIN
+                                  IF TrueEntry THEN BEGIN
+                                     // если по всем строкам в рамках одного документа все OK, то проставляем признак
+                                     GenJnlLine1.RESET;
+                                     GenJnlLine1.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Posting Date","Document No.");
+                                     GenJnlLine1.SETRANGE("Journal Template Name","Journal Template Name");
+                                     GenJnlLine1.SETRANGE("Journal Batch Name","Journal Batch Name");
+                                     GenJnlLine1.SETRANGE("Posting Date", OldPostingDate);
+                                     GenJnlLine1.SETRANGE("Document No.", OldDocNo);
+                                     IF GenJnlLine1.FINDSET THEN
+                                     REPEAT
+                                       GenJnlLine1."Is Inc. Tax" := TRUE;
+                                       GenJnlLine1.MODIFY;
+                                     UNTIL GenJnlLine1.NEXT=0;
+                                  END;
+                                END;
+
+                                //NC NCS-1000 > DP
+                                IF GUIALLOWED THEN
+                                //NC NCS-1000 < DP
+
+                                Indicator.CLOSE;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Field  ;
+                  CaptionML=[ENU=SourceFI;
+                             RUS=Источник ФИ];
+                  SourceExpr=isSourceFI }
+
+      { 1101495002;1;Field  ;
+                  CaptionML=[ENU=Source Mapping Inc. Tax;
+                             RUS=Источник Маппинг Inc. Tax];
+                  SourceExpr=isSourceMapping }
+
+      { 1101495003;1;Field  ;
+                  CaptionML=[ENU=Update Tag Is Inc. Tax;
+                             RUS=Обновить Признак Есть Inc. Tax];
+                  SourceExpr=isUpdateIncTax }
+
+      { 1101495004;1;Field  ;
+                  CaptionML=[ENU=Post;
+                             RUS=Учет];
+                  SourceExpr=isPost }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1101495017 : Record 98;
+      MovingDataSetup@1101495016 : Record 50064;
+      Indicator@1101495015 : Dialog;
+      LineCounter@1101495014 : Integer;
+      OldDocNo@1101495013 : Code[20];
+      DefDim@1101495012 : Record 352;
+      TrueEntry@1101495011 : Boolean;
+      GenJnlLine1@1101495010 : Record 81;
+      OldPostingDate@1101495009 : Date;
+      GenJnlPost@1101495008 : Codeunit 231;
+      StandParam@1101495007 : Record 50076;
+      Template@1101495006 : Code[10];
+      Batch@1101495005 : Code[10];
+      DimMgt@1101495004 : Codeunit 408;
+      isSourceFI@1101495003 : Boolean;
+      isSourceMapping@1101495002 : Boolean;
+      isUpdateIncTax@1101495001 : Boolean;
+      isPost@1101495000 : Boolean;
+      Text001@1101495022 : TextConst 'ENU=The rules for determining Inc. Tax;RUS=Правила определения Inc. Tax';
+      Text002@1101495021 : TextConst 'ENU=Lines Gen/ Journal;RUS=Строк Фин. Журнала';
+      Text003@1101495020 : TextConst 'ENU=Gen. Journal processing;RUS=Оработка строк Фин. Журнал';
+      Text004@1101495019 : TextConst 'ENU=Update feature Inc. Tax on Lines Gen. Journal;RUS=Обновление признака Inc. Tax на строках Фин. Журнала';
+      Text50002@1101495018 : TextConst 'ENU=Please set in;RUS="Не заполнены настройки в "';
+
+    PROCEDURE UpdateTax@1101495001(VAR GenJnlLine2@1101495000 : Record 81;AccountType@1000000000 : Option;AccountNo@1000000001 : Code[500];PostingGroup@1000000002 : Code[500];BalAccountType@1000000005 : Option;BalAccountNo@1000000004 : Code[500];BalPostingGroup@1000000003 : Code[500];TaxValue@1000000006 : Code[20];UseFIFromDeal@1101495011 : Boolean);
+    VAR
+      MovingDataSetup@1101495007 : Record 50064;
+      IncTax@1101495006 : Code[20];
+      MainUpdated@1101495005 : Boolean;
+      LinesCount@1101495004 : Integer;
+      ProgressCount@1101495003 : Integer;
+      GenJnlLineTemp@1101495001 : TEMPORARY Record 81;
+      GenJnlLine@1101495008 : Record 81;
+      GenJnlLine1@1101495009 : Record 81;
+      DimSetEntry@1101495002 : Record 480;
+      TempDimSetEntry@1101495010 : TEMPORARY Record 480;
+    BEGIN
+
+          GenJnlLine.RESET;
+          //GenJnlLine.SETRANGE("Journal Template Name",GenJnlLine2."Journal Template Name");
+          //GenJnlLine.SETFILTER("Journal Batch Name",'%1',GenJnlLine2."Journal Batch Name");
+          GenJnlLine.COPYFILTERS(GenJnlLine2);
+          GenJnlLine.SETFILTER("Is Inc. Tax",'%1',FALSE);
+
+          IF AccountType <> "Mapping Inc. Tax"."Debit Account Type"::Empty THEN
+            GenJnlLine.SETFILTER("Account Type",'%1',AccountType - 1);
+          IF AccountNo <> '' THEN
+            GenJnlLine.SETFILTER("Account No.",AccountNo);
+          IF PostingGroup <> '' THEN
+            GenJnlLine.SETFILTER("Posting Group",PostingGroup);
+          GenJnlLine.SETFILTER("Debit Amount",'<>%1',0);
+          GenJnlLine.SETFILTER("Bal. Account No.",'%1','');
+
+          LinesCount:=GenJnlLine.COUNT; ProgressCount := 0;
+
+
+          //NC NCS-1000 > DP
+          IF GUIALLOWED THEN
+          //NC NCS-1000 < DP
+
+          Indicator.UPDATE(4,LinesCount);
+
+          IF GenJnlLine.FIND('-') THEN
+            REPEAT
+              IncTax := '';
+              MainUpdated := FALSE;
+              ProgressCount +=1;
+
+              //NC NCS-1000 > DP
+              IF GUIALLOWED THEN
+              //NC NCS-1000 < DP
+
+              Indicator.UPDATE(3,ProgressCount);
+
+              GenJnlLine1."Account Type" := AccountType;
+              GenJnlLineTemp."Account Type" := BalAccountType;
+              //window.UPDATE(3,STRSUBSTNO('%1/%2/%3 - %4/%5/%6',GenJnlLine1."Account Type",AccountNo,PostingGroup,
+              //                   GenJnlLineTemp."Account Type",BalAccountNo,BalPostingGroup));
+
+
+              //NC NOS-26 > SPA
+              //IF NOT JnlLineDim1.GET(81,GenJnlLine."Journal Template Name",
+              //      GenJnlLine."Journal Batch Name",GenJnlLine."Line No.",0,'INC.TAX')
+              IF NOT DimSetEntry.GET(GenJnlLine."Dimension Set ID", 'INC.TAX')
+              //NC NOS-26 < SPA
+              THEN BEGIN
+              // Без INC.TAX
+                GenJnlLine1.RESET;
+                GenJnlLine1.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Posting Date","Document No.");
+                GenJnlLine1.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                GenJnlLine1.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                GenJnlLine1.SETRANGE("Posting Date",GenJnlLine."Posting Date");
+                GenJnlLine1.SETRANGE("Document No.",GenJnlLine."Document No.");
+                GenJnlLine1.SETFILTER("Line No.",'<>%1',GenJnlLine."Line No.");
+                GenJnlLine1.SETFILTER("Credit Amount",'<>%1',0);
+                GenJnlLine1.SETFILTER("Bal. Account No.",'%1','');
+
+                IF GenJnlLine1.FINDSET THEN
+                  REPEAT
+
+                    //NC NCS-1094 > DP
+                    IF IncTax='' THEN BEGIN // Zero pass
+                      IF GenJnlLine."Balance Entry" THEN
+                        //NC NOS-26 > SPA
+                        //IF JnlLineDim1.GET(81,GenJnlLine1."Journal Template Name",
+                        //  GenJnlLine1."Journal Batch Name",GenJnlLine1."Line No.",0,'INC.TAX')
+                        //  AND (JnlLineDim1."Dimension Value Code"<>'')
+                        IF DimSetEntry.GET(GenJnlLine1."Dimension Set ID",'INC.TAX') AND
+                           (DimSetEntry."Dimension Value Code" <> '')
+                        //NC NOS-26 < SPA
+                        THEN
+                          IncTax := DimSetEntry."Dimension Value Code";
+
+                      IF GenJnlLine1."Balance Entry" THEN
+                        //NC NOS-26 > SPA
+                        //IF JnlLineDim1.GET(81,GenJnlLine."Journal Template Name",
+                        //  GenJnlLine."Journal Batch Name",GenJnlLine."Line No.",0,'INC.TAX')
+                        //  AND (JnlLineDim1."Dimension Value Code"<>'')
+                        IF DimSetEntry.GET(GenJnlLine."Dimension Set ID",'INC.TAX') AND
+                           (DimSetEntry."Dimension Value Code" <> '')
+                        //NC NOS-26 < SPA
+                        THEN
+                          IncTax := DimSetEntry."Dimension Value Code";
+                    END;
+                    //NC NCS-1094 < DP
+
+                    // Нашли 2 строки корреспонденции, высчитываем INC.TAX
+                    IF IncTax='' THEN BEGIN // First pass
+
+                      GenJnlLineTemp.RESET;
+                      GenJnlLineTemp.DELETEALL;
+                      GenJnlLineTemp := GenJnlLine1;
+                      GenJnlLineTemp.INSERT;
+
+                      IF BalAccountType <> "Mapping Inc. Tax"."Credit Account Type"::Empty THEN
+                        GenJnlLineTemp.SETFILTER("Account Type",'%1',BalAccountType - 1);
+                      IF BalAccountNo<>'' THEN GenJnlLineTemp.SETFILTER("Account No.",BalAccountNo);
+                      IF BalPostingGroup<>'' THEN GenJnlLineTemp.SETFILTER("Posting Group",BalPostingGroup);
+
+                      IF GenJnlLineTemp.FIND('-') THEN BEGIN // Corresponsence OK
+                        IF NOT UseFIFromDeal THEN
+                          IncTax := TaxValue
+                        ELSE
+                          IncTax := GetIncTaxByDeal(GenJnlLine1."Agreement No.");
+                      END;
+                    END;
+
+                    IF IncTax<>'' THEN BEGIN
+                      IF NOT MainUpdated THEN BEGIN
+                        // Прямая строка
+                        //NC NOS-26 > SPA
+                        DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine."Dimension Set ID");
+                        TempDimSetEntry."Dimension Code" := 'INC.TAX';
+                        IF TempDimSetEntry.FIND THEN
+                          TempDimSetEntry.DELETE;
+                        TempDimSetEntry.VALIDATE("Dimension Value Code", IncTax);
+                        TempDimSetEntry.INSERT;
+                        DimMgt.UpdateGenJnlLineDim(GenJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+                        {
+                        JnlLineDim1.INIT;
+                        JnlLineDim1."Journal Template Name" := GenJnlLine."Journal Template Name";
+                        JnlLineDim1."Journal Batch Name" := GenJnlLine."Journal Batch Name";
+                        JnlLineDim1."Journal Line No." := GenJnlLine."Line No.";
+                        JnlLineDim1."Table ID" := 81;
+                        JnlLineDim1."Dimension Code" := 'INC.TAX';
+                        JnlLineDim1."Dimension Value Code" := IncTax;
+                        IF NOT JnlLineDim1.INSERT THEN JnlLineDim1.MODIFY;
+                        }
+                        //NC NOS-26 < SPA
+                        MainUpdated := TRUE;
+
+                        GenJnlLine."Is Inc. Tax" := TRUE;
+                        GenJnlLine."Reason Code" := '3';
+                        GenJnlLine.MODIFY;
+                      END;
+                      //NC NOS-26 > SPA
+                      //IF NOT JnlLineDim1.GET(81,GenJnlLine1."Journal Template Name",
+                      //  GenJnlLine1."Journal Batch Name",GenJnlLine1."Line No.",0,'INC.TAX')
+                      IF NOT DimSetEntry.GET(GenJnlLine1."Dimension Set ID",'INC.TAX') THEN BEGIN
+                        DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine1."Dimension Set ID");
+                        TempDimSetEntry."Dimension Code" := 'INC.TAX';
+                        IF TempDimSetEntry.FIND THEN
+                          TempDimSetEntry.DELETE;
+                        TempDimSetEntry.VALIDATE("Dimension Value Code", IncTax);
+                        TempDimSetEntry.INSERT;
+                        DimMgt.UpdateGenJnlLineDim(GenJnlLine1,DimMgt.GetDimensionSetID(TempDimSetEntry));
+                        {
+                        JnlLineDim1.INIT;
+                        JnlLineDim1."Journal Template Name" := GenJnlLine1."Journal Template Name";
+                        JnlLineDim1."Journal Batch Name" := GenJnlLine1."Journal Batch Name";
+                        JnlLineDim1."Journal Line No." := GenJnlLine1."Line No.";
+                        JnlLineDim1."Table ID" := 81;
+                        JnlLineDim1."Journal Line No." := GenJnlLine1."Line No.";
+                        JnlLineDim1."Dimension Code" := 'INC.TAX';
+                        JnlLineDim1."Dimension Value Code" := IncTax;
+                        IF NOT JnlLineDim1.INSERT THEN JnlLineDim1.MODIFY;
+                        }
+                      //NC NOS-26 < SPA
+                        GenJnlLine1."Is Inc. Tax" := TRUE;
+                        GenJnlLine1."Reason Code" := '3';
+                        GenJnlLine1.MODIFY;
+                      END;
+                    END; // IncTax<>''
+                  UNTIL GenJnlLine1.NEXT=0;
+              END ELSE BEGIN // Уже есть inc.tax
+                 SetDimValPerDoc(GenJnlLine,DimSetEntry); // NC NOS-26 SPA
+              END;
+
+            UNTIL GenJnlLine.NEXT=0;
+    END;
+
+    PROCEDURE GetIncTaxByDeal@1101495003(dealid@1101495000 : Code[20]) : Code[20];
+    VAR
+      Deal@1101495001 : Record 50037;
+      FI@1101495002 : Record 50021;
+      DefDim@1101495003 : Record 352;
+    BEGIN
+      IF (dealid<>'') AND (dealid<>'DUMMY') THEN
+        IF Deal.GET(dealid) THEN
+          IF Deal."Financial instrument No."<>'' THEN
+            IF DefDim.GET(DATABASE::"Financial Instrument",Deal."Financial instrument No.",GLSetup."Taxable Dimension Code") THEN
+              EXIT(DefDim."Dimension Value Code");
+
+      EXIT('');
+    END;
+
+    PROCEDURE SetDimValFIPerDoc@1101495000(GenJnlLine@1101495001 : Record 81;DimSetEntry@1101495000 : Record 480);
+    VAR
+      GenJnlLine1@1101495003 : Record 81;
+      DefDim@1101495004 : Record 352;
+      TempDimSetEntry@1101495002 : TEMPORARY Record 480;
+    BEGIN
+      GenJnlLine1.RESET;
+      GenJnlLine1.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+      GenJnlLine1.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+      GenJnlLine1.SETRANGE("Posting Date",GenJnlLine."Posting Date");
+      GenJnlLine1.SETRANGE("Document No.",GenJnlLine."Document No.");
+      IF GenJnlLine1.FIND('-') THEN
+        REPEAT
+          //NC NOS-26 > SPA
+          DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine1."Dimension Set ID");
+          IF NOT TempDimSetEntry.GET(GenJnlLine1."Dimension Set ID",'INC.TAX') THEN BEGIN
+            IF DefDim.GET(50021,GenJnlLine."Financial Instrument No.",'INC.TAX') THEN BEGIN
+              TempDimSetEntry.VALIDATE("Dimension Code",DefDim."Dimension Code");
+              IF TempDimSetEntry.FIND THEN
+                TempDimSetEntry.DELETE;
+              TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+              TempDimSetEntry.INSERT;
+            END;
+          {
+          IF NOT JnlLineDim1.GET(81,GenJnlLine1."Journal Template Name",
+            GenJnlLine1."Journal Batch Name",GenJnlLine1."Line No.",0,'INC.TAX') THEN BEGIN
+            IF DefDim.GET(50021,GenJnlLine."Financial Instrument No.",'INC.TAX') THEN BEGIN //NC RD
+              JnlLineDim1.INIT;
+              JnlLineDim1.TRANSFERFIELDS(JnlLineDim);
+              JnlLineDim1."Journal Line No." := GenJnlLine1."Line No.";
+              JnlLineDim1."Dimension Code" := DefDim."Dimension Code";
+              JnlLineDim1."Dimension Value Code" := DefDim."Dimension Value Code";
+              IF NOT JnlLineDim1.INSERT THEN JnlLineDim1.MODIFY;
+            END;
+          }
+          //NC NOS-26 < SPA
+            GenJnlLine1."Is Inc. Tax" := TRUE;
+            GenJnlLine1."Reason Code" := GenJnlLine."Reason Code";
+            GenJnlLine1.MODIFY;
+          END;
+        UNTIL GenJnlLine1.NEXT=0;
+    END;
+
+    PROCEDURE SetDimValPerDoc@1101495002(GenJnlLine@1101495000 : Record 81;DimSetEntry@1101495001 : Record 480);
+    VAR
+      GenJnlLine1@1101495003 : Record 81;
+      TempDimSetEntry@1101495002 : TEMPORARY Record 480;
+    BEGIN
+      GenJnlLine1.RESET;
+      GenJnlLine1.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+      GenJnlLine1.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+      GenJnlLine1.SETRANGE("Posting Date",GenJnlLine."Posting Date");
+      GenJnlLine1.SETRANGE("Document No.",GenJnlLine."Document No.");
+      IF GenJnlLine1.FIND('-') THEN
+        REPEAT
+          //NC NOS-26 > SPA
+          DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine1."Dimension Set ID");
+          IF NOT TempDimSetEntry.GET(GenJnlLine1."Dimension Set ID",'INC.TAX') THEN BEGIN
+            TempDimSetEntry := DimSetEntry;
+            TempDimSetEntry."Dimension Set ID" := GenJnlLine1."Dimension Set ID";
+            TempDimSetEntry.INSERT;
+            DimMgt.UpdateGenJnlLineDim(GenJnlLine1, DimMgt.GetDimensionSetID(TempDimSetEntry));
+          END;
+          {
+          IF NOT JnlLineDim1.GET(81,GenJnlLine1."Journal Template Name",
+            GenJnlLine1."Journal Batch Name",GenJnlLine1."Line No.",0,'INC.TAX') THEN BEGIN
+            JnlLineDim1.INIT;
+            JnlLineDim1.TRANSFERFIELDS(JnlLineDim);
+            JnlLineDim1."Journal Line No." := GenJnlLine1."Line No.";
+            IF NOT JnlLineDim1.INSERT THEN JnlLineDim1.MODIFY;
+          END;
+          }
+          //NC NOS-26 < SPA
+          GenJnlLine1."Is Inc. Tax" := TRUE;
+          GenJnlLine1."Reason Code" := GenJnlLine."Reason Code";
+          GenJnlLine1.MODIFY;
+        UNTIL GenJnlLine1.NEXT=0;
+    END;
+
+    BEGIN
+    {
+      NC NCS-1000 DP Шаблон, раздел и учет журнала из параметров периодических заданий
+      NC NCS-1094 DP Определение INC.TAX для балансировочных строк
+      -----------------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

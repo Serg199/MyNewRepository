@@ -1,0 +1,1657 @@
+OBJECT Report 14911 Vendor - Reconciliation Act
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Vendor - Reconciliation Act;
+               RUS=Поставщик - акт выверки];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   ReconActReportHelper.InitReportTemplate;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF (MinDate = 0D) OR (MaxDate = 0D) THEN
+                    ERROR(Text002);
+                  DateFilter := FORMAT(MinDate) + '..' + FORMAT(MaxDate);
+                  CompanyInfo.GET;
+                  GLSetup.GET;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName = '' THEN
+                     ReconActReportHelper.ExportData
+                   ELSE
+                     ReconActReportHelper.ExportDataFile(FileName);
+                 END;
+
+  }
+  DATASET
+  {
+    { 3182;    ;DataItem;Vendor              ;
+               DataItemTable=Table23;
+               DataItemTableView=SORTING(No.);
+               PrintOnlyIfDetail=Yes;
+               OnPreDataItem=BEGIN
+                               CurrReport.NEWPAGEPERRECORD := TRUE;
+                               FirstDate := CALCDATE('<-1D>',MinDate);
+                               FirstVendor := TRUE;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  ClearAmounts;
+                                  IF CurrencyCode <> '' THEN
+                                    CurrencyClaim := STRSUBSTNO(Text003,CurrencyCode)
+                                  ELSE
+                                    CurrencyClaim := '';
+
+                                  GetInitialDebitCreditBalance(InitialDebitBalance2,InitialCreditBalance2);
+                                  AdjustTotalsBalance(InitialDebitBalance2,InitialCreditBalance2);
+                                  SetOppositeData(1,'',InitialCreditBalance2,InitialDebitBalance2);
+
+                                  IF NOT FirstVendor THEN
+                                    ReconActReportHelper.AddPageBreak;
+                                  ReconActReportHelper.FillReportHeader(
+                                    MinDate,MaxDate,CompanyInfo.Name,CompanyInfo."VAT Registration No.",Name,"VAT Registration No.");
+                                  ReconActReportHelper.FillPageHeader(CurrencyClaim,CompanyInfo.Name,Name);
+                                  ReconActReportHelper.FillVendHeader(
+                                    FORMAT(MinDate),FormatAmount(InitialDebitBalance2),FormatAmount(InitialCreditBalance2),
+                                    FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+
+                                  FirstVendor := FALSE;
+                                END;
+
+               ReqFilterFields=No.,Agreement Filter }
+
+    { 4775;1   ;DataItem;OldVendInvoices     ;
+               DataItemTable=Table25;
+               DataItemTableView=SORTING(Document Type,Vendor No.,Posting Date,Currency Code);
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",'..%1',FirstDate);
+
+                               IF (NOT OldVendInvoices.ISEMPTY) AND (ShowDetails < 2) THEN
+                                 ReconActReportHelper.FillPrevHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT IsVendorInvoice(OldVendInvoices) THEN
+                                    CurrReport.SKIP;
+
+                                  SETFILTER("Date Filter",'..%1',FirstDate);
+                                  GetVendAmounts(OldVendInvoices,TempAmount,RemainingAmount);
+                                  RemainingAmount := -RemainingAmount;
+                                  IF RemainingAmount = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  IsInvProcessedInPrevPeriod("Entry No.",FALSE);
+
+                                  SETFILTER("Date Filter",'..%1',"Posting Date");
+                                  GetVendAmounts(OldVendInvoices,DocumentAmount,TempAmount);
+                                  DocumentAmount := -DocumentAmount;
+                                  TotalInvAmount := RemainingAmount;
+                                  InvCounter += 1;
+                                  EntryDescription := FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),RemainingAmount,0);
+
+                                  FindAppldVendLedgEntry("Entry No.");
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(InvCounter),FORMAT("Posting Date"),EntryDescription,
+                                      FormatAmount(DocumentAmount),FormatAmount(0),FormatAmount(RemainingAmount),
+                                      OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+
+               DataItemLink=Vendor No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 6253;2   ;DataItem;OldAppldVendPays2   ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT AppldVendLedgEntryTmp.FINDSET THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF AppldVendLedgEntryTmp.NEXT(1) = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  IF NOT (AppldVendLedgEntryTmp."Posting Date" IN [MinDate..MaxDate]) THEN
+                                    CurrReport.SKIP;
+
+                                  OldAppldVendPays."Entry Type" := OldAppldVendPays."Entry Type"::Application;
+                                  VendPayProcessing(OldAppldVendPays,OldVendInvoices,FALSE);
+                                  PayCounter += 1;
+                                  IF (CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode) THEN
+                                    SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),CreditAppliedAmt,DebitAppliedAmt)
+                                  ELSE
+                                    SetOppositeData(1,VendLedgEntry."Currency Code",CreditAppliedAmt,DebitAppliedAmt);
+
+                                  IF (ShowDetails = 0) AND ((CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode)) THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                      FormatAmount(DocumentAmount),FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                      OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                END;
+                                 }
+
+    { 4232;2   ;DataItem;OldAppldVendPays    ;
+               DataItemTable=Table380;
+               DataItemTableView=SORTING(Vendor Ledger Entry No.,Entry Type,Posting Date)
+                                 WHERE(Entry Type=FILTER(Realized Gain|Unrealized Gain|Realized Loss|Unrealized Loss));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",DateFilter);
+                               PayCounter := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  VendPayProcessing(OldAppldVendPays,OldVendInvoices,FALSE);
+                                  PayCounter += 1;
+                                  IF (CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode) THEN
+                                    SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),CreditAppliedAmt,DebitAppliedAmt)
+                                  ELSE
+                                    SetOppositeData(1,VendLedgEntry."Currency Code",CreditAppliedAmt,DebitAppliedAmt);
+
+                                  IF ShowDetails = 0 THEN BEGIN
+                                    IF (CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        FormatAmount(DocumentAmount),FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                    IF NOT ((CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode)) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        VendLedgEntry."Currency Code",FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                  END;
+                                END;
+
+               DataItemLink=Vendor Ledger Entry No.=FIELD(Entry No.) }
+
+    { 3438;2   ;DataItem;OldVendInvTotal     ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  CreditBalance2 += TotalInvAmount;
+                                  SetOppositeData(1,'',TotalInvAmount,0);
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillFooter(
+                                      FORMAT(OldVendInvoices."Document Type") + ' ' + OldVendInvoices."Document No.",
+                                      FormatAmount(0),FormatAmount(TotalInvAmount),FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+                                 }
+
+    { 8030;1   ;DataItem;VendInvoices        ;
+               DataItemTable=Table25;
+               DataItemTableView=SORTING(Document Type,Vendor No.,Posting Date,Currency Code);
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETRANGE("Posting Date",0D,MaxDate);
+                               InvCounter := 0;
+
+                               IF (NOT VendInvoices.ISEMPTY) AND (ShowDetails < 2) THEN
+                                 ReconActReportHelper.FillHeader(MinDate,MaxDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT IsVendorInvoice(VendInvoices) THEN
+                                    IF IsReturnPrepayment(VendInvoices) THEN BEGIN
+                                      IF IsReturnPpmtForCurrentPeriod(VendInvoices) THEN
+                                        CurrReport.SKIP;
+                                    END ELSE
+                                      CurrReport.SKIP;
+
+                                  IF "Posting Date" <= FirstDate THEN
+                                    IF (NOT CurrentPeriodApplicationExists("Entry No.")) OR IsInvProcessedInPrevPeriod("Entry No.",TRUE) THEN
+                                      CurrReport.SKIP;
+
+                                  SETFILTER("Date Filter",'..%1',"Posting Date");
+                                  GetVendAmounts(VendInvoices,DocumentAmount,TempAmount);
+                                  DocumentAmount := -DocumentAmount;
+                                  IF "Posting Date" IN [MinDate..MaxDate] THEN
+                                    CreditTurnover2 += DocumentAmount;
+
+                                  SETFILTER("Date Filter",DateFilter);
+                                  GetVendAmounts(VendInvoices,TempAmount,RemainingAmount);
+                                  RemainingAmount := -RemainingAmount;
+
+                                  TotalInvAmount := DocumentAmount;
+                                  RemainingAmount := -GetInvRemAmtAtDate("Entry No.");
+                                  IF "Posting Date" <= FirstDate THEN
+                                    TotalInvAmount := RemainingAmount;
+                                  InvCounter += 1;
+                                  EntryDescription := FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),RemainingAmount,0);
+
+                                  FindAppldVendLedgEntry("Entry No.");
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(InvCounter),FORMAT("Posting Date"),EntryDescription,
+                                      FormatAmount(DocumentAmount),FormatAmount(0),FormatAmount(RemainingAmount),
+                                      OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+
+               DataItemLink=Vendor No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 2052;2   ;DataItem;AppldVendPays2      ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT AppldVendLedgEntryTmp.FINDSET THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF AppldVendLedgEntryTmp.NEXT(1) = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  IF AppldVendLedgEntryTmp."Posting Date" < MinDate THEN
+                                    CurrReport.SKIP;
+
+                                  AppldVendPays."Entry Type" := AppldVendPays."Entry Type"::Application;
+                                  VendPayProcessing(AppldVendPays,VendInvoices,TRUE);
+                                  PayCounter += 1;
+                                  IF (CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode) THEN
+                                    SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),CreditAppliedAmt,DebitAppliedAmt)
+                                  ELSE
+                                    SetOppositeData(1,VendLedgEntry."Currency Code",CreditAppliedAmt,DebitAppliedAmt);
+
+                                  IF (ShowDetails = 0) AND ((CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode)) THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                      FormatAmount(DocumentAmount),FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                      OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                END;
+                                 }
+
+    { 2209;2   ;DataItem;AppldVendPays       ;
+               DataItemTable=Table380;
+               DataItemTableView=SORTING(Vendor Ledger Entry No.,Entry Type,Posting Date)
+                                 WHERE(Entry Type=FILTER(Realized Gain|Unrealized Gain|Realized Loss|Unrealized Loss));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",DateFilter);
+                               PayCounter := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  VendPayProcessing(AppldVendPays,VendInvoices,TRUE);
+                                  PayCounter += 1;
+                                  IF (CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode) THEN
+                                    SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),CreditAppliedAmt,DebitAppliedAmt)
+                                  ELSE
+                                    SetOppositeData(1,VendLedgEntry."Currency Code",CreditAppliedAmt,DebitAppliedAmt);
+
+                                  IF ShowDetails = 0 THEN BEGIN
+                                    IF (CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        FormatAmount(DocumentAmount),FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                    IF NOT ((CurrencyCode = '') OR (VendLedgEntry."Currency Code" = CurrencyCode)) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        VendLedgEntry."Currency Code",FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                  END;
+                                END;
+
+               DataItemLink=Vendor Ledger Entry No.=FIELD(Entry No.) }
+
+    { 5545;2   ;DataItem;VendInvTotal        ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  IF VendInvoices."Posting Date" IN [MinDate..MaxDate] THEN
+                                    CreditBalance2 += TotalInvAmount;
+                                  SetOppositeData(1,'',TotalInvAmount,0);
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillFooter(
+                                      FORMAT(VendInvoices."Document Type") + ' ' + VendInvoices."Document No.",
+                                      FormatAmount(0),FormatAmount(TotalInvAmount),FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+                                 }
+
+    { 8219;1   ;DataItem;VendPayments        ;
+               DataItemTable=Table25;
+               DataItemTableView=SORTING(Document Type,Vendor No.,Posting Date,Currency Code);
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",DateFilter);
+                               PayCounter := 0;
+
+                               IF (ShowDetails < 2) AND (NOT VendPayments.ISEMPTY) THEN
+                                 ReconActReportHelper.FillAdvHeader(MinDate,MaxDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT IsVendorPayment(VendPayments) THEN
+                                    CurrReport.SKIP;
+
+                                  SETFILTER("Date Filter",DateFilter);
+                                  GetVendPay(VendPayments,DocumentAmount,RemainingAmount,OtherCurrApplAmount);
+
+                                  IF (RemainingAmount + OtherCurrApplAmount = 0) AND ("Document Type" <> "Document Type"::Refund) THEN
+                                    CurrReport.SKIP;
+                                  DebitTurnover2 += (RemainingAmount + OtherCurrApplAmount);
+                                  TotalPayAmount += RemainingAmount;
+                                  PayCounter += 1;
+                                  InvCounter := 0;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),0,RemainingAmount);
+                                  SetOppositeData(2,'',0,TotalPayAmount);
+                                  IF "Document Type" = "Document Type"::Refund THEN
+                                    Description := COPYSTR(Description + ' (' + "Applies-to Doc. No." + ')',1,MAXSTRLEN(Description));
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(PayCounter),FORMAT("Posting Date"),FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description,
+                                      FormatAmount(DocumentAmount),FormatAmount(RemainingAmount),FormatAmount(0),
+                                      OppositeText,FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+
+               OnPostDataItem=BEGIN
+                                DebitBalance2 += TotalPayAmount;
+
+                                IF (ShowDetails < 2) AND (NOT VendPayments.ISEMPTY) THEN
+                                  ReconActReportHelper.FillAdvFooter(
+                                    MaxDate,FormatAmount(TotalPayAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[2,2]));
+                              END;
+
+               DataItemLink=Vendor No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 8363;2   ;DataItem;VendOtherCurrAppln  ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  IF OtherCurrApplAmount = 0 THEN
+                                    CurrReport.SKIP;
+                                  InvCounter += 1;
+                                  SetOppositeData(1,'',OtherCurrApplAmount,RemainingAmount);
+
+                                  IF ShowDetails = 2 THEN
+                                    ReconActReportHelper.FillAdvOtherCurrBody(
+                                      FORMAT(PayCounter) + '.1',FORMAT(VendPayments."Document Type") + ' ' + VendPayments."Document No.",
+                                      FormatAmount(0),FormatAmount(OtherCurrApplAmount),FormatAmount(OppositeData[1,1]),FormatAmount(0),
+                                      FormatAmount(RemainingAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+                                 }
+
+    { 4964;1   ;DataItem;OldVendPayments     ;
+               DataItemTable=Table25;
+               DataItemTableView=SORTING(Document Type,Vendor No.,Posting Date,Currency Code);
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",'..%1',FirstDate);
+                               PayCounter := 0;
+                               TotalPayAmount := 0;
+
+                               IF (ShowDetails < 2) AND (NOT OldVendPayments.ISEMPTY) THEN
+                                 ReconActReportHelper.FillPrevAdvHeader(MinDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT IsVendorPayment(OldVendPayments) THEN
+                                    CurrReport.SKIP;
+
+                                  SETFILTER("Date Filter",'..%1',MaxDate);
+                                  GetVendPay(OldVendPayments,DocumentAmount,RemainingAmount,OtherCurrApplAmount);
+
+                                  IF RemainingAmount + OtherCurrApplAmount = 0 THEN
+                                    CurrReport.SKIP;
+                                  TotalPayAmount += RemainingAmount;
+                                  PayCounter += 1;
+                                  InvCounter := 0;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),0,RemainingAmount);
+                                  SetOppositeData(2,'',0,TotalPayAmount);
+                                  IF "Document Type" = "Document Type"::Refund THEN
+                                    Description := COPYSTR(Description + ' (' + "Applies-to Doc. No." + ')',1,MAXSTRLEN(Description));
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(PayCounter),FORMAT("Posting Date"),FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description,
+                                      FormatAmount(DocumentAmount),FormatAmount(RemainingAmount),FormatAmount(0),
+                                      OppositeText,FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+
+               OnPostDataItem=BEGIN
+                                DebitBalance2 += TotalPayAmount;
+
+                                IF (ShowDetails < 2) AND (NOT OldVendPayments.ISEMPTY) THEN
+                                  ReconActReportHelper.FillPrevAdvFooter(
+                                    MaxDate,FormatAmount(TotalPayAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[2,2]));
+                              END;
+
+               DataItemLink=Vendor No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 9983;2   ;DataItem;OldVendOtherCurrAppln;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  IF OtherCurrApplAmount = 0 THEN
+                                    CurrReport.SKIP;
+                                  InvCounter += 1;
+                                  SetOppositeData(1,'',OtherCurrApplAmount,RemainingAmount);
+
+                                  IF ShowDetails = 2 THEN
+                                    ReconActReportHelper.FillAdvOtherCurrBody(
+                                      FORMAT(PayCounter) + '.1',FORMAT(OldVendPayments."Document Type") + ' ' + OldVendPayments."Document No.",
+                                      FormatAmount(0),FormatAmount(OtherCurrApplAmount),FormatAmount(OppositeData[1,1]),FormatAmount(0),
+                                      FormatAmount(RemainingAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+                                 }
+
+    { 7099;1   ;DataItem;VendTotal           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  AdjustTotalsBalance(DebitBalance2,CreditBalance2);
+                                  SetOppositeData(1,'',CreditTurnover2,DebitTurnover2);
+                                  SetOppositeData(2,'',CreditBalance2,DebitBalance2);
+
+                                  ReconActReportHelper.FillVendFooter(
+                                    MinDate,MaxDate,
+                                    FormatAmount(DebitTurnover2),FormatAmount(CreditTurnover2),
+                                    FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]),
+                                    FormatAmount(DebitBalance2),FormatAmount(CreditBalance2),
+                                    FormatAmount(OppositeData[2,1]),FormatAmount(OppositeData[2,2]));
+                                END;
+                                 }
+
+    { 6836;1   ;DataItem;Customer            ;
+               DataItemTable=Table18;
+               DataItemTableView=SORTING(No.);
+               PrintOnlyIfDetail=Yes;
+               OnPreDataItem=BEGIN
+                               CreditBalance := 0;
+                               DebitBalance := 0;
+                               CreditTurnover := 0;
+                               DebitTurnover := 0;
+                               InvCounter := 0;
+                               TotalInvAmount := 0;
+                               PayCounter := 0;
+                               TotalPayAmount := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  DtldCustLedgEntry.RESET;
+                                  DtldCustLedgEntry.SETCURRENTKEY(
+                                    "Customer No.","Initial Document Type","Document Type","Entry Type","Posting Date","Currency Code"); // PS36580
+                                  DtldCustLedgEntry.SETRANGE("Customer No.","No.");
+                                  DtldCustLedgEntry.SETFILTER("Posting Date",'..%1',FirstDate);
+                                  DtldCustLedgEntry.SETFILTER("Initial Document Type",'%1|%2|%3',DtldCustLedgEntry."Initial Document Type"::" ",
+                                    DtldCustLedgEntry."Initial Document Type"::Invoice,
+                                    DtldCustLedgEntry."Initial Document Type"::"Credit Memo");
+                                  IF CurrencyCode <> '' THEN BEGIN
+                                    CurrencyClaim := STRSUBSTNO(Text003,CurrencyCode);
+                                    DtldCustLedgEntry.SETRANGE("Currency Code",CurrencyCode);
+                                    DtldCustLedgEntry.CALCSUMS(Amount);
+                                    InitialDebitBalance := DtldCustLedgEntry.Amount;
+                                  END ELSE BEGIN
+                                    CurrencyClaim := '';
+                                    DtldCustLedgEntry.CALCSUMS("Amount (LCY)");
+                                    InitialDebitBalance := DtldCustLedgEntry."Amount (LCY)";
+                                  END;
+
+                                  DtldCustLedgEntry.SETFILTER("Initial Document Type",'%1|%2',DtldCustLedgEntry."Initial Document Type"::Payment,
+                                    DtldCustLedgEntry."Initial Document Type"::Refund);
+                                  IF CurrencyCode <> '' THEN BEGIN
+                                    DtldCustLedgEntry.CALCSUMS(Amount);
+                                    InitialCreditBalance := -DtldCustLedgEntry.Amount;
+                                  END ELSE BEGIN
+                                    DtldCustLedgEntry.CALCSUMS("Amount (LCY)");
+                                    InitialCreditBalance := -DtldCustLedgEntry."Amount (LCY)";
+                                  END;
+
+                                  IF (InitialCreditBalance = 0) AND (InitialDebitBalance = 0) AND (NOT HasAnyOps("No.")) THEN
+                                    CurrReport.BREAK;
+
+                                  AdjustTotals(InitialDebitBalance,InitialCreditBalance);
+                                  SetOppositeData(1,'',InitialCreditBalance,InitialDebitBalance);
+
+                                  ReconActReportHelper.FillCustHeader(
+                                    FORMAT(MinDate),FormatAmount(InitialDebitBalance),FormatAmount(InitialCreditBalance),
+                                    FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                END;
+
+               ReqFilterFields=Agreement Filter;
+               DataItemLink=Vendor No.=FIELD(No.) }
+
+    { 5773;2   ;DataItem;OldCustInvoices     ;
+               DataItemTable=Table21;
+               DataItemTableView=SORTING(Document Type,Customer No.,Posting Date,Currency Code)
+                                 WHERE(Document Type=FILTER(' '|Invoice|Credit Memo));
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",'..%1',FirstDate);
+
+                               IF (NOT OldCustInvoices.ISEMPTY) AND (ShowDetails < 2) THEN
+                                 ReconActReportHelper.FillPrevHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  SETFILTER("Date Filter",'..%1',FirstDate);
+                                  GetCustAmounts(OldCustInvoices,TempAmount,RemainingAmount);
+                                  IF RemainingAmount = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  SETFILTER("Date Filter",'..%1',"Posting Date");
+                                  GetCustAmounts(OldCustInvoices,DocumentAmount,TempAmount);
+                                  TotalInvAmount := RemainingAmount;
+                                  InvCounter += 1;
+                                  EntryDescription := FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),0,RemainingAmount);
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(InvCounter),FORMAT("Posting Date"),EntryDescription,
+                                      FormatAmount(DocumentAmount),FormatAmount(RemainingAmount),FormatAmount(0),
+                                      OppositeText,FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+
+               DataItemLink=Customer No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 5775;3   ;DataItem;OldAppldCustPays    ;
+               DataItemTable=Table379;
+               DataItemTableView=SORTING(Cust. Ledger Entry No.,Posting Date)
+                                 WHERE(Entry Type=FILTER(Application|Realized Gain|Unrealized Gain|Realized Loss|Unrealized Loss));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",DateFilter);
+                               PayCounter := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CustPayProcessing(OldAppldCustPays,OldCustInvoices);
+                                  PayCounter += 1;
+                                  IF (CurrencyCode = '') OR (CustLedgEntry."Currency Code" = CurrencyCode) THEN
+                                    SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),CreditAppliedAmt,DebitAppliedAmt)
+                                  ELSE
+                                    SetOppositeData(1,CustLedgEntry."Currency Code",CreditAppliedAmt,DebitAppliedAmt);
+
+                                  IF ShowDetails = 0 THEN BEGIN
+                                    IF (CurrencyCode = '') OR (CustLedgEntry."Currency Code" = CurrencyCode) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        FormatAmount(DocumentAmount),FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                    IF NOT ((CurrencyCode = '') OR (CustLedgEntry."Currency Code" = CurrencyCode)) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        CustLedgEntry."Currency Code",FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                  END;
+                                END;
+
+               DataItemLink=Cust. Ledger Entry No.=FIELD(Entry No.) }
+
+    { 4436;3   ;DataItem;OldCustInvTotal     ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  DebitBalance += TotalInvAmount;
+                                  SetOppositeData(1,'',0,TotalInvAmount);
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillFooter(
+                                      FORMAT(OldVendInvoices."Document Type") + ' ' + OldCustInvoices."Document No.",
+                                      FormatAmount(TotalInvAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+                                 }
+
+    { 9028;2   ;DataItem;CustInvoices        ;
+               DataItemTable=Table21;
+               DataItemTableView=SORTING(Document Type,Customer No.,Posting Date,Currency Code)
+                                 WHERE(Document Type=FILTER(' '|Invoice|Credit Memo));
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",DateFilter);
+                               InvCounter := 0;
+
+                               IF (NOT CustInvoices.ISEMPTY) AND (ShowDetails < 2) THEN
+                                 ReconActReportHelper.FillHeader(MinDate,MaxDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  SETFILTER("Date Filter",'..%1',"Posting Date");
+                                  GetCustAmounts(CustInvoices,DocumentAmount,TempAmount);
+                                  DebitTurnover += DocumentAmount;
+
+                                  SETFILTER("Date Filter",DateFilter);
+                                  GetCustAmounts(CustInvoices,TempAmount,RemainingAmount);
+
+                                  TotalInvAmount := DocumentAmount;
+                                  RemainingAmount := DocumentAmount;
+                                  InvCounter += 1;
+                                  EntryDescription := FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),0,RemainingAmount);
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(InvCounter),FORMAT("Posting Date"),EntryDescription,
+                                      FormatAmount(DocumentAmount),FormatAmount(RemainingAmount),FormatAmount(0),
+                                      OppositeText,FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+
+               DataItemLink=Customer No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 3752;3   ;DataItem;AppldCustPays       ;
+               DataItemTable=Table379;
+               DataItemTableView=SORTING(Cust. Ledger Entry No.,Posting Date)
+                                 WHERE(Entry Type=FILTER(Application|Realized Gain|Unrealized Gain|Realized Loss|Unrealized Loss));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",DateFilter);
+                               PayCounter := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CustPayProcessing(AppldCustPays,CustInvoices);
+                                  PayCounter += 1;
+                                  IF (CurrencyCode = '') OR (CustLedgEntry."Currency Code" = CurrencyCode) THEN
+                                    SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),CreditAppliedAmt,DebitAppliedAmt)
+                                  ELSE
+                                    SetOppositeData(1,CustLedgEntry."Currency Code",CreditAppliedAmt,DebitAppliedAmt);
+
+                                  IF ShowDetails = 0 THEN BEGIN
+                                    IF (CurrencyCode = '') OR (CustLedgEntry."Currency Code" = CurrencyCode) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        FormatAmount(DocumentAmount),FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                    IF NOT ((CurrencyCode = '') OR (CustLedgEntry."Currency Code" = CurrencyCode)) THEN
+                                      ReconActReportHelper.FillBody(
+                                        FORMAT(InvCounter) + '.' + FORMAT(PayCounter),FORMAT(PostingDate),EntryDescription,
+                                        CustLedgEntry."Currency Code",FormatAmount(DebitAppliedAmt),FormatAmount(CreditAppliedAmt),
+                                        OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]));
+                                  END;
+                                END;
+
+               DataItemLink=Cust. Ledger Entry No.=FIELD(Entry No.) }
+
+    { 6543;3   ;DataItem;CustInvTotal        ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  DebitBalance += TotalInvAmount;
+                                  SetOppositeData(1,'',0,TotalInvAmount);
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillFooter(
+                                      FORMAT(CustInvoices."Document Type") + ' ' + CustInvoices."Document No.",
+                                      FormatAmount(TotalInvAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[1,2]));
+                                END;
+                                 }
+
+    { 9217;2   ;DataItem;CustPayments        ;
+               DataItemTable=Table21;
+               DataItemTableView=SORTING(Document Type,Customer No.,Posting Date,Currency Code)
+                                 WHERE(Document Type=FILTER(Payment|Refund));
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",DateFilter);
+                               PayCounter := 0;
+
+                               IF (ShowDetails < 2) AND (NOT CustPayments.ISEMPTY) THEN
+                                 ReconActReportHelper.FillAdvHeader(MinDate,MaxDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  SETFILTER("Date Filter",DateFilter);
+                                  GetCustPay(CustPayments,DocumentAmount,RemainingAmount,OtherCurrApplAmount);
+                                  CreditTurnover += DocumentAmount;
+
+                                  IF ShowDetails = ShowDetails::Full THEN
+                                    IF (RemainingAmount + OtherCurrApplAmount = 0) AND ("Document Type" <> "Document Type"::Refund) THEN
+                                      CurrReport.SKIP;
+                                  TotalPayAmount += RemainingAmount;
+                                  PayCounter += 1;
+                                  InvCounter := 0;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),RemainingAmount,0);
+                                  SetOppositeData(2,'',TotalPayAmount,0);
+                                  IF "Document Type" = "Document Type"::Refund THEN
+                                    Description := COPYSTR(Description + ' (' + "Applies-to Doc. No." + ')',1,MAXSTRLEN(Description));
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(PayCounter),FORMAT("Posting Date"),FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description,
+                                      FormatAmount(DocumentAmount),FormatAmount(0),FormatAmount(RemainingAmount + OtherCurrApplAmount),
+                                      OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+
+               OnPostDataItem=BEGIN
+                                CreditBalance += TotalPayAmount;
+
+                                IF (ShowDetails < 2) AND (NOT CustPayments.ISEMPTY) THEN
+                                  ReconActReportHelper.FillAdvFooter(
+                                    MaxDate,FormatAmount(0),FormatAmount(TotalPayAmount),FormatAmount(OppositeData[2,1]),FormatAmount(0));
+                              END;
+
+               DataItemLink=Customer No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 3398;3   ;DataItem;CustOtherCurrAppln  ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  IF OtherCurrApplAmount = 0 THEN
+                                    CurrReport.SKIP;
+                                  InvCounter += 1;
+                                  SetOppositeData(1,'',RemainingAmount,OtherCurrApplAmount);
+
+                                  IF ShowDetails = 2 THEN
+                                    ReconActReportHelper.FillAdvOtherCurrBody(
+                                      FORMAT(PayCounter) + '.' + FORMAT(InvCounter),FORMAT(CustPayments."Document Type") + ' ' + CustPayments."Document No.",
+                                      FormatAmount(OtherCurrApplAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[1,2]),
+                                      FormatAmount(0),FormatAmount(RemainingAmount),FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+                                 }
+
+    { 5962;2   ;DataItem;OldCustPayments     ;
+               DataItemTable=Table21;
+               DataItemTableView=SORTING(Document Type,Customer No.,Posting Date,Currency Code)
+                                 WHERE(Document Type=FILTER(Payment|Refund));
+               OnPreDataItem=BEGIN
+                               IF CurrencyCode <> '' THEN
+                                 SETFILTER("Currency Code",CurrencyCode);
+                               SETFILTER("Posting Date",'..%1',FirstDate);
+                               PayCounter := 0;
+                               TotalPayAmount := 0;
+
+                               IF (ShowDetails < 2) AND (NOT OldCustPayments.ISEMPTY) THEN
+                                 ReconActReportHelper.FillPrevAdvHeader(MinDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  SETFILTER("Date Filter",'..%1',MaxDate);
+                                  GetCustPay(OldCustPayments,DocumentAmount,RemainingAmount,OtherCurrApplAmount);
+
+                                  IF RemainingAmount + OtherCurrApplAmount = 0 THEN
+                                    CurrReport.SKIP;
+                                  TotalPayAmount += RemainingAmount;
+                                  PayCounter += 1;
+                                  InvCounter := 0;
+                                  SetOppositeData(1,FORMAT(DocumentAmount,0,'<Precision,2:2><Standard Format,0>'),RemainingAmount,0);
+                                  SetOppositeData(2,'',TotalPayAmount,0);
+                                  IF "Document Type" = "Document Type"::Refund THEN
+                                    Description := COPYSTR(Description + ' (' + "Applies-to Doc. No." + ')',1,MAXSTRLEN(Description));
+
+                                  IF ShowDetails < 2 THEN
+                                    ReconActReportHelper.FillBody(
+                                      FORMAT(PayCounter),FORMAT("Posting Date"),FORMAT("Document Type") + ' ' + "Document No." + ' ' + Description,
+                                      FormatAmount(DocumentAmount),FormatAmount(0),FormatAmount(RemainingAmount),
+                                      OppositeText,FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+
+               OnPostDataItem=BEGIN
+                                CreditBalance += TotalPayAmount;
+
+                                IF (ShowDetails < 2) AND (NOT OldCustPayments.ISEMPTY) THEN
+                                  ReconActReportHelper.FillPrevAdvFooter(
+                                    MaxDate,FormatAmount(0),FormatAmount(TotalPayAmount),FormatAmount(OppositeData[2,1]),FormatAmount(0));
+                              END;
+
+               DataItemLink=Customer No.=FIELD(No.),
+                            Agreement No.=FIELD(Agreement Filter) }
+
+    { 8049;3   ;DataItem;OldCustOtherCurrAppln;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  IF OtherCurrApplAmount = 0 THEN
+                                    CurrReport.SKIP;
+                                  InvCounter += 1;
+                                  SetOppositeData(1,'',RemainingAmount,OtherCurrApplAmount);
+
+                                  IF ShowDetails = 2 THEN
+                                    ReconActReportHelper.FillAdvOtherCurrBody(
+                                      FORMAT(PayCounter) + '.' + FORMAT(InvCounter),FORMAT(OldCustPayments."Document Type") + ' ' + OldCustPayments."Document No.",
+                                      FormatAmount(OtherCurrApplAmount),FormatAmount(0),FormatAmount(0),FormatAmount(OppositeData[1,2]),
+                                      FormatAmount(0),FormatAmount(RemainingAmount),FormatAmount(OppositeData[1,1]),FormatAmount(0));
+                                END;
+                                 }
+
+    { 6083;2   ;DataItem;CustTotal           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=BEGIN
+                                  AdjustTotals(DebitBalance,CreditBalance);
+                                  SetOppositeData(1,'',CreditTurnover,DebitTurnover);
+                                  SetOppositeData(2,'',CreditBalance,DebitBalance);
+                                END;
+                                 }
+
+    { 9725;1   ;DataItem;Totals              ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnAfterGetRecord=VAR
+                                  LocMgt@1210000 : Codeunit 12400;
+                                  Result@1470002 : Decimal;
+                                  CurrencyText@1470001 : Text[30];
+                                BEGIN
+                                  CreditBalance := CreditBalance + CreditBalance2;
+                                  DebitBalance := DebitBalance + DebitBalance2;
+                                  AdjustTotals(DebitBalance,CreditBalance);
+                                  CreditTurnover := CreditTurnover + CreditTurnover2;
+                                  DebitTurnover := DebitTurnover + DebitTurnover2;
+                                  InitialDebitBalance := InitialDebitBalance + InitialDebitBalance2;
+                                  InitialCreditBalance := InitialCreditBalance + InitialCreditBalance2;
+                                  AdjustTotals(InitialDebitBalance,InitialCreditBalance);
+                                  CreditTotalBalance := InitialCreditBalance + CreditTurnover;
+                                  DebitTotalBalance := InitialDebitBalance + DebitTurnover;
+                                  AdjustTotalsBalance(DebitTotalBalance,CreditTotalBalance);
+                                  SetOppositeData(1,'',InitialCreditBalance,InitialDebitBalance);
+                                  SetOppositeData(2,'',CreditTurnover,DebitTurnover);
+                                  SetOppositeData(3,'',CreditBalance,DebitBalance);
+
+                                  Result := CreditTotalBalance - DebitTotalBalance;
+                                  IF CurrencyCode = '' THEN
+                                    CurrencyText := Text004
+                                  ELSE
+                                    CurrencyText := CurrencyCode;
+                                  IF Result = 0 THEN
+                                    ResultText := STRSUBSTNO(Text000,MaxDate,CompanyInfo.Name,Vendor.Name)
+                                  ELSE
+                                    IF Result > 0 THEN
+                                      ResultText :=
+                                        STRSUBSTNO(Text001,MaxDate,CompanyInfo.Name,Vendor.Name,Result,
+                                          LocMgt.Amount2Text(CurrencyCode,Result),CurrencyText)
+                                    ELSE
+                                      ResultText :=
+                                        STRSUBSTNO(Text001,MaxDate,Vendor.Name,CompanyInfo.Name,-Result,
+                                          LocMgt.Amount2Text(CurrencyCode,-Result),CurrencyText);
+
+                                  ReconActReportHelper.FillPageFooter(
+                                    MinDate,MaxDate,
+                                    FormatAmount(InitialDebitBalance),FormatAmount(InitialCreditBalance),
+                                    FormatAmount(OppositeData[1,1]),FormatAmount(OppositeData[1,2]),
+                                    FormatAmount(DebitTurnover),FormatAmount(CreditTurnover),
+                                    FormatAmount(OppositeData[2,1]),FormatAmount(OppositeData[2,2]),
+                                    FormatAmount(DebitTotalBalance),FormatAmount(CreditTotalBalance),
+                                    FormatAmount(OppositeData[3,1]),FormatAmount(OppositeData[3,2]));
+
+                                  ReconActReportHelper.FillReportFooter(
+                                    ResultText,CompanyInfo.Name,Customer.Name,
+                                    CompanyInfo."Director Name",CompanyInfo."Accountant Name");
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1470000;2;Field     ;
+                  CaptionML=[ENU=Starting Date;
+                             RUS=Дата начала];
+                  SourceExpr=MinDate;
+                  OnValidate=BEGIN
+                               IF MinDate <> 0D THEN
+                                 MaxDate := CALCDATE('<CM>',MinDate);
+                             END;
+                              }
+
+      { 1470002;2;Field     ;
+                  CaptionML=[ENU=Ending Date;
+                             RUS=Дата окончания];
+                  SourceExpr=MaxDate }
+
+      { 1470004;2;Field     ;
+                  CaptionML=[ENU=Currency Code;
+                             RUS=Код валюты];
+                  SourceExpr=CurrencyCode;
+                  TableRelation=Currency }
+
+      { 1470007;2;Field     ;
+                  CaptionML=[ENU=Show Details;
+                             RUS=Подробно];
+                  OptionCaptionML=[ENU=All,Partially,None;
+                                   RUS=Все,Частично,Нет];
+                  SourceExpr=ShowDetails }
+
+      { 1470006;2;Field     ;
+                  CaptionML=[ENU=Print Customer Data;
+                             RUS=Печать данных клиента];
+                  SourceExpr=PrintCustomerData }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst '@@@=Must be translated: На %1 между %2 и %3 задолженность отсутствует;ENU=There is no debt between %2 and %3 at %1;RUS=В %1 отсутствует задолженность между %2 и %3';
+      Text001@1018 : TextConst '@@@=Must be translated: На %1 задолженность %2 перед %3 составляет %4 (%5) %6.;ENU=%2 debt amount to %3 is %4 (%5) %6 at %1.;RUS=В %1 сумма задолженности от %2 к %3 составляет %4 (%5) %6.';
+      GLSetup@1210006 : Record 98;
+      CompanyInfo@1210004 : Record 79;
+      DtldCustLedgEntry@1210001 : Record 379;
+      CustLedgEntry@1210000 : Record 21;
+      VendLedgEntry@1210003 : Record 25;
+      DetailedVendLedgEntry@1210002 : Record 380;
+      AppldVendLedgEntryTmp@1210005 : TEMPORARY Record 380;
+      CurrencyCode@1470002 : Code[10];
+      CurrencyClaim@1470033 : Text[100];
+      DateFilter@1470003 : Text[250];
+      PrintCustomerData@1470044 : Boolean;
+      MinDate@1470006 : Date;
+      MaxDate@1470007 : Date;
+      Text002@1470008 : TextConst 'ENU=Starting Date and Ending Date should be filled.;RUS=Необходимо указать даты начала и окончания.';
+      FirstDate@1470037 : Date;
+      TotalInvAmount@1470009 : Decimal;
+      TotalPayAmount@1470010 : Decimal;
+      InvCounter@1470011 : Integer;
+      PayCounter@1470012 : Integer;
+      InitialDebitBalance@1470018 : Decimal;
+      InitialCreditBalance@1470017 : Decimal;
+      DebitAppliedAmt@1470019 : Decimal;
+      CreditAppliedAmt@1470020 : Decimal;
+      DebitTurnover@1470016 : Decimal;
+      CreditTurnover@1470015 : Decimal;
+      DebitBalance@1470014 : Decimal;
+      CreditBalance@1470013 : Decimal;
+      DebitTurnover2@1470026 : Decimal;
+      CreditTurnover2@1470025 : Decimal;
+      DebitBalance2@1470024 : Decimal;
+      CreditBalance2@1470023 : Decimal;
+      InitialDebitBalance2@1470028 : Decimal;
+      InitialCreditBalance2@1470027 : Decimal;
+      ResultText@1470000 : Text[1024];
+      DocumentAmount@1470030 : Decimal;
+      RemainingAmount@1470031 : Decimal;
+      TempAmount@1470032 : Decimal;
+      Text003@1470034 : TextConst 'ENU=Report currency code: %1;RUS=Код валюты отчета: %1';
+      Text004@1470035 : TextConst 'ENU=rub;RUS=руб';
+      EntryDescription@1470038 : Text[1024];
+      PostingDate@1470041 : Date;
+      OtherCurrApplAmount@1470042 : Decimal;
+      ShowDetails@1470043 : 'Full,Partly,Nothing';
+      OppositeData@1470045 : ARRAY [3,2] OF Decimal;
+      OppositeText@1470046 : Text[30];
+      CreditTotalBalance@1210008 : Decimal;
+      DebitTotalBalance@1210007 : Decimal;
+      ProcessedPayEntries@1210100 : TEMPORARY Record 380;
+      ProcessedVendInvoices@1210101 : TEMPORARY Record 25;
+      Text007@1210102 : TextConst 'ENU=(AR);RUS=(АР)';
+      FileName@1210010 : Text;
+      ReconActReportHelper@1210009 : Codeunit 14955;
+      FirstVendor@1210011 : Boolean;
+
+    LOCAL PROCEDURE ExchAmount@43(Amount@1000 : Decimal;FromCurrencyCode@1001 : Code[10];ToCurrencyCode@1002 : Code[10];UsePostingDate@1003 : Date) : Decimal;
+    VAR
+      ToCurrency@1004 : Record 4;
+      CurrExchRate@1470000 : Record 330;
+    BEGIN
+      IF (FromCurrencyCode = ToCurrencyCode) OR (Amount = 0) THEN
+        EXIT(Amount);
+
+      IF (FromCurrencyCode = '') OR (FromCurrencyCode = GLSetup."LCY Code") THEN
+        Amount :=
+          CurrExchRate.ExchangeAmtLCYToFCY(
+            UsePostingDate,ToCurrencyCode,Amount,VendInvoices."Original Currency Factor")
+      ELSE
+        Amount :=
+          CurrExchRate.ExchangeAmtFCYToFCY(
+            UsePostingDate,FromCurrencyCode,ToCurrencyCode,Amount);
+
+      IF ToCurrencyCode <> '' THEN BEGIN
+        ToCurrency.GET(ToCurrencyCode);
+        Amount := ROUND(Amount,ToCurrency."Amount Rounding Precision");
+      END ELSE
+        Amount := ROUND(Amount);
+
+      EXIT(Amount);
+    END;
+
+    LOCAL PROCEDURE GetCustApplicationEntry@1470002(SourceEntry@1470001 : Record 379;VAR DtldCustLedgEntry@1470002 : Record 379;GetLedgEntry@1470004 : Boolean;VAR CustLedgEntry@1470000 : Record 21;VAR OtherCurrApplAmount@1470003 : Decimal);
+    BEGIN
+      WITH SourceEntry DO BEGIN
+        DtldCustLedgEntry.RESET;
+        DtldCustLedgEntry.SETFILTER("Entry No.",'%1|%2',"Entry No." - 1,"Entry No." + 1);
+        IF DtldCustLedgEntry.FIND('-') THEN
+          REPEAT
+            IF (DtldCustLedgEntry."Entry Type" = DtldCustLedgEntry."Entry Type"::Application) AND
+               (DtldCustLedgEntry."Transaction No." = "Transaction No.")
+            THEN BEGIN
+              IF GetLedgEntry THEN
+                CustLedgEntry.GET(DtldCustLedgEntry."Cust. Ledger Entry No.");
+              IF "Currency Code" <> DtldCustLedgEntry."Currency Code" THEN
+                OtherCurrApplAmount += Amount;
+              EXIT;
+            END;
+          UNTIL DtldCustLedgEntry.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetVendApplicationEntry@1470008(SourceEntry@1470001 : Record 380;VAR DetailedVendLedgEntry@1470002 : Record 380;GetLedgEntry@1470004 : Boolean;VAR VendLedgEntry@1470000 : Record 25;VAR OtherCurrApplAmount@1470003 : Decimal);
+    BEGIN
+      WITH SourceEntry DO BEGIN
+        DetailedVendLedgEntry.RESET;
+        DetailedVendLedgEntry.SETFILTER("Entry No.",'%1|%2',"Entry No." - 1,"Entry No." + 1);
+        IF DetailedVendLedgEntry.FIND('-') THEN
+          REPEAT
+            IF (DetailedVendLedgEntry."Entry Type" = DetailedVendLedgEntry."Entry Type"::Application) AND
+               (DetailedVendLedgEntry."Transaction No." = "Transaction No.")
+            THEN BEGIN
+              IF GetLedgEntry THEN // Positive is just temporary flag
+                VendLedgEntry.GET(DetailedVendLedgEntry."Vendor Ledger Entry No.");
+              IF "Currency Code" <> DetailedVendLedgEntry."Currency Code" THEN
+                OtherCurrApplAmount += Amount;
+              EXIT;
+            END;
+          UNTIL DetailedVendLedgEntry.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE AdjustTotals@1470000(VAR DebitAmount@1470000 : Decimal;VAR CreditAmount@1470001 : Decimal);
+    BEGIN
+      IF ShowDetails > 0 THEN
+        AdjustTotalsBalance(DebitAmount,CreditAmount);
+    END;
+
+    LOCAL PROCEDURE GetCustPay@1470001(VAR Rec@1470000 : Record 21;VAR DocumentAmount@1470002 : Decimal;VAR RemainingAmount@1470003 : Decimal;VAR OtherCurrApplAmount@1470004 : Decimal);
+    VAR
+      ApplDtldCustLedgEntry@1470001 : Record 379;
+    BEGIN
+      OtherCurrApplAmount := 0;
+      WITH Rec DO BEGIN
+        GetCustAmounts(Rec,DocumentAmount,RemainingAmount);
+        DocumentAmount := -DocumentAmount;
+        RemainingAmount := -RemainingAmount;
+        IF CurrencyCode = '' THEN
+          EXIT;
+        DtldCustLedgEntry.RESET;
+        DtldCustLedgEntry.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type","Posting Date");
+        DtldCustLedgEntry.SETRANGE("Cust. Ledger Entry No.","Entry No.");
+        DtldCustLedgEntry.SETRANGE("Entry Type",DtldCustLedgEntry."Entry Type"::Application);
+        DtldCustLedgEntry.SETFILTER("Posting Date",DateFilter);
+        IF DtldCustLedgEntry.FIND('-') THEN
+          REPEAT
+            CustLedgEntry.Positive := FALSE;
+            GetCustApplicationEntry(DtldCustLedgEntry,ApplDtldCustLedgEntry,FALSE,CustLedgEntry,OtherCurrApplAmount);
+          UNTIL DtldCustLedgEntry.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetVendPay@1470034(VAR Rec@1470003 : Record 25;VAR DocumentAmount@1470002 : Decimal;VAR RemainingAmount@1470001 : Decimal;VAR OtherCurrApplAmount@1470000 : Decimal);
+    VAR
+      ApplDetailedVendLedgEntry@1470004 : Record 380;
+    BEGIN
+      OtherCurrApplAmount := 0;
+      WITH Rec DO BEGIN
+        GetVendAmounts(Rec,DocumentAmount,RemainingAmount);
+        IF CurrencyCode = '' THEN
+          EXIT;
+        DetailedVendLedgEntry.RESET;
+        DetailedVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type","Posting Date");
+        DetailedVendLedgEntry.SETRANGE("Vendor Ledger Entry No.","Entry No.");
+        DetailedVendLedgEntry.SETRANGE("Entry Type",DetailedVendLedgEntry."Entry Type"::Application);
+        DetailedVendLedgEntry.SETFILTER("Posting Date",DateFilter);
+        IF DetailedVendLedgEntry.FINDSET THEN
+          REPEAT
+            GetVendApplicationEntry(DetailedVendLedgEntry,ApplDetailedVendLedgEntry,FALSE,VendLedgEntry,OtherCurrApplAmount);
+          UNTIL DetailedVendLedgEntry.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetCustAmounts@1470006(VAR CustLedgEntry@1470000 : Record 21;VAR Amount1@1470001 : Decimal;VAR RemainingAmount1@1470002 : Decimal);
+    VAR
+      IsInvoice@1470003 : Boolean;
+    BEGIN
+      IsInvoice := CustLedgEntry."Document Type" IN [CustLedgEntry."Document Type"::" ",
+                                                     CustLedgEntry."Document Type"::Invoice,
+                                                     CustLedgEntry."Document Type"::"Credit Memo"];
+      WITH CustLedgEntry DO
+        IF CurrencyCode = '' THEN BEGIN
+          CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)","Original Amt. (LCY)");
+          IF IsInvoice THEN
+            Amount1 := "Original Amt. (LCY)"
+          ELSE
+            Amount1 := "Amount (LCY)";
+          RemainingAmount1 := "Remaining Amt. (LCY)";
+        END ELSE BEGIN
+          CALCFIELDS(Amount,"Remaining Amount","Original Amount");
+          IF IsInvoice THEN
+            Amount1 := "Original Amount"
+          ELSE
+            Amount1 := Amount;
+          RemainingAmount1 := "Remaining Amount";
+        END;
+    END;
+
+    LOCAL PROCEDURE GetVendAmounts@1470010(VAR VendLedgEntry@1470000 : Record 25;VAR Amount1@1470001 : Decimal;VAR RemainingAmount1@1470002 : Decimal);
+    VAR
+      IsInvoice@1470003 : Boolean;
+    BEGIN
+      IsInvoice := IsVendorInvoice(VendLedgEntry);
+      WITH VendLedgEntry DO
+        IF CurrencyCode = '' THEN BEGIN
+          CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)","Original Amt. (LCY)");
+          IF IsInvoice THEN
+            Amount1 := "Original Amt. (LCY)"
+          ELSE
+            Amount1 := "Amount (LCY)";
+          RemainingAmount1 := "Remaining Amt. (LCY)";
+        END ELSE BEGIN
+          CALCFIELDS(Amount,"Remaining Amount","Original Amount");
+          IF IsInvoice THEN
+            Amount1 := "Original Amount"
+          ELSE
+            Amount1 := Amount;
+          RemainingAmount1 := "Remaining Amount";
+        END;
+    END;
+
+    LOCAL PROCEDURE CustPayProcessing@1470017(VAR PayEntry@1470000 : Record 379;VAR InvEntry@1470001 : Record 21);
+    BEGIN
+      WITH PayEntry DO
+        IF "Entry Type" <> "Entry Type"::Application THEN BEGIN
+          IF CurrencyCode <> '' THEN
+            CurrReport.SKIP;
+          PostingDate := "Posting Date";
+          EntryDescription := FORMAT(InvEntry."Document Type") + ' ' + InvEntry."Document No." + ' ' + InvEntry.Description;
+          TempAmount := "Amount (LCY)";
+          IF "Amount (LCY)" < 0 THEN BEGIN
+            DocumentAmount := -"Amount (LCY)";
+            CreditAppliedAmt := -"Amount (LCY)";
+            DebitAppliedAmt := 0;
+            CreditTurnover += -"Amount (LCY)";
+          END ELSE BEGIN
+            DocumentAmount := "Amount (LCY)";
+            CreditAppliedAmt := 0;
+            DebitAppliedAmt := "Amount (LCY)";
+            DebitTurnover += "Amount (LCY)";
+          END;
+        END ELSE BEGIN
+          GetCustApplicationEntry(PayEntry,DtldCustLedgEntry,TRUE,CustLedgEntry,OtherCurrApplAmount);
+          CustLedgEntry.SETFILTER("Date Filter",'..%1',CustLedgEntry."Posting Date");
+          PostingDate := CustLedgEntry."Posting Date";
+          IF CustLedgEntry."Currency Code" = '' THEN
+            CustLedgEntry."Currency Code" := GLSetup."LCY Code";
+          EntryDescription :=
+            FORMAT(CustLedgEntry."Document Type") + ' ' +
+            CustLedgEntry."Document No." + ' ' + CustLedgEntry.Description;
+          IF CurrencyCode = '' THEN BEGIN
+            CustLedgEntry.CALCFIELDS("Amount (LCY)");
+            DocumentAmount := -CustLedgEntry."Amount (LCY)";
+            TempAmount := "Amount (LCY)";
+          END ELSE BEGIN
+            CustLedgEntry.CALCFIELDS(Amount);
+            DocumentAmount := -CustLedgEntry.Amount;
+            TempAmount := ExchAmount(Amount,"Currency Code",CurrencyCode,"Posting Date");
+          END;
+          IF CustLedgEntry."Document Type" IN [CustLedgEntry."Document Type"::Invoice,
+                                               CustLedgEntry."Document Type"::"Credit Memo"]
+          THEN BEGIN
+            DocumentAmount := -DocumentAmount;
+            CreditAppliedAmt := 0;
+            DebitAppliedAmt := TempAmount;
+          END ELSE BEGIN
+            CreditAppliedAmt := -TempAmount;
+            DebitAppliedAmt := 0;
+          END;
+        END;
+      TotalInvAmount += TempAmount;
+    END;
+
+    LOCAL PROCEDURE VendPayProcessing@1470003(VAR PayEntry@1470000 : Record 380;VAR InvEntry@1470001 : Record 25;CurrentPeriod@1470101 : Boolean);
+    BEGIN
+      WITH PayEntry DO
+        IF "Entry Type" <> "Entry Type"::Application THEN BEGIN
+          VendLedgEntry.GET("Vendor Ledger Entry No.");
+          IF CurrencyCode <> '' THEN
+            CurrReport.SKIP;
+          PostingDate := "Posting Date";
+          EntryDescription := FORMAT(InvEntry."Document Type") + ' ' + InvEntry."Document No." + ' ' + InvEntry.Description;
+          TempAmount := -"Amount (LCY)";
+          IF "Amount (LCY)" < 0 THEN BEGIN
+            DocumentAmount := -"Amount (LCY)";
+            CreditAppliedAmt := -"Amount (LCY)";
+            DebitAppliedAmt := 0;
+          END ELSE BEGIN
+            DocumentAmount := "Amount (LCY)";
+            CreditAppliedAmt := 0;
+            DebitAppliedAmt := "Amount (LCY)";
+          END;
+        END ELSE BEGIN
+          VendLedgEntry.GET(AppldVendLedgEntryTmp."Vendor Ledger Entry No.");
+          VendLedgEntry.SETFILTER("Date Filter",'..%1',VendLedgEntry."Posting Date");
+          PostingDate := VendLedgEntry."Posting Date";
+          IF VendLedgEntry."Currency Code" = '' THEN
+            VendLedgEntry."Currency Code" := GLSetup."LCY Code";
+          IF AppldVendLedgEntryTmp."Prepmt. Diff." THEN
+            EntryDescription :=
+              STRSUBSTNO(
+                '%1 %2 %3 %4',Text007,FORMAT(InvEntry."Document Type"),
+                InvEntry."Document No.",InvEntry.Description)
+          ELSE
+            EntryDescription :=
+              STRSUBSTNO(
+                '%1 %2 %3',FORMAT(VendLedgEntry."Document Type"),VendLedgEntry."Document No.",
+                VendLedgEntry.Description);
+          IF CurrencyCode = '' THEN BEGIN
+            VendLedgEntry.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+            DocumentAmount := VendLedgEntry."Amount (LCY)";
+            TempAmount := -AppldVendLedgEntryTmp."Amount (LCY)";
+          END ELSE BEGIN
+            VendLedgEntry.CALCFIELDS(Amount,"Remaining Amount");
+            DocumentAmount := VendLedgEntry.Amount;
+            TempAmount := ExchAmount(
+                -AppldVendLedgEntryTmp.Amount,
+                AppldVendLedgEntryTmp."Currency Code",
+                CurrencyCode,
+                VendLedgEntry."Posting Date");
+          END;
+          IF AppldVendLedgEntryTmp."Prepmt. Diff." THEN BEGIN
+            IF TempAmount = 0 THEN
+              CurrReport.SKIP;
+            DebitAppliedAmt := 0;
+            CreditAppliedAmt := TempAmount;
+          END ELSE
+            IF (VendLedgEntry."Document Type" IN [VendLedgEntry."Document Type"::Invoice,
+                                                  VendLedgEntry."Document Type"::"Credit Memo"])
+            THEN BEGIN
+              DocumentAmount := -DocumentAmount;
+              DebitAppliedAmt := 0;
+              CreditAppliedAmt := TempAmount;
+            END ELSE BEGIN
+              CreditAppliedAmt := 0;
+              DebitAppliedAmt := -TempAmount;
+            END;
+        END;
+      IF (NOT WasProcessedInPrevPeriod(PayEntry,CurrentPeriod)) AND (PostingDate IN [MinDate..MaxDate]) THEN BEGIN
+        DebitTurnover2 += DebitAppliedAmt;
+        CreditTurnover2 += CreditAppliedAmt;
+      END;
+      TotalInvAmount += TempAmount;
+    END;
+
+    LOCAL PROCEDURE SetOppositeData@1470004(Index@1470003 : Integer;Data1@1470000 : Text[30];Data2@1470001 : Decimal;Data3@1470002 : Decimal);
+    BEGIN
+      IF PrintCustomerData THEN BEGIN
+        IF Index = 1 THEN
+          OppositeText := FORMAT(Data1,0,'<Precision,2:2><Standard Format,0>');
+        OppositeData[Index,1] := Data2;
+        OppositeData[Index,2] := Data3;
+      END;
+    END;
+
+    LOCAL PROCEDURE HasAnyOps@1470007(CustNo@1470000 : Code[20]) : Boolean;
+    BEGIN
+      DtldCustLedgEntry.RESET;
+      DtldCustLedgEntry.SETCURRENTKEY("Customer No.","Posting Date");
+      DtldCustLedgEntry.SETRANGE("Customer No.",CustNo);
+      DtldCustLedgEntry.SETRANGE("Posting Date",MinDate,MaxDate);
+      EXIT(DtldCustLedgEntry.COUNT <> 0);
+    END;
+
+    LOCAL PROCEDURE AdjustTotalsBalance@1210003(VAR DebitAmount@1210004 : Decimal;VAR CreditAmount@1210005 : Decimal);
+    BEGIN
+      IF DebitAmount > CreditAmount THEN BEGIN
+        DebitAmount -= CreditAmount;
+        CreditAmount := 0;
+      END ELSE BEGIN
+        CreditAmount -= DebitAmount;
+        DebitAmount := 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE IsVendorInvoice@1210000(InvVendLedgEntry@1210000 : Record 25) : Boolean;
+    BEGIN
+      WITH InvVendLedgEntry DO BEGIN
+        CALCFIELDS("Original Amount");
+        IF IsReturnPrepayment(InvVendLedgEntry) OR IsCheckVoiding(InvVendLedgEntry) THEN
+          EXIT(FALSE);
+        EXIT(
+          (("Document Type" = "Document Type"::Invoice) OR
+           ("Document Type" = "Document Type"::"Credit Memo")) OR
+          (("Document Type" = "Document Type"::" ") AND ("Original Amount" < 0)));
+      END;
+    END;
+
+    LOCAL PROCEDURE IsVendorPayment@1210015(PmtVendLedgEntry@1210000 : Record 25) : Boolean;
+    BEGIN
+      WITH PmtVendLedgEntry DO BEGIN
+        CALCFIELDS("Original Amount");
+        EXIT(
+          (("Document Type" = "Document Type"::Payment) OR
+           ("Document Type" = "Document Type"::Refund)) OR
+          (("Document Type" = "Document Type"::" ") AND ("Original Amount" > 0)));
+      END;
+    END;
+
+    LOCAL PROCEDURE IsReturnPrepayment@1210020(VendorLedgerEntry@1210000 : Record 25) : Boolean;
+    BEGIN
+      WITH VendorLedgerEntry DO
+        EXIT(("Document Type" = "Document Type"::" ") AND Prepayment);
+    END;
+
+    LOCAL PROCEDURE IsReturnPpmtForCurrentPeriod@1210021(VendorLedgerEntry@1210000 : Record 25) : Boolean;
+    VAR
+      VendorLedgerEntry2@1210001 : Record 25;
+    BEGIN
+      WITH VendorLedgerEntry DO BEGIN
+        IF ("Document Type" = "Document Type"::" ") AND Prepayment THEN BEGIN
+          VendorLedgerEntry2.SETRANGE("Document Type","Document Type"::Payment);
+          VendorLedgerEntry2.SETRANGE(Prepayment,TRUE);
+          VendorLedgerEntry2.SETRANGE("Document No.","Document No.");
+          VendorLedgerEntry2.SETRANGE("Posting Date",MinDate,MaxDate);
+          IF VendorLedgerEntry2.COUNT > 0 THEN
+            EXIT(TRUE);
+        END;
+        EXIT(FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE IsCheckVoiding@1210022(VendLedgEntry@1210000 : Record 25) : Boolean;
+    VAR
+      BankAccountLedgerEntry@1210001 : Record 271;
+      CheckLedgerEntry@1210002 : Record 272;
+    BEGIN
+      IF NOT FindBankAccountLedgerEntry(VendLedgEntry,BankAccountLedgerEntry) THEN
+        EXIT(FALSE);
+
+      WITH CheckLedgerEntry DO BEGIN
+        SETRANGE("Bank Account Ledger Entry No.",BankAccountLedgerEntry."Entry No.");
+        SETRANGE("Document No.",BankAccountLedgerEntry."Document No.");
+        SETRANGE("Entry Status","Entry Status"::"Financially Voided");
+        EXIT(NOT ISEMPTY);
+      END;
+    END;
+
+    LOCAL PROCEDURE FindBankAccountLedgerEntry@1210023(VendLedgEntry@1210000 : Record 25;VAR BankAccountLedgerEntry@1210001 : Record 271) : Boolean;
+    BEGIN
+      WITH BankAccountLedgerEntry DO BEGIN
+        SETRANGE("Transaction No.",VendLedgEntry."Transaction No.");
+        IF FINDFIRST THEN BEGIN
+          SETRANGE("Document Type","Document Type"::Payment);
+          SETRANGE("Document No.","Document No.");
+          SETFILTER("Transaction No.",'<>%1',VendLedgEntry."Transaction No.");
+          EXIT(FINDFIRST);
+        END;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE CurrentPeriodApplicationExists@1210004(EntryNo@1210000 : Integer) : Boolean;
+    VAR
+      ApplDetailedVendLedgEntry@1210001 : Record 380;
+    BEGIN
+      WITH ApplDetailedVendLedgEntry DO BEGIN
+        SETRANGE("Vendor Ledger Entry No.",EntryNo);
+        SETRANGE("Entry Type","Entry Type"::Application);
+        SETRANGE("Posting Date",MinDate,MaxDate);
+        SETRANGE(Unapplied,FALSE);
+        EXIT(NOT ISEMPTY);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetInvRemAmtAtDate@1210019(EntryNo@1210000 : Integer) : Decimal;
+    VAR
+      InvVendLedgEntry@1210001 : Record 25;
+      InvoiceRemainingAmount@1210002 : Decimal;
+    BEGIN
+      WITH InvVendLedgEntry DO BEGIN
+        GET(EntryNo);
+        IF "Posting Date" IN [MinDate..MaxDate] THEN BEGIN
+          SETFILTER("Date Filter",'..%1',"Posting Date");
+          CALCFIELDS("Original Amount","Original Amt. (LCY)");
+          IF CurrencyCode <> '' THEN
+            InvoiceRemainingAmount := "Original Amount"
+          ELSE
+            InvoiceRemainingAmount := "Original Amt. (LCY)";
+        END ELSE BEGIN
+          SETFILTER("Date Filter",'..%1',FirstDate);
+          CALCFIELDS("Remaining Amount","Remaining Amt. (LCY)");
+          IF CurrencyCode <> '' THEN
+            InvoiceRemainingAmount := "Remaining Amount"
+          ELSE
+            InvoiceRemainingAmount := "Remaining Amt. (LCY)";
+        END;
+      END;
+      EXIT(InvoiceRemainingAmount);
+    END;
+
+    LOCAL PROCEDURE FindAppldVendLedgEntry@1210016(VendLedgEntryNo@1210000 : Integer);
+    VAR
+      SrcDetailedVendLedgEntry@1210001 : Record 380;
+      AppliedDetailedVendLedgEntry@1210002 : Record 380;
+      AppliedVendLedgEntry@1210003 : Record 25;
+    BEGIN
+      AppldVendLedgEntryTmp.RESET;
+      AppldVendLedgEntryTmp.DELETEALL;
+
+      SrcDetailedVendLedgEntry.SETCURRENTKEY("Vendor Ledger Entry No.");
+      SrcDetailedVendLedgEntry.SETRANGE("Vendor Ledger Entry No.",VendLedgEntryNo);
+      SrcDetailedVendLedgEntry.SETRANGE(Unapplied,FALSE);
+      SrcDetailedVendLedgEntry.SETFILTER("Posting Date",'..%1',MaxDate);
+      SrcDetailedVendLedgEntry.SETRANGE("Entry Type",SrcDetailedVendLedgEntry."Entry Type"::Application);
+      IF SrcDetailedVendLedgEntry.FINDSET THEN BEGIN
+        REPEAT
+          IF SrcDetailedVendLedgEntry."Vendor Ledger Entry No." =
+             SrcDetailedVendLedgEntry."Applied Vend. Ledger Entry No."
+          THEN BEGIN
+            AppliedDetailedVendLedgEntry.INIT;
+            AppliedDetailedVendLedgEntry.SETCURRENTKEY("Applied Vend. Ledger Entry No.","Entry Type");
+            AppliedDetailedVendLedgEntry.SETRANGE(
+              "Applied Vend. Ledger Entry No.",SrcDetailedVendLedgEntry."Applied Vend. Ledger Entry No.");
+            AppliedDetailedVendLedgEntry.SETRANGE("Entry Type",AppliedDetailedVendLedgEntry."Entry Type"::Application);
+            AppliedDetailedVendLedgEntry.SETRANGE(Unapplied,FALSE);
+            IF AppliedDetailedVendLedgEntry.FINDSET THEN BEGIN
+              REPEAT
+                IF AppliedDetailedVendLedgEntry."Vendor Ledger Entry No." <>
+                   AppliedDetailedVendLedgEntry."Applied Vend. Ledger Entry No."
+                THEN
+                  IF AppliedVendLedgEntry.GET(AppliedDetailedVendLedgEntry."Vendor Ledger Entry No.") THEN BEGIN
+                    AppldVendLedgEntryTmp := AppliedDetailedVendLedgEntry;
+                    AppldVendLedgEntryTmp.Amount := -AppldVendLedgEntryTmp.Amount;
+                    AppldVendLedgEntryTmp."Amount (LCY)" := -AppldVendLedgEntryTmp."Amount (LCY)";
+                    IF NOT AppliedDetailedVendLedgEntry."Prepmt. Diff." THEN
+                      IF AppldVendLedgEntryTmp.INSERT THEN;
+                  END;
+              UNTIL AppliedDetailedVendLedgEntry.NEXT = 0;
+            END;
+          END ELSE
+            IF AppliedVendLedgEntry.GET(SrcDetailedVendLedgEntry."Applied Vend. Ledger Entry No.") THEN BEGIN
+              AppldVendLedgEntryTmp := SrcDetailedVendLedgEntry;
+              AppldVendLedgEntryTmp."Vendor Ledger Entry No." := AppldVendLedgEntryTmp."Applied Vend. Ledger Entry No.";
+              IF AppldVendLedgEntryTmp.INSERT THEN;
+            END;
+        UNTIL SrcDetailedVendLedgEntry.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetInitialDebitCreditBalance@1210040(VAR InitialDebitAmount@1210000 : Decimal;VAR InitialCreditAmount@1210001 : Decimal);
+    BEGIN
+      DetailedVendLedgEntry.RESET;
+      DetailedVendLedgEntry.SETCURRENTKEY(
+        "Vendor No.","Initial Document Type","Document Type",
+        "Entry Type","Posting Date","Currency Code");
+      DetailedVendLedgEntry.SETRANGE("Vendor No.",Vendor."No.");
+      DetailedVendLedgEntry.SETFILTER("Agreement No.",Vendor.GETFILTER("Agreement Filter"));
+      DetailedVendLedgEntry.SETFILTER("Posting Date",'..%1',FirstDate);
+      DetailedVendLedgEntry.SETRANGE("Prepmt. Diff. in TA",FALSE);
+      IF CurrencyCode <> '' THEN
+        DetailedVendLedgEntry.SETRANGE("Currency Code",CurrencyCode);
+
+      GetInitialCreditBalance(DetailedVendLedgEntry,InitialCreditAmount);
+      GetInitialDebitBalance(DetailedVendLedgEntry,InitialDebitAmount);
+      UpdInitialDebitCreditBalance(DetailedVendLedgEntry,InitialDebitAmount,InitialCreditAmount);
+    END;
+
+    LOCAL PROCEDURE GetInitialCreditBalance@1210047(VAR DetailedVendLedgEntry@1210000 : Record 380;VAR InitialCreditAmount@1210001 : Decimal) : Decimal;
+    BEGIN
+      WITH DetailedVendLedgEntry DO BEGIN
+        SETFILTER(
+          "Initial Document Type",'%1|%2',
+          "Initial Document Type"::Invoice,
+          "Initial Document Type"::"Credit Memo");
+        IF CurrencyCode <> '' THEN BEGIN
+          CALCSUMS(Amount);
+          InitialCreditAmount := -Amount;
+        END ELSE BEGIN
+          CALCSUMS("Amount (LCY)");
+          InitialCreditAmount := -"Amount (LCY)";
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetInitialDebitBalance@1210056(VAR DetailedVendLedgEntry@1210000 : Record 380;VAR InitialDebitAmount@1210002 : Decimal);
+    BEGIN
+      WITH DetailedVendLedgEntry DO BEGIN
+        SETFILTER(
+          "Initial Document Type",'%1|%2',
+          "Initial Document Type"::Payment,
+          "Initial Document Type"::Refund);
+        IF CurrencyCode <> '' THEN BEGIN
+          CALCSUMS(Amount);
+          InitialDebitAmount := Amount;
+        END ELSE BEGIN
+          CALCSUMS("Amount (LCY)");
+          InitialDebitAmount := "Amount (LCY)";
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdInitialDebitCreditBalance@1210068(VAR DetailedVendLedgEntry@1210001 : Record 380;VAR InitialDebitAmount@1210002 : Decimal;VAR InitialCreditAmount@1210000 : Decimal);
+    BEGIN
+      WITH DetailedVendLedgEntry DO BEGIN
+        SETRANGE("Initial Document Type","Initial Document Type"::" ");
+        IF FINDSET THEN
+          REPEAT
+            IF CurrencyCode <> '' THEN
+              HandleInitialDebitCreditBal("Entry Type",Amount,InitialDebitAmount,InitialCreditAmount)
+            ELSE
+              HandleInitialDebitCreditBal("Entry Type","Amount (LCY)",InitialDebitAmount,InitialCreditAmount);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE HandleInitialDebitCreditBal@1210073(EntryType@1210001 : Option;Amount@1210000 : Decimal;VAR InitialDebitAmount@1210002 : Decimal;VAR InitialCreditAmount@1210003 : Decimal);
+    VAR
+      DetailedVendLedgEntry@1210004 : Record 380;
+    BEGIN
+      IF Amount < 0 THEN BEGIN
+        IF DetailedVendLedgEntry."Entry Type" <> DetailedVendLedgEntry."Entry Type"::Application THEN
+          InitialCreditAmount += -Amount
+        ELSE
+          InitialDebitAmount += Amount;
+      END ELSE BEGIN
+        IF DetailedVendLedgEntry."Entry Type" <> DetailedVendLedgEntry."Entry Type"::Application THEN
+          InitialDebitAmount += Amount
+        ELSE
+          InitialCreditAmount += -Amount;
+      END;
+    END;
+
+    LOCAL PROCEDURE ClearAmounts@1210001();
+    BEGIN
+      CreditBalance2 := 0;
+      DebitBalance2 := 0;
+      CreditTurnover2 := 0;
+      DebitTurnover2 := 0;
+      InvCounter := 0;
+      TotalInvAmount := 0;
+      PayCounter := 0;
+      TotalPayAmount := 0;
+      DebitTotalBalance := 0;
+      CreditTotalBalance := 0;
+      InitialDebitBalance := 0;
+      InitialCreditBalance := 0;
+      InitialDebitBalance2 := 0;
+      InitialCreditBalance2 := 0;
+      DebitTurnover := 0;
+      CreditTurnover := 0;
+      ProcessedPayEntries.RESET;
+      ProcessedPayEntries.DELETEALL;
+      ProcessedVendInvoices.RESET;
+      ProcessedVendInvoices.DELETEALL;
+    END;
+
+    LOCAL PROCEDURE WasProcessedInPrevPeriod@1210100(VAR PayEntry@1210000 : Record 380;CurrentPeriod@1210001 : Boolean) : Boolean;
+    BEGIN
+      IF CurrentPeriod THEN BEGIN
+        ProcessedPayEntries.SETRANGE("Entry No.",PayEntry."Entry No.");
+        EXIT(NOT ProcessedPayEntries.ISEMPTY);
+      END;
+      ProcessedPayEntries."Entry No." := PayEntry."Entry No.";
+      IF ProcessedPayEntries.INSERT THEN;
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE IsInvProcessedInPrevPeriod@1210101(EntryNo@1210000 : Integer;CurrentPeriod@1210001 : Boolean) : Boolean;
+    BEGIN
+      IF CurrentPeriod THEN BEGIN
+        ProcessedVendInvoices.SETRANGE("Entry No.",EntryNo);
+        EXIT(NOT ProcessedVendInvoices.ISEMPTY);
+      END;
+      ProcessedVendInvoices."Entry No." := EntryNo;
+      IF ProcessedVendInvoices.INSERT THEN;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE InitializeRequest@1210009(NewStartDate@1210001 : Date;NewEndDate@1210002 : Date;NewFileName@1210000 : Text;NewPrintCustomerData@1210003 : Boolean);
+    BEGIN
+      FileName := NewFileName;
+      MinDate := NewStartDate;
+      MaxDate := NewEndDate;
+      PrintCustomerData := NewPrintCustomerData;
+    END;
+
+    LOCAL PROCEDURE FormatAmount@1210002(Amount@1210000 : Decimal) : Text;
+    BEGIN
+      IF Amount <> 0 THEN
+        EXIT(FORMAT(Amount,0,'<Precision,2:2><Standard Format,0>'));
+      EXIT('');
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

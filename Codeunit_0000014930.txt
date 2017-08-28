@@ -1,0 +1,214 @@
+OBJECT Codeunit 14930 Excel Report Builder Manager
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TempExcelTemplateSheetBuffer@1210002 : TEMPORARY Record 14932;
+      FileMgt@1210005 : Codeunit 419;
+      ReportBuilder@1210004 : DotNet "'Microsoft.Dynamics.NAV.RU.ExcelReportBuilder, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.NAV.RU.ExcelReportBuilder.ReportBuilder";
+      TemplateCode@1210000 : Code[10];
+      SheetNameExceedsMaxLengthErr@1210001 : TextConst 'ENU="Sheet Name exceeds max length = %1.";RUS=Имя листа превышает максимальную длину (%1).';
+      SaveFileTitleMsg@1210003 : TextConst 'ENU=Save excel report;RUS=Сохранить отчет Excel';
+
+    PROCEDURE SetSheet@1210004(SheetName@1210000 : Text);
+    VAR
+      ExcelTemplateSheet@1210001 : Record 14930;
+    BEGIN
+      IF STRLEN(SheetName) > MAXSTRLEN(TempExcelTemplateSheetBuffer."Sheet Name") THEN
+        ERROR(STRSUBSTNO(SheetNameExceedsMaxLengthErr,FORMAT(MAXSTRLEN(TempExcelTemplateSheetBuffer."Sheet Name"))));
+
+      ReportBuilder.SetSheet(SheetName);
+
+      // Buffer that store sheet size info
+      WITH TempExcelTemplateSheetBuffer DO BEGIN
+        // Save current values
+        IF "Sheet Name" <> '' THEN
+          MODIFY;
+
+        IF NOT GET(SheetName) THEN BEGIN
+          ExcelTemplateSheet.GET(TemplateCode,SheetName);
+
+          INIT;
+          "Sheet Name" := COPYSTR(SheetName,1,MAXSTRLEN("Sheet Name"));
+          "Paper Height" := ExcelTemplateSheet."Paper Height";
+          "Current Paper Height" := ExcelTemplateSheet."Paper Height";
+          "Last Page No." := 1;
+          INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE InitTemplate@1210005(InitTemplateCode@121000 : Code[10]);
+    BEGIN
+      TemplateCode := InitTemplateCode;
+      ReportBuilder := ReportBuilder.ReportBuilder();
+    END;
+
+    PROCEDURE AddSection@1210002(NewSectionName@1210000 : Text);
+    VAR
+      ExcelTemplateSection@1210002 : Record 14931;
+      SectionHeight@1210003 : Decimal;
+    BEGIN
+      ExcelTemplateSection.GET(
+        TemplateCode,TempExcelTemplateSheetBuffer."Sheet Name",NewSectionName);
+      SectionHeight := ExcelTemplateSection.Height;
+
+      IF ExcelTemplateSection.Height > TempExcelTemplateSheetBuffer."Current Paper Height" THEN
+        AddPagebreak;
+
+      TempExcelTemplateSheetBuffer."Current Paper Height" -= SectionHeight;
+
+      ReportBuilder.AddSection(NewSectionName);
+    END;
+
+    PROCEDURE TryAddSection@1210000(NewSectionName@1210000 : Text) : Boolean;
+    VAR
+      ExcelTemplateSection@1210002 : Record 14931;
+      SectionHeight@1210003 : Decimal;
+    BEGIN
+      ExcelTemplateSection.GET(
+        TemplateCode,TempExcelTemplateSheetBuffer."Sheet Name",NewSectionName);
+      SectionHeight := ExcelTemplateSection.Height;
+
+      IF ExcelTemplateSection.Height > TempExcelTemplateSheetBuffer."Current Paper Height" THEN
+        EXIT(FALSE);
+
+      TempExcelTemplateSheetBuffer."Current Paper Height" -= SectionHeight;
+      ReportBuilder.AddSection(NewSectionName);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE TryAddSectionWithPlaceForFooter@1210001(NewSectionName@1210000 : Text;FooterSectionNames@1000 : Text) : Boolean;
+    VAR
+      ExcelTemplateSection@1210002 : Record 14931;
+      SectionHeight@1210011 : Decimal;
+    BEGIN
+      IF FooterSectionNames = '' THEN BEGIN
+        AddSection(NewSectionName);
+        EXIT(TRUE);
+      END;
+
+      IF IsPageBreakRequired(NewSectionName,FooterSectionNames) THEN
+        EXIT(FALSE);
+
+      ExcelTemplateSection.GET(
+        TemplateCode,TempExcelTemplateSheetBuffer."Sheet Name",NewSectionName);
+      SectionHeight := ExcelTemplateSection.Height;
+
+      TempExcelTemplateSheetBuffer."Current Paper Height" -= SectionHeight;
+      ReportBuilder.AddSection(NewSectionName);
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE IsPageBreakRequired@1210009(NewSectionName@1210000 : Text;FooterSectionNames@1000 : Text) : Boolean;
+    VAR
+      ExcelTemplateSection@1210002 : Record 14931;
+      SectionHeight@1210011 : Decimal;
+      FooterHeight@1210003 : Decimal;
+    BEGIN
+      FooterHeight := GetFooterTotalHeight(FooterSectionNames);
+      ExcelTemplateSection.GET(
+        TemplateCode,TempExcelTemplateSheetBuffer."Sheet Name",NewSectionName);
+      SectionHeight := ExcelTemplateSection.Height;
+
+      EXIT(SectionHeight + FooterHeight > TempExcelTemplateSheetBuffer."Current Paper Height");
+    END;
+
+    PROCEDURE GetFooterTotalHeight@1210012(FooterSectionNames@1210000 : Text) TotalSectionHeight : Decimal;
+    VAR
+      ExcelTemplateSection@1210001 : Record 14931;
+    BEGIN
+      IF FooterSectionNames = '' THEN
+        EXIT(0);
+
+      TotalSectionHeight := 0;
+
+      WHILE STRPOS(FooterSectionNames,',') <> 0 DO BEGIN
+        ExcelTemplateSection.GET(
+          TemplateCode,TempExcelTemplateSheetBuffer."Sheet Name",
+          COPYSTR(FooterSectionNames,1,STRPOS(FooterSectionNames,',') - 1));
+        TotalSectionHeight += ExcelTemplateSection.Height;
+        FooterSectionNames := DELSTR(FooterSectionNames,1,STRPOS(FooterSectionNames,','))
+      END;
+
+      ExcelTemplateSection.GET(
+        TemplateCode,TempExcelTemplateSheetBuffer."Sheet Name",FooterSectionNames);
+      TotalSectionHeight += ExcelTemplateSection.Height;
+    END;
+
+    PROCEDURE AddDataToSection@1210014(CellName@1210000 : Text;Value@1210001 : Text);
+    BEGIN
+      ReportBuilder.AddData(CellName,Value);
+    END;
+
+    PROCEDURE AddDataToPreviousSection@1210013(SectionId@1210002 : Integer;CellName@1210000 : Text;Value@1210001 : Text);
+    BEGIN
+      ReportBuilder.AddDataToPreviousSection(SectionId,CellName,Value);
+    END;
+
+    PROCEDURE AddPagebreak@1210041();
+    BEGIN
+      ReportBuilder.AddPageBreak;
+
+      TempExcelTemplateSheetBuffer."Current Paper Height" := TempExcelTemplateSheetBuffer."Paper Height";
+      TempExcelTemplateSheetBuffer."Last Page No." += 1;
+    END;
+
+    LOCAL PROCEDURE ExportDataToServerFile@1210007() ServerFileName : Text;
+    VAR
+      ExcelTemplate@1210003 : Record 14919;
+      TempBlob@1210004 : TEMPORARY Record 99008535;
+    BEGIN
+      ExcelTemplate.GET(TemplateCode);
+      ExcelTemplate.CALCFIELDS(BLOB);
+      TempBlob.Blob := ExcelTemplate.BLOB;
+
+      ServerFileName := FileMgt.ServerTempFileName('');
+      FileMgt.BLOBExportToServerFile(TempBlob,ServerFileName);
+      ReportBuilder.BuildReport(ServerFileName);
+    END;
+
+    PROCEDURE ExportData@1210103();
+    VAR
+      ServerFileName@1210001 : Text;
+      ExportToFile@1210000 : Text;
+    BEGIN
+      ServerFileName := ExportDataToServerFile;
+
+      ExportToFile := TemplateCode + '.xlsx';
+      DOWNLOAD(ServerFileName,SaveFileTitleMsg,'','(*.xlsx)|*.xlsx',ExportToFile);
+    END;
+
+    PROCEDURE ExportDataToClientFile@1210003(ClientFileName@1210000 : Text);
+    BEGIN
+      FileMgt.DownloadToFile(ExportDataToServerFile,ClientFileName);
+    END;
+
+    PROCEDURE GetLastPageNo@1210006() : Integer;
+    BEGIN
+      EXIT(TempExcelTemplateSheetBuffer."Last Page No.");
+    END;
+
+    PROCEDURE GetCurrentSectionId@1210008() : Integer;
+    BEGIN
+      EXIT(ReportBuilder.GetCurrentSectionId)
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

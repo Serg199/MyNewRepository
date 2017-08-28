@@ -1,0 +1,208 @@
+OBJECT Report 62008 New Funct2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:20;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      PurchSetup@1210000 : Record 312;
+      GLSetup@1210001 : Record 98;
+      Text50105@1210002 : TextConst 'ENU=Amount %1 %2 is more than Agreement Amount %3 %4. Continue?;RUS=Сумма документа %1 %2 превышает сумму остатка по договору %3 %4. Продолжить?';
+
+    PROCEDURE CheckAgreementAmount@1210016(GenJnlLineLoc@1210000 : Record 81);
+    VAR
+      VendorAgreementLoc@1210001 : Record 14901;
+      CurrExchRateLoc@1210002 : Record 330;
+      AgreementAmountLCY@1210004 : Decimal;
+      VLELoc@1210003 : Record 25;
+      AgreementAmount@1210006 : Decimal;
+      CurrencyLoc@1210005 : Record 4;
+      LEAmount@1210007 : Decimal;
+      GJAmount@1210008 : Decimal;
+    BEGIN
+      //NC TR189 < DP
+      PurchSetup.GET;
+      IF NOT ((PurchSetup."Check Pmtn. Agrmnt. Amount") AND
+              ((GenJnlLineLoc."Document Type"=GenJnlLineLoc."Document Type"::Payment) OR
+              ((GenJnlLineLoc."Document Type"=GenJnlLineLoc."Document Type"::" ") AND (GenJnlLineLoc.Amount > 0))))
+        AND NOT ((PurchSetup."Check Liab. Agrmnt. Amount") AND
+              ((GenJnlLineLoc."Document Type"=GenJnlLineLoc."Document Type"::Invoice) OR
+              ((GenJnlLineLoc."Document Type"=GenJnlLineLoc."Document Type"::" ") AND (GenJnlLineLoc.Amount < 0)))) THEN
+        EXIT;
+      GLSetup.GET;
+      IF VendorAgreementLoc.GET(GenJnlLineLoc."Agreement No.") THEN BEGIN
+        IF VendorAgreementLoc."Agreement Amount" = 0 THEN
+          EXIT;
+        AgreementAmount := VendorAgreementLoc."Agreement Amount";
+        CASE VendorAgreementLoc."Agreement Type" OF
+        VendorAgreementLoc."Agreement Type"::Standard:
+
+          BEGIN
+          VLELoc.SETCURRENTKEY("Vendor No.","Posting Date","Currency Code");
+          VLELoc.SETRANGE("Vendor No.", GenJnlLineLoc."Account No.");
+          VLELoc.SETRANGE("Agreement No.", GenJnlLineLoc."Agreement No.");
+          IF VLELoc.FIND('-') THEN REPEAT
+            VLELoc.CALCFIELDS("Original Amount");
+            IF (((GenJnlLineLoc."Document Type" = GenJnlLineLoc."Document Type"::Payment) OR
+                ((GenJnlLineLoc."Document Type" = GenJnlLineLoc."Document Type"::" ") AND (GenJnlLineLoc.Amount>0))) AND
+                (VLELoc."Original Amount" > 0) AND
+                (VLELoc."Document Type" <> VLELoc."Document Type"::"Credit Memo")) THEN
+              BEGIN
+                IF VLELoc."Currency Code"<>VendorAgreementLoc."Currency Code" THEN
+                  LEAmount := ROUND(CurrExchRateLoc.ExchangeAmtFCYToFCY(GenJnlLineLoc."Posting Date",
+                                    VLELoc."Currency Code",
+                                    VendorAgreementLoc."Currency Code",
+                                    VLELoc."Original Amount"),GLSetup."Amount Rounding Precision")
+                ELSE
+                  LEAmount :=VLELoc."Original Amount";
+                AgreementAmount -= LEAmount;
+              END;
+            IF (((GenJnlLineLoc."Document Type" = GenJnlLineLoc."Document Type"::Invoice)
+              OR ((GenJnlLineLoc."Document Type" = GenJnlLineLoc."Document Type"::" ") AND (GenJnlLineLoc.Amount<0))) AND
+              (VLELoc."Original Amount" < 0)) OR
+              (((GenJnlLineLoc."Document Type" = GenJnlLineLoc."Document Type"::Invoice)
+              OR ((GenJnlLineLoc."Document Type" = GenJnlLineLoc."Document Type"::" ")  AND (GenJnlLineLoc.Amount<0))) AND
+              (VLELoc."Document Type" = VLELoc."Document Type"::"Credit Memo")) THEN
+              BEGIN
+                IF VLELoc."Currency Code"<>VendorAgreementLoc."Currency Code" THEN
+                  LEAmount := ROUND(CurrExchRateLoc.ExchangeAmtFCYToFCY(GenJnlLineLoc."Posting Date",
+                                    VLELoc."Currency Code",
+                                    VendorAgreementLoc."Currency Code",
+                                    VLELoc."Original Amount"),GLSetup."Amount Rounding Precision")
+                ELSE
+                  LEAmount :=VLELoc."Original Amount";
+                AgreementAmount += LEAmount;
+              END;
+          UNTIL VLELoc.NEXT = 0;
+          END;
+        VendorAgreementLoc."Agreement Type"::Trade:
+          BEGIN
+
+          END;
+        END;
+        IF VendorAgreementLoc."Currency Code" <> GenJnlLineLoc."Currency Code" THEN BEGIN
+          GJAmount := ROUND(CurrExchRateLoc.ExchangeAmtFCYToFCY(GenJnlLineLoc."Posting Date",
+              GenJnlLineLoc."Currency Code",
+              VendorAgreementLoc."Currency Code",
+              GenJnlLineLoc.Amount),GLSetup."Amount Rounding Precision");
+        END ELSE
+          GJAmount := GenJnlLineLoc.Amount;
+
+        IF ABS(GJAmount) > ABS(AgreementAmount) THEN
+          IF NOT CONFIRM(STRSUBSTNO(Text50105, ABS(GJAmount), VendorAgreementLoc."Currency Code",
+            AgreementAmount,VendorAgreementLoc."Currency Code")) THEN
+            ERROR('');
+      END;
+      //NC TR189 < DP
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+    <?xml version="1.0" encoding="utf-8"?>
+<Report xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner" xmlns="http://schemas.microsoft.com/sqlserver/reporting/2010/01/reportdefinition">
+  <AutoRefresh>0</AutoRefresh>
+  <DataSources>
+    <DataSource Name="DataSource">
+      <ConnectionProperties>
+        <DataProvider>SQL</DataProvider>
+        <ConnectString />
+      </ConnectionProperties>
+      <rd:SecurityType>None</rd:SecurityType>
+      <rd:DataSourceID>f42b1fe6-4959-41ac-bd1b-1d49c3af6544</rd:DataSourceID>
+    </DataSource>
+  </DataSources>
+  <DataSets>
+    <DataSet Name="DataSet_Result">
+      <Query>
+        <DataSourceName>DataSource</DataSourceName>
+        <CommandText />
+      </Query>
+      <rd:DataSetInfo>
+        <rd:DataSetName>DataSet</rd:DataSetName>
+        <rd:SchemaPath>Report.xsd</rd:SchemaPath>
+        <rd:TableName>Result</rd:TableName>
+      </rd:DataSetInfo>
+    </DataSet>
+  </DataSets>
+  <ReportSections>
+    <ReportSection>
+      <Body>
+        <Height>2in</Height>
+        <Style />
+      </Body>
+      <Width>6.5in</Width>
+      <Page>
+        <Style />
+      </Page>
+    </ReportSection>
+  </ReportSections>
+  <Code>Public Function BlankZero(ByVal Value As Decimal)
+    if Value = 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankPos(ByVal Value As Decimal)
+    if Value &gt; 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankZeroAndPos(ByVal Value As Decimal)
+    if Value &gt;= 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankNeg(ByVal Value As Decimal)
+    if Value &lt; 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankNegAndZero(ByVal Value As Decimal)
+    if Value &lt;= 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+</Code>
+  <Language>=User!Language</Language>
+  <ConsumeContainerWhitespace>true</ConsumeContainerWhitespace>
+  <rd:ReportUnitType>Inch</rd:ReportUnitType>
+  <rd:ReportID>0eeb6585-38ae-40f1-885b-8d50088d51b4</rd:ReportID>
+</Report>
+    END_OF_RDLDATA
+  }
+}
+

@@ -1,0 +1,401 @@
+OBJECT Codeunit 12460 Item Doc.-Post Receipt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    TableNo=12450;
+    Permissions=TableData 6507=i,
+                TableData 6508=ri,
+                TableData 12451=rimd;
+    OnRun=VAR
+            Item@1000 : Record 27;
+            SourceCodeSetup@1001 : Record 242;
+            InvtSetup@1002 : Record 313;
+            InventoryPostingSetup@1011 : Record 5813;
+            NoSeriesMgt@1003 : Codeunit 396;
+            UpdateAnalysisView@1004 : Codeunit 410;
+            UpdateItemAnalysisView@1012 : Codeunit 7150;
+            InvtAdjmt@1210000 : Codeunit 5895;
+            Window@1006 : Dialog;
+            LineCount@1210001 : Integer;
+          BEGIN
+            TESTFIELD("Document Type","Document Type"::Receipt);
+
+            IF Status = Status::Open THEN BEGIN
+              CODEUNIT.RUN(CODEUNIT::"Release Item Document",Rec);
+              Status := Status::Open;
+              MODIFY;
+              COMMIT;
+              Status := Status::Released;
+            END;
+            ItemDocHeader := Rec;
+            ItemDocHeader.SetHideValidationDialog(HideValidationDialog);
+
+            WITH ItemDocHeader DO BEGIN
+              TESTFIELD(Status,Status::Released);
+              TESTFIELD("Posting Date");
+
+              CheckDim;
+
+              DocSignMgt.CheckDocSignatures(DATABASE::"Item Document Header","Document Type","No.");
+
+              ItemDocLine.RESET;
+              ItemDocLine.SETRANGE("Document Type","Document Type");
+              ItemDocLine.SETRANGE("Document No.","No.");
+              ItemDocLine.SETFILTER(Quantity,'>0');
+              IF NOT ItemDocLine.FIND('-') THEN
+                ERROR(Text001);
+
+              GetLocation("Location Code");
+              IF Location."Require Receive" OR Location."Require Put-away" THEN
+                ERROR(Text002,"Location Code");
+
+              Window.OPEN(
+                '#1#################################\\' +
+                Text003);
+
+              Window.UPDATE(1,STRSUBSTNO(Text004,"No."));
+
+              SourceCodeSetup.GET;
+              SourceCode := SourceCodeSetup."Item Receipt";
+              InvtSetup.GET;
+              InvtSetup.TESTFIELD("Posted Item Receipt Nos.");
+              InventoryPostingSetup.SETRANGE("Location Code","Location Code");
+              InventoryPostingSetup.FINDFIRST;
+
+              NoSeriesLine.LOCKTABLE;
+              IF NoSeriesLine.FINDLAST THEN;
+              IF InvtSetup."Automatic Cost Posting" THEN BEGIN
+                GLEntry.LOCKTABLE;
+                IF GLEntry.FINDLAST THEN;
+              END;
+
+              // Insert receipt header
+              ItemRcptHeader.LOCKTABLE;
+              ItemRcptHeader.INIT;
+              ItemRcptHeader."Location Code" := "Location Code";
+              ItemRcptHeader."Document Date" := "Document Date";
+              ItemRcptHeader."Posting Date" := "Posting Date";
+              ItemRcptHeader."Purchaser Code" := "Salesperson/Purchaser Code";
+              ItemRcptHeader."Shortcut Dimension 1 Code" := "Shortcut Dimension 1 Code";
+              ItemRcptHeader."Shortcut Dimension 2 Code" := "Shortcut Dimension 2 Code";
+              ItemRcptHeader."Receipt No." := "No.";
+              ItemRcptHeader."External Document No." := "External Document No.";
+              ItemRcptHeader."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+              ItemRcptHeader."No. Series" := InvtSetup."Posted Item Receipt Nos.";
+              ItemRcptHeader."No." :=
+                NoSeriesMgt.GetNextNo(
+                  InvtSetup."Posted Item Receipt Nos.","Posting Date",TRUE);
+              "Posting No." := ItemRcptHeader."No.";
+              ItemRcptHeader."Posting Description" := "Posting Description";
+              ItemRcptHeader.Correction := Correction;
+              ItemRcptHeader."Dimension Set ID" := "Dimension Set ID";
+              ItemRcptHeader.INSERT;
+
+              DocSignMgt.MoveDocSignToPostedDocSign(
+                DocSign,DATABASE::"Item Document Header","Document Type","No.",
+                DATABASE::"Item Receipt Header",ItemRcptHeader."No.");
+              IF InvtSetup."Copy Comments to Item Doc." THEN
+                CopyCommentLines(4,6,"No.",ItemRcptHeader."No.");
+
+              // Insert receipt lines
+              LineCount := 0;
+              ItemRcptLine.LOCKTABLE;
+              ItemDocLine.SETRANGE(Quantity);
+              IF ItemDocLine.FIND('-') THEN BEGIN
+                REPEAT
+                  LineCount := LineCount + 1;
+                  Window.UPDATE(2,LineCount);
+
+                  IF ItemDocLine."Item No." <> '' THEN BEGIN
+                    Item.GET(ItemDocLine."Item No.");
+                    Item.TESTFIELD(Blocked,FALSE);
+                  END;
+
+                  ItemRcptLine.INIT;
+                  ItemRcptLine."Document No." := ItemRcptHeader."No.";
+                  ItemRcptLine."Posting Date" := ItemRcptHeader."Posting Date";
+                  ItemRcptLine."Document Date" := ItemRcptHeader."Document Date";
+                  ItemRcptLine."Line No." := ItemDocLine."Line No.";
+                  ItemRcptLine."Item No." := ItemDocLine."Item No.";
+                  ItemRcptLine.Description := ItemDocLine.Description;
+                  ItemRcptLine.Quantity := ItemDocLine.Quantity;
+                  ItemRcptLine."Unit Amount" := ItemDocLine."Unit Amount";
+                  ItemRcptLine."Unit Cost" := ItemDocLine."Unit Cost";
+                  ItemRcptLine.Amount := ItemDocLine.Amount;
+                  ItemRcptLine."Indirect Cost %" := ItemDocLine."Indirect Cost %";
+                  ItemRcptLine."Unit of Measure Code" := ItemDocLine."Unit of Measure Code";
+                  ItemRcptLine."Shortcut Dimension 1 Code" := ItemDocLine."Shortcut Dimension 1 Code";
+                  ItemRcptLine."Shortcut Dimension 2 Code" := ItemDocLine."Shortcut Dimension 2 Code";
+                  ItemRcptLine."Gen. Bus. Posting Group" := ItemDocLine."Gen. Bus. Posting Group";
+                  ItemRcptLine."Gen. Prod. Posting Group" := ItemDocLine."Gen. Prod. Posting Group";
+                  ItemRcptLine."Inventory Posting Group" := ItemDocLine."Inventory Posting Group";
+                  ItemRcptLine."Quantity (Base)" := ItemDocLine."Quantity (Base)";
+                  ItemRcptLine."Qty. per Unit of Measure" := ItemDocLine."Qty. per Unit of Measure";
+                  ItemRcptLine."Unit of Measure Code" := ItemDocLine."Unit of Measure Code";
+                  ItemRcptLine."Gross Weight" := ItemDocLine."Gross Weight";
+                  ItemRcptLine."Net Weight" := ItemDocLine."Net Weight";
+                  ItemRcptLine."Unit Volume" := ItemDocLine."Unit Volume";
+                  ItemRcptLine."Variant Code" := ItemDocLine."Variant Code";
+                  ItemRcptLine."Units per Parcel" := ItemDocLine."Units per Parcel";
+                  ItemRcptLine."Receipt No." := ItemDocLine."Document No.";
+                  ItemRcptLine."Document Date" := ItemDocLine."Document Date";
+                  ItemRcptLine."Location Code" := ItemDocLine."Location Code";
+                  ItemRcptLine."Bin Code" := ItemDocLine."Bin Code";
+                  ItemRcptLine."Item Category Code" := ItemDocLine."Item Category Code";
+                  ItemRcptLine."Applies-to Entry" := ItemDocLine."Applies-to Entry";
+                  ItemRcptLine."Applies-from Entry" := ItemDocLine."Applies-from Entry";
+                  ItemRcptLine."Dimension Set ID" := ItemDocLine."Dimension Set ID";
+                  ItemRcptLine.INSERT;
+
+                  PostItemJnlLine(ItemDocLine,ItemRcptHeader,ItemRcptLine);
+                  ItemJnlPostLine.CollectValueEntryRelation(TempValueEntryRelation,ItemRcptLine.RowID1);
+                UNTIL ItemDocLine.NEXT = 0;
+              END;
+
+              InvtSetup.GET;
+              IF InvtSetup."Automatic Cost Adjustment" <>
+                 InvtSetup."Automatic Cost Adjustment"::Never
+              THEN BEGIN
+                InvtAdjmt.SetProperties(TRUE,InvtSetup."Automatic Cost Posting");
+                InvtAdjmt.MakeMultiLevelAdjmt;
+              END;
+
+              LOCKTABLE;
+              DELETE(TRUE);
+
+              InsertValueEntryRelation;
+              COMMIT;
+              Window.CLOSE;
+            END;
+            UpdateAnalysisView.UpdateAll(0,TRUE);
+            UpdateItemAnalysisView.UpdateAll(0,TRUE);
+            Rec := ItemDocHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1001 : TextConst 'ENU=There is nothing to post.;RUS=Здесь нечего учитывать.';
+      Text002@1002 : TextConst 'ENU=Warehouse handling is required for Location Code %1.;RUS=Для склада с кодом %1 требуется складская обработка.';
+      Text003@1003 : TextConst 'ENU=Posting item receipt lines     #2######;RUS=Учет строк акта оприходования товаров #2######';
+      Text004@1004 : TextConst 'ENU=Item Receipt %1;RUS=Акт оприходования товаров %1';
+      Text005@1005 : TextConst 'ENU=The combination of dimensions used in item receipt %1 is blocked. %2;RUS=Комбинация измерений, использованная в акте оприходования товаров %1, заблокирована. %2';
+      Text006@1006 : TextConst 'ENU=The combination of dimensions used in item receipt %1, line no. %2 is blocked. %3;RUS=Комбинация измерений, использованная в акте оприходования товаров %1, строка %2, заблокирована. %3';
+      Text007@1007 : TextConst 'ENU=The dimensions used in item receipt %1, line no. %2 are invalid. %3;RUS=Недопустимые измерения: акт оприходования товаров %1, строка %2. %3';
+      ItemRcptHeader@1009 : Record 12451;
+      ItemRcptLine@1010 : Record 12452;
+      ItemDocHeader@1011 : Record 12450;
+      ItemDocLine@1012 : Record 12453;
+      ItemJnlLine@1015 : Record 83;
+      Location@1016 : Record 14;
+      TempValueEntryRelation@1041 : TEMPORARY Record 6508;
+      NoSeriesLine@1035 : Record 309;
+      GLEntry@1042 : Record 17;
+      DocSign@1470002 : Record 12420;
+      WMSMgmt@1210001 : Codeunit 7302;
+      WhseJnlPostLine@1210000 : Codeunit 7301;
+      ItemJnlPostLine@1020 : Codeunit 22;
+      DimMgt@1017 : Codeunit 408;
+      ReserveItemDocLine@1021 : Codeunit 12452;
+      DocSignMgt@1470001 : Codeunit 12420;
+      SourceCode@1023 : Code[10];
+      HideValidationDialog@1024 : Boolean;
+
+    LOCAL PROCEDURE PostItemJnlLine@2(VAR ItemDocLine3@1000 : Record 12453;ItemRcptHeader2@1001 : Record 12451;ItemRcptLine2@1002 : Record 12452);
+    VAR
+      TempHandlingSpecification@1210002 : TEMPORARY Record 336;
+      OriginalQuantity@1210001 : Decimal;
+      OriginalQuantityBase@1210000 : Decimal;
+    BEGIN
+      ItemJnlLine.INIT;
+      ItemJnlLine."Posting Date" := ItemRcptHeader2."Posting Date";
+      ItemJnlLine."Document Date" := ItemRcptHeader2."Document Date";
+      ItemJnlLine."Document No." := ItemRcptHeader2."No.";
+      ItemJnlLine."Document Type" := ItemJnlLine."Document Type"::"Item Receipt";
+      ItemJnlLine."Document Line No." := ItemRcptLine2."Line No.";
+      ItemJnlLine."External Document No." := ItemRcptHeader2."External Document No.";
+      ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::"Positive Adjmt.";
+      ItemJnlLine."Item No." := ItemRcptLine2."Item No.";
+      ItemJnlLine.Description := ItemRcptLine2.Description;
+      ItemJnlLine."Shortcut Dimension 1 Code" := ItemRcptLine2."Shortcut Dimension 1 Code";
+      ItemJnlLine."Shortcut Dimension 2 Code" := ItemRcptLine2."Shortcut Dimension 2 Code";
+      ItemJnlLine."Location Code" := ItemRcptHeader2."Location Code";
+
+      IF ItemRcptHeader2.Correction THEN BEGIN
+        ItemJnlLine."Red Storno" := TRUE;
+
+        ItemJnlLine.Quantity := -ItemRcptLine2.Quantity;
+        ItemJnlLine."Invoiced Quantity" := -ItemRcptLine2.Quantity;
+        ItemJnlLine."Quantity (Base)" := -ItemRcptLine2."Quantity (Base)";
+        ItemJnlLine."Invoiced Qty. (Base)" := -ItemRcptLine2."Quantity (Base)";
+        ItemJnlLine.Amount := -ItemRcptLine2.Amount;
+      END
+      ELSE BEGIN
+        ItemJnlLine.Quantity := ItemRcptLine2.Quantity;
+        ItemJnlLine."Invoiced Quantity" := ItemRcptLine2.Quantity;
+        ItemJnlLine."Quantity (Base)" := ItemRcptLine2."Quantity (Base)";
+        ItemJnlLine."Invoiced Qty. (Base)" := ItemRcptLine2."Quantity (Base)";
+        ItemJnlLine.Amount := ItemRcptLine2.Amount;
+      END;
+
+      ItemJnlLine."Unit Amount" := ItemRcptLine2."Unit Amount";
+      ItemJnlLine."Unit Cost" := ItemRcptLine2."Unit Cost";
+      ItemJnlLine."Indirect Cost %" := ItemRcptLine2."Indirect Cost %";
+      ItemJnlLine."Source Code" := SourceCode;
+      ItemJnlLine."Gen. Bus. Posting Group" := ItemRcptLine2."Gen. Bus. Posting Group";
+      ItemJnlLine."Gen. Prod. Posting Group" := ItemRcptLine2."Gen. Prod. Posting Group";
+      ItemJnlLine."Inventory Posting Group" := ItemRcptLine2."Inventory Posting Group";
+      ItemJnlLine."Unit of Measure Code" := ItemRcptLine2."Unit of Measure Code";
+      ItemJnlLine."Qty. per Unit of Measure" := ItemRcptLine2."Qty. per Unit of Measure";
+      ItemJnlLine."Variant Code" := ItemRcptLine2."Variant Code";
+      ItemJnlLine."Bin Code" := ItemDocLine."Bin Code";
+      ItemJnlLine."Item Category Code" := ItemRcptLine2."Item Category Code";
+      ItemJnlLine."Applies-to Entry" := ItemRcptLine2."Applies-to Entry";
+      ItemJnlLine."Applies-from Entry" := ItemRcptLine2."Applies-from Entry";
+
+      ItemJnlLine."Bin Code" := ItemRcptLine2."Bin Code";
+      ItemJnlLine."Dimension Set ID" := ItemRcptLine2."Dimension Set ID";
+
+      ReserveItemDocLine.TransferItemDocToItemJnlLine(
+        ItemDocLine,ItemJnlLine,ItemJnlLine.Quantity);
+
+      OriginalQuantity := ItemJnlLine.Quantity;
+      OriginalQuantityBase := ItemJnlLine."Quantity (Base)";
+
+      ItemJnlPostLine.RunWithCheck(ItemJnlLine);
+
+      ItemJnlPostLine.CollectTrackingSpecification(TempHandlingSpecification);
+      PostWhseJnlLine(ItemJnlLine,OriginalQuantity,OriginalQuantityBase,TempHandlingSpecification);
+    END;
+
+    LOCAL PROCEDURE CopyCommentLines@22(FromDocumentType@1000 : Integer;ToDocumentType@1001 : Integer;FromNumber@1002 : Code[20];ToNumber@1003 : Code[20]);
+    VAR
+      InvtCommentLine@1004 : Record 5748;
+      InvtCommentLine2@1005 : Record 5748;
+    BEGIN
+      InvtCommentLine.SETRANGE("Document Type",FromDocumentType);
+      InvtCommentLine.SETRANGE("No.",FromNumber);
+      IF InvtCommentLine.FIND('-') THEN
+        REPEAT
+          InvtCommentLine2 := InvtCommentLine;
+          InvtCommentLine2."Document Type" := ToDocumentType;
+          InvtCommentLine2."No." := ToNumber;
+          InvtCommentLine2.INSERT;
+        UNTIL InvtCommentLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CheckDim@1210002();
+    BEGIN
+      ItemDocLine."Line No." := 0;
+      CheckDimComb(ItemDocHeader,ItemDocLine);
+      CheckDimValuePosting(ItemDocHeader,ItemDocLine);
+
+      ItemDocLine.SETRANGE("Document Type",ItemDocHeader."Document Type");
+      ItemDocLine.SETRANGE("Document No.",ItemDocHeader."No.");
+      IF ItemDocLine.FINDFIRST THEN BEGIN
+        CheckDimComb(ItemDocHeader,ItemDocLine);
+        CheckDimValuePosting(ItemDocHeader,ItemDocLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckDimComb@1210001(ItemDocHeader@1001 : Record 12450;ItemDocLine@1000 : Record 12453);
+    BEGIN
+      IF ItemDocLine."Line No." = 0 THEN
+        IF NOT DimMgt.CheckDimIDComb(ItemDocHeader."Dimension Set ID") THEN
+          ERROR(
+            Text005,
+            ItemDocHeader."No.",DimMgt.GetDimCombErr);
+      IF ItemDocLine."Line No." <> 0 THEN
+        IF NOT DimMgt.CheckDimIDComb(ItemDocLine."Dimension Set ID") THEN
+          ERROR(
+            Text006,
+            ItemDocHeader."No.",ItemDocLine."Line No.",DimMgt.GetDimCombErr);
+    END;
+
+    LOCAL PROCEDURE CheckDimValuePosting@1210000(ItemDocHeader@1000 : Record 12450;ItemDocLine@1004 : Record 12453);
+    VAR
+      TableIDArr@1002 : ARRAY [10] OF Integer;
+      NumberArr@1003 : ARRAY [10] OF Code[20];
+    BEGIN
+      TableIDArr[1] := DATABASE::Item;
+      NumberArr[1] := ItemDocLine."Item No.";
+      IF ItemDocLine."Line No." = 0 THEN
+        IF NOT DimMgt.CheckDimValuePosting(TableIDArr,NumberArr,ItemDocHeader."Dimension Set ID") THEN
+          ERROR(
+            Text007,
+            ItemDocHeader."No.",ItemDocLine."Line No.",DimMgt.GetDimValuePostingErr);
+
+      IF ItemDocLine."Line No." <> 0 THEN
+        IF NOT DimMgt.CheckDimValuePosting(TableIDArr,NumberArr,ItemDocLine."Dimension Set ID") THEN
+          ERROR(
+            Text007,
+            ItemDocHeader."No.",ItemDocLine."Line No.",DimMgt.GetDimValuePostingErr);
+    END;
+
+    PROCEDURE SetHideValidationDialog@14(NewHideValidationDialog@1000 : Boolean);
+    BEGIN
+      HideValidationDialog := NewHideValidationDialog;
+    END;
+
+    LOCAL PROCEDURE InsertValueEntryRelation@40();
+    VAR
+      ValueEntryRelation@1000 : Record 6508;
+    BEGIN
+      TempValueEntryRelation.RESET;
+      IF TempValueEntryRelation.FIND('-') THEN BEGIN
+        REPEAT
+          ValueEntryRelation := TempValueEntryRelation;
+          ValueEntryRelation.INSERT;
+        UNTIL TempValueEntryRelation.NEXT = 0;
+        TempValueEntryRelation.DELETEALL;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetLocation@7300(LocationCode@1000 : Code[10]);
+    BEGIN
+      IF LocationCode = '' THEN
+        Location.GetLocationSetup(LocationCode,Location)
+      ELSE
+        IF Location.Code <> LocationCode THEN
+          Location.GET(LocationCode);
+    END;
+
+    PROCEDURE GetPostedItemReceipt@1470000() : Code[20];
+    BEGIN
+      EXIT(ItemRcptHeader."No.");
+    END;
+
+    LOCAL PROCEDURE PostWhseJnlLine@7302(ItemJnlLine@1000 : Record 83;OriginalQuantity@1001 : Decimal;OriginalQuantityBase@1006 : Decimal;VAR TempHandlingSpecification@1003 : TEMPORARY Record 336);
+    VAR
+      WhseJnlLine@1002 : Record 7311;
+      TempWhseJnlLine2@1005 : TEMPORARY Record 7311;
+      ItemTrackingMgt@1004 : Codeunit 6500;
+    BEGIN
+      WITH ItemJnlLine DO BEGIN
+        Quantity := OriginalQuantity;
+        "Quantity (Base)" := OriginalQuantityBase;
+        GetLocation("Location Code");
+        IF Location."Bin Mandatory" THEN
+          IF WMSMgmt.CreateWhseJnlLine(ItemJnlLine,0,WhseJnlLine,FALSE) THEN BEGIN
+            ItemTrackingMgt.SplitWhseJnlLine(WhseJnlLine,TempWhseJnlLine2,TempHandlingSpecification,FALSE);
+            IF TempWhseJnlLine2.FINDSET THEN
+              REPEAT
+                WMSMgmt.CheckWhseJnlLine(TempWhseJnlLine2,1,0,FALSE);
+                WhseJnlPostLine.RUN(TempWhseJnlLine2);
+              UNTIL TempWhseJnlLine2.NEXT = 0;
+          END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

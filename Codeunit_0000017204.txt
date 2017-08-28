@@ -1,0 +1,275 @@
+OBJECT Codeunit 17204 Create Tax Register CV Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17210;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Window@1210000 : Dialog;
+
+    PROCEDURE CreateRegister@1(SectionCode@1210000 : Code[10];StartDate@1000 : Date;EndDate@1001 : Date);
+    VAR
+      Customer@1003 : Record 18;
+      CustLedgEntry@1004 : Record 21;
+      DtldCustLedgEntry@1005 : Record 379;
+      Vendor@1006 : Record 23;
+      VendLedgEntry@1007 : Record 25;
+      DtldVendLedgEntry@1008 : Record 380;
+      TaxRegCVEntry@1010 : Record 17210;
+      TaxReg@1011 : Record 17200;
+      TaxRegTemplate@1012 : Record 17202;
+      TaxRegAccumulation@1013 : Record 17208;
+      TaxRegMgt@1014 : Codeunit 17201;
+      TaxRegTermMgt@1015 : Codeunit 17200;
+      Total@1017 : Integer;
+      Procesing@1018 : Integer;
+      FiterDueDateTotal@1019 : Text[30];
+      FiterDueDate45Days90Days@1020 : Text[30];
+      FilterDueDate90Days3Years@1021 : Text[30];
+      FilterDueDate3YearsDebit@1022 : Text[30];
+      FilterDueDate3YearsCredit@1023 : Text[30];
+      ExistEntry@1024 : Boolean;
+      CVDebitBalance@1025 : ARRAY [4] OF Decimal;
+      CVCreditBalance@1026 : ARRAY [4] OF Decimal;
+    BEGIN
+      TaxRegMgt.CalcDebitBalancePointDate(SectionCode,EndDate,
+        FiterDueDateTotal,FiterDueDate45Days90Days,FilterDueDate90Days3Years,FilterDueDate3YearsDebit);
+      TaxRegMgt.CalcCreditBalancePointDate(SectionCode,EndDate,FilterDueDate3YearsCredit);
+
+      TaxRegMgt.ValidateAbsenceCVEntriesDate(StartDate,EndDate,SectionCode);
+
+      TaxRegCVEntry.RESET;
+      IF NOT TaxRegCVEntry.FINDLAST THEN
+        TaxRegCVEntry."Entry No." := 0;
+
+      Window.OPEN(Text21000900);
+      Window.UPDATE(1,StartDate);
+      Window.UPDATE(2,EndDate);
+
+      TaxRegCVEntry.INIT;
+      TaxRegCVEntry."Section Code" := SectionCode;
+      TaxRegCVEntry."Starting Date" := StartDate;
+      TaxRegCVEntry."Ending Date" := EndDate;
+
+      CLEAR(CVDebitBalance);
+      CLEAR(CVCreditBalance);
+
+      WITH Vendor DO BEGIN
+        SETFILTER("Vendor Type",'%1|%2',"Vendor Type"::Vendor,"Vendor Type"::"Resp. Employee");
+        SETFILTER("Vendor Type",'%1',"Vendor Type"::Vendor);
+        Total := COUNT;
+      END;
+
+      Window.UPDATE(4,Customer.TABLECAPTION);
+      Total += Customer.COUNT;
+      IF Customer.FINDSET THEN
+        REPEAT
+          Procesing += 1;
+          IF (Procesing MOD 50) = 1 THEN
+            Window.UPDATE(3,ROUND((Procesing / Total) * 10000,1));
+
+          CustLedgEntry.SETCURRENTKEY("Customer No.","Posting Date");
+          CustLedgEntry.SETRANGE("Customer No.",Customer."No.");
+          CustLedgEntry.SETRANGE("Posting Date",StartDate,EndDate);
+
+          TaxRegCVEntry."C/V No." := Customer."No.";
+          TaxRegCVEntry."Object Type" := TaxRegCVEntry."Object Type"::Customer;
+
+          WITH DtldCustLedgEntry DO BEGIN
+            CustLedgEntry.SETRANGE(Positive,TRUE);
+            ExistEntry := CustLedgEntry.FINDFIRST;
+
+            RESET;
+            SETCURRENTKEY("Customer No.","Initial Entry Positive","Initial Entry Due Date","Posting Date");
+            SETRANGE("Customer No.",Customer."No.");
+            SETRANGE("Initial Entry Positive",TRUE);
+            SETFILTER("Posting Date",'..%1',EndDate);
+            CALCSUMS("Amount (LCY)");
+            IF ExistEntry OR ("Amount (LCY)" <> 0) THEN BEGIN
+              TaxRegCVEntry."Register Type" := TaxRegCVEntry."Register Type"::"Debit Balance";
+              TaxRegCVEntry."CV Debit Balance Amnt 1" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FiterDueDate45Days90Days);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Debit Balance Amnt 2" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FilterDueDate90Days3Years);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Debit Balance Amnt 3" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FilterDueDate3YearsDebit);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Debit Balance Amnt 4" := "Amount (LCY)";
+              TaxRegCVEntry."CV Debit Balance Amnt 2-4" :=
+                TaxRegCVEntry."CV Debit Balance Amnt 2" +
+                TaxRegCVEntry."CV Debit Balance Amnt 3" +
+                TaxRegCVEntry."CV Debit Balance Amnt 4";
+              TaxRegCVEntry."Entry No." += 1;
+              TaxRegCVEntry.INSERT;
+              CVDebitBalance[1] += TaxRegCVEntry."CV Debit Balance Amnt 1";
+              CVDebitBalance[2] += TaxRegCVEntry."CV Debit Balance Amnt 2";
+              CVDebitBalance[3] += TaxRegCVEntry."CV Debit Balance Amnt 3";
+              CVDebitBalance[4] += TaxRegCVEntry."CV Debit Balance Amnt 4";
+            END;
+
+            CustLedgEntry.SETRANGE(Positive,FALSE);
+            ExistEntry := CustLedgEntry.FINDFIRST;
+
+            RESET;
+            SETCURRENTKEY("Customer No.","Initial Entry Positive","Initial Entry Due Date","Posting Date");
+            SETRANGE("Customer No.",Customer."No.");
+            SETRANGE("Initial Entry Positive",FALSE);
+            SETFILTER("Posting Date",'..%1',EndDate);
+            CALCSUMS("Amount (LCY)");
+            IF ExistEntry OR ("Amount (LCY)" <> 0) THEN BEGIN
+              TaxRegCVEntry."Register Type" := TaxRegCVEntry."Register Type"::"Credit Balance";
+              TaxRegCVEntry."CV Credit Balance Amnt 1" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FilterDueDate3YearsCredit);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Credit Balance Amnt 2" := "Amount (LCY)";
+              TaxRegCVEntry."Entry No." += 1;
+              TaxRegCVEntry.INSERT;
+              CVCreditBalance[1] += TaxRegCVEntry."CV Credit Balance Amnt 1";
+              CVCreditBalance[2] += TaxRegCVEntry."CV Credit Balance Amnt 2";
+            END;
+          END;
+
+        UNTIL Customer.NEXT = 0;
+
+      Window.UPDATE(4,Vendor.TABLECAPTION);
+      IF Vendor.FINDSET THEN
+        REPEAT
+          Procesing += 1;
+          IF (Procesing MOD 50) = 1 THEN
+            Window.UPDATE(3,ROUND((Procesing / Total) * 10000,1));
+          VendLedgEntry.SETCURRENTKEY("Vendor No.","Posting Date");
+          VendLedgEntry.SETRANGE("Vendor No.",Vendor."No.");
+          VendLedgEntry.SETRANGE("Posting Date",StartDate,EndDate);
+
+          TaxRegCVEntry."C/V No." := Vendor."No.";
+          TaxRegCVEntry."Object Type" := TaxRegCVEntry."Object Type"::Vendor;
+
+          WITH DtldVendLedgEntry DO BEGIN
+            VendLedgEntry.SETRANGE(Positive,TRUE);
+            ExistEntry := VendLedgEntry.FINDFIRST;
+
+            RESET;
+            SETCURRENTKEY("Vendor No.","Initial Entry Positive","Initial Entry Due Date","Posting Date");
+            SETRANGE("Vendor No.",Vendor."No.");
+            SETRANGE("Initial Entry Positive",TRUE);
+            SETFILTER("Posting Date",'..%1',EndDate);
+            CALCSUMS("Amount (LCY)");
+            IF ExistEntry OR ("Amount (LCY)" <> 0) THEN BEGIN
+              TaxRegCVEntry."Register Type" := TaxRegCVEntry."Register Type"::"Debit Balance";
+              TaxRegCVEntry."CV Debit Balance Amnt 1" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FiterDueDate45Days90Days);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Debit Balance Amnt 2" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FilterDueDate90Days3Years);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Debit Balance Amnt 3" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FilterDueDate3YearsDebit);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Debit Balance Amnt 4" := "Amount (LCY)";
+              TaxRegCVEntry."CV Debit Balance Amnt 2-4" :=
+                TaxRegCVEntry."CV Debit Balance Amnt 2" +
+                TaxRegCVEntry."CV Debit Balance Amnt 3" +
+                TaxRegCVEntry."CV Debit Balance Amnt 4";
+              TaxRegCVEntry."Entry No." += 1;
+              TaxRegCVEntry.INSERT;
+              CVDebitBalance[1] += TaxRegCVEntry."CV Debit Balance Amnt 1";
+              CVDebitBalance[2] += TaxRegCVEntry."CV Debit Balance Amnt 2";
+              CVDebitBalance[3] += TaxRegCVEntry."CV Debit Balance Amnt 3";
+              CVDebitBalance[4] += TaxRegCVEntry."CV Debit Balance Amnt 4";
+            END;
+
+            VendLedgEntry.SETRANGE(Positive,FALSE);
+            ExistEntry := VendLedgEntry.FINDFIRST;
+
+            RESET;
+            SETCURRENTKEY("Vendor No.","Initial Entry Positive","Initial Entry Due Date","Posting Date");
+            SETRANGE("Vendor No.",Vendor."No.");
+            SETRANGE("Initial Entry Positive",FALSE);
+            SETFILTER("Posting Date",'..%1',EndDate);
+            CALCSUMS("Amount (LCY)");
+            IF ExistEntry OR ("Amount (LCY)" <> 0) THEN BEGIN
+              TaxRegCVEntry."Register Type" := TaxRegCVEntry."Register Type"::"Credit Balance";
+              TaxRegCVEntry."CV Credit Balance Amnt 1" := "Amount (LCY)";
+              SETFILTER("Initial Entry Due Date",FilterDueDate3YearsCredit);
+              CALCSUMS("Amount (LCY)");
+              TaxRegCVEntry."CV Credit Balance Amnt 2" := "Amount (LCY)";
+              TaxRegCVEntry."Entry No." += 1;
+              TaxRegCVEntry.INSERT;
+              CVCreditBalance[1] += TaxRegCVEntry."CV Credit Balance Amnt 1";
+              CVCreditBalance[2] += TaxRegCVEntry."CV Credit Balance Amnt 2";
+            END;
+          END;
+        UNTIL Vendor.NEXT = 0;
+
+      TaxRegAccumulation.RESET;
+      IF NOT TaxRegAccumulation.FINDLAST THEN
+        TaxRegAccumulation."Entry No." := 0;
+
+      TaxRegAccumulation.INIT;
+      TaxRegAccumulation."Section Code" := SectionCode;
+      TaxRegAccumulation."Starting Date" := StartDate;
+      TaxRegAccumulation."Ending Date" := EndDate;
+
+      TaxReg.RESET;
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register CV Entry");
+      TaxRegTemplate.SETRANGE("Section Code",SectionCode);
+      IF TaxReg.FINDSET THEN
+        REPEAT
+          TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+          IF TaxRegTemplate.FINDSET THEN
+            REPEAT
+              TaxRegAccumulation."Report Line Code" := TaxRegTemplate."Report Line Code";
+              TaxRegAccumulation."Template Line Code" := TaxRegTemplate."Line Code";
+              TaxRegAccumulation."Tax Register No." := TaxRegTemplate.Code;
+              TaxRegAccumulation.Indentation := TaxRegTemplate.Indentation;
+              TaxRegAccumulation.Bold := TaxRegTemplate.Bold;
+              TaxRegAccumulation.Description := TaxRegTemplate.Description;
+              TaxRegAccumulation."Template Line No." := TaxRegTemplate."Line No.";
+              CASE TaxRegTemplate."Sum Field No." OF
+                TaxRegCVEntry.FIELDNO("CV Credit Balance Amnt 1"):
+                  TaxRegAccumulation.Amount := CVCreditBalance[1];
+                TaxRegCVEntry.FIELDNO("CV Credit Balance Amnt 2"):
+                  TaxRegAccumulation.Amount := CVCreditBalance[2];
+                TaxRegCVEntry.FIELDNO("CV Debit Balance Amnt 1"):
+                  TaxRegAccumulation.Amount := CVDebitBalance[1];
+                TaxRegCVEntry.FIELDNO("CV Debit Balance Amnt 2"):
+                  TaxRegAccumulation.Amount := CVDebitBalance[2];
+                TaxRegCVEntry.FIELDNO("CV Debit Balance Amnt 3"):
+                  TaxRegAccumulation.Amount := CVDebitBalance[3];
+                TaxRegCVEntry.FIELDNO("CV Debit Balance Amnt 4"):
+                  TaxRegAccumulation.Amount := CVDebitBalance[4];
+                ELSE
+                  TaxRegAccumulation.Amount := 0;
+              END;
+              TaxRegAccumulation."Amount Period" := TaxRegAccumulation.Amount;
+              TaxRegAccumulation."Amount Date Filter" :=
+                TaxRegTermMgt.CalcIntervalDate(
+                  TaxRegAccumulation."Starting Date",
+                  TaxRegAccumulation."Ending Date",
+                  TaxRegTemplate.Period);
+              TaxRegAccumulation."Entry No." += 1;
+              TaxRegAccumulation.INSERT;
+            UNTIL TaxRegTemplate.NEXT = 0;
+        UNTIL TaxReg.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

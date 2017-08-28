@@ -1,0 +1,232 @@
+OBJECT Codeunit 14945 Advance Statement Helper
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CompInfo@1210001 : Record 79;
+      Employee@1210014 : Record 5200;
+      ExcelReportBuilderManager@1210000 : Codeunit 14930;
+      LocMgt@1210002 : Codeunit 12400;
+      GeneralManagerTxt@1210003 : TextConst 'ENU=General Manager;RUS=Генеральный управляющий';
+      AdvReceivedTxt@1210004 : TextConst 'ENU=Advance received 1.;RUS=Аванс получен 1.';
+      FCYReferenceTxt@1210005 : TextConst 'ENU="  1a. in currency (reference)";RUS="  1a. в валюте (ссылка)"';
+      TotalReceivedTxt@1210006 : TextConst 'ENU=Received total;RUS=Всего получено';
+      SpentTxt@1210007 : TextConst 'ENU=Spent;RUS=Потрачено';
+      RemainderTxt@1210008 : TextConst 'ENU="  Remainder";RUS="  Остаток"';
+      OverdraftTxt@1210009 : TextConst 'ENU="  Overdraft";RUS="  Перерасход"';
+      DocumentsOnTxt@1210010 : TextConst 'ENU=documents on;RUS=документы на';
+      PagesTxt@1210011 : TextConst 'ENU=pages;RUS=стр.';
+      LocalReportMgt@1210012 : Codeunit 12401;
+      RespEmployee@1210013 : Text;
+      RubleTxt@1210016 : TextConst 'ENU=rub.;RUS=руб.';
+      CopecTxt@1210017 : TextConst 'ENU=kop.);RUS=коп.)';
+
+    PROCEDURE InitReportTemplate@1210001();
+    VAR
+      PurchasesPayablesSetup@1210000 : Record 312;
+    BEGIN
+      PurchasesPayablesSetup.GET;
+      PurchasesPayablesSetup.TESTFIELD("Adv. Statement Template Code");
+      ExcelReportBuilderManager.InitTemplate(PurchasesPayablesSetup."Adv. Statement Template Code");
+      ExcelReportBuilderManager.SetSheet('Sheet1');
+
+      CompInfo.GET;
+    END;
+
+    PROCEDURE FillHeader@1210000(ReportAmount@1210002 : Decimal;DocumentNo@1210000 : Code[20];DocumentDate@1210001 : Date;ContactNo@1210004 : Code[20];ContactName@1210005 : Text;Purpose@1210003 : Text);
+    VAR
+      OrganizationalUnit@1210007 : Record 12422;
+    BEGIN
+      ExcelReportBuilderManager.AddSection('REPORTHEADER');
+
+      ExcelReportBuilderManager.AddDataToSection('CompanyName',CompInfo.Name);
+      ExcelReportBuilderManager.AddDataToSection('OKPO',CompInfo."OKPO Code");
+      ExcelReportBuilderManager.AddDataToSection('AmountInWordsHeader1',
+        COPYSTR(LocMgt.Amount2Text('',ReportAmount),1,30));
+      ExcelReportBuilderManager.AddDataToSection('AmountInWordsHeader2',
+        COPYSTR(LocMgt.Amount2Text('',ReportAmount),31,100));
+
+      ExcelReportBuilderManager.AddDataToSection('ChiefTitle',GeneralManagerTxt);
+      ExcelReportBuilderManager.AddDataToSection('AdvanceId',DocumentNo);
+      ExcelReportBuilderManager.AddDataToSection('Date',FORMAT(DocumentDate));
+      ExcelReportBuilderManager.AddDataToSection('ChiefName',CompInfo."Director Name");
+
+      IF Employee.READPERMISSION THEN
+        IF Employee.GET(ContactNo) THEN
+          IF OrganizationalUnit.READPERMISSION THEN
+            IF OrganizationalUnit.GET(Employee."Org. Unit Code") THEN;
+
+      RespEmployee := ContactName;
+      ExcelReportBuilderManager.AddDataToSection('Department',OrganizationalUnit.Name);
+      ExcelReportBuilderManager.AddDataToSection('OrgUnitCode',OrganizationalUnit.Code);
+      ExcelReportBuilderManager.AddDataToSection('EmplName',RespEmployee);
+      ExcelReportBuilderManager.AddDataToSection('EmplId',Employee."No.");
+      ExcelReportBuilderManager.AddDataToSection('EmplPosition',Employee.GetJobTitleName);
+      ExcelReportBuilderManager.AddDataToSection('Target',Purpose);
+
+      ExcelReportBuilderManager.AddDataToSection('ReportDay',FORMAT(DATE2DMY(DocumentDate,1)));
+      ExcelReportBuilderManager.AddDataToSection('ReportMonth',LocMgt.GetMonthName(DocumentDate,TRUE));
+      ExcelReportBuilderManager.AddDataToSection('ReportYear',FORMAT(DATE2DMY(DocumentDate,3) MOD 100));
+    END;
+
+    PROCEDURE FillAdvance@1210003(Remainder@1210000 : Decimal;Overdraft@1210001 : Decimal);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('PREVADVANCE');
+
+      ExcelReportBuilderManager.AddDataToSection('Remainder',BlankZeroValue(Remainder));
+      ExcelReportBuilderManager.AddDataToSection('Overdraft',BlankZeroValue(Overdraft));
+    END;
+
+    PROCEDURE FillAdvanceDetails@1210004(DocReceived@1210000 : ARRAY [4] OF Text;DocAmount@1210001 : ARRAY [4] OF Decimal;OutstandingAmount@1210002 : Decimal;Remainder@1210003 : Decimal;Overdraft@1210004 : Decimal;DebitAccount@1210005 : ARRAY [8] OF Code[20];DebitAmount@1210006 : ARRAY [8] OF Decimal;CreditAccount@1210007 : Code[20];CreditAmount@1210008 : Decimal);
+    BEGIN
+      FillAdvanceDetailsLine(
+        AdvReceivedTxt,DocReceived[1],ABS(DocAmount[1]),DebitAccount[1],DebitAmount[1],CreditAccount,CreditAmount);
+      FillAdvanceDetailsLine(
+        FCYReferenceTxt,DocReceived[4],ABS(DocAmount[4]),DebitAccount[2],DebitAmount[2],'',0);
+      FillAdvanceDetailsLine(
+        '  2.',DocReceived[2],ABS(DocAmount[2]),DebitAccount[3],DebitAmount[3],'',0);
+      FillAdvanceDetailsLine(
+        '  3.',DocReceived[3],ABS(DocAmount[3]),DebitAccount[4],DebitAmount[4],'',0);
+      FillAdvanceDetailsLine(
+        TotalReceivedTxt,'',ABS(DocAmount[1] + DocAmount[2] + DocAmount[3]),
+        DebitAccount[5],DebitAmount[5],'',0);
+      FillAdvanceDetailsLine(
+        SpentTxt,'',OutstandingAmount,DebitAccount[6],DebitAmount[6],'',0);
+      FillAdvanceDetailsLine(
+        RemainderTxt,'',ABS(Remainder),DebitAccount[7],DebitAmount[7],'',0);
+      FillAdvanceDetailsLine(
+        OverdraftTxt,'',ABS(Overdraft),DebitAccount[8],DebitAmount[8],'',0);
+    END;
+
+    LOCAL PROCEDURE FillAdvanceDetailsLine@1210005(LineTxt@1210009 : Text;Received@1210000 : Text;Amount@1210001 : Decimal;DebitAccount@1210005 : Code[20];DebitAmount@1210006 : Decimal;CreditAccount@1210007 : Code[20];CreditAmount@1210008 : Decimal);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('ADVANCEGRID');
+
+      ExcelReportBuilderManager.AddDataToSection('DocTxt',LineTxt);
+      IF Received <> '' THEN
+        ExcelReportBuilderManager.AddDataToSection('DocReceived',FORMAT(Received));
+      ExcelReportBuilderManager.AddDataToSection('DocAmount',BlankZeroValue(Amount));
+
+      ExcelReportBuilderManager.AddDataToSection('DebetAccount',FORMAT(DebitAccount));
+      ExcelReportBuilderManager.AddDataToSection('DebetAmount',BlankZeroValue(DebitAmount));
+      IF CreditAccount <> '' THEN
+        ExcelReportBuilderManager.AddDataToSection('CreditAccount',FORMAT(CreditAccount));
+      ExcelReportBuilderManager.AddDataToSection('CreditAmount',BlankZeroValue(CreditAmount));
+    END;
+
+    PROCEDURE FillSummary@1210006(NoOfDocuments@1210000 : Integer;NoOfPages@1210001 : Integer;Amount@1210009 : Decimal;AccountantCode@1210006 : Code[10];Remainder@1210002 : Decimal;Overdraft@1210003 : Decimal;DocNo@1210004 : Code[20];DocDate@1210005 : Date;CashierCode@1210007 : Code[10];HeaderDate@1210008 : Date);
+    VAR
+      Zero@1210010 : Text;
+    BEGIN
+      ExcelReportBuilderManager.AddSection('SUMMARY');
+
+      ExcelReportBuilderManager.AddDataToSection('CountReasonDoc',FORMAT(NoOfDocuments));
+      ExcelReportBuilderManager.AddDataToSection('DocDeclension',DocumentsOnTxt);
+      ExcelReportBuilderManager.AddDataToSection('CountReasonDocPrep',FORMAT(NoOfPages));
+      ExcelReportBuilderManager.AddDataToSection('PageDeclension',PagesTxt);
+
+      ExcelReportBuilderManager.AddDataToSection('AmountApprovedTotalInWords',LocMgt.Amount2Text('',Amount));
+      ExcelReportBuilderManager.AddDataToSection('ConfirmSum',
+        ' ( ' + FORMAT(Amount DIV 1) + ' ' + RubleTxt + ' ' +
+        Zero + FORMAT(Amount MOD 1 * 100) + ' ' + CopecTxt);
+
+      ExcelReportBuilderManager.AddDataToSection('ChiefAccountantName',CompInfo."Accountant Name");
+      ExcelReportBuilderManager.AddDataToSection('AccountantName',LocalReportMgt.GetEmpName(AccountantCode));
+
+      ExcelReportBuilderManager.AddSection('OVERUNDER');
+      ExcelReportBuilderManager.AddDataToSection('AmountRUR',
+        BlankZeroValue(ABS(Remainder DIV 1)) + ' ' + BlankZeroValue(ABS(Overdraft DIV 1)));
+      ExcelReportBuilderManager.AddDataToSection('AmountCOP',
+        BlankZeroValue(ABS((Remainder MOD 1) * 100)) + ' ' + BlankZeroValue(ABS((Overdraft MOD 1) * 100)));
+      ExcelReportBuilderManager.AddDataToSection('CashOrder',DocNo);
+      ExcelReportBuilderManager.AddDataToSection('CashOrderDate',FORMAT(DocDate));
+
+      ExcelReportBuilderManager.AddSection('ACCOUNTANT');
+      ExcelReportBuilderManager.AddDataToSection('CashierName',LocalReportMgt.GetEmpName(CashierCode));
+      ExcelReportBuilderManager.AddDataToSection('CashierDate',FORMAT(HeaderDate));
+    END;
+
+    PROCEDURE FillReceipt@1210008(DocNo@1210000 : Code[20];DocDate@1210001 : Date;Amount@1210002 : Decimal;NoOfDocuments@1210003 : Integer;NoOfPages@1210004 : Integer;CashierCode@1210005 : Code[10]);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('RECEIPT');
+
+      ExcelReportBuilderManager.AddDataToSection('ReceiptEmplName',RespEmployee);
+      ExcelReportBuilderManager.AddDataToSection('ReceiptAdvNo',DocNo);
+      ExcelReportBuilderManager.AddDataToSection('ReceiptAdvDate',FORMAT(DocDate));
+      ExcelReportBuilderManager.AddDataToSection('ReceiptAmountTxt',LocMgt.Amount2Text('',Amount));
+      ExcelReportBuilderManager.AddDataToSection('ReceiptDocCount',FORMAT(NoOfDocuments));
+      ExcelReportBuilderManager.AddDataToSection('ReceiptDocCountPrep',FORMAT(NoOfPages));
+      ExcelReportBuilderManager.AddDataToSection('ReceiptDocCountDecl',PagesTxt);
+      ExcelReportBuilderManager.AddDataToSection('ReceiptAccountant',LocalReportMgt.GetEmpName(CashierCode));
+      ExcelReportBuilderManager.AddDataToSection('ReceiptDate',FORMAT(DocDate));
+
+      ExcelReportBuilderManager.AddPagebreak;
+    END;
+
+    PROCEDURE FillPageHeader@1210007();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('PAGEHEADER');
+    END;
+
+    PROCEDURE FillBody@1210010(LineNo@1210000 : Integer;DocDate@1210001 : Date;DocNo@1210002 : Code[20];Description@1210003 : Text;AmountLCY@1210004 : Decimal;AmountFCY@1210005 : Decimal;SubAcc@1210006 : Text);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('EXPENSEGRID');
+
+      ExcelReportBuilderManager.AddDataToSection('LineNum',FORMAT(LineNo));
+      ExcelReportBuilderManager.AddDataToSection('DocDate',FORMAT(DocDate));
+      ExcelReportBuilderManager.AddDataToSection('DocNum',FORMAT(DocNo));
+      ExcelReportBuilderManager.AddDataToSection('DocName',FORMAT(Description));
+      ExcelReportBuilderManager.AddDataToSection('AmountMST',BlankZeroValue(AmountLCY));
+      ExcelReportBuilderManager.AddDataToSection('AmountCur',BlankZeroValue(AmountFCY));
+      ExcelReportBuilderManager.AddDataToSection('AmountMSTApprove',BlankZeroValue(AmountLCY));
+      ExcelReportBuilderManager.AddDataToSection('AmountCurApprove',BlankZeroValue(AmountFCY));
+      ExcelReportBuilderManager.AddDataToSection('LedAcc',SubAcc);
+    END;
+
+    PROCEDURE FillFooter@1210012(AmountLCY@1210001 : Decimal;AmountFCY@1210000 : Decimal);
+    BEGIN
+      ExcelReportBuilderManager.AddSection('FOOTER');
+
+      ExcelReportBuilderManager.AddDataToSection('TotalAmountMST',BlankZeroValue(AmountLCY));
+      ExcelReportBuilderManager.AddDataToSection('TotalAmountCur',BlankZeroValue(AmountFCY));
+      ExcelReportBuilderManager.AddDataToSection('TotalAmountMSTAppr',BlankZeroValue(AmountLCY));
+      ExcelReportBuilderManager.AddDataToSection('TotalAmountCurAppr',BlankZeroValue(AmountFCY));
+
+      ExcelReportBuilderManager.AddDataToSection('FooterEmplName',RespEmployee);
+    END;
+
+    PROCEDURE ExportData@1210002();
+    BEGIN
+      ExcelReportBuilderManager.ExportData;
+    END;
+
+    PROCEDURE ExportDataToClientFile@1210011(FileName@1210000 : Text);
+    BEGIN
+      ExcelReportBuilderManager.ExportDataToClientFile(FileName);
+    END;
+
+    LOCAL PROCEDURE BlankZeroValue@1210015(Value@1210000 : Decimal) : Text;
+    BEGIN
+      IF Value = 0 THEN
+        EXIT('');
+
+      EXIT(LocalReportMgt.FormatReportValue(Value,2));
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

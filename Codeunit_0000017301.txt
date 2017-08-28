@@ -1,0 +1,302 @@
+OBJECT Codeunit 17301 Tax Diff.-Post Jnl. Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 5601=rm,
+                TableData 17302=imd,
+                TableData 17306=imd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TaxDiffJnlLine@1000 : Record 17305;
+      TaxDiffReg@1002 : Record 17302;
+      TaxDiffEntry@1003 : Record 17306;
+      FE@1012 : Record 5600;
+      GenJnlPostLine@1004 : Codeunit 12;
+      NextEntryNo@1009 : Integer;
+      Text1003@1010 : TextConst 'ENU="=%1 can not be less than %2=%3";RUS="=%1 не может быть меньше, чем %2=%3"';
+      Text1004@1011 : TextConst 'ENU=Wrong posting order. Start balance of tax difference changed.;RUS=Неправильный порядок учета. Начальный баланс налоговой разницы изменен.';
+      Text1005@1210000 : TextConst 'ENU=must be %1;RUS=должно быть %1';
+      Text1006@1210001 : TextConst 'ENU=Depr. bonus for %1 has been already recovered.;RUS=Аморт. премия для %1 уже была восстановлена.';
+
+    LOCAL PROCEDURE Code@1();
+    VAR
+      TaxDiffPostGroup@1000 : Record 17301;
+      PostingDate@1001 : Date;
+    BEGIN
+      CheckJnlLine;
+
+      WITH TaxDiffEntry DO BEGIN
+        IF NextEntryNo = 0 THEN BEGIN
+          LOCKTABLE;
+          IF FINDLAST THEN
+            NextEntryNo := "Entry No.";
+
+          TaxDiffReg.LOCKTABLE;
+          IF TaxDiffReg.FINDLAST THEN
+            TaxDiffReg."No." := TaxDiffReg."No." + 1
+          ELSE
+            TaxDiffReg."No." := 1;
+          TaxDiffReg.INIT;
+          TaxDiffReg."Journal Batch Name" := TaxDiffJnlLine."Journal Batch Name";
+          TaxDiffReg."Creation Date" := TODAY;
+          TaxDiffReg."User ID" := USERID;
+          TaxDiffReg.INSERT;
+        END;
+        NextEntryNo := NextEntryNo + 1;
+
+        INIT;
+        TRANSFERFIELDS(TaxDiffJnlLine,FALSE);
+        "Journal Batch Name" := TaxDiffJnlLine."Journal Batch Name";
+        "Transaction No." := 0;
+        "Entry No." := NextEntryNo;
+      END;
+
+      WITH TaxDiffJnlLine DO BEGIN
+        TaxDiffPostGroup.GET("Tax Diff. Posting Group");
+
+        PostingDate := "Posting Date";
+        CASE "Tax Diff. Type" OF
+          "Tax Diff. Type"::Constant:
+            BEGIN
+              IF "Asset Tax Amount" <> 0 THEN BEGIN
+                TaxDiffPostGroup.TESTFIELD("CTA Tax Account");
+                TaxDiffPostGroup.TESTFIELD("CTA Account");
+                GenJnlLineCreate(
+                  TaxDiffPostGroup."CTA Tax Account",
+                  TaxDiffPostGroup."CTA Account",
+                  "Asset Tax Amount",PostingDate);
+              END;
+              IF "Liability Tax Amount" <> 0 THEN BEGIN
+                TaxDiffPostGroup.TESTFIELD("CTL Tax Account");
+                TaxDiffPostGroup.TESTFIELD("CTL Account");
+                GenJnlLineCreate(
+                  TaxDiffPostGroup."CTL Account",
+                  TaxDiffPostGroup."CTL Tax Account",
+                  "Liability Tax Amount",PostingDate);
+              END;
+            END;
+          "Tax Diff. Type"::"Temporary":
+            BEGIN
+              IF "Asset Tax Amount" <> 0 THEN BEGIN
+                TaxDiffPostGroup.TESTFIELD("DTA Tax Account");
+                TaxDiffPostGroup.TESTFIELD("DTA Account");
+                GenJnlLineCreate(
+                  TaxDiffPostGroup."DTA Account",
+                  TaxDiffPostGroup."DTA Tax Account",
+                  "Asset Tax Amount",PostingDate);
+              END;
+              IF "Liability Tax Amount" <> 0 THEN BEGIN
+                TaxDiffPostGroup.TESTFIELD("DTL Tax Account");
+                TaxDiffPostGroup.TESTFIELD("DTL Account");
+                GenJnlLineCreate(
+                  TaxDiffPostGroup."DTL Tax Account",
+                  TaxDiffPostGroup."DTL Account",
+                  "Liability Tax Amount",PostingDate);
+              END;
+              IF "Disposal Date" <> 0D THEN
+                PostingDate := "Disposal Date";
+              IF "Disposal Mode" = "Disposal Mode"::"Write Down" THEN BEGIN
+                IF "Disposal Tax Amount" > 0 THEN BEGIN
+                  TESTFIELD("DTL Ending Balance",0);
+                  TaxDiffPostGroup.TESTFIELD("DTA Disposal Account");
+                  TaxDiffPostGroup.TESTFIELD("DTA Account");
+                  GenJnlLineCreate(
+                    TaxDiffPostGroup."DTA Disposal Account",
+                    TaxDiffPostGroup."DTA Account",
+                    "Disposal Tax Amount",PostingDate);
+                END;
+                IF "Disposal Tax Amount" < 0 THEN BEGIN
+                  TESTFIELD("DTA Ending Balance",0);
+                  TaxDiffPostGroup.TESTFIELD("DTL Disposal Account");
+                  TaxDiffPostGroup.TESTFIELD("DTL Account");
+                  GenJnlLineCreate(
+                    TaxDiffPostGroup."DTL Account",
+                    TaxDiffPostGroup."DTL Disposal Account",
+                    -"Disposal Tax Amount",PostingDate);
+                END;
+              END;
+              IF "Disposal Mode" = "Disposal Mode"::Transform THEN BEGIN
+                IF "Disposal Tax Amount" > 0 THEN BEGIN
+                  TESTFIELD("DTL Ending Balance",0);
+                  TaxDiffPostGroup.TESTFIELD("DTA Transfer Bal. Account");
+                  TaxDiffPostGroup.TESTFIELD("DTA Account");
+                  TaxDiffPostGroup.TESTFIELD("CTL Transfer Tax Account");
+                  GenJnlLineCreate(
+                    TaxDiffPostGroup."DTA Transfer Bal. Account",
+                    TaxDiffPostGroup."DTA Account",
+                    "Disposal Tax Amount",PostingDate);
+                  GenJnlLineCreate(
+                    TaxDiffPostGroup."CTL Transfer Tax Account",
+                    TaxDiffPostGroup."DTA Transfer Bal. Account",
+                    "Disposal Tax Amount",PostingDate);
+                END;
+                IF "Disposal Tax Amount" < 0 THEN BEGIN
+                  TESTFIELD("DTA Ending Balance",0);
+                  TaxDiffPostGroup.TESTFIELD("DTL Transfer Bal. Account");
+                  TaxDiffPostGroup.TESTFIELD("DTL Account");
+                  TaxDiffPostGroup.TESTFIELD("CTA Transfer Tax Account");
+                  GenJnlLineCreate(
+                    TaxDiffPostGroup."DTL Account",
+                    TaxDiffPostGroup."DTL Transfer Bal. Account",
+                    -"Disposal Tax Amount",PostingDate);
+                  GenJnlLineCreate(
+                    TaxDiffPostGroup."DTL Transfer Bal. Account",
+                    TaxDiffPostGroup."CTA Transfer Tax Account",
+                    -"Disposal Tax Amount",PostingDate);
+                END;
+              END;
+            END;
+        END;
+      END;
+
+      TaxDiffEntry.INSERT;
+
+      WITH TaxDiffReg DO BEGIN
+        GET("No.");
+        IF "From Entry No." = 0 THEN
+          "From Entry No." := NextEntryNo;
+        "To Entry No." := NextEntryNo;
+        MODIFY;
+      END;
+    END;
+
+    LOCAL PROCEDURE GenJnlLineCreate@2(AccountNo@1000 : Code[20];BalAccountNo@1001 : Code[20];PostingAmount@1002 : Decimal;PostingDate@1003 : Date);
+    VAR
+      GenJnlLine@1004 : Record 81;
+      GLReg@1005 : Record 45;
+      GLEntry@1006 : Record 17;
+    BEGIN
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Batch Name" := TaxDiffJnlLine."Journal Batch Name";
+      GenJnlLine."Posting Date" := PostingDate;
+      GenJnlLine."Document Date" := PostingDate;
+      GenJnlLine.Description := TaxDiffJnlLine.Description;
+      GenJnlLine."Reason Code" := TaxDiffJnlLine."Reason Code";
+      GenJnlLine."Document No." := TaxDiffJnlLine."Document No.";
+      GenJnlLine."Account No." := AccountNo;
+      GenJnlLine."System-Created Entry" := TRUE;
+      GenJnlLine.Amount := PostingAmount;
+      GenJnlLine."Shortcut Dimension 1 Code" := TaxDiffJnlLine."Shortcut Dimension 1 Code";
+      GenJnlLine."Shortcut Dimension 2 Code" := TaxDiffJnlLine."Shortcut Dimension 2 Code";
+      GenJnlLine."Source Code" := TaxDiffJnlLine."Source Code";
+      GenJnlLine."Bal. Account No." := BalAccountNo;
+      GenJnlLine."Dimension Set ID" := TaxDiffJnlLine."Dimension Set ID";
+
+      GenJnlPostLine.RunWithCheck(GenJnlLine);
+
+      IF TaxDiffEntry."Transaction No." = 0 THEN BEGIN
+        GenJnlPostLine.GetGLReg(GLReg);
+        GLEntry.GET(GLReg."To Entry No.");
+        TaxDiffEntry."Transaction No." := GLEntry."Transaction No.";
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckJnlLine@3();
+    VAR
+      TaxDiffJnlLine0@1000 : Record 17305;
+    BEGIN
+      WITH TaxDiffJnlLine DO BEGIN
+        TESTFIELD("Posting Date");
+        TESTFIELD("Document No.");
+        TESTFIELD("Tax Diff. Code");
+        TESTFIELD("Tax Factor");
+        TESTFIELD("Tax Diff. Posting Group");
+
+        IF "Source Type" <> "Source Type"::" " THEN
+          TESTFIELD("Source No.");
+
+        IF ("Source Type" = "Source Type"::"Future Expense") AND ("Source No." <> '') THEN BEGIN
+          FE.GET("Source No.");
+          FE.TESTFIELD("Tax Difference Code");
+          TESTFIELD("Tax Diff. Code",FE."Tax Difference Code");
+        END;
+
+        IF "Source No." <> '' THEN
+          DeprBonusRecover;
+
+        IF "Disposal Date" <> 0D THEN
+          IF "Disposal Mode" = "Disposal Mode"::" " THEN
+            TESTFIELD("Disposal Date",0D)
+          ELSE
+            IF "Disposal Date" < "Posting Date" THEN
+              FIELDERROR(
+                "Disposal Date",STRSUBSTNO(Text1003,"Disposal Date",FIELDCAPTION("Posting Date"),"Posting Date"));
+
+        IF "Partial Disposal" THEN
+          TESTFIELD("Disposal Mode");
+
+        TaxDiffJnlLine0 := TaxDiffJnlLine;
+        TaxDiffJnlLine0."DTA Starting Balance" := 0;
+        TaxDiffJnlLine0."DTL Starting Balance" := 0;
+        TaxDiffJnlLine0."Partial Disposal" := FALSE;
+        TaxDiffJnlLine0.GetStartingAmount;
+        IF "Partial Disposal" THEN
+          PreparePartiotionalDisposal
+        ELSE
+          IF (TaxDiffJnlLine0."DTA Starting Balance" <> "DTA Starting Balance") OR
+             (TaxDiffJnlLine0."DTL Starting Balance" <> "DTL Starting Balance")
+          THEN
+            ERROR(Text1004);
+      END;
+    END;
+
+    PROCEDURE RunWithCheck@4(VAR Rec@1000 : Record 17305);
+    BEGIN
+      TaxDiffJnlLine.COPY(Rec);
+      Code;
+      Rec := TaxDiffJnlLine;
+    END;
+
+    LOCAL PROCEDURE PreparePartiotionalDisposal@5();
+    BEGIN
+      IF TaxDiffJnlLine."Disposal Tax Amount" < 0 THEN
+        TaxDiffJnlLine."DTL Ending Balance" := -TaxDiffJnlLine."Disposal Tax Amount"
+      ELSE
+        TaxDiffJnlLine."DTA Ending Balance" := TaxDiffJnlLine."Disposal Tax Amount";
+    END;
+
+    LOCAL PROCEDURE DeprBonusRecover@1210000();
+    VAR
+      FALedgerEntry@1210002 : Record 5601;
+      TaxRegisterSetup@1210000 : Record 17236;
+    BEGIN
+      WITH TaxDiffJnlLine DO
+        IF "Depr. Bonus Recovery" THEN BEGIN
+          TaxRegisterSetup.GET;
+          TaxRegisterSetup.TESTFIELD("Tax Depreciation Book");
+          FALedgerEntry.SETCURRENTKEY(
+            "FA No.","Depreciation Book Code","FA Posting Category","FA Posting Type","FA Posting Date");
+          FALedgerEntry.SETRANGE("Depreciation Book Code",TaxRegisterSetup."Tax Depreciation Book");
+          FALedgerEntry.SETRANGE("FA No.","Source No.");
+          FALedgerEntry.SETRANGE("FA Posting Type",FALedgerEntry."FA Posting Type"::Depreciation);
+          FALedgerEntry.SETRANGE("Depr. Bonus",TRUE);
+          FALedgerEntry.CALCSUMS(Amount);
+
+          IF "Amount (Tax)" <> - FALedgerEntry.Amount THEN
+            FIELDERROR("Amount (Tax)",STRSUBSTNO(Text1005,-FALedgerEntry.Amount));
+
+          IF FALedgerEntry.FINDSET THEN
+            REPEAT
+              IF FALedgerEntry."Depr. Bonus Recovery Date" <> 0D THEN
+                ERROR(Text1006,"Source No.");
+            UNTIL FALedgerEntry.NEXT = 0;
+          FALedgerEntry.MODIFYALL("Depr. Bonus Recovery Date","Posting Date");
+        END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,373 @@
+OBJECT Report 12495 FA Inventory Card FA-6
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.01.17;
+    Time=12:00:00;
+    Version List=NAVRU10.00.00.15052;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=FA Inventory Card FA-6;
+               RUS=Инв. карточка учета объекта ОС-6];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   IF CompanyInf.GET THEN;
+                 END;
+
+    OnPreReport=BEGIN
+                  FASetup.GET;
+                  FASetup.TESTFIELD("FA-6 Template Code");
+                  ExcelReportBuilderMgr.InitTemplate(FASetup."FA-6 Template Code");
+                  ExcelReportBuilderMgr.SetSheet('Sheet1');
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     ExcelReportBuilderMgr.ExportDataToClientFile(FileName)
+                   ELSE
+                     ExcelReportBuilderMgr.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 3794;    ;DataItem;                    ;
+               DataItemTable=Table5600;
+               OnAfterGetRecord=BEGIN
+                                  FASetup.GET;
+                                  IF FASetup."FA Location Mandatory" THEN
+                                    TESTFIELD("FA Location Code");
+                                  IF FASetup."Employee No. Mandatory" THEN
+                                    TESTFIELD("Responsible Employee");
+
+                                  FactYears := LocMgt.GetPeriodDate("Initial Release Date",CreateDate,2);
+
+                                  PostedFADocLine.RESET;
+                                  PostedFADocLine.SETRANGE("Document Type",PostedFADocLine."Document Type"::Release);
+                                  PostedFADocLine.SETRANGE("FA No.","Fixed Asset"."No.");
+                                  IF PostedFADocLine.FINDFIRST THEN;
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 2285;1   ;DataItem;                    ;
+               DataItemTable=Table5612;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Depreciation Book Code",ForBook);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FAPostingGroup.GET("FA Posting Group");
+                                  "Initial Acquisition Filter" := TRUE;
+                                  CALCFIELDS("Acquisition Cost",Depreciation,"Initial Acquisition Cost","Depreciated Cost");
+
+                                  InitialAcquisitionCost := 0;
+                                  IF "Initial Acquisition Cost" = 0 THEN
+                                    InitialAcquisitionCost := "Acquisition Cost"
+                                  ELSE
+                                    InitialAcquisitionCost := "Initial Acquisition Cost";
+
+                                  FillFirstPageHeader;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExcelReportBuilderMgr.AddSection('FIRSTPAGEFOOTER');
+                              END;
+
+               DataItemLink=FA No.=FIELD(No.) }
+
+    { 8923;2   ;DataItem;InitialAcquisition  ;
+               DataItemTable=Table5601;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code,FA Posting Category,FA Posting Type,FA Posting Date,Part of Book Value,Reclassification Entry)
+                                 WHERE(FA Posting Type=FILTER(Acquisition Cost),
+                                       Initial Acquisition=CONST(Yes),
+                                       Quantity=FILTER(>0));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",'<=%1',CreateDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TempFALedgerEntry := InitialAcquisition;
+                                  TempFALedgerEntry.Description := FORMAT("FA Posting Type");
+                                  TempFALedgerEntry.INSERT;
+                                END;
+
+               DataItemLink=FA No.=FIELD(FA No.),
+                            Depreciation Book Code=FIELD(Depreciation Book Code) }
+
+    { 2467;2   ;DataItem;Transfer            ;
+               DataItemTable=Table5601;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code,FA Posting Category,FA Posting Type,FA Posting Date,Part of Book Value,Reclassification Entry)
+                                 WHERE(FA Posting Type=FILTER(Acquisition Cost),
+                                       Initial Acquisition=CONST(No),
+                                       Quantity=FILTER(>0),
+                                       Reclassification Entry=CONST(Yes));
+               PrintOnlyIfDetail=Yes;
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",'<=%1',CreateDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TempFALedgerEntry := Transfer;
+                                  TempFALedgerEntry.Description := TransferOperationTypeTxt;
+                                  TempFALedgerEntry.INSERT;
+                                END;
+
+               DataItemLink=FA No.=FIELD(FA No.),
+                            Depreciation Book Code=FIELD(Depreciation Book Code) }
+
+    { 3371;2   ;DataItem;WriteOff            ;
+               DataItemTable=Table5601;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code,FA Posting Category,FA Posting Type,FA Posting Date,Part of Book Value,Reclassification Entry)
+                                 WHERE(FA Posting Type=FILTER(Acquisition Cost),
+                                       FA Posting Category=FILTER(Disposal));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Posting Date",'<=%1',CreateDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TempFALedgerEntry := WriteOff;
+                                  TempFALedgerEntry.Description := FORMAT("FA Posting Category");
+                                  TempFALedgerEntry.INSERT;
+                                END;
+
+               DataItemLink=FA No.=FIELD(FA No.),
+                            Depreciation Book Code=FIELD(Depreciation Book Code) }
+
+    { 1210000;2;DataItem;Integer 1           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               TempFALedgerEntry.RESET;
+                               SETRANGE(Number,1,TempFALedgerEntry.COUNT);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  FADepreciationBook@1210000 : Record 5612;
+                                BEGIN
+                                  IF Number = 1 THEN
+                                    TempFALedgerEntry.FINDSET
+                                  ELSE
+                                    TempFALedgerEntry.NEXT;
+                                  FADepreciationBook.GET(TempFALedgerEntry."FA No.",TempFALedgerEntry."Depreciation Book Code");
+                                  FADepreciationBook.SETFILTER("FA Posting Date Filter",'<=%1',TempFALedgerEntry."Posting Date");
+                                  FADepreciationBook.CALCFIELDS("Acquisition Cost",Depreciation);
+                                  FillFirstPageBody(
+                                    TempFALedgerEntry."Document No." + ', ' + FORMAT(TempFALedgerEntry."Posting Date"),
+                                    TempFALedgerEntry.Description,TempFALedgerEntry."FA Location Code",
+                                    FADepreciationBook."Acquisition Cost" + FADepreciationBook.Depreciation,TempFALedgerEntry."Employee No.");
+                                END;
+
+               OnPostDataItem=BEGIN
+                                TempFALedgerEntry.DELETEALL;
+                              END;
+                               }
+
+    { 3642;1   ;DataItem;FA Depreciation Book 2;
+               DataItemTable=Table5612;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code);
+               OnPreDataItem=BEGIN
+                               CurrReport.NEWPAGE;
+                               SETRANGE("Depreciation Book Code",ForBook);
+
+                               ExcelReportBuilderMgr.SetSheet('Sheet2');
+                               ExcelReportBuilderMgr.AddSection('LASTPAGEHEADER');
+                             END;
+
+               DataItemLink=FA No.=FIELD(No.) }
+
+    { 1867;2   ;DataItem;FA Ledger Entry 2   ;
+               DataItemTable=Table5601;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code,FA Posting Category,FA Posting Type,FA Posting Date,Part of Book Value,Reclassification Entry)
+                                 WHERE(FA Posting Type=FILTER(Acquisition Cost),
+                                       Initial Acquisition=CONST(No),
+                                       Quantity=FILTER(>0));
+               OnAfterGetRecord=BEGIN
+                                  FALedgerEntry.RESET;
+                                  FALedgerEntry.SETRANGE("FA No.","FA No.");
+                                  FALedgerEntry.SETRANGE("Depreciation Book Code","Depreciation Book Code");
+                                  FALedgerEntry.SETRANGE("FA Posting Type",FALedgerEntry."FA Posting Type"::"Acquisition Cost");
+                                  FALedgerEntry.SETRANGE("Initial Acquisition",FALSE);
+                                  FALedgerEntry.SETFILTER(Quantity,'<%1',0);
+                                  IF FALedgerEntry.FINDFIRST THEN
+                                    CurrReport.SKIP;
+
+                                  ExcelReportBuilderMgr.AddSection('LASTPAGEBODY');
+                                  ExcelReportBuilderMgr.AddDataToSection('a1_1',FORMAT("FA Posting Type"));
+                                  ExcelReportBuilderMgr.AddDataToSection('a1_2',Description);
+                                  ExcelReportBuilderMgr.AddDataToSection('a1_3',FORMAT("Posting Date"));
+                                  ExcelReportBuilderMgr.AddDataToSection('a1_4',"Document No.");
+                                  ExcelReportBuilderMgr.AddDataToSection('a1_5',StdRepMgt.FormatReportValue(ABS(Amount),2));
+                                END;
+
+               DataItemLink=FA No.=FIELD(FA No.),
+                            Depreciation Book Code=FIELD(Depreciation Book Code) }
+
+    { 1992;1   ;DataItem;Integer 2           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnAfterGetRecord=BEGIN
+                                  ExcelReportBuilderMgr.AddSection('LASTPAGEHEADER7');
+                                END;
+                                 }
+
+    { 9342;1   ;DataItem;                    ;
+               DataItemTable=Table5640;
+               DataItemTableView=SORTING(Main Asset No.,FA No.);
+               OnAfterGetRecord=BEGIN
+                                  ExcelReportBuilderMgr.AddSection('LASTPAGEBODY7');
+                                  ExcelReportBuilderMgr.AddDataToSection('p1_1',Description);
+                                  ExcelReportBuilderMgr.AddDataToSection('p1_2',FORMAT(Quantity));
+                                END;
+
+               DataItemLink=Main Asset No.=FIELD(No.) }
+
+    { 8951;1   ;DataItem;                    ;
+               DataItemTable=Table12474;
+               DataItemTableView=SORTING(Item Type,No.,Precious Metals Code)
+                                 WHERE(Item Type=CONST(FA));
+               OnAfterGetRecord=BEGIN
+                                  ExcelReportBuilderMgr.AddSection('LASTPAGEBODY7');
+                                  ExcelReportBuilderMgr.AddDataToSection('z1_3',Name);
+                                  ExcelReportBuilderMgr.AddDataToSection('z1_4',"Nomenclature No.");
+                                  ExcelReportBuilderMgr.AddDataToSection('z1_5',"Unit of Measure Code");
+                                  ExcelReportBuilderMgr.AddDataToSection('z1_6',FORMAT(Quantity));
+                                  ExcelReportBuilderMgr.AddDataToSection('z1_7',FORMAT(Mass));
+                                END;
+
+               DataItemLink=No.=FIELD(No.) }
+
+    { 5444;1   ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnAfterGetRecord=BEGIN
+                                  ExcelReportBuilderMgr.AddSection('LASTPAGEFOOTER');
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   CreateDate := WORKDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Document Date;
+                             RUS=Дата документа];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=CreateDate }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Depreciation Book;
+                             RUS=Книга амортизации];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=ForBook;
+                  TableRelation="Depreciation Book" }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInf@1210005 : Record 79;
+      FASetup@1210003 : Record 5603;
+      FAPostingGroup@1210008 : Record 5606;
+      FALedgerEntry@1210010 : Record 5601;
+      PostedFADocLine@1210000 : Record 12472;
+      TempFALedgerEntry@1210009 : TEMPORARY Record 5601;
+      LocMgt@1210040 : Codeunit 12400;
+      StdRepMgt@1210007 : Codeunit 12401;
+      ExcelReportBuilderMgr@1210006 : Codeunit 14930;
+      CreateDate@1210014 : Date;
+      ForBook@1210002 : Code[10];
+      FactYears@1210011 : Text[30];
+      FileName@1210004 : Text;
+      InitialAcquisitionCost@1210012 : Decimal;
+      TransferOperationTypeTxt@1210001 : TextConst 'ENU=Transfer;RUS=Перемещение';
+
+    PROCEDURE SetFileNameSilent@1210007(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    PROCEDURE InitializeRequest@1210002(NewCreateDate@1210000 : Date;NewForBook@1210001 : Code[10]);
+    BEGIN
+      CreateDate := NewCreateDate;
+      ForBook := NewForBook;
+    END;
+
+    LOCAL PROCEDURE FillFirstPageHeader@1210001();
+    VAR
+      FALocation@1210000 : Record 5609;
+    BEGIN
+      ExcelReportBuilderMgr.AddSection('FIRSTPAGEHEADER');
+      ExcelReportBuilderMgr.AddDataToSection('CompanyName',StdRepMgt.GetCompanyName);
+      ExcelReportBuilderMgr.AddDataToSection('DocumentNum',"Fixed Asset"."No.");
+      ExcelReportBuilderMgr.AddDataToSection('DocumentDate',FORMAT(CreateDate));
+      ExcelReportBuilderMgr.AddDataToSection('AssetName',"Fixed Asset".Description + "Fixed Asset"."Description 2");
+      ExcelReportBuilderMgr.AddDataToSection('OKPO',CompanyInf."OKPO Code");
+      ExcelReportBuilderMgr.AddDataToSection('OKOF',"Fixed Asset"."Depreciation Code");
+      ExcelReportBuilderMgr.AddDataToSection('DeprGroupName',"Fixed Asset"."Depreciation Group");
+      ExcelReportBuilderMgr.AddDataToSection('PassportNum',"Fixed Asset"."Passport No.");
+      ExcelReportBuilderMgr.AddDataToSection('FactoryNumber',"Fixed Asset"."Factory No.");
+      ExcelReportBuilderMgr.AddDataToSection('InventoryNumber',"Fixed Asset"."Inventory Number");
+      ExcelReportBuilderMgr.AddDataToSection('AcquisitionDate',FORMAT("Fixed Asset"."Initial Release Date"));
+      ExcelReportBuilderMgr.AddDataToSection('DisposalDate',FORMAT("Fixed Asset"."Vehicle Writeoff Date"));
+      ExcelReportBuilderMgr.AddDataToSection('Account',FAPostingGroup."Acquisition Cost Account");
+      IF FALocation.GET("Fixed Asset"."FA Location Code") THEN BEGIN
+        ExcelReportBuilderMgr.AddDataToSection('AssetLocation',FALocation.Name);
+        ExcelReportBuilderMgr.AddDataToSection('DepartmentName',FALocation.Name);
+      END;
+      ExcelReportBuilderMgr.AddDataToSection('AssetMade',"Fixed Asset".Manufacturer);
+      IF "Fixed Asset"."Accrued Depr. Amount" <> 0 THEN BEGIN
+        ExcelReportBuilderMgr.AddDataToSection('d1_1',FORMAT("Fixed Asset"."Manufacturing Year"));
+        ExcelReportBuilderMgr.AddDataToSection('d1_3',FORMAT(PostedFADocLine."Document Type"));
+        ExcelReportBuilderMgr.AddDataToSection('d1_4',PostedFADocLine."Document No.");
+        ExcelReportBuilderMgr.AddDataToSection('d1_5',FORMAT(PostedFADocLine."Posting Date"));
+        ExcelReportBuilderMgr.AddDataToSection('d1_6',FactYears);
+        ExcelReportBuilderMgr.AddDataToSection('d1_7',StdRepMgt.FormatReportValue(ABS("FA Depreciation Book".Depreciation),2));
+        ExcelReportBuilderMgr.AddDataToSection('d1_8',StdRepMgt.FormatReportValue(ABS("FA Depreciation Book"."Depreciated Cost"),2));
+      END;
+      ExcelReportBuilderMgr.AddDataToSection('d1_9',StdRepMgt.FormatReportValue(InitialAcquisitionCost,2));
+      ExcelReportBuilderMgr.AddDataToSection('d1_10',FORMAT("FA Depreciation Book"."No. of Depreciation Years"));
+    END;
+
+    LOCAL PROCEDURE FillFirstPageBody@1210000(DocumentNoDate@1210000 : Text;OperationType@1210001 : Text;FALocation@1210002 : Text;BookValue@1210003 : Decimal;ResponsiblePerson@1210004 : Code[20]);
+    BEGIN
+      ExcelReportBuilderMgr.AddSection('FIRSTPAGEBODY');
+      ExcelReportBuilderMgr.AddDataToSection('b1_1',DocumentNoDate);
+      ExcelReportBuilderMgr.AddDataToSection('b1_2',OperationType);
+      ExcelReportBuilderMgr.AddDataToSection('b1_3',FALocation);
+      ExcelReportBuilderMgr.AddDataToSection('b1_4',StdRepMgt.FormatReportValue(BookValue,2));
+      ExcelReportBuilderMgr.AddDataToSection('b1_5',StdRepMgt.GetEmpName(ResponsiblePerson));
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

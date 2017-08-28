@@ -1,0 +1,298 @@
+OBJECT Report 12403 Cash Ingoing Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Cash Ingoing Order;
+               RUS=Приходный кассовый ордер];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CashOrderReportHelper.InitIngoingReportTmpl;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     CashOrderReportHelper.ExportDataFile(FileName)
+                   ELSE
+                     CashOrderReportHelper.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7024;    ;DataItem;                    ;
+               DataItemTable=Table81;
+               DataItemTableView=SORTING(Journal Template Name,Journal Batch Name,Line No.);
+               OnAfterGetRecord=BEGIN
+                                  CurrencyText := EmptyCurrencyTxt;
+
+                                  CompanyInfo.GET;
+
+                                  TESTFIELD("Bal. Account Type","Bal. Account Type"::"Bank Account");
+                                  TESTFIELD("Bal. Account No.");
+                                  TESTFIELD("Bank Payment Type");
+
+                                  GenJnlBatch.GET("Journal Template Name","Journal Batch Name");
+                                  GenJnlBatch.TESTFIELD("No. Series",'');
+                                  GenJnlBatch.TESTFIELD("Posting No. Series",'');
+
+                                  BankAcc.GET("Bal. Account No.");
+                                  BankAcc.TESTFIELD("Account Type",BankAcc."Account Type"::"Cash Account");
+                                  IF BankAcc."Currency Code" <> '' THEN
+                                    TESTFIELD("Currency Code",BankAcc."Currency Code");
+
+                                  CashierFullName := BankAcc.Contact;
+
+                                  WrittenAmount := LocMgt.Amount2Text("Currency Code","Credit Amount");
+
+                                  IF "Gen. Journal Line"."Currency Code" <> '' THEN BEGIN
+                                    Currency.GET("Gen. Journal Line"."Currency Code");
+                                    CurrencyText := Currency.Description;
+                                    WrittenAmountNumber := FORMAT("Credit Amount" DIV 1) + ' ' + COPYSTR(Currency."Unit Name 1",1,4) + '. ' +
+                                      FormatAmount("Credit Amount" MOD 1 * 100) + ' ' + COPYSTR(Currency."Hundred Name 1",1,4) + '.';
+                                  END ELSE
+                                    WrittenAmountNumber :=
+                                      STRSUBSTNO(CurrencyTxt,FORMAT("Credit Amount" DIV 1),FormatAmount("Credit Amount" MOD 1 * 100));
+
+                                  IF "Credit Amount" < 0 THEN
+                                    WrittenAmount := MinusTxt + WrittenAmount;
+
+                                  IF NOT "Check Printed" THEN
+                                    IF NOT PrintTest THEN BEGIN
+                                      IF (("Account Type" = "Account Type"::"Bank Account") OR
+                                          ("Bal. Account Type" = "Bal. Account Type"::"Bank Account")) AND
+                                         ((Amount < 0) OR (BankAcc."Account Type" = BankAcc."Account Type"::"Cash Account"))
+                                      THEN
+                                        TESTFIELD("Bank Payment Type");
+                                      IF "Bank Payment Type" = "Bank Payment Type"::"Manual Check" THEN BEGIN
+                                        TESTFIELD("Document No.");
+                                        IF "Posting No. Series" <> '' THEN
+                                          IF NOT CONFIRM(PrintQst,
+                                               FALSE,FIELDCAPTION("Posting No. Series"),FIELDCAPTION("Document No."))
+                                          THEN
+                                            CurrReport.QUIT;
+                                        "External Document No." := "Document No.";
+                                        MODIFY;
+                                      END ELSE BEGIN
+                                        IF "Posting No. Series" <> '' THEN
+                                          FIELDERROR("Posting No. Series",
+                                            STRSUBSTNO(CannotBeUsedErr,
+                                              FIELDCAPTION("Bank Payment Type"),"Bank Payment Type"));
+
+                                        BankAcc.TESTFIELD("Debit Cash Order No. Series");
+                                        IF "Document No." = '' THEN
+                                          "Document No." := NoSeriesMgt.GetNextNo(BankAcc."Debit Cash Order No. Series",0D,TRUE)
+                                        ELSE BEGIN
+                                          LastNo := NoSeriesMgt.GetNextNo(BankAcc."Debit Cash Order No. Series",0D,FALSE);
+                                          CLEAR(NoSeriesMgt);
+                                          IF (DELCHR("Document No.",'<>','0123456789') <> DELCHR(LastNo,'<>','0123456789')) OR
+                                             ("Document No." > LastNo)
+                                          THEN
+                                            ERROR(WrongDocumentNoErr,"Document No.",LastNo);
+                                          IF "Document No." = LastNo THEN
+                                            NoSeriesMgt.GetNextNo(BankAcc."Debit Cash Order No. Series",0D,TRUE);
+                                        END;
+                                        TESTFIELD("Document No.");
+
+                                        "Check Printed" := TRUE;
+                                        IF "External Document No." = '' THEN
+                                          "External Document No." := "Document No.";
+
+                                        CheckLedgEntry.INIT;
+                                        CheckLedgEntry."Bank Account No." := "Bal. Account No.";
+                                        CheckLedgEntry."Posting Date" := "Posting Date";
+                                        CheckLedgEntry."Check Date" := "Posting Date";
+                                        CheckLedgEntry."Document Type" := "Document Type";
+                                        CheckLedgEntry."Document No." := "Document No.";
+                                        CheckLedgEntry.Description := Description;
+                                        CheckLedgEntry."Check No." := "Document No.";
+                                        CheckLedgEntry."Payment Purpose" := "Payment Purpose";
+                                        CheckLedgEntry."Cash Order Including" := "Cash Order Including";
+                                        CheckLedgEntry."Cash Order Supplement" := "Cash Order Supplement";
+                                        CheckLedgEntry.Amount := "Credit Amount";
+                                        CheckLedgEntry."Debit Amount" := "Credit Amount";
+                                        CheckLedgEntry.Positive := TRUE;
+                                        CheckLedgEntry."Bal. Account Type" := "Account Type";
+                                        CheckLedgEntry."Bal. Account No." := "Account No.";
+                                        CheckLedgEntry."External Document No." := "External Document No.";
+                                        CheckLedgEntry."Entry Status" := CheckLedgEntry."Entry Status"::Printed;
+                                        CheckLedgEntry."Bank Payment Type" := "Bank Payment Type";
+                                        CheckManagement.InsertCheck(CheckLedgEntry,RECORDID);
+                                        MODIFY;
+                                      END;
+                                    END;
+
+                                  BankAccPostingGr.GET(BankAcc."Bank Acc. Posting Group");
+                                  DebitAccNo := BankAccPostingGr."G/L Bank Account No.";
+
+                                  CASE "Account Type" OF
+                                    "Account Type"::Customer:
+                                      BEGIN
+                                        CustPostingGr.GET("Posting Group");
+                                        BalAccNo := CustPostingGr."Receivables Account";
+                                        IF Prepayment THEN
+                                          BalAccNo := CustPostingGr."Prepayment Account";
+                                      END;
+                                    "Account Type"::Vendor:
+                                      BEGIN
+                                        VendPostingGr.GET("Posting Group");
+                                        BalAccNo := VendPostingGr."Payables Account";
+                                        IF Prepayment THEN
+                                          BalAccNo := VendPostingGr."Prepayment Account";
+                                      END;
+                                    "Account Type"::"Bank Account":
+                                      BEGIN
+                                        BankAcc2.GET("Account No.");
+                                        BankAccPostingGr.GET(BankAcc2."Bank Acc. Posting Group");
+                                        BalAccNo := BankAccPostingGr."G/L Bank Account No.";
+                                      END;
+                                    "Account Type"::"G/L Account":
+                                      BalAccNo := "Account No.";
+                                  END;
+
+                                  PaymentCheckNo :=
+                                    LocMgt.DigitalPartCode("Document No.");
+
+                                  IF PaymentCheckNo = '' THEN
+                                    PaymentCheckNo := PADSTR('',MAXSTRLEN(PaymentCheckNo),' ');
+
+                                  FillBody("Gen. Journal Line");
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Test Print;
+                             RUS=Тестовая печать];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PrintTest }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      PrintQst@1210001 : TextConst 'ENU=If %1 is not empty then it will be changed during posting\\Do you want to continue printing?;RUS=Если значение %1 не пустое, оно будет изменено во время учета.\\Продолжить печать?';
+      CannotBeUsedErr@1210002 : TextConst '@@@=Parameter 1 - field caption, parameter 2 - bank payment type;ENU=Cannot be used if %1 %2.;RUS=Не может быть использовано, если %1 %2.';
+      CompanyInfo@1210005 : Record 79;
+      BankAcc@1210006 : Record 270;
+      CheckLedgEntry@1210007 : Record 272;
+      CustPostingGr@1210008 : Record 92;
+      VendPostingGr@1210009 : Record 93;
+      BankAccPostingGr@1210010 : Record 277;
+      GenJnlBatch@1210004 : Record 232;
+      BankAcc2@1210003 : Record 270;
+      Currency@1210000 : Record 4;
+      CheckManagement@1210011 : Codeunit 367;
+      LocMgt@1210012 : Codeunit 12400;
+      NoSeriesMgt@1210022 : Codeunit 396;
+      LocRepMgt@1210021 : Codeunit 12401;
+      CashOrderReportHelper@1210013 : Codeunit 14936;
+      FileName@1210024 : Text;
+      WrittenAmount@1210014 : Text[250];
+      BalAccNo@1210015 : Code[20];
+      DebitAccNo@1210016 : Code[20];
+      LastNo@1210017 : Code[20];
+      PrintTest@1210018 : Boolean;
+      PaymentCheckNo@1210019 : Text[20];
+      CashierFullName@1210020 : Text[50];
+      WrongDocumentNoErr@1210023 : TextConst 'ENU=The number of the document %1 does not match the input mask %2 or greater than the last number.;RUS=Номер документа %1 не соответствует входной маске %2 или превышает последний номер.';
+      CurrencyTxt@1210025 : TextConst 'ENU=%1 Rub., %2 kop.;RUS=%1 руб., %2 коп.';
+      WrittenAmountNumber@1210026 : Text[250];
+      CurrencyText@1210028 : Text[30];
+      EmptyCurrencyTxt@1210029 : TextConst 'ENU=Rub., kop.;RUS=Руб., коп.';
+      MinusTxt@1470000 : TextConst 'ENU="(minus) ";RUS="(минус) "';
+
+    PROCEDURE FormatAmount@1(Amount@1210000 : Decimal) : Text[30];
+    BEGIN
+      IF Amount = 0 THEN
+        EXIT('00');
+      IF Amount < 10 THEN
+        EXIT('0' + FORMAT(FORMAT(Amount)));
+      EXIT(FORMAT(Amount));
+    END;
+
+    PROCEDURE TransferReportValues@1210006(VAR ReportValues@1210004 : ARRAY [13] OF Text;GenGnlLine@1210000 : Record 81);
+    BEGIN
+      ReportValues[1] := LocRepMgt.GetCompanyName;
+      ReportValues[2] := CompanyInfo."OKPO Code";
+      ReportValues[3] := PaymentCheckNo;
+      ReportValues[4] := LocMgt.FormatDate(GenGnlLine."Posting Date");
+      ReportValues[5] := CurrencyText;
+      ReportValues[6] := DebitAccNo;
+      ReportValues[7] := '-';
+      ReportValues[8] := BalAccNo;
+      ReportValues[9] := LocRepMgt.FormatReportValue(GenGnlLine."Credit Amount",2);
+      ReportValues[10] := GenGnlLine."Reason Code";
+      ReportValues[11] := GenGnlLine.Description;
+      ReportValues[12] := GenGnlLine."Payment Purpose";
+      ReportValues[13] := WrittenAmount;
+      ReportValues[14] := GenGnlLine."Cash Order Including";
+      ReportValues[15] := GenGnlLine."Cash Order Supplement";
+      ReportValues[16] := CompanyInfo."Accountant Name";
+      ReportValues[17] := CashierFullName;
+    END;
+
+    PROCEDURE TransferReceiptValues@1210004(VAR ReceiptValues@1210001 : ARRAY [14] OF Text;GenGnlLine@1210000 : Record 81);
+    BEGIN
+      ReceiptValues[1] := LocRepMgt.GetCompanyName;
+      ReceiptValues[2] := PaymentCheckNo;
+      ReceiptValues[3] := LocMgt.Date2Text(GenGnlLine."Posting Date");
+      ReceiptValues[4] := GenGnlLine.Description;
+      ReceiptValues[5] := COPYSTR(GenGnlLine."Payment Purpose",1,40);
+      ReceiptValues[6] := COPYSTR(GenGnlLine."Payment Purpose",41,50);
+      ReceiptValues[7] := COPYSTR(GenGnlLine."Payment Purpose",91);
+      ReceiptValues[8] := WrittenAmountNumber;
+      ReceiptValues[9] := COPYSTR(WrittenAmount,1,50);
+      ReceiptValues[10] := COPYSTR(WrittenAmount,51,50);
+      ReceiptValues[11] := COPYSTR(WrittenAmount,101);
+      ReceiptValues[12] := GenGnlLine."Cash Order Including";
+      ReceiptValues[13] := CompanyInfo."Accountant Name";
+      ReceiptValues[14] := CashierFullName;
+    END;
+
+    LOCAL PROCEDURE FillBody@1210003(GenGnlLine@1210000 : Record 81);
+    VAR
+      ReportValues@1210001 : ARRAY [17] OF Text;
+      ReceiptValues@1210002 : ARRAY [14] OF Text;
+    BEGIN
+      TransferReportValues(ReportValues,GenGnlLine);
+      TransferReceiptValues(ReceiptValues,GenGnlLine);
+      CashOrderReportHelper.FillBodyIngoing(ReportValues,ReceiptValues);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210000(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

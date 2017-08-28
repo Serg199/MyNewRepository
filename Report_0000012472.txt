@@ -1,0 +1,364 @@
+OBJECT Report 12472 Sales Shipment M-15
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Sales Shipment M-15;
+               RUS=Накладная на отпуск материалов на сторону М-15];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  SalesShipmentM15Helper.InitM15Report;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     SalesShipmentM15Helper.ExportDataFile(FileName)
+                   ELSE
+                     SalesShipmentM15Helper.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7745;    ;DataItem;Header              ;
+               DataItemTable=Table36;
+               DataItemTableView=SORTING(Document Type,No.);
+               OnAfterGetRecord=BEGIN
+                                  TESTFIELD(Status);
+                                  CompanyInfo.GET;
+
+                                  SalesLine1.RESET;
+                                  SalesLine1.SETRANGE("Document Type","Document Type");
+                                  SalesLine1.SETRANGE("Document No.","No.");
+                                  SalesLine1.SETFILTER(Type,'<>%1',SalesLine1.Type::" ");
+
+                                  LineCount := SalesLine1.COUNT;
+
+                                  CheckSignature(PassedBy,PassedBy."Employee Type"::PassedBy);
+                                  CheckSignature(ApprovedBy,PassedBy."Employee Type"::Responsible);
+                                  CheckSignature(ReleasedBy,ReleasedBy."Employee Type"::ReleasedBy);
+                                  CheckSignature(ReceivedBy,ReceivedBy."Employee Type"::ReceivedBy);
+
+                                  IF NOT Preview THEN BEGIN
+                                    IF ArchiveDocument THEN
+                                      ArchiveManagement.StoreSalesDocument(Header,LogInteraction);
+
+                                    IF LogInteraction THEN BEGIN
+                                      CALCFIELDS("No. of Archived Versions");
+                                      IF "Bill-to Contact No." <> '' THEN
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Contact,"Bill-to Contact No."
+                                          ,"Salesperson Code","Campaign No.","Posting Description","Opportunity No.")
+                                      ELSE
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Customer,"Bill-to Customer No.",
+                                          "Salesperson Code","Campaign No.","Posting Description","Opportunity No.");
+                                    END;
+                                  END;
+                                END;
+
+               ReqFilterFields=Document Type,No. }
+
+    { 7804;1   ;DataItem;CopyCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               IF NOT SalesLine1.FIND('-') THEN
+                                 CurrReport.BREAK;
+
+                               IF Header."Document Type" = Header."Document Type"::"Return Order" THEN
+                                 AssignPostingNo(Header."Return Receipt No.",Header."Return Receipt No. Series")
+                               ELSE
+                                 AssignPostingNo(Header."Shipping No.",Header."Shipping No. Series");
+
+                               IF Header."Document Type" = Header."Document Type"::"Return Order" THEN
+                                 Header."Shipping No." := Header."Return Receipt No.";
+
+                               IF NOT CurrReport.USEREQUESTPAGE THEN
+                                 CopiesNumber := 1;
+                               SETRANGE(Number,1,CopiesNumber);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CLEAR(TotalAmount);
+                                  CurrReport.PAGENO := 1;
+
+                                  FillReportHeader;
+                                  FillPageHeader;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT Preview THEN
+                                  CODEUNIT.RUN(CODEUNIT::"Sales-Printed",Header);
+                              END;
+                               }
+
+    { 5739;2   ;DataItem;LineCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               Currency.InitRoundingPrecision;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT SalesLine1.FIND('-') THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF SalesLine1.NEXT(1) = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  COPYARRAY(LastTotalAmount,TotalAmount,1);
+
+                                  IF SalesLine1."Qty. to Invoice" = 0 THEN
+                                    CurrReport.SKIP;
+                                  SalesLine1.Amount := SalesLine1."Amount (LCY)";
+                                  SalesLine1."Amount Including VAT" := SalesLine1."Amount Including VAT (LCY)";
+                                  SalesLine1."Unit Price" :=
+                                    ROUND(SalesLine1.Amount / SalesLine1."Qty. to Invoice",Currency."Unit-Amount Rounding Precision");
+                                  IncrAmount(SalesLine1);
+                                  IF StdRepMgt.VATExemptLine(SalesLine1."VAT Bus. Posting Group",SalesLine1."VAT Prod. Posting Group") THEN
+                                    StdRepMgt.FormatVATExemptLine(LineVATText[1],LineVATText[2])
+                                  ELSE
+                                    LineVATText[2] :=
+                                      StdRepMgt.FormatReportValue(SalesLine1."Amount Including VAT" - SalesLine1.Amount,2);
+
+                                  InvPostingSetup.RESET;
+                                  InvPostingSetup.SETRANGE("Location Code",SalesLine1."Location Code");
+                                  InvPostingSetup.SETRANGE("Invt. Posting Group Code",SalesLine1."Posting Group");
+                                  IF InvPostingSetup.FINDFIRST THEN
+                                    BalAccNo := InvPostingSetup."Inventory Account"
+                                  ELSE
+                                    BalAccNo := '';
+
+                                  FillBody;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                FillReportFooter;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   IF CopiesNumber < 1 THEN
+                     CopiesNumber := 1;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1470004;2;Field     ;
+                  CaptionML=[ENU=No. of Copies;
+                             RUS=Число копий];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CopiesNumber;
+                  OnValidate=BEGIN
+                               IF CopiesNumber < 1 THEN
+                                 CopiesNumber := 1;
+                             END;
+                              }
+
+      { 4   ;2   ;Field     ;
+                  CaptionML=[ENU=Operation Type;
+                             RUS=Тип операции];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=OperationType }
+
+      { 2   ;2   ;Field     ;
+                  CaptionML=[ENU=Reason;
+                             RUS=Основание];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Reason;
+                  MultiLine=Yes }
+
+      { 1470000;2;Field     ;
+                  CaptionML=[ENU=Save in Archive;
+                             RUS=Сохранить в архиве];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ArchiveDocument }
+
+      { 1470002;2;Field     ;
+                  CaptionML=[ENU=Log Interaction;
+                             RUS=Регистрировать взаимодействие];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=LogInteraction }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Preview }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210000 : Record 79;
+      InvPostingSetup@1210012 : Record 5813;
+      SalesLine1@1470009 : Record 37;
+      PassedBy@1470003 : Record 12420;
+      ApprovedBy@1470002 : Record 12420;
+      ReleasedBy@1470001 : Record 12420;
+      ReceivedBy@1470000 : Record 12420;
+      Currency@1210001 : Record 4;
+      NoSeriesMgt@1210005 : Codeunit 396;
+      LocMgt@1210015 : Codeunit 12400;
+      StdRepMgt@1210004 : Codeunit 12401;
+      DocSignMgt@1470004 : Codeunit 12420;
+      ArchiveManagement@1470005 : Codeunit 5063;
+      SegManagement@1470006 : Codeunit 5051;
+      SalesShipmentM15Helper@1210013 : Codeunit 14944;
+      BalAccNo@1210006 : Code[20];
+      OperationType@1210008 : Text[30];
+      Reason@1210009 : Text[250];
+      FileName@1210003 : Text;
+      LineCount@1210002 : Integer;
+      ArchiveDocument@1470007 : Boolean;
+      LogInteraction@1470008 : Boolean;
+      Preview@1210007 : Boolean;
+      CopiesNumber@1470012 : Integer;
+      TotalAmount@1470015 : ARRAY [8] OF Decimal;
+      LastTotalAmount@1470014 : ARRAY [8] OF Decimal;
+      LineVATText@1210014 : ARRAY [2] OF Text[50];
+
+    PROCEDURE CheckSignature@1470002(VAR DocSign@1470000 : Record 12420;EmpType@1470001 : Integer);
+    BEGIN
+      DocSignMgt.GetDocSign(
+        DocSign,DATABASE::"Sales Header",
+        Header."Document Type",Header."No.",EmpType,TRUE);
+    END;
+
+    PROCEDURE IncrAmount@1210008(SalesLine2@1210000 : Record 37);
+    BEGIN
+      WITH SalesLine2 DO BEGIN
+        TotalAmount[1] := TotalAmount[1] + Amount;
+        TotalAmount[2] := TotalAmount[2] + "Amount Including VAT" - Amount;
+        TotalAmount[3] := TotalAmount[3] + "Amount Including VAT";
+        TotalAmount[4] := TotalAmount[4] + "Qty. to Invoice";
+      END;
+    END;
+
+    LOCAL PROCEDURE AssignPostingNo@1210001(VAR PostingNo@1210000 : Code[20];SeriesNoCode@1210001 : Code[10]);
+    BEGIN
+      IF PostingNo = '' THEN BEGIN
+        CLEAR(NoSeriesMgt);
+        PostingNo := NoSeriesMgt.GetNextNo(
+            SeriesNoCode,Header."Posting Date",NOT Preview);
+        IF NOT Preview THEN
+          Header.MODIFY;
+      END;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210007(NewFileName@1210001 : Text;NewPreview@1210000 : Boolean);
+    BEGIN
+      FileName := NewFileName;
+      Preview := NewPreview;
+    END;
+
+    LOCAL PROCEDURE FillReportHeader@1210003();
+    VAR
+      ReportHeaderArr@1210000 : ARRAY [15] OF Text;
+    BEGIN
+      WITH Header DO BEGIN
+        ReportHeaderArr[1] := "Shipping No.";
+        ReportHeaderArr[2] := StdRepMgt.GetCompanyName;
+        ReportHeaderArr[3] := CompanyInfo."OKPO Code";
+        ReportHeaderArr[4] := FORMAT("Shipment Date");
+        ReportHeaderArr[5] := OperationType;
+        ReportHeaderArr[6] := "Location Code";
+        ReportHeaderArr[8] := "Sell-to Customer No.";
+        ReportHeaderArr[13] := Reason;
+        ReportHeaderArr[14] := "Ship-to Name";
+        ReportHeaderArr[15] := PassedBy."Employee Name";
+      END;
+
+      SalesShipmentM15Helper.FillM15ReportHeader(ReportHeaderArr);
+    END;
+
+    LOCAL PROCEDURE FillPageHeader@1210000();
+    BEGIN
+      SalesShipmentM15Helper.FillM15PageHeader;
+    END;
+
+    LOCAL PROCEDURE FillBody@1210010();
+    VAR
+      ReportBodyArr@1210000 : ARRAY [15] OF Text;
+    BEGIN
+      WITH SalesLine1 DO BEGIN
+        ReportBodyArr[1] := BalAccNo;
+        ReportBodyArr[3] := Description;
+        ReportBodyArr[4] := "No.";
+        ReportBodyArr[5] := "Unit of Measure Code";
+        ReportBodyArr[6] := "Unit of Measure";
+        ReportBodyArr[7] := FORMAT("Qty. to Invoice");
+        ReportBodyArr[9] := FormatAmount("Unit Price");
+        ReportBodyArr[10] := FormatAmount(Amount);
+        ReportBodyArr[11] := LineVATText[2];
+        ReportBodyArr[12] := FormatAmount("Amount Including VAT");
+      END;
+
+      SalesShipmentM15Helper.FillM15Body(ReportBodyArr);
+    END;
+
+    LOCAL PROCEDURE FillReportFooter@1210031();
+    VAR
+      ReportFooterArr@1210000 : ARRAY [12] OF Text;
+      TotalIntAmount@1210001 : Decimal;
+    BEGIN
+      ReportFooterArr[1] := LocMgt.Integer2Text(LineCount,2,'','','');
+      TotalIntAmount := ROUND(TotalAmount[3],1,'<');
+      ReportFooterArr[2] := LocMgt.Integer2Text(TotalIntAmount,0,'','','');
+      ReportFooterArr[3] := LocMgt.Integer2Text((TotalAmount[3] - TotalIntAmount) * 100,0,'','','');
+      TotalIntAmount := ROUND(TotalAmount[2],1,'<');
+      ReportFooterArr[4] := LocMgt.Integer2Text(TotalIntAmount,0,'','','');
+      ReportFooterArr[5] := LocMgt.Integer2Text((TotalAmount[2] - TotalIntAmount) * 100,0,'','','');
+
+      ReportFooterArr[6] := ApprovedBy."Employee Job Title";
+      ReportFooterArr[7] := ApprovedBy."Employee Name";
+      ReportFooterArr[8] := StdRepMgt.GetAccountantName(FALSE,36,Header."Document Type",Header."No.");
+      ReportFooterArr[9] := ReleasedBy."Employee Job Title";
+      ReportFooterArr[10] := ReleasedBy."Employee Name";
+      ReportFooterArr[11] := ReceivedBy."Employee Job Title";
+      ReportFooterArr[12] := ReceivedBy."Employee Name";
+
+      SalesShipmentM15Helper.FillM15ReportFooter(ReportFooterArr);
+    END;
+
+    LOCAL PROCEDURE FormatAmount@1210024(Amount@1210000 : Decimal) : Text;
+    BEGIN
+      EXIT(StdRepMgt.FormatReportValue(Amount,2));
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

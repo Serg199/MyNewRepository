@@ -1,0 +1,1034 @@
+OBJECT Report 14963 Create VAT Sales Led. Ad. Sh.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create VAT Sales Led. Ad. Sh.;
+               RUS=Создание доп. листа книги НДС продаж];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CompanyInfo.GET;
+                  IF StartPageNo > 0 THEN
+                    StartPageNo := StartPageNo - 1
+                  ELSE
+                    StartPageNo := 0;
+                END;
+
+  }
+  DATASET
+  {
+    { 3133;    ;DataItem;VATLedgerName       ;
+               DataItemTable=Table12404;
+               DataItemTableView=SORTING(Type,Code)
+                                 WHERE(Type=CONST(Sales));
+               OnAfterGetRecord=VAR
+                                  VATLedgerConnection@1470000 : Record 12406;
+                                  VATLedgerLine@1470001 : Record 12405;
+                                BEGIN
+                                  IF ClearOperation = TRUE THEN BEGIN
+                                    VATLedgerLine.RESET;
+                                    VATLedgerLine.SETRANGE(Type,Type);
+                                    VATLedgerLine.SETRANGE(Code,Code);
+                                    VATLedgerLine.SETRANGE("Additional Sheet",TRUE);
+                                    IF NOT VATLedgerLine.ISEMPTY THEN
+                                      VATLedgerLine.DELETEALL;
+
+                                    VATLedgerConnection.RESET;
+                                    VATLedgerConnection.SETRANGE("Sales Ledger Code",Code);
+                                    IF VATLedgerConnection.FINDSET THEN
+                                      REPEAT
+                                        IF NOT VATLedgerLine.GET(Type,Code,VATLedgerConnection."Sales Ledger Line No.") THEN
+                                          VATLedgerConnection.DELETE;
+                                      UNTIL VATLedgerConnection.NEXT = 0;
+                                  END;
+                                END;
+
+               ReqFilterFields=Code }
+
+    { 4683;1   ;DataItem;VATEntryAdd         ;
+               DataItemTable=Table254;
+               DataItemTableView=SORTING(Posting Date,Type,VAT Bus. Posting Group,VAT Prod. Posting Group,Tax Invoice Amount Type,Prepayment,Positive)
+                                 WHERE(Type=CONST(Sale),
+                                       Tax Invoice Amount Type=CONST(VAT),
+                                       Additional VAT Ledger Sheet=CONST(Yes),
+                                       VAT Allocation Type=CONST(VAT));
+               OnPreDataItem=VAR
+                               VATLedgerLine@1000 : Record 12405;
+                             BEGIN
+                               SETRANGE("Corrected Document Date",VATLedgerName."Start Date",VATLedgerName."End Date");
+                               VATLedgMgt.SetCustVendFilter(VATEntryAdd,CustFilter);
+                               VATLedgMgt.SetVATGroupsFilter(VATEntryAdd,VATProdGroupFilter,VATBusGroupFilter);
+
+                               LedgerBuffer.RESET;
+                               LedgerBuffer.SETCURRENTKEY("Document No.");
+
+                               VATLedgerLine.SETRANGE(Code,VATLedgerName.Code);
+                               VATLedgerLine.SETRANGE(Type,VATLedgerName.Type);
+                               IF VATLedgerLine.FINDLAST THEN;
+                               LineNo := VATLedgerLine."Line No.";
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  CustLedgEntry@1004 : Record 21;
+                                  VATEntry1@1003 : Record 254;
+                                  VATEntry2@1002 : Record 254;
+                                BEGIN
+                                  IF Reversed THEN
+                                    IF NOT ReversedByCorrection(VATEntryAdd) THEN
+                                      CurrReport.SKIP;
+
+                                  IF Prepayment THEN BEGIN
+                                    IF ("Unrealized VAT Entry No." <> 0) AND NOT Reversed THEN
+                                      CurrReport.SKIP;
+                                  END ELSE
+                                    IF "Unrealized VAT Entry No." = 0 THEN
+                                      IF (Base = 0) AND (Amount = 0) THEN
+                                        CurrReport.SKIP;
+
+                                  IF Prepayment AND NOT ShowPrepayment THEN
+                                    CurrReport.SKIP;
+                                  IF NOT Prepayment THEN
+                                    IF "Unrealized VAT Entry No." <> 0 THEN BEGIN
+                                      IF NOT ShowUnrealVAT THEN
+                                        CurrReport.SKIP
+                                    END ELSE
+                                      IF NOT ShowRealVAT THEN
+                                        CurrReport.SKIP;
+
+                                  IF NOT Reversed THEN
+                                    IF "Posting Date" IN [VATLedgerName."Start Date"..VATLedgerName."End Date"] THEN
+                                      CurrReport.SKIP;
+
+                                  DocumentDate := 0D;
+                                  RealVATEntryDate := 0D;
+                                  PaymentDate := 0D;
+
+                                  VATEntryNo := "Entry No.";
+                                  IF "Unrealized VAT Entry No." <> 0 THEN
+                                    VATEntryNo := "Unrealized VAT Entry No.";
+                                  GetLineProperties(VATEntryNo);
+
+                                  IF NOT Prepayment THEN BEGIN
+                                    GetSalesPaymentDate("Transaction No.",PaymentDate);
+                                    IF PaymentDate = 0D THEN
+                                      PaymentDate := "Posting Date";
+                                  END;
+
+                                  IF "Unrealized VAT Entry No." = 0 THEN // by shipment
+                                    RealVATEntryDate := "Posting Date"
+                                  ELSE // by payment
+                                    RealVATEntryDate := PaymentDate;
+
+                                  IF Prepayment AND ("Unrealized VAT Entry No." <> 0) THEN
+                                    InvertVATEntry(VATEntryAdd);
+
+                                  MakeSalesBook(VATEntryAdd,LedgerBuffer);
+                                END;
+                                 }
+
+    { 1628;1   ;DataItem;PrepmtVATEntryAdd   ;
+               DataItemTable=Table254;
+               DataItemTableView=SORTING(Posting Date,Type,VAT Bus. Posting Group,VAT Prod. Posting Group,Tax Invoice Amount Type,Prepayment,Positive)
+                                 WHERE(Type=CONST(Purchase),
+                                       Tax Invoice Amount Type=CONST(VAT),
+                                       Prepayment=CONST(Yes),
+                                       Additional VAT Ledger Sheet=CONST(Yes),
+                                       VAT Allocation Type=CONST(VAT));
+               OnPreDataItem=VAR
+                               Customer@1210001 : Record 18;
+                               Delimiter@1210000 : Code[1];
+                             BEGIN
+                               IF NOT ShowVendPrepmt THEN
+                                 CurrReport.BREAK;
+
+                               SETRANGE("Corrected Document Date",VATLedgerName."Start Date",VATLedgerName."End Date");
+                               VATLedgMgt.GetVendFilterByCustFilter(VendFilter,CustFilter);
+                               VATLedgMgt.SetCustVendFilter(PrepmtVATEntryAdd,VendFilter);
+                               VATLedgMgt.SetVATGroupsFilter(PrepmtVATEntryAdd,VATProdGroupFilter,VATBusGroupFilter);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  ReversedVATEntry@1210001 : Record 254;
+                                BEGIN
+                                  IF "Unrealized VAT Entry No." = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  IF NOT Reversed THEN
+                                    IF "Posting Date" IN [VATLedgerName."Start Date"..VATLedgerName."End Date"] THEN
+                                      CurrReport.SKIP;
+
+                                  IF Reversed THEN BEGIN
+                                    IF NOT ReversedByCorrection(PrepmtVATEntryAdd) THEN
+                                      CurrReport.SKIP;
+
+                                    // Returned Prepayment
+                                    IF ReversedVATEntry.GET("Reversed Entry No.") THEN
+                                      IF ReversedVATEntry."Unrealized VAT Entry No." = 0 THEN
+                                        CurrReport.SKIP;
+                                  END;
+
+                                  DocumentDate := 0D;
+                                  GetLineProperties("Unrealized VAT Entry No.");
+                                  RealVATEntryDate := "Posting Date";
+
+                                  Base := - Base;
+                                  Amount := - Amount;
+                                  MakeSalesBook(PrepmtVATEntryAdd,LedgerBuffer);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                SaveSalesLedger;
+                              END;
+                               }
+
+    { 1912;1   ;DataItem;Ledger              ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               IF Details THEN
+                                 CurrReport.BREAK;
+
+                               WITH LedgerBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS("Base VAT Exempt",Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Amount");
+                               END;
+
+                               WITH ShipmentBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS("Base VAT Exempt",Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Amount");
+                               END;
+
+                               WITH PrepaymBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS("Base VAT Exempt",Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Amount");
+                               END;
+
+                               WITH PaymentBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS("Base VAT Exempt",Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Amount");
+                               END;
+
+                               WITH AmtDiffBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 // CurrReport.CREATETOTALS("Base VAT Exempt");
+                                 CurrReport.CREATETOTALS("Base VAT Exempt",Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Amount");
+                               END;
+                               LedgerBuffer.RESET;
+
+                               CASE Sorting OF
+                                 Sorting::"Document Date":
+                                   LedgerBuffer.SETCURRENTKEY("Document Date");
+                                 Sorting::"Document No.":
+                                   LedgerBuffer.SETCURRENTKEY("Document No.");
+                                 Sorting::"Customer No.":
+                                   LedgerBuffer.SETCURRENTKEY("C/V No.");
+                                 ELSE
+                                   LedgerBuffer.SETCURRENTKEY("Real. VAT Entry Date");
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT LedgerBuffer.FINDSET THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF LedgerBuffer.NEXT(1) = 0 THEN
+                                      CurrReport.BREAK;
+                                  LedgerBuffer."Sales Tax Amount" := LedgerBuffer."Sales Tax Amount" + LedgerBuffer."Full Sales Tax Amount";
+
+                                  LedgerBuffer."Full VAT Amount" := 0;
+                                  LedgerBuffer."Full Sales Tax Amount" := 0;
+
+                                  IF LedgerBuffer."Amount Including VAT" = 0 THEN
+                                    LedgerBuffer."Amount Including VAT" :=
+                                      ROUND(LedgerBuffer.Base20 + LedgerBuffer.Amount20 +
+                                        LedgerBuffer.Base18 + LedgerBuffer.Amount18 +
+                                        LedgerBuffer.Base10 + LedgerBuffer.Amount10 +
+                                        LedgerBuffer."Sales Tax Amount" + LedgerBuffer."Full Sales Tax Amount" + LedgerBuffer."Base VAT Exempt" +
+                                        LedgerBuffer.Base0,
+                                        0.01);
+
+                                  IF LedgerBuffer."Amount Including VAT" = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  LedgerBuffer.Base20 := ROUND(LedgerBuffer.Base20,0.01);
+                                  LedgerBuffer.Amount20 := ROUND(LedgerBuffer.Amount20,0.01);
+                                  LedgerBuffer.Base18 := ROUND(LedgerBuffer.Base18,0.01);
+                                  LedgerBuffer.Amount18 := ROUND(LedgerBuffer.Amount18,0.01);
+                                  LedgerBuffer.Base10 := ROUND(LedgerBuffer.Base10,0.01);
+                                  LedgerBuffer.Amount10 := ROUND(LedgerBuffer.Amount10,0.01);
+                                  LedgerBuffer."Full VAT Amount" := ROUND(LedgerBuffer."Full VAT Amount",0.01);
+                                  LedgerBuffer."Sales Tax Amount" := ROUND(LedgerBuffer."Sales Tax Amount",0.01);
+                                  LedgerBuffer."Full Sales Tax Amount" := ROUND(LedgerBuffer."Full Sales Tax Amount",0.01);
+                                  LedgerBuffer."Base VAT Exempt" := ROUND(LedgerBuffer."Base VAT Exempt",0.01);
+                                  LedgerBuffer.Base0 := ROUND(LedgerBuffer.Base0,0.01);
+
+                                  CheckMethod;
+                                END;
+                                 }
+
+    { 1928;1   ;DataItem;Analysis            ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               IF NOT Details THEN
+                                 CurrReport.BREAK;
+
+                               WITH LedgerBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS(Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Base","Sales Tax Amount");
+                                 CurrReport.CREATETOTALS("Full VAT Amount","Full Sales Tax Amount");
+                               END;
+
+                               WITH ShipmentBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS(Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Base","Sales Tax Amount");
+                                 CurrReport.CREATETOTALS("Full VAT Amount","Full Sales Tax Amount");
+
+                               END;
+
+                               WITH PrepaymBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS(Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Base","Sales Tax Amount");
+                                 CurrReport.CREATETOTALS("Full VAT Amount","Full Sales Tax Amount");
+                               END;
+
+                               WITH PaymentBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS(Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Base","Sales Tax Amount");
+                                 CurrReport.CREATETOTALS("Full VAT Amount","Full Sales Tax Amount");
+                               END;
+
+                               WITH AmtDiffBuffer DO BEGIN
+                                 CurrReport.CREATETOTALS("Amount Including VAT");
+                                 CurrReport.CREATETOTALS(Base20,Amount20);
+                                 CurrReport.CREATETOTALS(Base18,Amount18);
+                                 CurrReport.CREATETOTALS(Base10,Amount10);
+                                 CurrReport.CREATETOTALS(Base0);
+                                 CurrReport.CREATETOTALS("Sales Tax Base","Sales Tax Amount");
+                                 CurrReport.CREATETOTALS("Full VAT Amount","Full Sales Tax Amount");
+                               END;
+
+                               LedgerBuffer.RESET;
+
+                               CASE Sorting OF
+                                 Sorting::"Document Date":
+                                   LedgerBuffer.SETCURRENTKEY("Document Date");
+                                 Sorting::"Document No.":
+                                   LedgerBuffer.SETCURRENTKEY("Document No.");
+                                 Sorting::"Customer No.":
+                                   LedgerBuffer.SETCURRENTKEY("C/V No.");
+                                 ELSE
+                                   LedgerBuffer.SETCURRENTKEY("Real. VAT Entry Date");
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT LedgerBuffer.FINDSET THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF LedgerBuffer.NEXT = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  LedgerBuffer."Amount Including VAT" :=
+                                    ROUND(LedgerBuffer.Base20 + LedgerBuffer.Amount20 +
+                                      LedgerBuffer.Base18 + LedgerBuffer.Amount18 +
+                                      LedgerBuffer.Base10 + LedgerBuffer.Amount10 +
+                                      LedgerBuffer."Sales Tax Amount" + LedgerBuffer."Full Sales Tax Amount" + LedgerBuffer.Base0,0.01);
+
+                                  CheckMethod;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210022;2;Field     ;
+                  CaptionML=[ENU=Customer Filter;
+                             RUS=Фильтр по клиенту];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CustFilter;
+                  TableRelation=Customer;
+                  Editable=FALSE }
+
+      { 1210017;2;Field     ;
+                  CaptionML=[ENU=VAT Product Group Filter;
+                             RUS=НДС товарная группа - фильтр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=VATProdGroupFilter;
+                  TableRelation="VAT Product Posting Group";
+                  Editable=FALSE }
+
+      { 1210013;2;Field     ;
+                  CaptionML=[ENU=VAT Business Group Filter;
+                             RUS=НДС бизнес-группа - фильтр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=VATBusGroupFilter;
+                  TableRelation="VAT Business Posting Group";
+                  Editable=FALSE }
+
+      { 1210003;2;Field     ;
+                  CaptionML=[ENU=Sorting;
+                             RUS=Сортировка];
+                  OptionCaptionML=[ENU=" ,Document Date,Document No.,Customer No.";
+                                   RUS=" ,Дата документа,Номер документа,Код клиента"];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Sorting;
+                  Editable=FALSE }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Clear Lines by Code;
+                             RUS=Очистить строки];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ClearOperation }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Show Aggregated Totals;
+                             RUS=Показать совокупные итоги];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=TotalDetails }
+
+      { 1210024;2;Field     ;
+                  CaptionML=[ENU=Show Realized VAT;
+                             RUS=Показать реализованный НДС];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowRealVAT;
+                  Editable=FALSE }
+
+      { 1470001;2;Field     ;
+                  CaptionML=[ENU=Show Unrealized VAT;
+                             RUS=Показать нереализованный НДС];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowUnrealVAT;
+                  Editable=FALSE }
+
+      { 1210015;2;Field     ;
+                  CaptionML=[ENU=Show Customer Prepayments;
+                             RUS=Показать предоплаты клиентов];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowPrepayment;
+                  Editable=FALSE }
+
+      { 1210011;2;Field     ;
+                  CaptionML=[ENU=Show Amount Differences;
+                             RUS=Показать суммовые разницы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowAmtDiff;
+                  Editable=FALSE }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Show Details;
+                             RUS=Подробно];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Details }
+
+      { 1210018;2;Field     ;
+                  CaptionML=[ENU=Show Vendor Prepayments;
+                             RUS=Показать предоплаты поставщиков];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowVendPrepmt;
+                  Editable=FALSE;
+                  OnValidate=BEGIN
+                               ShowVendPrepmtOnPush;
+                             END;
+                              }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text12400@1210042 : TextConst 'ENU=cannot be %1 if Tax Invoice Amount Type is %2;RUS=не может быть %1, если тип суммы для счета-фактуры - %2';
+      CompanyInfo@1210048 : Record 79;
+      LedgerConnBuffer@1210045 : TEMPORARY Record 12406;
+      LedgerBuffer@1210041 : TEMPORARY Record 12405;
+      ShipmentBuffer@1210040 : TEMPORARY Record 12405;
+      PrepaymBuffer@1210039 : TEMPORARY Record 12405;
+      PaymentBuffer@1210038 : TEMPORARY Record 12405;
+      AmtDiffBuffer@1210037 : TEMPORARY Record 12405;
+      AmountBuffer@1210034 : TEMPORARY Record 12405;
+      Details@1210026 : Boolean;
+      Prepayment@1210024 : Boolean;
+      ShowRealVAT@1210021 : Boolean;
+      ShowUnrealVAT@1210020 : Boolean;
+      ShowPrepayment@1210019 : Boolean;
+      ShowAmtDiff@1210018 : Boolean;
+      Sorting@1210017 : ' ,Document Date,Document No.,Customer No.';
+      LineNo@1210016 : Integer;
+      StartPageNo@1210014 : Integer;
+      LineLabel@1210013 : ' ,_By Pay,@ PrePay,$ Amt.Diff';
+      CustNo@1470002 : Code[20];
+      DocumentNo@1210011 : Code[30];
+      DocumentDate@1210010 : Date;
+      VendFilter@1210008 : Code[250];
+      CustFilter@1210009 : Code[250];
+      VATProdGroupFilter@1210007 : Code[250];
+      VATBusGroupFilter@1210006 : Code[250];
+      ClearOperation@1210002 : Boolean;
+      TotalDetails@1210001 : Boolean;
+      RealVATEntryDate@1000000002 : Date;
+      VATEntryNo@1470000 : Integer;
+      PaymentDate@1470003 : Date;
+      ShowVendPrepmt@1210004 : Boolean;
+      VATLedgMgt@1210000 : Codeunit 12423;
+      CorrectionNo@1210023 : Code[20];
+      CorrectionDate@1210022 : Date;
+      RevisionNo@1210015 : Code[20];
+      RevisionDate@1210012 : Date;
+      RevisionOfCorrectionNo@1210005 : Code[20];
+      RevisionOfCorrectionDate@1210003 : Date;
+      PrintRevision@1210025 : Boolean;
+
+    PROCEDURE Check@1(VATEntry@1000 : Record 254) : Boolean;
+    VAR
+      VATPostingSetup@1210000 : Record 325;
+      TaxJurisdiction@1210001 : Record 320;
+      TaxDetail@1210002 : Record 322;
+    BEGIN
+      CLEAR(AmountBuffer);
+
+      WITH VATEntry DO BEGIN
+        "Tax Invoice Amount Type" := "Tax Invoice Amount Type"::VAT;
+        CASE "VAT Calculation Type" OF
+          "VAT Calculation Type"::"Full VAT",
+          "VAT Calculation Type"::"Normal VAT":
+            BEGIN
+              VATPostingSetup.GET("VAT Bus. Posting Group","VAT Prod. Posting Group");
+              IF VATPostingSetup."Not Include into VAT Ledger" IN
+                 [VATPostingSetup."Not Include into VAT Ledger"::Sales,
+                  VATPostingSetup."Not Include into VAT Ledger"::"Purchases & Sales"]
+              THEN
+                EXIT(FALSE);
+              "Tax Invoice Amount Type" := VATPostingSetup."Tax Invoice Amount Type";
+            END;
+          "VAT Calculation Type"::"Sales Tax":
+            BEGIN
+              TaxJurisdiction.GET("Tax Jurisdiction Code");
+              IF TaxJurisdiction."Not Include into Ledger" IN
+                 [TaxJurisdiction."Not Include into Ledger"::Sales,
+                  TaxJurisdiction."Not Include into Ledger"::"Purchase & Sales"]
+              THEN
+                EXIT(FALSE);
+              "Tax Invoice Amount Type" := TaxJurisdiction."Sales Tax Amount Type";
+              TaxDetail.SETRANGE("Tax Jurisdiction Code","Tax Jurisdiction Code");
+              TaxDetail.SETRANGE("Tax Group Code","Tax Group Used");
+              TaxDetail.SETRANGE("Tax Type","Tax Type");
+              TaxDetail.SETRANGE("Effective Date",0D,"Posting Date");
+              TaxDetail.FIND('+');
+            END;
+        END;
+        CASE "Tax Invoice Amount Type" OF
+          "Tax Invoice Amount Type"::Excise:
+            CASE "VAT Calculation Type" OF
+              "VAT Calculation Type"::"Full VAT",
+              "VAT Calculation Type"::"Sales Tax":
+                AmountBuffer."Excise Amount" := Amount;
+              ELSE
+                FIELDERROR("VAT Calculation Type",
+                  STRSUBSTNO(Text12400,
+                    "VAT Calculation Type","Tax Invoice Amount Type"));
+            END;
+          "Tax Invoice Amount Type"::VAT:
+            CASE "VAT Calculation Type" OF
+              "VAT Calculation Type"::"Full VAT":
+                BEGIN
+                  AmountBuffer."Full VAT Amount" := Amount;
+                  CheckVAT(VATEntry,VATPostingSetup."VAT %",VATPostingSetup."VAT Exempt");
+                END;
+              "VAT Calculation Type"::"Normal VAT":
+                CheckVAT(VATEntry,VATPostingSetup."VAT %",VATPostingSetup."VAT Exempt");
+              "VAT Calculation Type"::"Sales Tax":
+                CheckVAT(VATEntry,TaxDetail."Tax Below Maximum",VATPostingSetup."VAT Exempt");
+              ELSE
+                FIELDERROR("VAT Calculation Type",
+                  STRSUBSTNO(Text12400,
+                    "VAT Calculation Type","Tax Invoice Amount Type"));
+            END;
+          "Tax Invoice Amount Type"::"Sales Tax":
+            CASE "VAT Calculation Type" OF
+              "VAT Calculation Type"::"Full VAT":
+                AmountBuffer."Full Sales Tax Amount" := Amount;
+              "VAT Calculation Type"::"Sales Tax":
+                BEGIN
+                  AmountBuffer."Sales Tax Amount" := Amount;
+                  AmountBuffer."Sales Tax Base" := Base;
+                END;
+              ELSE
+                FIELDERROR("VAT Calculation Type",
+                  STRSUBSTNO(Text12400,
+                    "VAT Calculation Type","Tax Invoice Amount Type"));
+            END;
+          ELSE
+            FIELDERROR("Tax Invoice Amount Type",
+              STRSUBSTNO(Text12400,
+                "Tax Invoice Amount Type",FIELDCAPTION(Type),Type));
+        END;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckVAT@2(VATEntry@1000 : Record 254;VATPercent@1210000 : Decimal;VATExempt@1000000000 : Boolean);
+    BEGIN
+      WITH VATEntry DO BEGIN
+        IF VATPercent = 0 THEN
+          IF NOT VATExempt THEN
+            AmountBuffer.Base0 := Base + "Unrealized Base"
+          ELSE
+            AmountBuffer."Base VAT Exempt" := Base + "Unrealized Base"
+        ELSE
+          CASE VATPercent OF
+            9.09,10:
+              BEGIN
+                AmountBuffer.Base10 := Base + "Unrealized Base";
+                AmountBuffer.Amount10 := Amount + "Unrealized Amount";
+              END;
+            18:
+              BEGIN
+                AmountBuffer.Base18 := Base + "Unrealized Base";
+                AmountBuffer.Amount18 := Amount + "Unrealized Amount";
+              END;
+            16.67,20:
+              BEGIN
+                AmountBuffer.Base20 := Base + "Unrealized Base";
+                AmountBuffer.Amount20 := Amount + "Unrealized Amount";
+              END;
+            ELSE
+              BEGIN
+              AmountBuffer.Base18 := Base + "Unrealized Base";
+              AmountBuffer.Amount18 := Amount + "Unrealized Amount";
+              AmountBuffer."VAT Percent" := VATPercent;
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE MakeSalesBook@5(VATEntry@1000 : Record 254;VAR LedgerBuffer@1210000 : TEMPORARY Record 12405);
+    VAR
+      Cust@1470000 : Record 18;
+      SalesInvoiceHeader@1210001 : Record 112;
+      SalesCrMemoHeader@1210002 : Record 114;
+      Vend@1210003 : Record 23;
+      CurrencyCode@1210006 : Code[10];
+      VATEntryType@1210005 : Code[15];
+      CVLedgEntryAmount@1210004 : Decimal;
+    BEGIN
+      IF NOT Check(VATEntry) THEN
+        EXIT;
+
+      WITH VATEntry DO BEGIN
+        LedgerBuffer.SETRANGE("Document No.",DocumentNo);
+        IF Prepayment THEN BEGIN
+          LedgerBuffer.SETRANGE(Method);
+        END ELSE BEGIN
+          IF "Unrealized VAT Entry No." = 0 THEN
+            LedgerBuffer.SETRANGE(Method,LedgerBuffer.Method::Shipment)
+          ELSE
+            LedgerBuffer.SETRANGE(Method,LedgerBuffer.Method::Payment);
+        END;
+        LedgerBuffer.SETRANGE(Prepayment,Prepayment);
+        LedgerBuffer.SETRANGE("Amt. Diff. VAT",FALSE);
+        LedgerBuffer.SETRANGE("Document Type","Document Type");
+        LedgerBuffer.SETRANGE("C/V No.",CustNo);
+
+        IF "Corrective Doc. Type" <> "Corrective Doc. Type"::" " THEN BEGIN
+          CASE "Corrective Doc. Type" OF
+            "Corrective Doc. Type"::Correction:
+              LedgerBuffer.SETRANGE("Correction No.",CorrectionNo);
+            "Corrective Doc. Type"::Revision:
+              BEGIN
+                IF RevisionNo <> '' THEN
+                  LedgerBuffer.SETRANGE("Revision No.",RevisionNo);
+                IF RevisionOfCorrectionNo <> '' THEN
+                  LedgerBuffer.SETRANGE("Revision of Corr. No.",RevisionOfCorrectionNo);
+              END;
+          END;
+        END ELSE BEGIN
+          LedgerBuffer.SETRANGE("Correction No.");
+          LedgerBuffer.SETRANGE("Revision No.");
+          LedgerBuffer.SETRANGE("Revision of Corr. No.");
+        END;
+
+        IF LedgerBuffer.ISEMPTY THEN BEGIN
+          LedgerBuffer.INIT;
+          LineNo := LineNo + 1;
+          LedgerBuffer.Type := VATLedgerName.Type;
+          LedgerBuffer.Code := VATLedgerName.Code;
+          LedgerBuffer."Line No." := LineNo;
+          LedgerBuffer."Document No." := DocumentNo;
+          LedgerBuffer."External Document No." := "External Document No.";
+          GetVATEntryValues(VATEntry,CVLedgEntryAmount,CurrencyCode,VATEntryType);
+          LedgerBuffer.Amount := CVLedgEntryAmount;
+          LedgerBuffer."Currency Code" := CurrencyCode;
+          LedgerBuffer."VAT Entry Type" := VATEntryType;
+
+          LedgerBuffer."Real. VAT Entry Date" := RealVATEntryDate;
+          LedgerBuffer."Payment Date" := PaymentDate;
+          LedgerBuffer."Transaction/Entry No." := "Transaction No.";
+          IF "Unrealized VAT Entry No." = 0 THEN
+            LedgerBuffer.Method := LedgerBuffer.Method::Shipment
+          ELSE
+            LedgerBuffer.Method := LedgerBuffer.Method::Payment;
+          LedgerBuffer.Prepayment := Prepayment;
+          LedgerBuffer."VAT Product Posting Group" := "VAT Prod. Posting Group";
+          LedgerBuffer."VAT Business Posting Group" := "VAT Bus. Posting Group";
+          LedgerBuffer."Document Type" := "Document Type";
+          LedgerBuffer."C/V No." := CustNo;
+          LedgerBuffer."Document Date" := "Posting Date";
+          LedgerBuffer.Prepayment := Prepayment;
+
+          CASE Type OF
+            Type::Purchase:
+              BEGIN
+                LedgerBuffer."C/V Type" := LedgerBuffer."C/V Type"::Vendor;
+                IF Prepayment OR "VAT Agent" THEN BEGIN
+                  LedgerBuffer."C/V Name" := CompanyInfo.Name + CompanyInfo."Name 2";
+                  LedgerBuffer."C/V VAT Reg. No." := CompanyInfo."VAT Registration No.";
+                  LedgerBuffer."Reg. Reason Code" := CompanyInfo."KPP Code";
+                END ELSE
+                  IF Vend.GET(LedgerBuffer."C/V No.") THEN BEGIN
+                    LedgerBuffer."C/V Name" := Vend.Name + Vend."Name 2";
+                    LedgerBuffer."C/V VAT Reg. No." := Vend."VAT Registration No.";
+                    LedgerBuffer."Reg. Reason Code" := Vend."KPP Code";
+                  END ELSE
+                    Vend.INIT;
+              END;
+            Type::Sale:
+              BEGIN
+                LedgerBuffer."C/V Type" := LedgerBuffer."C/V Type"::Customer;
+                IF Cust.GET(LedgerBuffer."C/V No.") THEN BEGIN
+                  LedgerBuffer."C/V Name" := Cust.Name + Cust."Name 2";
+                  LedgerBuffer."C/V VAT Reg. No." := Cust."VAT Registration No.";
+                  LedgerBuffer."Reg. Reason Code" := Cust."KPP Code";
+                END ELSE
+                  Cust.INIT;
+              END;
+          END;
+
+          CASE "Document Type" OF
+            "Document Type"::Invoice:
+              IF SalesInvoiceHeader.GET("Document No.") THEN
+                IF SalesInvoiceHeader."KPP Code" <> '' THEN
+                  LedgerBuffer."Reg. Reason Code" := SalesInvoiceHeader."KPP Code";
+            "Document Type"::"Credit Memo":
+              IF SalesCrMemoHeader.GET("Document No.") THEN
+                IF SalesCrMemoHeader."KPP Code" <> '' THEN
+                  LedgerBuffer."Reg. Reason Code" := SalesCrMemoHeader."KPP Code";
+          END;
+
+          LedgerBuffer."Additional Sheet" := "Additional VAT Ledger Sheet";
+          IF "Additional VAT Ledger Sheet" THEN
+            LedgerBuffer."Corr. VAT Entry Posting Date" := "Posting Date";
+
+          IF "Corrective Doc. Type" <> "Corrective Doc. Type"::" " THEN BEGIN
+            LedgerBuffer."Document Date" := DocumentDate;
+            LedgerBuffer."Correction No." := CorrectionNo;
+            LedgerBuffer."Correction Date" := CorrectionDate;
+            LedgerBuffer."Revision No." := RevisionNo;
+            LedgerBuffer."Revision Date" := RevisionDate;
+            LedgerBuffer."Revision of Corr. No." := RevisionOfCorrectionNo;
+            LedgerBuffer."Revision of Corr. Date" := RevisionOfCorrectionDate;
+            LedgerBuffer."Print Revision" := PrintRevision;
+          END;
+
+          LedgerBuffer.INSERT;
+          InsertLedgerConnBuffer(LedgerBuffer,"Entry No.");
+        END;
+      END;
+
+      UpdateLedgerBufferAmounts;
+    END;
+
+    PROCEDURE CheckMethod@4();
+    BEGIN
+      IF LedgerBuffer."Amt. Diff. VAT" THEN BEGIN
+        ShipmentBuffer.INIT;
+        PaymentBuffer.INIT;
+        PrepaymBuffer.INIT;
+        AmtDiffBuffer := LedgerBuffer;
+        LineLabel := LineLabel::"$ Amt.Diff";
+      END ELSE
+        IF LedgerBuffer.Prepayment THEN BEGIN
+          ShipmentBuffer.INIT;
+          PaymentBuffer.INIT;
+          PrepaymBuffer := LedgerBuffer;
+          AmtDiffBuffer.INIT;
+          LineLabel := LineLabel::"@ PrePay";
+        END ELSE
+          IF LedgerBuffer.Method = LedgerBuffer.Method::Shipment THEN BEGIN
+            ShipmentBuffer := LedgerBuffer;
+            PaymentBuffer.INIT;
+            PrepaymBuffer.INIT;
+            AmtDiffBuffer.INIT;
+            LineLabel := LineLabel::" ";
+          END ELSE BEGIN
+            ShipmentBuffer.INIT;
+            PaymentBuffer := LedgerBuffer;
+            PrepaymBuffer.INIT;
+            AmtDiffBuffer.INIT;
+            LineLabel := LineLabel::"_By Pay";
+          END;
+    END;
+
+    PROCEDURE SaveSalesLedger@1210000();
+    VAR
+      LedgerLine@1470000 : Record 12405;
+      LedgerConnection@1470001 : Record 12406;
+    BEGIN
+      LedgerBuffer.RESET;
+      IF LedgerBuffer.FINDSET THEN
+        REPEAT
+          LedgerBuffer."Amount Including VAT" :=
+            ROUND(LedgerBuffer.Base20 + LedgerBuffer.Amount20 +
+              LedgerBuffer.Base18 + LedgerBuffer.Amount18 +
+              LedgerBuffer.Base10 + LedgerBuffer.Amount10 +
+              LedgerBuffer."Sales Tax Amount" + LedgerBuffer."Full Sales Tax Amount" + LedgerBuffer."Base VAT Exempt" +
+              LedgerBuffer.Base0,
+              0.01);
+
+          IF LedgerBuffer."Amount Including VAT" <> 0 THEN BEGIN
+            LedgerLine := LedgerBuffer;
+            LedgerLine.Correction := LedgerLine.IsCorrection;
+            LedgerLine.INSERT;
+          END ELSE BEGIN
+            LedgerConnBuffer.SETRANGE("Sales Ledger Code",LedgerBuffer.Code);
+            LedgerConnBuffer.SETRANGE("Sales Ledger Line No.",LedgerBuffer."Line No.");
+            LedgerConnBuffer.DELETEALL;
+          END;
+        UNTIL LedgerBuffer.NEXT = 0;
+
+      LedgerConnBuffer.RESET;
+      IF LedgerConnBuffer.FINDSET THEN
+        REPEAT
+          LedgerConnection := LedgerConnBuffer;
+          LedgerConnection.INSERT;
+        UNTIL LedgerConnBuffer.NEXT = 0;
+    END;
+
+    PROCEDURE InitializeRequest@1210001(NewCustFilter@1000 : Text[250]);
+    BEGIN
+      ShowRealVAT := TRUE;
+      ShowUnrealVAT := TRUE;
+      ShowPrepayment := TRUE;
+      ShowAmtDiff := TRUE;
+      CustFilter := NewCustFilter;
+      ClearOperation := TRUE;
+    END;
+
+    PROCEDURE GetLineProperties@1210002(VATEntryNo@1210000 : Integer);
+    VAR
+      VATEntry@1210001 : Record 254;
+      CustLedgEntry@1470000 : Record 21;
+      VendLedgEntry@1210002 : Record 25;
+    BEGIN
+      IF VATEntry.GET(VATEntryNo) THEN BEGIN
+        DocumentNo := VATEntry."Document No.";
+        DocumentDate := VATEntry."Posting Date";
+        CustNo := VATEntry."Bill-to/Pay-to No.";
+        IF VATEntry.Prepayment THEN
+          CASE VATEntry.Type OF
+            VATEntry.Type::Sale:
+              BEGIN
+                CustLedgEntry.SETCURRENTKEY("Transaction No.");
+                CustLedgEntry.SETRANGE("Transaction No.",VATEntry."Transaction No.");
+                IF CustLedgEntry.FINDFIRST THEN BEGIN
+                  DocumentNo := CustLedgEntry."Prepayment Document No.";
+                  PaymentDate := CustLedgEntry."Posting Date";
+                END;
+              END;
+            VATEntry.Type::Purchase:
+              IF VendLedgEntry.GET(VATEntry."CV Ledg. Entry No.") THEN BEGIN
+                DocumentNo := VendLedgEntry."Vendor VAT Invoice No.";
+                DocumentDate := VendLedgEntry."Vendor VAT Invoice Date";
+                PaymentDate := VendLedgEntry."Posting Date";
+              END;
+          END;
+        IF VATEntry."Corrective Doc. Type" <> VATEntry."Corrective Doc. Type"::" " THEN
+          VATLedgMgt.GetCorrDocProperties(
+            VATEntry,DocumentNo,DocumentDate,CorrectionNo,CorrectionDate,
+            RevisionNo,RevisionDate,RevisionOfCorrectionNo,RevisionOfCorrectionDate,PrintRevision);
+      END;
+    END;
+
+    PROCEDURE InvertVATEntry@1470000(VAR VATEntry@1470000 : Record 254);
+    BEGIN
+      WITH VATEntry DO BEGIN
+        Base := -Base;
+        "Unrealized Base" := -"Unrealized Base";
+        Amount := -Amount;
+        "Unrealized Amount" := -"Unrealized Amount";
+      END;
+    END;
+
+    PROCEDURE ReversedByCorrection@7(ReversedVATEntry@1470001 : Record 254) : Boolean;
+    VAR
+      ReversedByVATEntry@1470000 : Record 254;
+    BEGIN
+      IF ReversedVATEntry.Reversed THEN BEGIN
+        IF ReversedVATEntry."Additional VAT Ledger Sheet" THEN
+          EXIT(TRUE);
+
+        IF ReversedByVATEntry.GET(ReversedVATEntry."Reversed by Entry No.") THEN
+          EXIT(ReversedByVATEntry."Corrected Document Date" <> 0D);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsNotNullAmounts@3(VATLedgerLine@1000 : Record 12405) : Boolean;
+    BEGIN
+      WITH VATLedgerLine DO
+        EXIT(NOT
+          (("Amount Including VAT" = 0) AND
+           (Base20 = 0) AND
+           (Amount20 = 0) AND
+           (Base10 = 0) AND
+           (Amount10 = 0) AND
+           ("Sales Tax Amount" = 0) AND
+           ("Sales Tax Base" = 0) AND
+           (Base0 = 0) AND
+           ("Full VAT Amount" = 0) AND
+           ("Full Sales Tax Amount" = 0)));
+    END;
+
+    PROCEDURE SetParameters@1210005(NewCustFilter@1210008 : Code[250];NewVATProdGroupFilter@1210007 : Code[250];NewVATBusGroupFilter@1210006 : Code[250];NewSorting@1210009 : ' ,Document Date,Document No.,Customer No.';NewClearOperation@1210011 : Boolean;NewShowRealVAT@1210000 : Boolean;NewShowUnrealVAT@1210001 : Boolean;NewShowCustPrepmt@1210003 : Boolean;NewShowAmtDiff@1210002 : Boolean;NewShowVendPrepmt@1210004 : Boolean);
+    BEGIN
+      CustFilter := NewCustFilter;
+      VATProdGroupFilter := NewVATProdGroupFilter;
+      VATBusGroupFilter := NewVATBusGroupFilter;
+      Sorting := NewSorting;
+      ClearOperation := NewClearOperation;
+      ShowRealVAT := NewShowRealVAT;
+      ShowUnrealVAT := NewShowUnrealVAT;
+      ShowPrepayment := NewShowCustPrepmt;
+      ShowAmtDiff := NewShowAmtDiff;
+      ShowVendPrepmt := NewShowVendPrepmt;
+    END;
+
+    LOCAL PROCEDURE ShowVendPrepmtOnPush@19050484();
+    BEGIN
+      IF NOT ShowVendPrepmt THEN
+        VendFilter := '';
+    END;
+
+    LOCAL PROCEDURE GetVATEntryValues@1210015(VATEntry@1210000 : Record 254;VAR CVLedgEntryAmount@1210003 : Decimal;VAR CurrencyCode@1210004 : Code[10];VAR VATEntryType@1210005 : Code[15]);
+    VAR
+      VendLedgerEntry@1210002 : Record 25;
+      CustLedgerEntry@1210001 : Record 21;
+    BEGIN
+      IF VATEntry.Type = VATEntry.Type::Sale THEN
+        IF CustLedgerEntry.GET(VATEntry."CV Ledg. Entry No.") THEN BEGIN
+          CustLedgerEntry.CALCFIELDS(Amount);
+          CVLedgEntryAmount := ABS(CustLedgerEntry.Amount);
+          CurrencyCode := CustLedgerEntry."Currency Code";
+          VATEntryType := CustLedgerEntry."VAT Entry Type";
+        END;
+      IF VATEntry.Type = VATEntry.Type::Purchase THEN
+        IF VendLedgerEntry.GET(VATEntry."CV Ledg. Entry No.") THEN BEGIN
+          VendLedgerEntry.CALCFIELDS(Amount);
+          CVLedgEntryAmount := ABS(VendLedgerEntry.Amount);
+          CurrencyCode := VendLedgerEntry."Currency Code";
+          VATEntryType := VendLedgerEntry."VAT Entry Type";
+        END;
+    END;
+
+    LOCAL PROCEDURE InsertLedgerConnBuffer@1210004(VATLedgerLine@1210002 : Record 12405;VATEntryNo@1210001 : Integer);
+    BEGIN
+      LedgerConnBuffer.INIT;
+      LedgerConnBuffer."Connection Type" := LedgerConnBuffer."Connection Type"::Sales;
+      LedgerConnBuffer."Sales Ledger Code" := VATLedgerLine.Code;
+      LedgerConnBuffer."Sales Ledger Line No." := VATLedgerLine."Line No.";
+      LedgerConnBuffer."Purch. Ledger Code" := '';
+      LedgerConnBuffer."Purch. Ledger Line No." := 0;
+      LedgerConnBuffer."VAT Entry No." := VATEntryNo;
+      LedgerConnBuffer.INSERT;
+    END;
+
+    LOCAL PROCEDURE UpdateLedgerBufferAmounts@1210003();
+    BEGIN
+      WITH LedgerBuffer DO BEGIN
+        Base10 := Base10 - AmountBuffer.Base10;
+        Amount10 := Amount10 - AmountBuffer.Amount10;
+        Base20 := Base20 - AmountBuffer.Base20;
+        Amount20 := Amount20 - AmountBuffer.Amount20;
+        Base18 := Base18 - AmountBuffer.Base18;
+        Amount18 := Amount18 - AmountBuffer.Amount18;
+        "Full VAT Amount" := "Full VAT Amount" - AmountBuffer."Full VAT Amount";
+        "Sales Tax Amount" := "Sales Tax Amount" - AmountBuffer."Sales Tax Amount";
+        "Sales Tax Base" := "Sales Tax Base" - AmountBuffer."Sales Tax Base";
+        "Full Sales Tax Amount" := "Full Sales Tax Amount" - AmountBuffer."Full Sales Tax Amount";
+        "Base VAT Exempt" := "Base VAT Exempt" - AmountBuffer."Base VAT Exempt";
+        "Excise Amount" := "Excise Amount" - AmountBuffer."Excise Amount";
+        Base0 := Base0 - AmountBuffer.Base0;
+        IF DocumentDate <> 0D THEN
+          "Document Date" := DocumentDate;
+        MODIFY;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

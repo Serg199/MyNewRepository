@@ -1,0 +1,255 @@
+OBJECT Report 14907 Change Vendor VAT Invoice
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Change Vendor VAT Invoice;
+               RUS=Изменение счета-фактуры поставщика];
+    ProcessingOnly=Yes;
+    OnPreReport=VAR
+                  VATPrepmtPost@1210000 : Codeunit 12410;
+                  VendEntryEdit@1210001 : Codeunit 113;
+                BEGIN
+                  WITH VendLedgEntry DO BEGIN
+                    GET("Entry No.");
+                    CALCFIELDS("Remaining Amt. (LCY)");
+                    VendEntryEdit.UpdateVATInvoiceData(VendLedgEntry,InvoiceNo,InvoiceDate,InvoiceRcvdDate);
+                    IF Prepayment THEN BEGIN
+                      TESTFIELD("Vendor VAT Invoice No.");
+                      TESTFIELD("Vendor VAT Invoice Date");
+                      TESTFIELD("Vendor VAT Invoice Rcvd Date");
+                    END;
+
+                    IF CreatePrepmtInvoice THEN BEGIN
+                      CheckPostingGroup;
+                      TESTFIELD(Prepayment,TRUE);
+                      IF (VATBase <= 0) OR (VATAmount <= 0) THEN
+                        ERROR(Text001);
+                      VATPrepmtPost.PostVendVAT(VendLedgEntry,VATProdPostingGrCode,VATBase,VATAmount);
+
+                      COMMIT;
+                      IF CurrReport.USEREQUESTPAGE THEN
+                        MESSAGE(Text002,"Document No.");
+                    END;
+                  END;
+                END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   UpdateRequestForm;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Vendor VAT Invoice No.;
+                             RUS=Номер счета-фактуры поставщика];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=InvoiceNo }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Vendor VAT Invoice Date;
+                             RUS=Дата счета-фактуры поставщика];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=InvoiceDate }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Vendor VAT Invoice Rcvd Date;
+                             RUS=Дата получения счета-фактуры поставщика];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=InvoiceRcvdDate }
+
+      { 1210006;2;Field     ;
+                  Name=CreatePrepmtInvoice;
+                  CaptionML=[ENU=Create Prepmt. Invoice;
+                             RUS=Создать счет на предоплату];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CreatePrepmtInvoice }
+
+      { 1210014;2;Group     ;
+                  Name=PrepaymentFrame;
+                  CaptionML=[ENU=Prepayment;
+                             RUS=Предоплата];
+                  Visible=CreatePrepmtInvoice }
+
+      { 1210012;3;Field     ;
+                  Name=VATBus;
+                  CaptionML=[ENU=VAT Bus. Posting Group;
+                             RUS=НДС бизнес-группа];
+                  SourceExpr=VATBusPostingGrCode;
+                  Editable=FALSE }
+
+      { 1210010;3;Field     ;
+                  Name=VATProd;
+                  CaptionML=[ENU=VAT Prod. Posting Group;
+                             RUS=НДС товарная группа];
+                  SourceExpr=VATProdPostingGrCode;
+                  OnValidate=BEGIN
+                               IF CheckPostingGroup THEN
+                                 SetAmounts(0);
+                             END;
+
+                  OnLookup=BEGIN
+                             VATProdGroupLookup;
+                           END;
+                            }
+
+      { 1210016;3;Field     ;
+                  Name=VATBase;
+                  CaptionML=[ENU=VAT Base (LCY);
+                             RUS=База НДС (руб.)];
+                  SourceExpr=VATBase;
+                  Editable=FALSE }
+
+      { 1210008;3;Field     ;
+                  Name=VATAmt;
+                  CaptionML=[ENU=VAT Amount (LCY);
+                             RUS=Сумма НДС (руб.)];
+                  SourceExpr=VATAmount;
+                  OnValidate=BEGIN
+                               RecalcVATBase;
+                             END;
+                              }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      VendLedgEntry@1210006 : Record 25;
+      VATProdPostingGrCode@1210008 : Code[10];
+      VATBusPostingGrCode@1210003 : Code[10];
+      InvoiceDate@1210000 : Date;
+      InvoiceRcvdDate@1210001 : Date;
+      InvoiceNo@1210002 : Code[20];
+      CreatePrepmtInvoice@1210004 : Boolean;
+      VATAmount@1210005 : Decimal;
+      Text001@1210007 : TextConst 'ENU=VAT Base (LCY) and VAT Amount (LCY) must be positive.;RUS=База НДС (руб.) и сумма НДС (руб.) должны быть положительными.';
+      VATBase@1210010 : Decimal;
+      Text002@1210011 : TextConst 'ENU=VAT for Prepayment %1 is successfully posted.;RUS=НДС на предоплату %1 был успешно учтен.';
+      Text003@1210009 : TextConst 'ENU=You must specify %1.;RUS=Необходимо указать %1.';
+
+    PROCEDURE SetInvParameters@1210008(InvNo@1210000 : Code[20];InvDate@1210001 : Date;InvRcvdDate@1210002 : Date);
+    BEGIN
+      InvoiceNo := InvNo;
+      InvoiceDate := InvDate;
+      InvoiceRcvdDate := InvRcvdDate;
+      IF InvoiceDate = 0D THEN BEGIN
+        InvoiceDate := WORKDATE;
+        InvoiceRcvdDate := InvoiceDate;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateRequestForm@1210001();
+    BEGIN
+      IF NOT CreatePrepmtInvoice THEN BEGIN
+        VATBase := 0;
+        VATAmount := 0;
+      END;
+    END;
+
+    PROCEDURE SetVendLedgEntry@1210000(NewVendLedgEntry@1210000 : Record 25);
+    VAR
+      Vendor@1210001 : Record 23;
+    BEGIN
+      VendLedgEntry := NewVendLedgEntry;
+      Vendor.GET(VendLedgEntry."Vendor No.");
+      VATBusPostingGrCode := Vendor."VAT Bus. Posting Group";
+      WITH VendLedgEntry DO
+        SetInvParameters("Vendor VAT Invoice No.","Vendor VAT Invoice Date","Vendor VAT Invoice Rcvd Date");
+    END;
+
+    LOCAL PROCEDURE VATProdGroupLookup@1210002();
+    VAR
+      VATPostingSetup@1210001 : Record 325;
+      VATPostingSetupForm@1210000 : Page 472;
+    BEGIN
+      VATPostingSetup.FILTERGROUP(2);
+      VATPostingSetup.SETRANGE("VAT Bus. Posting Group",VATBusPostingGrCode);
+      VATPostingSetup.FILTERGROUP(0);
+      VATPostingSetup.SETRANGE("VAT Calculation Type",
+        VATPostingSetup."VAT Calculation Type"::"Full VAT");
+      VATPostingSetup.SETRANGE("Unrealized VAT Type",
+        VATPostingSetup."Unrealized VAT Type"::Percentage);
+      IF VATPostingSetup.GET(VATBusPostingGrCode,VATProdPostingGrCode) THEN;
+      VATPostingSetupForm.SETTABLEVIEW(VATPostingSetup);
+      VATPostingSetupForm.LOOKUPMODE(TRUE);
+      IF VATPostingSetupForm.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        VATPostingSetupForm.GETRECORD(VATPostingSetup);
+        SetVATProdGroup(VATPostingSetup."VAT Prod. Posting Group");
+      END;
+    END;
+
+    PROCEDURE SetVATProdGroup@1210003(NewVATProdPostingGrCode@1210001 : Code[10]);
+    BEGIN
+      CreatePrepmtInvoice := TRUE;
+      VATProdPostingGrCode := NewVATProdPostingGrCode;
+      IF CheckPostingGroup THEN
+        SetAmounts(0);
+    END;
+
+    PROCEDURE SetAmounts@1210006(NewVATAmount@1210002 : Decimal);
+    VAR
+      VATPostingSetup@1210003 : Record 325;
+    BEGIN
+      IF NewVATAmount = 0 THEN BEGIN
+        VATPostingSetup.GET(VATBusPostingGrCode,VATProdPostingGrCode);
+        VendLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+        VATAmount :=
+          ROUND(VendLedgEntry."Remaining Amt. (LCY)" *
+            VATPostingSetup."VAT %" /
+            (100 + VATPostingSetup."VAT %"));
+      END ELSE
+        VATAmount := NewVATAmount;
+      RecalcVATBase;
+    END;
+
+    PROCEDURE CheckPostingGroup@1210005() Result : Boolean;
+    VAR
+      VATPostingSetup@1210000 : Record 325;
+    BEGIN
+      Result := FALSE;
+      IF VATProdPostingGrCode = '' THEN
+        ERROR(Text003,VATPostingSetup.FIELDCAPTION("VAT Prod. Posting Group"));
+      VATPostingSetup.GET(VATBusPostingGrCode,VATProdPostingGrCode);
+      VATPostingSetup.TESTFIELD("VAT Calculation Type",VATPostingSetup."VAT Calculation Type"::"Full VAT");
+      VATPostingSetup.TESTFIELD("Unrealized VAT Type",VATPostingSetup."Unrealized VAT Type"::Percentage);
+      Result := TRUE;
+    END;
+
+    PROCEDURE RecalcVATBase@1210004();
+    BEGIN
+      VATBase := VendLedgEntry."Remaining Amt. (LCY)" - VATAmount;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

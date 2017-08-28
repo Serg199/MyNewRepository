@@ -1,0 +1,176 @@
+OBJECT Report 60005 Delete Cons. Register
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:19;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+  }
+  DATASET
+  {
+    { 8447;    ;DataItem;ConsRegister        ;
+               DataItemTable=Table50005;
+               OnPreDataItem=BEGIN
+                               Wnd.OPEN('Status:\#1#####################################################');
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  //Удаление регистра загрузки
+                                  ConsSource.GET(ConsRegister."Cons. Source Code");
+                                  CASE ConsSource."Import Format" OF
+                                    ConsSource."Import Format"::OperationFromExtSystem :
+                                      //Очистка предбуфера
+                                      BEGIN
+                                        //Удаление данных из буфера обработки
+                                        EntryBuffer.RESET;
+                                        EntryBuffer.SETCURRENTKEY("Export Cons. Source Code", "Export Consolidation Register");
+                                        EntryBuffer.SETRANGE("Export Cons. Source Code", ConsSource."Export Cons. Source");
+                                        EntryBuffer.SETRANGE("Consolidation Register", "No.");
+                                        IF EntryBuffer.FIND('-') THEN
+                                          REPEAT
+                                            Wnd.UPDATE(1, FORMAT(STRSUBSTNO(Text000, EntryBuffer."Entry No.")));
+                                            PreDeleteOneEntryBuffer(EntryBuffer, FALSE);
+                                          UNTIL EntryBuffer.NEXT = 0;
+                                        Wnd.UPDATE(1, FORMAT(Text001));
+                                        EntryBuffer.DELETEALL;
+
+                                        //Очистка / удаление буфера загрузки
+                                        EntryPreBuffer.RESET;
+                                        EntryPreBuffer.SETCURRENTKEY("Id Legal Entity", "Cons. Source Code", "Consolidation Register", Type);
+                                        EntryPreBuffer.SETRANGE("Id Legal Entity", ConsRegister."Id Legal Entity");
+                                        EntryPreBuffer.SETRANGE("Cons. Source Code", ConsRegister."Cons. Source Code");
+                                        EntryPreBuffer.SETRANGE("Consolidation Register", "No.");
+                                        IF DeletePreBuffer THEN BEGIN
+                                        //Удаление из предбуфера (буфера загрузки)
+                                          Wnd.UPDATE(1, FORMAT(Text003));
+                                          EntryPreBuffer.DELETEALL;
+                                        END ELSE BEGIN
+                                        // Очистка данных об обработке предбуфер -> буфер
+                                          IF EntryPreBuffer.FIND('-') THEN
+                                            REPEAT
+                                              Wnd.UPDATE(1, FORMAT(STRSUBSTNO(Text002, EntryPreBuffer."Entry No.")));
+                                              ClearEntryPreBuff(EntryPreBuffer);
+                                            UNTIL EntryPreBuffer.NEXT = 0;
+                                        END;
+
+                                      END; //ConsSource."Import Format"::OperationFromExtSystem
+
+                                    ConsSource."Import Format"::OperationFromBuffer :
+                                      //Очистка буфера обработки
+                                      BEGIN
+                                        EntryBuffer.RESET;
+                                        EntryBuffer.SETCURRENTKEY("Export Cons. Source Code", "Export Consolidation Register");
+                                        EntryBuffer.SETRANGE("Export Cons. Source Code", ConsSource.Code);
+                                        EntryBuffer.SETRANGE("Export Consolidation Register", "No.");
+                                        IF EntryBuffer.FIND('-') THEN
+                                          REPEAT
+                                            Wnd.UPDATE(1, FORMAT(STRSUBSTNO(Text000, EntryBuffer."Entry No.")));
+                                            PreDeleteOneEntryBuffer(EntryBuffer, TRUE);
+                                          UNTIL EntryBuffer.NEXT = 0;
+                                        Wnd.UPDATE(1, FORMAT(Text001));
+                                        EntryBuffer.DELETEALL;
+
+                                      END;
+
+                                  ELSE
+                                    //FromExtSystem,FromBuffer,FromNavision,<done>,<done>
+                                    ERROR('Delete Import Format = %1 not realized', ConsSource."Import Format");
+
+                                  END; // CASE ConsSource."Import Format"
+
+                                  IF NOT TmpDeleteRegister.GET("No.", "Cons. Source Code") THEN BEGIN
+                                    TmpDeleteRegister := ConsRegister;
+                                    TmpDeleteRegister.INSERT;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                //Удаление обработанных регистров
+                                ErrorJournal.RESET;
+                                ErrorJournal.SETRANGE("Company Name", COMPANYNAME);
+
+                                IF TmpDeleteRegister.FINDSET THEN
+                                  REPEAT
+                                    //Удаление журнала ошибок
+                                    ErrorJournal.SETRANGE("Cons. Source Code", TmpDeleteRegister."Cons. Source Code");
+                                    ErrorJournal.SETRANGE("Cons. Register", TmpDeleteRegister."No.");
+                                    ErrorJournal.DELETEALL;
+
+                                    IF ConsRegister.GET(TmpDeleteRegister."No.", TmpDeleteRegister."Cons. Source Code") THEN
+                                      ConsRegister.DELETE(TRUE);
+                                  UNTIL TmpDeleteRegister.NEXT = 0;
+                                Wnd.CLOSE;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ErrorJournal@1101495000 : Record 50023;
+      EntryPreBuffer@1101495001 : Record 50081;
+      EntryBuffer@1101495002 : Record 50082;
+      ConsSource@1101495003 : Record 50001;
+      DeletePreBuffer@1101495004 : Boolean;
+      TmpDeleteRegister@1101495005 : TEMPORARY Record 50005;
+      Wnd@1101495006 : Dialog;
+      Text000@1101495007 : TextConst 'RUS="Clear Entry Data Buffer No. %1 "';
+      Text001@1101495008 : TextConst 'RUS=Delete records from Entry Data Buffer ...';
+      Text002@1101495011 : TextConst 'RUS="Clear Entry Data PreBuffer No. %1 "';
+      Text003@1101495010 : TextConst 'RUS=Delete records from Entry Data PreBuffer ...';
+
+    PROCEDURE PreDeleteOneEntryBuffer@1101495001(VAR pEntryBuffer@1101495000 : Record 50082;ClearPreBufferData@1101495002 : Boolean);
+    VAR
+      DeletedRegister@1101495001 : Record 50005;
+      ClearedEntryPreBuff@1101495003 : Record 50081;
+    BEGIN
+      //Удаление одной строки из буфера обработки
+      IF NOT TmpDeleteRegister.GET(pEntryBuffer."Consolidation Register", pEntryBuffer."Export Cons. Source Code") THEN
+        IF DeletedRegister.GET(pEntryBuffer."Consolidation Register") THEN BEGIN
+          TmpDeleteRegister := DeletedRegister;
+          TmpDeleteRegister.INSERT;
+        END;
+
+      IF ClearPreBufferData THEN
+        IF ClearedEntryPreBuff.GET(pEntryBuffer."PreBuffer Entry No.") THEN
+          ClearEntryPreBuff(ClearedEntryPreBuff);
+    END;
+
+    PROCEDURE ClearEntryPreBuff@1101495002(VAR pEntryPreBuff@1101495000 : Record 50081);
+    BEGIN
+      //Очистка информации о том, что операция была загружена в буфер обработки
+      pEntryPreBuff.Status := pEntryPreBuff.Status::New;
+      pEntryPreBuff."Time Complete" := CREATEDATETIME(0D, 0T);
+      pEntryPreBuff."Cons. Source Code" := '';
+      pEntryPreBuff."Consolidation Register" := 0;
+      pEntryPreBuff.MODIFY(TRUE);
+    END;
+
+    BEGIN
+    {
+      NC DEV AKU Удаление регистров консолидации
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

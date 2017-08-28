@@ -1,0 +1,284 @@
+OBJECT Report 60001 Temp Clear Firm
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:19;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+    OnPreReport=VAR
+                  DefDim@1101495000 : Record 352;
+                  Vendor@1101495001 : Record 23;
+                  i@1101495002 : Integer;
+                  Customer@1101495003 : Record 18;
+                BEGIN
+                  //удаление операций пифагора по номеру документа и дате
+                  FILedgerEntry.RESET;
+                  IF FILedgerEntry.FINDSET(TRUE, FALSE) THEN
+                  REPEAT
+                    GLEntry.SETCURRENTKEY("Document No.","Posting Date");
+                    GLEntry.SETRANGE("Document No.", FILedgerEntry."Document No.");
+                    GLEntry.SETRANGE("Posting Date", FILedgerEntry."Posting Date");
+                    WITH GLEntry DO
+                      IF FINDSET(TRUE, FALSE) THEN
+                        REPEAT
+                          DELETE(TRUE);
+                        UNTIL NEXT = 0;
+
+                    CustLedgerEntry.SETCURRENTKEY("Document No.","Document Type","Customer No.");
+                    CustLedgerEntry.SETRANGE("Document No.", FILedgerEntry."Document No.");
+                    CustLedgerEntry.SETRANGE("Posting Date", FILedgerEntry."Posting Date");
+                    WITH CustLedgerEntry DO
+                      IF FINDSET(TRUE, FALSE) THEN
+                        REPEAT
+                          DELETE(TRUE);
+                        UNTIL NEXT = 0;
+
+                    VendorLedgerEntry.SETCURRENTKEY("Document No.","Document Type","Vendor No.");
+                    VendorLedgerEntry.SETRANGE("Document No.", FILedgerEntry."Document No.");
+                    VendorLedgerEntry.SETRANGE("Posting Date", FILedgerEntry."Posting Date");
+                    WITH VendorLedgerEntry DO
+                      IF FINDSET(TRUE, FALSE) THEN
+                        REPEAT
+                          DELETE(TRUE);
+                        UNTIL NEXT = 0;
+
+                    VATEntry.SETCURRENTKEY("Document No.","Posting Date");
+                    VATEntry.SETRANGE("Document No.", FILedgerEntry."Document No.");
+                    VATEntry.SETRANGE("Posting Date", FILedgerEntry."Posting Date");
+                    WITH VATEntry DO
+                      IF FINDSET(TRUE, FALSE) THEN
+                        REPEAT
+                          DELETE(TRUE);
+                        UNTIL NEXT = 0;
+
+                    BankAccountLedgerEntry.SETCURRENTKEY("Document No.","Posting Date");
+                    BankAccountLedgerEntry.SETRANGE("Document No.", FILedgerEntry."Document No.");
+                    BankAccountLedgerEntry.SETRANGE("Posting Date", FILedgerEntry."Posting Date");
+                    WITH BankAccountLedgerEntry DO
+                      IF FINDSET(TRUE, FALSE) THEN
+                        REPEAT
+                          DELETE(TRUE);
+                        UNTIL NEXT = 0;
+
+                    FILedgerEntry.DELETE;
+                  UNTIL FILedgerEntry.NEXT = 0;
+
+                  // создаем учетную группу на учт. банк. операциях
+                  {
+                  BankAccLedgEntry.RESET;
+                  BankAccLedgEntry.SETRANGE("Bank Acc. Posting Group", '');
+                  IF BankAccLedgEntry.FINDSET THEN REPEAT
+                    OK := SetPostingGR(BankAccLedgEntry."Entry No." ,BankAccLedgEntry."Bank Account No.");
+                  UNTIL BankAccLedgEntry.NEXT=0;
+                  }
+                  {
+                  Vendor.RESET;
+                  IF Vendor.FINDSET THEN REPEAT
+                    IF NOT DefDim.GET(DATABASE::Vendor, Vendor."No.",'COUNTERPARTY') THEN BEGIN
+                      DefDim.INIT;
+                      DefDim."Table ID" := DATABASE::Vendor;
+                      DefDim."No." := Vendor."No.";
+                      DefDim."Dimension Code" := 'COUNTERPARTY';
+                      DefDim."Dimension Value Code" := Vendor."No.";
+                      DefDim."Value Posting" := DefDim."Value Posting"::"Code Mandatory";
+                      DefDim.INSERT(TRUE);
+                      i += 1;
+                    END;
+                  UNTIL Vendor.NEXT = 0;
+                  }
+                  {
+                  Customer.RESET;
+                  IF Customer.FINDSET THEN REPEAT
+                    IF NOT DefDim.GET(DATABASE::Customer, Customer."No.",'COUNTERPARTY') THEN BEGIN
+                      DefDim.INIT;
+                      DefDim."Table ID" := DATABASE::Customer;
+                      DefDim."No." := Customer."No.";
+                      DefDim."Dimension Code" := 'COUNTERPARTY';
+                      DefDim."Dimension Value Code" := Customer."No.";
+                      DefDim."Value Posting" := DefDim."Value Posting"::"Code Mandatory";
+                      DefDim.INSERT(TRUE);
+                      i += 1;
+                    END;
+                  UNTIL Customer.NEXT = 0;
+
+                  MESSAGE(FORMAT(i));
+                  EXIT;
+                  }
+                  {
+                  BankAccount1.RESET;
+                  BankAccount1.CHANGECOMPANY('_Cons');
+                  IF BankAccount1.FINDSET THEN
+                  REPEAT
+                    BankAccount2.INIT;
+                    BankAccount2.TRANSFERFIELDS(BankAccount1);
+                    BankAccount2.INSERT(TRUE);
+                  UNTIL BankAccount1.NEXT = 0;
+                  }
+                  {
+                  // Источник загрузки в буфер обработки
+                  BankAccount.RESET;
+                  IF BankAccount.FINDSET THEN REPEAT
+                    IF NOT DimensionValue.GET('BANK.ACC',BankAccount."No.") THEN BEGIN
+                      DimensionValue.INIT;
+                      DimensionValue."Dimension Code" := 'BANK.ACC';
+                      DimensionValue.Code := BankAccount."No.";
+                      DimensionValue.Name := BankAccount.Name;
+                      DimensionValue.INSERT(TRUE);
+                    END;
+                  UNTIL BankAccount.NEXT = 0;
+                  EXIT;
+                  }
+                  {
+                  ConsSourceCode1 := '1C';
+
+                  // Источник загрузки в фин. журнал
+                  //ConsSourceCode2 := 'TDFB';
+
+                  Company.GET(COMPANYNAME);
+
+                  IF Company."Legal Entity Id" = '' THEN
+                    ERROR('Не указан Legal Entity Id');
+                  }
+                  {
+                  // чистим новые
+                  ConsDataPreBuffer.RESET;
+                  ConsDataPreBuffer.SETRANGE(Status, ConsDataPreBuffer.Status::New);
+                  ConsDataPreBuffer.SETRANGE("Id Legal Entity", Company."Legal Entity Id");
+                    ConsDataPreBuffer.DELETEALL;
+                  }
+
+                  {
+                  // чистим ошибки в буфере загрузки
+                  ConsDataPreBuffer.RESET;
+                  ConsDataPreBuffer.SETRANGE(Status, ConsDataPreBuffer.Status::"Processing Canceled");
+                  ConsDataPreBuffer.SETRANGE("Id Legal Entity", Company."Legal Entity Id");
+                  //ConsDataPreBuffer.SETRANGE("Document Date", 300908D);
+                  IF ConsSourceCode1 <> '' THEN
+                    ConsDataPreBuffer.SETFILTER("Cons. Source Code", ConsSourceCode1);
+                  IF ConsDataPreBuffer.FINDSET THEN REPEAT
+                    ConsDataPreBuffer.Status := ConsDataPreBuffer.Status::"Canceled Manualy";
+                    ConsDataPreBuffer.MODIFY;
+                  UNTIL ConsDataPreBuffer.NEXT = 0;
+
+                  //  ConsDataPreBuffer.DELETEALL(TRUE);
+
+
+                  // чистим проводки в буфере
+                  ConsDataBuffer.RESET;
+                  //ConsDataBuffer.SETRANGE("Export Consolidation Register", 0);
+                  IF ConsSourceCode1 <> '' THEN
+                    ConsDataBuffer.SETFILTER("Cons. Source Code", ConsSourceCode1);
+                  //ConsDataBuffer.SETRANGE("Document Date", 300908D);
+                  IF ConsDataBuffer.FINDSET THEN
+                    ConsDataBuffer.DELETEALL(TRUE);
+
+                  // чистим проводки с ошибками
+                  ConsDataBuffer.RESET;
+                  ConsDataBuffer.SETRANGE("Export Consolidation Register", 0);
+                  ConsDataBuffer.SETRANGE("Error in Import",TRUE);
+                  //ConsDataBuffer.SETRANGE("Document Date", 300908D);
+                  IF ConsSourceCode1 <> '' THEN
+                    ConsDataBuffer.SETFILTER("Cons. Source Code", ConsSourceCode1);
+                  IF ConsDataBuffer.FINDSET THEN
+                    ConsDataBuffer.DELETEALL(TRUE);
+                  }
+
+                  // чистим фин. журнал
+                  {
+                  GenJournalLine.RESET;
+                  IF ConsSourceCode1 <> '' THEN
+                    GenJournalLine.SETFILTER("Cons. Source Code", ConsSourceCode1);
+                  GenJournalLine.SETFILTER("Journal Template Name", 'GENJL');
+                  GenJournalLine.SETFILTER("Journal Batch Name", 'GJNEW');
+                  //GenJournalLine.SETFILTER("Journal Batch Name", 'GJNEWERA');
+                  IF GenJournalLine.FINDSET THEN
+                    GenJournalLine.DELETEALL(TRUE);
+                  }
+                  {
+                  GenJournalLine.RESET;
+                  GenJournalLine.SETRANGE("Document Date", 300908D);
+                  GenJournalLine.SETRANGE("Cons. Source Code", ConsSourceCode1);
+                  IF GenJournalLine.FINDSET THEN
+                    GenJournalLine.DELETEALL(TRUE);
+
+                  GLEntry.RESET;
+                  GLEntry.SETRANGE("Posting Date", 300908D);
+                  GLEntry.SETRANGE("Cons. Source Code", ConsSourceCode1);
+                  IF GLEntry.FINDSET THEN
+                    GLEntry.DELETEALL(TRUE);
+                  }
+                END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ConsDataPreBuffer@1000000000 : Record 50007;
+      ConsDataBuffer@1000000001 : Record 50008;
+      ConsSourceCode1@1000000002 : Text[30];
+      ConsSourceCode2@1000000005 : Text[30];
+      Company@1000000003 : Record 2000000006;
+      GenJournalLine@1000000004 : Record 81;
+      GLEntry@1000000006 : Record 17;
+      BankAccount@1000000007 : Record 270;
+      DimensionValue@1000000008 : Record 349;
+      BankAccount1@1000000009 : Record 270;
+      BankAccount2@1000000010 : Record 270;
+      BankAccLedgEntry@1101495000 : Record 271;
+      BankAccLedgEntry1@1101495003 : Record 271;
+      LedgerEntryDimension@1101495001 : Record 355;
+      GLAccount@1101495002 : Record 15;
+      OK@1101495004 : Boolean;
+      FILedgerEntry@1101495005 : Record 50106;
+      VATEntry@1101495006 : Record 254;
+      CustLedgerEntry@1101495007 : Record 21;
+      VendorLedgerEntry@1101495008 : Record 25;
+      BankAccountLedgerEntry@1101495009 : Record 271;
+
+    PROCEDURE SetPostingGR@1101495000(EntryNo@1101495001 : Integer;BankAcc@1101495000 : Code[20]) : Boolean;
+    BEGIN
+      LedgerEntryDimension.RESET;
+      LedgerEntryDimension.SETRANGE("Table ID", 17);
+      LedgerEntryDimension.SETRANGE("Dimension Code", 'BANK.ACC');
+      LedgerEntryDimension.SETRANGE("Dimension Value Code", BankAcc);
+      IF LedgerEntryDimension.FINDSET THEN
+      REPEAT
+        GLAccount.GET(LedgerEntryDimension."Entry No.");
+        IF (GLAccount."Ext. Source Type" = GLAccount."Ext. Source Type"::"Bank Account") AND
+           (GLAccount."Source Posting Group" <> '') THEN BEGIN
+          BankAccLedgEntry1.GET(EntryNo);
+          BankAccLedgEntry1."Bank Acc. Posting Group" := GLAccount."Source Posting Group";
+          BankAccLedgEntry1.MODIFY;
+          EXIT(TRUE);
+        END;
+      UNTIL LedgerEntryDimension.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

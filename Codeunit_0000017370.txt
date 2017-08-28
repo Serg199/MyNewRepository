@@ -1,0 +1,1165 @@
+OBJECT Codeunit 17370 Labor Contract Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17363=rim,
+                TableData 17389=rim,
+                TableData 17413=rim;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Position@1210000 : Record 17370;
+      Person@1210001 : Record 17350;
+      Employee@1210006 : Record 5200;
+      LaborContract@1210002 : Record 17360;
+      LaborContractTerms@1210003 : Record 17362;
+      LaborContractTermsSetup@1210004 : Record 17365;
+      HumanResSetup@1210009 : Record 5218;
+      EmplJobEntry@1210007 : Record 17363;
+      EmplLedgEntry@1210011 : Record 17413;
+      PayrollPeriod@1210014 : Record 17426;
+      EmplAbsenceEntry@1210016 : Record 17389;
+      TimesheetStatus@1210017 : Record 17440;
+      PayrollElement@1210023 : Record 17400;
+      NoSeriesMgt@1210010 : Codeunit 396;
+      NextEntryNo@1210008 : Integer;
+      Text001@1210012 : TextConst 'ENU=%1 already exists. Recalculate?;RUS=%1 уже существует. Пересчитать?';
+      Text002@1210013 : TextConst 'ENU=%1 and %2 should not be 0 at the same time.;RUS=%1 и %2 не должны одновременно равняться 0.';
+      Text003@1210015 : TextConst 'ENU=Do you want to approve %1?;RUS=Одобрить %1?';
+      OrderNo@1210018 : Code[20];
+      OrderDate@1210019 : Date;
+      Text004@1210020 : TextConst 'ENU=Accrual for %1 %2 for period %3 %4 already exist.;RUS=Начисление для %1 %2 за период %3 %4 уже существует.';
+      SkipSalTermsCheck@1210021 : Boolean;
+      SkipVacTermsCheck@1210022 : Boolean;
+      Text005@1210005 : TextConst 'ENU=Do you want to cancel %1 approval?;RUS=Отменить утверждение %1?';
+      Text006@1210024 : TextConst 'ENU=%1 should not be %2 for period %3.;RUS=%1 не должно быть %2 для периода %3.';
+      Text007@1210026 : TextConst 'ENU=%1 has already been terminated.;RUS=%1 уже уволен.';
+      Text008@1000 : TextConst 'ENU="The Middle Name is not specified in Person No.=%1\Do you want to continue?";RUS="Второе имя не указано для физ. лица с кодом=%1.\Продолжить?"';
+
+    PROCEDURE CreateContractTerms@1210008(LaborContractLine@1210002 : Record 17361;HideDialog@1210000 : Boolean);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        IF NOT LaborContract.GET("Contract No.") THEN
+          EXIT;
+
+        IF LaborContract.Status = LaborContract.Status::Closed THEN
+          LaborContract.FIELDERROR(Status);
+
+        LaborContractTerms.SETRANGE("Labor Contract No.","Contract No.");
+        LaborContractTerms.SETRANGE("Operation Type","Operation Type");
+        LaborContractTerms.SETRANGE("Supplement No.","Supplement No.");
+        IF LaborContractTerms.FINDFIRST THEN BEGIN
+          IF NOT HideDialog THEN
+            IF CONFIRM(Text001,TRUE,LaborContractTerms.TABLECAPTION) THEN
+              LaborContractTerms.DELETEALL
+            ELSE
+              EXIT
+          ELSE
+            LaborContractTerms.DELETEALL;
+        END;
+
+        Position.GET("Position No.");
+        Position.TESTFIELD("Category Code");
+        Position.TESTFIELD("Base Salary Element Code");
+
+        LaborContract.GET("Contract No.");
+        LaborContract.TESTFIELD("Person No.");
+        Person.GET(LaborContract."Person No.");
+
+        // add base salary for new position
+        IF "Operation Type" IN ["Operation Type"::Hire,"Operation Type"::Transfer] THEN BEGIN
+          LaborContractTerms.INIT;
+          LaborContractTerms."Labor Contract No." := "Contract No.";
+          LaborContractTerms."Operation Type" := "Operation Type";
+          LaborContractTerms."Supplement No." := "Supplement No.";
+          LaborContractTerms."Line Type" := LaborContractTerms."Line Type"::"Payroll Element";
+          LaborContractTerms.VALIDATE("Element Code",Position."Base Salary Element Code");
+          LaborContractTerms."Starting Date" := "Starting Date";
+          LaborContractTerms."Ending Date" := "Ending Date";
+          LaborContractTerms."Posting Group" := Position."Posting Group";
+          LaborContractTerms.Amount := Position."Base Salary";
+          IF NOT LaborContractTerms.INSERT THEN
+            LaborContractTerms.MODIFY;
+        END;
+
+        // add other position payroll elements
+        LaborContractTermsSetup.RESET;
+        LaborContractTermsSetup.SETRANGE("Table Type",LaborContractTermsSetup."Table Type"::Position);
+        LaborContractTermsSetup.SETRANGE("No.",Position."No.");
+        LaborContractTermsSetup.SETFILTER("Operation Type",'%1|%2',
+          "Operation Type" + 1,LaborContractTermsSetup."Operation Type"::All);
+        IF "Ending Date" <> 0D THEN
+          LaborContractTermsSetup.SETRANGE("Start Date",0D,"Ending Date");
+        LaborContractTermsSetup.SETFILTER("End Date",'%1|%2..',0D,"Starting Date");
+        IF LaborContractTermsSetup.FINDSET THEN
+          REPEAT
+            InsertContractTerms(LaborContractLine,LaborContractTermsSetup);
+          UNTIL LaborContractTermsSetup.NEXT = 0;
+
+        // add personal payroll elements
+        LaborContractTermsSetup.RESET;
+        LaborContractTermsSetup.SETRANGE("Table Type",LaborContractTermsSetup."Table Type"::Person);
+        LaborContractTermsSetup.SETRANGE("No.",Person."No.");
+        LaborContractTermsSetup.SETFILTER("Operation Type",'%1|%2',
+          "Operation Type" + 1,LaborContractTermsSetup."Operation Type"::All);
+        IF "Ending Date" <> 0D THEN
+          LaborContractTermsSetup.SETRANGE("Start Date",0D,"Ending Date");
+        LaborContractTermsSetup.SETFILTER("End Date",'%1|%2..',0D,"Starting Date");
+        IF LaborContractTermsSetup.FINDSET THEN
+          REPEAT
+            InsertContractTerms(LaborContractLine,LaborContractTermsSetup);
+          UNTIL LaborContractTermsSetup.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE InsertContractTerms@1210001(LaborContractLine2@1210001 : Record 17361;LaborContractTermsSetup2@1210000 : Record 17365);
+    BEGIN
+      WITH LaborContractTerms DO BEGIN
+        INIT;
+        SETRANGE("Labor Contract No.",LaborContractLine2."Contract No.");
+        SETRANGE("Operation Type",LaborContractLine2."Operation Type");
+        SETRANGE("Supplement No.",LaborContractLine2."Supplement No.");
+        SETRANGE("Line Type",LaborContractTermsSetup2.Type);
+        SETRANGE("Element Code",LaborContractTermsSetup2."Element Code");
+        SETRANGE("Starting Date",LaborContractTermsSetup2."Start Date");
+        IF FINDFIRST THEN BEGIN
+          IF Amount < LaborContractTermsSetup.Amount THEN BEGIN
+            Amount := LaborContractTermsSetup.Amount;
+            MODIFY;
+          END;
+        END ELSE BEGIN
+          INIT;
+          "Labor Contract No." := LaborContractLine2."Contract No.";
+          "Operation Type" := LaborContractLine2."Operation Type";
+          "Supplement No." := LaborContractLine2."Supplement No.";
+          "Starting Date" := LaborContractLine2."Starting Date";
+          IF "Starting Date" < LaborContractTermsSetup2."Start Date" THEN
+            "Starting Date" := LaborContractTermsSetup2."Start Date";
+          "Ending Date" := LaborContractLine2."Ending Date";
+          IF "Ending Date" = 0D THEN
+            "Ending Date" := LaborContractTermsSetup2."End Date"
+          ELSE
+            IF ("Ending Date" > LaborContractTermsSetup2."End Date") AND (LaborContractTermsSetup2."End Date" <> 0D) THEN
+              "Ending Date" := LaborContractTermsSetup2."End Date";
+          CASE LaborContractTermsSetup.Type OF
+            LaborContractTermsSetup.Type::"Payroll Element":
+              BEGIN
+                "Line Type" := "Line Type"::"Payroll Element";
+                LaborContractTermsSetup.TESTFIELD("Element Code");
+                VALIDATE("Element Code",LaborContractTermsSetup."Element Code");
+                VALIDATE("Posting Group",Position."Posting Group");
+                VALIDATE(Amount,LaborContractTermsSetup.Amount);
+                VALIDATE(Quantity,LaborContractTermsSetup.Quantity);
+                VALIDATE(Percent,LaborContractTermsSetup.Percent);
+              END;
+            LaborContractTermsSetup.Type::"Vacation Accrual":
+              BEGIN
+                "Line Type" := "Line Type"::"Vacation Accrual";
+                LaborContractTermsSetup.TESTFIELD("Element Code");
+                VALIDATE("Element Code",LaborContractTermsSetup."Element Code");
+                IF "Starting Date" <> 0D THEN BEGIN
+                  "Starting Date" := "Starting Date";
+                  "Ending Date" := CALCDATE('<1Y-1D>',"Starting Date");
+                END;
+                VALIDATE(Quantity,LaborContractTermsSetup.Quantity);
+              END;
+          END;
+          IF NOT INSERT THEN
+            MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE PostContractTerms@1210009(LaborContractLine@1210000 : Record 17361);
+    VAR
+      SourceCodeSetup@1210002 : Record 242;
+      EmplJnlLine@1210003 : Record 17382;
+      EmplAbsenceEntry@1210001 : Record 17389;
+      EmplJnlPostLine@1210004 : Codeunit 17382;
+      AECalcMgt@1210006 : Codeunit 17480;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        SourceCodeSetup.GET;
+        SourceCodeSetup.TESTFIELD("Employee Journal");
+
+        LaborContractTerms.RESET;
+        LaborContractTerms.SETRANGE("Labor Contract No.","Contract No.");
+        LaborContractTerms.SETRANGE("Operation Type","Operation Type");
+        LaborContractTerms.SETRANGE("Supplement No.","Supplement No.");
+        LaborContractTerms.SETRANGE("Line Type",LaborContractTerms."Line Type"::"Vacation Accrual");
+        IF NOT LaborContractTerms.ISEMPTY THEN BEGIN
+          EmplAbsenceEntry.RESET;
+          IF EmplAbsenceEntry.FINDLAST THEN
+            NextEntryNo := EmplAbsenceEntry."Entry No." + 1
+          ELSE
+            NextEntryNo := 1;
+        END;
+        LaborContractTerms.SETRANGE("Line Type");
+        IF LaborContractTerms.FINDSET THEN
+          REPEAT
+            CASE LaborContractTerms."Line Type" OF
+              LaborContractTerms."Line Type"::"Payroll Element":
+                BEGIN
+                  EmplJnlLine.INIT;
+                  EmplJnlLine."Employee No." := LaborContract."Employee No.";
+                  EmplJnlLine."Posting Date" := "Order Date";
+                  EmplJnlLine."Starting Date" := LaborContractTerms."Starting Date";
+                  EmplJnlLine."Ending Date" := LaborContractTerms."Ending Date";
+                  IF EmplJnlLine."Period Code" = '' THEN
+                    EmplJnlLine."Period Code" :=
+                      PayrollPeriod.PeriodByDate(EmplJnlLine."Starting Date");
+                  EmplJnlLine.Description := LaborContractTerms.Description;
+                  EmplJnlLine.VALIDATE("Element Code",LaborContractTerms."Element Code");
+                  IF (LaborContractTerms.Amount = 0) AND (LaborContractTerms.Quantity = 0) THEN
+                    ERROR(Text002,
+                      LaborContractTerms.FIELDCAPTION(Amount),
+                      LaborContractTerms.FIELDCAPTION(Quantity));
+                  EmplJnlLine.Amount := LaborContractTerms.Amount;
+                  EmplJnlLine.Quantity := LaborContractTerms.Quantity;
+                  IF LaborContractTerms.Percent <> 0 THEN
+                    EmplJnlLine.Quantity := LaborContractTerms.Percent;
+                  Position.GET("Position No.");
+                  EmplJnlLine.VALIDATE("Posting Group",LaborContractTerms."Posting Group");
+                  EmplJnlLine.VALIDATE("Currency Code",LaborContractTerms."Currency Code");
+                  EmplJnlLine.VALIDATE("Calendar Code",Position."Calendar Code");
+                  EmplJnlLine.VALIDATE("Payroll Calc Group",Position."Calc Group Code");
+                  EmplJnlLine.VALIDATE("Contract No.",LaborContract."No.");
+                  EmplJnlLine."HR Order No." := "Order No.";
+                  EmplJnlLine."HR Order Date" := "Order Date";
+                  EmplJnlLine."Source Code" := SourceCodeSetup."Employee Journal";
+                  EmplJnlLine."Salary Indexation" := LaborContractTerms."Salary Indexation";
+                  EmplJnlLine."Depends on Salary Element" := LaborContractTerms."Depends on Salary Element";
+                  PayrollElement.GET(LaborContractTerms."Element Code");
+                  IF PayrollElement.IsAECalc THEN BEGIN
+                    EmplJnlLine."Document Type" := EmplJnlLine."Document Type"::Vacation;
+                    AECalcMgt.FillDismissalAEDates(EmplJnlLine);
+                  END;
+                  EmplJnlPostLine.RunWithCheck(EmplJnlLine);
+                END;
+              LaborContractTerms."Line Type"::"Vacation Accrual":
+                BEGIN
+                  EmplAbsenceEntry.RESET;
+                  EmplAbsenceEntry.SETCURRENTKEY("Employee No.");
+                  EmplAbsenceEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+                  EmplAbsenceEntry.SETRANGE("Time Activity Code",LaborContractTerms."Time Activity Code");
+                  EmplAbsenceEntry.SETRANGE("Entry Type",EmplAbsenceEntry."Entry Type"::Accrual);
+                  EmplAbsenceEntry.SETRANGE("Start Date",
+                    LaborContractTerms."Starting Date",CALCDATE('<1Y-1D>',LaborContractTerms."Starting Date"));
+                  IF NOT EmplAbsenceEntry.ISEMPTY THEN
+                    ERROR(Text004,
+                      LaborContract."Employee No.",LaborContractTerms."Time Activity Code",
+                      LaborContractTerms."Starting Date",CALCDATE('<1Y-1D>',LaborContractTerms."Starting Date"));
+
+                  EmplAbsenceEntry.INIT;
+                  EmplAbsenceEntry."Entry No." := NextEntryNo;
+                  NextEntryNo := NextEntryNo + 1;
+                  EmplAbsenceEntry."Entry Type" := EmplAbsenceEntry."Entry Type"::Accrual;
+                  EmplAbsenceEntry."Employee No." := LaborContract."Employee No.";
+                  EmplAbsenceEntry."Element Code" := LaborContractTerms."Element Code";
+                  EmplAbsenceEntry."Time Activity Code" := LaborContractTerms."Time Activity Code";
+                  EmplAbsenceEntry."Position No." := "Position No.";
+                  EmplAbsenceEntry."Person No." := "Person No.";
+                  EmplAbsenceEntry."Start Date" := LaborContractTerms."Starting Date";
+                  EmplAbsenceEntry."End Date" := CALCDATE('<1Y-1D>',EmplAbsenceEntry."Start Date");
+                  LaborContractTerms.TESTFIELD(Quantity);
+                  EmplAbsenceEntry."Calendar Days" := LaborContractTerms.Quantity;
+                  EmplAbsenceEntry.INSERT;
+                END;
+            END;
+          UNTIL LaborContractTerms.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ConfirmApprove@1210003(VAR LaborContractLine@1210000 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD(Status,Status::Open);
+        IF CONFIRM(Text003,TRUE,"Operation Type") THEN
+          DoApprove(LaborContractLine);
+      END;
+    END;
+
+    PROCEDURE DoApprove@1210002(VAR LaborContractLine@1210000 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD(Status,Status::Open);
+
+        CASE "Operation Type" OF
+          "Operation Type"::Hire:
+            Hire(LaborContractLine,'');
+          "Operation Type"::Transfer:
+            Transfer(LaborContractLine);
+          "Operation Type"::Combination:
+            Combine(LaborContractLine);
+          "Operation Type"::Dismissal:
+            Dismiss(LaborContractLine);
+        END;
+      END;
+    END;
+
+    PROCEDURE Hire@1210000(VAR LaborContractLine@1210002 : Record 17361;PersonNo@1210000 : Code[20]);
+    VAR
+      AltAddrReg@1210001 : Record 5201;
+      AltAddrPerm@1210003 : Record 5201;
+      RegAddrExist@1210004 : Boolean;
+      PermAddrExist@1210005 : Boolean;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Hire);
+        CALCFIELDS("Salary Terms","Vacation Terms");
+        IF NOT SkipSalTermsCheck THEN
+          TESTFIELD("Salary Terms",TRUE);
+
+        LaborContract.GET("Contract No.");
+        CASE LaborContract."Contract Type" OF
+          LaborContract."Contract Type"::"Labor Contract":
+            IF NOT SkipVacTermsCheck THEN
+              TESTFIELD("Vacation Terms",TRUE);
+          LaborContract."Contract Type"::"Civil Contract":
+            LaborContract.TESTFIELD("Ending Date");
+        END;
+
+        CheckLine;
+        CheckPosition(LaborContractLine);
+
+        Person.GET(LaborContract."Person No.");
+        Person.TESTFIELD("First Name");
+        IF Person."Middle Name" = '' THEN
+          IF NOT CONFIRM(Text008,FALSE,Person."No.") THEN
+            EXIT;
+        Person.TESTFIELD("Last Name");
+        Person.TESTFIELD("Birth Date");
+        Person.TESTFIELD(Gender);
+
+        Position.GET("Position No.");
+
+        // create Employee card
+        IF LaborContract."Employee No." <> '' THEN
+          Employee.GET(LaborContract."Employee No.")
+        ELSE BEGIN
+          Employee.INIT;
+          Employee."No." := PersonNo;
+        END;
+        Employee.VALIDATE("Person No.",LaborContract."Person No.");
+        Employee.VALIDATE("Position No.","Position No.");
+        Employee."Contract No." := "Contract No.";
+
+        AltAddrReg.RESET;
+        AltAddrReg.SETRANGE("Person No.",Person."No.");
+        AltAddrReg.SETRANGE("Address Type",AltAddrReg."Address Type"::Registration);
+        RegAddrExist := AltAddrReg.FINDLAST;
+
+        AltAddrPerm.RESET;
+        AltAddrPerm.SETRANGE("Person No.",Person."No.");
+        AltAddrPerm.SETRANGE("Address Type",AltAddrPerm."Address Type"::Permanent);
+        PermAddrExist := AltAddrPerm.FINDLAST;
+
+        IF RegAddrExist THEN BEGIN
+          CopyAltAddr(Employee,AltAddrReg);
+          IF PermAddrExist THEN BEGIN
+            Employee."Alt. Address Code" := AltAddrPerm.Code;
+            Employee."Alt. Address Start Date" := AltAddrPerm."Valid from Date";
+          END;
+        END ELSE
+          IF PermAddrExist THEN
+            CopyAltAddr(Employee,AltAddrPerm);
+
+        IF LaborContract."Employee No." = '' THEN
+          Employee.INSERT(TRUE);
+
+        LaborContract."Employee No." := Employee."No.";
+        LaborContract.Status := LaborContract.Status::Approved;
+        LaborContract.MODIFY;
+
+        // Update Job History
+        EmplJobEntry.RESET;
+        IF EmplJobEntry.FINDLAST THEN
+          NextEntryNo := EmplJobEntry."Entry No." + 1
+        ELSE
+          NextEntryNo := 1;
+
+        IF OrderNo <> '' THEN
+          "Order No." := OrderNo;
+        IF OrderDate <> 0D THEN
+          "Order Date" := OrderDate;
+
+        IF "Order No." = '' THEN BEGIN
+          HumanResSetup.GET;
+          HumanResSetup.TESTFIELD("HR Order Nos.");
+          "Order No." := NoSeriesMgt.GetNextNo(HumanResSetup."HR Order Nos.",WORKDATE,TRUE);
+        END;
+        IF "Order Date" = 0D THEN
+          "Order Date" := WORKDATE;
+
+        EmplJobEntry.INIT;
+        EmplJobEntry."Entry No." := NextEntryNo;
+        EmplJobEntry.VALIDATE("Employee No.",Employee."No.");
+        EmplJobEntry.Type := EmplJobEntry.Type::Hire;
+        EmplJobEntry."Contract No." := "Contract No.";
+        EmplJobEntry."Supplement No." := "Supplement No.";
+        EmplJobEntry.VALIDATE("Person No.",LaborContract."Person No.");
+        EmplJobEntry.VALIDATE("Position No.","Position No.");
+        EmplJobEntry."Position Rate" := "Position Rate";
+        EmplJobEntry."Starting Date" := "Starting Date";
+        EmplJobEntry."Ending Date" := "Ending Date";
+        IF LaborContract."Insured Service" THEN BEGIN
+          EmplJobEntry."Insured Period Starting Date" := "Starting Date";
+          EmplJobEntry."Insured Period Ending Date" := "Ending Date";
+        END;
+        EmplJobEntry."Uninterrupted Service" := LaborContract."Uninterrupted Service";
+        EmplJobEntry."Document No." := "Order No.";
+        EmplJobEntry."Document Date" := "Order Date";
+        EmplJobEntry."Position Changed" := TRUE;
+        EmplJobEntry."Territorial Conditions" := "Territorial Conditions";
+        EmplJobEntry."Special Conditions" := "Special Conditions";
+        EmplJobEntry."Record of Service Reason" := "Record of Service Reason";
+        EmplJobEntry."Record of Service Additional" := "Record of Service Additional";
+        EmplJobEntry."Service Years Reason" := "Service Years Reason";
+        EmplJobEntry.INSERT;
+
+        PostContractTerms(LaborContractLine);
+
+        Status := Status::Approved;
+        MODIFY;
+        COMMIT;
+
+        Employee.VALIDATE("Employment Date","Starting Date");
+        Employee.VALIDATE("Emplymt. Contract Code",LaborContract."Contract Type Code");
+        Employee.MODIFY;
+      END;
+    END;
+
+    LOCAL PROCEDURE Combine@1210004(VAR LaborContractLine@1210000 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Combination);
+        TESTFIELD("Ending Date");
+
+        CheckLine;
+        CheckPosition(LaborContractLine);
+
+        LaborContract.GET("Contract No.");
+        Employee.GET(LaborContract."Employee No.");
+        Position.GET("Position No.");
+
+        IF "Order No." = '' THEN BEGIN
+          HumanResSetup.GET;
+          HumanResSetup.TESTFIELD("HR Order Nos.");
+          "Order No." := NoSeriesMgt.GetNextNo(HumanResSetup."HR Order Nos.",WORKDATE,TRUE);
+        END;
+        IF "Order Date" = 0D THEN
+          "Order Date" := WORKDATE;
+
+        EmplJobEntry.RESET;
+        IF EmplJobEntry.FINDLAST THEN
+          NextEntryNo := EmplJobEntry."Entry No." + 1
+        ELSE
+          NextEntryNo := 1;
+
+        EmplJobEntry.INIT;
+        EmplJobEntry."Entry No." := NextEntryNo;
+        EmplJobEntry.VALIDATE("Employee No.",Employee."No.");
+        EmplJobEntry."Contract No." := "Contract No.";
+        EmplJobEntry."Supplement No." := "Supplement No.";
+        EmplJobEntry.VALIDATE("Person No.",LaborContract."Person No.");
+        EmplJobEntry.VALIDATE("Position No.","Position No.");
+        EmplJobEntry."Position Rate" := "Position Rate";
+        EmplJobEntry."Starting Date" := "Starting Date";
+        EmplJobEntry."Ending Date" := "Ending Date";
+        IF LaborContract."Insured Service" THEN BEGIN
+          EmplJobEntry."Insured Period Starting Date" := "Starting Date";
+          EmplJobEntry."Insured Period Ending Date" := "Ending Date";
+        END;
+        EmplJobEntry."Uninterrupted Service" := LaborContract."Uninterrupted Service";
+        EmplJobEntry."Document No." := "Order No.";
+        EmplJobEntry."Document Date" := "Order Date";
+        EmplJobEntry."Position Changed" := TRUE;
+        EmplJobEntry."Territorial Conditions" := "Territorial Conditions";
+        EmplJobEntry."Special Conditions" := "Special Conditions";
+        EmplJobEntry."Record of Service Reason" := "Record of Service Reason";
+        EmplJobEntry."Record of Service Additional" := "Record of Service Additional";
+        EmplJobEntry."Service Years Reason" := "Service Years Reason";
+        EmplJobEntry.INSERT;
+
+        PostContractTerms(LaborContractLine);
+
+        Status := Status::Approved;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    LOCAL PROCEDURE Transfer@1210006(VAR LaborContractLine@1210003 : Record 17361);
+    VAR
+      EmplJobEntry2@1210002 : Record 17363;
+      Position2@1210000 : Record 17370;
+      TimesheetMgt@1210004 : Codeunit 17440;
+      NextEntryNo@1210001 : Integer;
+      CalendarChanged@1210005 : Boolean;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Transfer);
+        TESTFIELD("Supplement No.");
+
+        LaborContract.GET("Contract No.");
+        Employee.GET(LaborContract."Employee No.");
+        Position.GET("Position No.");
+
+        CheckLine;
+        IF LaborContract."Contract Type" = LaborContract."Contract Type"::"Civil Contract" THEN
+          TESTFIELD("Ending Date");
+
+        CheckPosition(LaborContractLine);
+
+        // Update Job History
+        EmplJobEntry.RESET;
+        IF EmplJobEntry.FINDLAST THEN
+          NextEntryNo := EmplJobEntry."Entry No." + 1
+        ELSE
+          NextEntryNo := 1;
+
+        // close job enties for previous position
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Position No.",Employee."Position No.");
+        EmplJobEntry.SETRANGE("Position Changed",TRUE);
+        IF EmplJobEntry.FINDLAST THEN BEGIN
+          CheckTransferDate(EmplJobEntry."Supplement No.",EmplJobEntry."Document No.",EmplJobEntry."Document Date");
+          EmplJobEntry."Ending Date" := CALCDATE('<-1D>',"Starting Date");
+          IF LaborContract."Insured Service" THEN
+            EmplJobEntry."Insured Period Ending Date" := EmplJobEntry."Ending Date";
+          EmplJobEntry.MODIFY;
+          EmplJobEntry2 := EmplJobEntry;
+          EmplJobEntry2."Entry No." := NextEntryNo;
+          NextEntryNo := NextEntryNo + 1;
+          EmplJobEntry2."Document No." := "Order No.";
+          EmplJobEntry2."Document Date" := "Order Date";
+          EmplJobEntry2."Position Rate" := -EmplJobEntry2."Position Rate";
+          EmplJobEntry2."Position Changed" := FALSE;
+          EmplJobEntry2."Starting Date" := "Starting Date";
+          EmplJobEntry2."Insured Period Starting Date" := 0D;
+          EmplJobEntry2."Insured Period Ending Date" := 0D;
+          EmplJobEntry2.INSERT;
+        END;
+
+        // Update parent positions
+        Position2.RESET;
+        Position2.SETCURRENTKEY("Parent Position No.");
+        Position2.SETRANGE("Parent Position No.",Employee."Position No.");
+        Position2.MODIFYALL("Parent Position No.","Position No.");
+
+        // update Employee card
+        Employee.GET(LaborContract."Employee No.");
+        IF Employee."Position No." <> "Position No." THEN BEGIN
+          CalendarChanged := FALSE;
+          IF Employee."Calendar Code" <> Position."Calendar Code" THEN
+            CalendarChanged := TRUE;
+          Employee.VALIDATE("Position No.","Position No.");
+          Employee.MODIFY;
+        END;
+
+        // Update Job History
+        EmplJobEntry.RESET;
+        IF EmplJobEntry.FINDLAST THEN
+          NextEntryNo := EmplJobEntry."Entry No." + 1
+        ELSE
+          NextEntryNo := 1;
+
+        IF OrderNo <> '' THEN
+          "Order No." := OrderNo;
+        IF OrderDate <> 0D THEN
+          "Order Date" := OrderDate;
+
+        IF "Order No." = '' THEN BEGIN
+          HumanResSetup.GET;
+          HumanResSetup.TESTFIELD("HR Order Nos.");
+          "Order No." := NoSeriesMgt.GetNextNo(HumanResSetup."HR Order Nos.",WORKDATE,TRUE);
+        END;
+        IF "Order Date" = 0D THEN
+          "Order Date" := WORKDATE;
+
+        // create new job entry
+        EmplJobEntry.INIT;
+        EmplJobEntry."Entry No." := NextEntryNo;
+        EmplJobEntry.VALIDATE("Employee No.",Employee."No.");
+        EmplJobEntry."Contract No." := "Contract No.";
+        EmplJobEntry."Supplement No." := "Supplement No.";
+        EmplJobEntry.VALIDATE("Person No.",LaborContract."Person No.");
+        EmplJobEntry.VALIDATE("Position No.","Position No.");
+        EmplJobEntry."Position Rate" := "Position Rate";
+        EmplJobEntry."Starting Date" := "Starting Date";
+        EmplJobEntry."Ending Date" := "Ending Date";
+        EmplJobEntry.Type := EmplJobEntry.Type::Transfer;
+        IF LaborContract."Insured Service" THEN BEGIN
+          EmplJobEntry."Insured Period Starting Date" := "Starting Date";
+          EmplJobEntry."Insured Period Ending Date" := "Ending Date";
+        END;
+        EmplJobEntry."Uninterrupted Service" := LaborContract."Uninterrupted Service";
+        EmplJobEntry."Document No." := "Order No.";
+        EmplJobEntry."Document Date" := "Order Date";
+        EmplJobEntry."Position Changed" := TRUE;
+        EmplJobEntry."Territorial Conditions" := "Territorial Conditions";
+        EmplJobEntry."Special Conditions" := "Special Conditions";
+        EmplJobEntry.INSERT;
+
+        PostContractTerms(LaborContractLine);
+
+        // update timesheet
+        IF CalendarChanged THEN BEGIN
+          // IMPORTANT: Calendar change is only possible for new payroll period
+          IF DATE2DMY("Starting Date",1) <> 1 THEN
+            FIELDERROR("Starting Date");
+
+          Employee."Calendar Code" := Position."Calendar Code";
+          TimesheetStatus.SETRANGE("Employee No.",Employee."No.");
+          IF "Ending Date" = 0D THEN
+            TimesheetStatus.SETFILTER("Period Code",'%1..',
+              PayrollPeriod.PeriodByDate("Starting Date"))
+          ELSE
+            TimesheetStatus.SETRANGE("Period Code",
+              PayrollPeriod.PeriodByDate("Starting Date"),
+              PayrollPeriod.PeriodByDate("Ending Date"));
+          IF TimesheetStatus.FINDSET THEN
+            REPEAT
+              PayrollPeriod.GET(TimesheetStatus."Period Code");
+              IF PayrollPeriod.Code = PayrollPeriod.PeriodByDate("Starting Date") THEN
+                TimesheetMgt.UpdateTimesheet(
+                  Employee,"Starting Date",PayrollPeriod."Ending Date",Position."Calendar Code",TRUE)
+              ELSE
+                TimesheetMgt.UpdateTimesheet(
+                  Employee,PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",
+                  Position."Calendar Code",TRUE);
+            UNTIL TimesheetStatus.NEXT = 0;
+        END;
+
+        Status := Status::Approved;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    LOCAL PROCEDURE Dismiss@1210005(LaborContractLine@1210002 : Record 17361);
+    VAR
+      EmplJobEntry2@1210001 : Record 17363;
+      TimesheetLine@1210003 : Record 17441;
+      PayrollStatus@1210004 : Record 17457;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Dismissal);
+        TESTFIELD("Starting Date");
+        TESTFIELD("Ending Date");
+        TESTFIELD("Dismissal Reason");
+
+        CheckDateOrder;
+
+        // close main contract and line
+        LaborContract.GET("Contract No.");
+        Employee.GET(LaborContract."Employee No.");
+        LaborContract.Status := LaborContract.Status::Closed;
+        LaborContract.MODIFY;
+
+        // check payroll status
+        PayrollStatus.GET(
+          PayrollPeriod.PeriodByDate("Ending Date"),Employee."No.");
+        IF PayrollStatus."Payroll Status" > PayrollStatus."Payroll Status"::Calculated THEN
+          ERROR(Text006,
+            PayrollStatus.TABLECAPTION,
+            PayrollStatus."Payroll Status",
+            PayrollPeriod.PeriodByDate("Ending Date"));
+
+        // Update Job History
+        EmplJobEntry.RESET;
+        IF EmplJobEntry.FINDLAST THEN
+          NextEntryNo := EmplJobEntry."Entry No." + 1
+        ELSE
+          NextEntryNo := 1;
+
+        IF OrderNo <> '' THEN
+          "Order No." := OrderNo;
+        IF OrderDate <> 0D THEN
+          "Order Date" := OrderDate;
+
+        IF "Order No." = '' THEN BEGIN
+          HumanResSetup.GET;
+          HumanResSetup.TESTFIELD("HR Order Nos.");
+          "Order No." := NoSeriesMgt.GetNextNo(HumanResSetup."HR Order Nos.",WORKDATE,TRUE);
+        END;
+        IF "Order Date" = 0D THEN
+          "Order Date" := WORKDATE;
+
+        // close job entry for current position
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Position No.",Employee."Position No.");
+        EmplJobEntry.SETRANGE("Position Changed",TRUE);
+        IF EmplJobEntry.FINDLAST THEN BEGIN
+          EmplJobEntry."Ending Date" := "Ending Date";
+          EmplJobEntry.MODIFY;
+          EmplJobEntry2 := EmplJobEntry;
+          EmplJobEntry2."Entry No." := NextEntryNo;
+          NextEntryNo := NextEntryNo + 1;
+          EmplJobEntry2."Document No." := "Order No.";
+          EmplJobEntry2."Document Date" := "Order Date";
+          EmplJobEntry2."Position Rate" := -EmplJobEntry2."Position Rate";
+          EmplJobEntry2."Position Changed" := FALSE;
+          EmplJobEntry2."Starting Date" := "Ending Date";
+          EmplJobEntry2.INSERT;
+        END;
+
+        // update Employee card
+        Employee.GET(LaborContract."Employee No.");
+        Employee.VALIDATE("Termination Date","Ending Date");
+        Employee.VALIDATE("Grounds for Term. Code","Dismissal Reason");
+        Employee.Status := Employee.Status::Terminated;
+        Employee.MODIFY;
+
+        // remove timesheets after dismissal period
+        TimesheetStatus.RESET;
+        TimesheetStatus.SETRANGE("Employee No.",Employee."No.");
+        TimesheetStatus.SETFILTER("Period Code",'%1..',
+          PayrollPeriod.PeriodByDate(CALCDATE('<CM +1D>',Employee."Termination Date")));
+        TimesheetStatus.DELETEALL(TRUE);
+
+        TimesheetLine.RESET;
+        TimesheetLine.SETRANGE("Employee No.",Employee."No.");
+        TimesheetLine.SETFILTER(Date,'>%1',Employee."Termination Date");
+        TimesheetLine.DELETEALL(TRUE);
+
+        // remove payroll status after dismissal period
+        PayrollStatus.RESET;
+        PayrollStatus.SETRANGE("Employee No.",Employee."No.");
+        PayrollStatus.SETFILTER("Period Code",'%1..',
+          PayrollPeriod.PeriodByDate(CALCDATE('<CM +1D>',Employee."Termination Date")));
+        PayrollStatus.DELETEALL(TRUE);
+
+        // close line
+
+        // close existing salary records
+        EmplLedgEntry.RESET;
+        EmplLedgEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplLedgEntry.SETRANGE("Action Ending Date",0D);
+        EmplLedgEntry.MODIFYALL("Action Ending Date","Starting Date");
+
+        // update last vacation period calculation entry
+        UpdateLastVacPeriodCalcEntry(LaborContract."Employee No.","Ending Date",FALSE);
+
+        PostContractTerms(LaborContractLine);
+
+        Status := Status::Approved;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE TerminateCombination@1210007(LaborContractLine@1210000 : Record 17361);
+    VAR
+      EmplJobEntry2@1210001 : Record 17363;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Combination);
+        TESTFIELD(Status,Status::Approved);
+        TESTFIELD("Ending Date");
+
+        LaborContract.GET("Contract No.");
+        Employee.GET(LaborContract."Employee No.");
+        Position.GET("Position No.");
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Contract No.",LaborContract."No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Position No.","Position No.");
+        EmplJobEntry.SETRANGE("Position Changed",TRUE);
+        EmplJobEntry.SETRANGE(Type,EmplJobEntry.Type::" ");
+        EmplJobEntry.SETRANGE("Supplement No.","Supplement No.");
+        EmplJobEntry.SETRANGE("Document No.","Order No.");
+        EmplJobEntry.SETRANGE("Document Date","Order Date");
+        IF EmplJobEntry.FINDLAST THEN BEGIN
+          NextEntryNo := EmplJobEntry."Entry No." + 1;
+          EmplJobEntry."Ending Date" := "Ending Date";
+          EmplJobEntry.MODIFY;
+          EmplJobEntry2 := EmplJobEntry;
+          EmplJobEntry2."Entry No." := NextEntryNo;
+          EmplJobEntry2."Position Rate" := -EmplJobEntry2."Position Rate";
+          EmplJobEntry2."Position Changed" := FALSE;
+          EmplJobEntry2.INSERT;
+        END;
+
+        EmplLedgEntry.RESET;
+        EmplLedgEntry.SETRANGE("Contract No.","Contract No.");
+        EmplLedgEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplLedgEntry.SETRANGE("HR Order No.","Order No.");
+        EmplLedgEntry.SETRANGE("HR Order Date","Order Date");
+        EmplLedgEntry.MODIFYALL("Action Ending Date","Ending Date");
+
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE InsertContracts@12(VAR GroupOrderLine@1000 : Record 17367);
+    VAR
+      LaborContract@1001 : Record 17360;
+      LaborContractLine@1210001 : Record 17361;
+      LaborContracts@1002 : Page 17368;
+      ChangeLogMgt@1007 : Codeunit 423;
+      RecRef@1210000 : RecordRef;
+      LaborContractCount@1003 : Integer;
+      GroupOrderLineNo@1004 : Integer;
+      i@1005 : Integer;
+    BEGIN
+      LaborContract.FILTERGROUP(2);
+      IF GroupOrderLine."Document Type" = GroupOrderLine."Document Type"::Hire THEN
+        LaborContract.SETRANGE(Status,LaborContract.Status::Open)
+      ELSE
+        LaborContract.SETRANGE(Status,LaborContract.Status::Open,LaborContract.Status::Approved);
+      LaborContract.FILTERGROUP(0);
+      IF LaborContract.FINDSET THEN
+        REPEAT
+          LaborContractLine.SETRANGE("Contract No.",LaborContract."No.");
+          LaborContractLine.SETRANGE(Status,LaborContractLine.Status::Open);
+          CASE GroupOrderLine."Document Type" OF
+            GroupOrderLine."Document Type"::Hire:
+              LaborContractLine.SETRANGE("Operation Type",LaborContractLine."Operation Type"::Hire);
+            GroupOrderLine."Document Type"::Dismissal:
+              LaborContractLine.SETRANGE("Operation Type",LaborContractLine."Operation Type"::Dismissal);
+            GroupOrderLine."Document Type"::Transfer:
+              LaborContractLine.SETRANGE("Operation Type",LaborContractLine."Operation Type"::Transfer);
+          END;
+          IF NOT LaborContractLine.ISEMPTY THEN
+            LaborContract.MARK(TRUE);
+        UNTIL LaborContract.NEXT = 0;
+
+      LaborContract.MARKEDONLY(TRUE);
+      LaborContracts.SETTABLEVIEW(LaborContract);
+      LaborContracts.LOOKUPMODE(TRUE);
+
+      IF LaborContracts.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        LaborContracts.SetSelection(LaborContract);
+        LaborContractCount := LaborContract.COUNT;
+        IF LaborContractCount > 0 THEN BEGIN
+          GroupOrderLineNo := GroupOrderLine."Line No.";
+          GroupOrderLine.SETRANGE("Document Type",GroupOrderLine."Document Type");
+          GroupOrderLine.SETRANGE("Document No.",GroupOrderLine."Document No.");
+          IF GroupOrderLine.FINDLAST THEN
+            REPEAT
+              i := GroupOrderLine."Line No.";
+              IF i >= GroupOrderLineNo THEN BEGIN
+                GroupOrderLine.DELETE;
+                GroupOrderLine."Line No." := i + 10000 * LaborContractCount;
+                GroupOrderLine.INSERT;
+              END;
+            UNTIL (i <= GroupOrderLineNo) OR (GroupOrderLine.NEXT(-1) = 0);
+
+          IF GroupOrderLineNo = 0 THEN
+            GroupOrderLineNo := 10000;
+
+          IF LaborContract.FINDSET THEN
+            REPEAT
+              GroupOrderLine.INIT;
+              GroupOrderLine."Line No." := GroupOrderLineNo;
+              GroupOrderLineNo := GroupOrderLineNo + 10000;
+              GroupOrderLine.VALIDATE("Contract No.",LaborContract."No.");
+              GroupOrderLine.INSERT;
+              RecRef.GETTABLE(GroupOrderLine);
+              ChangeLogMgt.LogInsertion(RecRef);
+            UNTIL LaborContract.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetOrderNoDate@1210011(OrderNo2@1210000 : Code[20];OrderDate2@1210001 : Date);
+    BEGIN
+      OrderNo := OrderNo2;
+      OrderDate := OrderDate2;
+    END;
+
+    PROCEDURE CopyAltAddr@1210014(VAR Employee@1210000 : Record 5200;AltAddr@1210001 : Record 5201);
+    BEGIN
+      Employee.Address := COPYSTR(AltAddr.Address,1,50);
+      Employee.City := AltAddr.City;
+      Employee."Post Code" := AltAddr."Post Code";
+      Employee."Country/Region Code" := AltAddr."Country/Region Code";
+      Employee."Phone No." := AltAddr."Phone No.";
+      Employee."Fax No." := AltAddr."Fax No.";
+      Employee."E-Mail" := AltAddr."E-Mail"
+    END;
+
+    PROCEDURE ConfirmCancelApproval@1210010(VAR LaborContractLine@1210000 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD(Status,Status::Approved);
+        IF CONFIRM(Text005,FALSE,"Operation Type") THEN
+          UndoApproval(LaborContractLine);
+      END;
+    END;
+
+    PROCEDURE UndoApproval@1210018(VAR LaborContractLine@1210000 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD(Status,Status::Approved);
+
+        CASE "Operation Type" OF
+          "Operation Type"::Hire:
+            UndoHire(LaborContractLine,'');
+          "Operation Type"::Transfer:
+            UndoTransfer(LaborContractLine);
+          "Operation Type"::Combination:
+            UndoCombine(LaborContractLine);
+          "Operation Type"::Dismissal:
+            UndoDismiss(LaborContractLine);
+        END;
+      END;
+    END;
+
+    PROCEDURE UndoHire@1210021(VAR LaborContractLine@1210002 : Record 17361;PersonNo@1210000 : Code[20]);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Hire);
+
+        LaborContract.GET("Contract No.");
+        IF LaborContract.Status = LaborContract.Status::Closed THEN
+          LaborContract.FIELDERROR(Status);
+        Employee.GET(LaborContract."Employee No.");
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETRANGE("Contract No.","Contract No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Document No.","Order No.");
+        EmplJobEntry.SETRANGE("Document Date","Order Date");
+        EmplJobEntry.MODIFYALL("Position Rate",0);
+        EmplJobEntry.MODIFYALL("Employee No.",'');
+
+        CancelPostedContractTerms(LaborContractLine);
+
+        Employee.VALIDATE("Position No.",'');
+        Employee.VALIDATE("Employment Date",0D);
+        Employee.VALIDATE("Emplymt. Contract Code",'');
+        Employee.MODIFY;
+
+        TimesheetStatus.RESET;
+        TimesheetStatus.SETRANGE("Employee No.",Employee."No.");
+        TimesheetStatus.DELETEALL(TRUE);
+
+        LaborContract.Status := LaborContract.Status::Open;
+        LaborContract.MODIFY;
+
+        Status := Status::Open;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    LOCAL PROCEDURE UndoTransfer@1210024(VAR LaborContractLine@1210003 : Record 17361);
+    VAR
+      CalendarChanged@1210005 : Boolean;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Transfer);
+        TESTFIELD("Supplement No.");
+
+        LaborContract.GET("Contract No.");
+        IF LaborContract.Status = LaborContract.Status::Closed THEN
+          LaborContract.FIELDERROR(Status);
+        Employee.GET(LaborContract."Employee No.");
+        Position.GET("Position No.");
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Contract No.","Contract No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Document No.","Order No.");
+        EmplJobEntry.SETRANGE("Document Date","Order Date");
+        IF EmplJobEntry.FINDFIRST THEN
+          IF Employee."Position No." <> EmplJobEntry."Position No." THEN BEGIN
+            Position.GET(EmplJobEntry."Position No.");
+            Position.TESTFIELD(Status,Position.Status::Approved);
+            CalendarChanged := FALSE;
+            IF Employee."Calendar Code" <> Position."Calendar Code" THEN
+              CalendarChanged := TRUE;
+            Employee.VALIDATE("Position No.",Position."No.");
+            Employee.MODIFY;
+          END;
+        EmplJobEntry.MODIFYALL("Position Rate",0);
+        EmplJobEntry.MODIFYALL("Employee No.",'');
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Contract No.","Contract No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Position No.",Position."No.");
+        EmplJobEntry.SETRANGE("Position Changed",TRUE);
+        IF EmplJobEntry.FINDLAST THEN BEGIN
+          EmplJobEntry."Ending Date" := 0D;
+          EmplJobEntry.MODIFY;
+        END;
+
+        CancelPostedContractTerms(LaborContractLine);
+
+        Status := Status::Open;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    LOCAL PROCEDURE UndoDismiss@1210015(VAR LaborContractLine@1210002 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Dismissal);
+
+        LaborContract.GET("Contract No.");
+        Employee.GET(LaborContract."Employee No.");
+        Position.GET("Position No.");
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Contract No.","Contract No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Document No.","Order No.");
+        EmplJobEntry.SETRANGE("Document Date","Order Date");
+        EmplJobEntry.MODIFYALL("Position Rate",0);
+        EmplJobEntry.MODIFYALL("Employee No.",'');
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETCURRENTKEY("Employee No.");
+        EmplJobEntry.SETRANGE("Contract No.","Contract No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Position No.",Employee."Position No.");
+        EmplJobEntry.SETRANGE("Position Changed",TRUE);
+        IF EmplJobEntry.FINDLAST THEN BEGIN
+          EmplJobEntry."Ending Date" := 0D;
+          EmplJobEntry.MODIFY;
+        END;
+
+        CancelPostedContractTerms(LaborContractLine);
+
+        // update last vacation period calculation entry
+        UpdateLastVacPeriodCalcEntry(LaborContract."Employee No.","Ending Date",TRUE);
+
+        Employee.VALIDATE("Termination Date",0D);
+        Employee.VALIDATE("Grounds for Term. Code",'');
+        Employee.Status := Employee.Status::Active;
+        Employee.MODIFY;
+
+        LaborContract.Status := LaborContract.Status::Approved;
+        LaborContract.MODIFY;
+        Status := Status::Open;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE UndoCombine@1210017(VAR LaborContractLine@1210002 : Record 17361);
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        TESTFIELD("Operation Type","Operation Type"::Combination);
+
+        LaborContract.GET("Contract No.");
+        IF LaborContract.Status = LaborContract.Status::Closed THEN
+          LaborContract.FIELDERROR(Status);
+        Employee.GET(LaborContract."Employee No.");
+
+        EmplJobEntry.RESET;
+        EmplJobEntry.SETRANGE("Contract No.","Contract No.");
+        EmplJobEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+        EmplJobEntry.SETRANGE("Document No.","Order No.");
+        EmplJobEntry.SETRANGE("Document Date","Order Date");
+        IF EmplJobEntry.COUNT <> 1 THEN
+          ERROR(Text007,"Operation Type");
+        EmplJobEntry.MODIFYALL("Position Rate",0);
+        EmplJobEntry.MODIFYALL("Employee No.",'');
+
+        CancelPostedContractTerms(LaborContractLine);
+
+        Status := Status::Open;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE CancelPostedContractTerms@1210016(LaborContractLine@1210000 : Record 17361);
+    VAR
+      EmplAbsenceEntry@1210001 : Record 17389;
+      PayrollStatus@1210002 : Record 17457;
+    BEGIN
+      WITH LaborContractLine DO BEGIN
+        LaborContractTerms.RESET;
+        LaborContractTerms.SETRANGE("Labor Contract No.","Contract No.");
+        LaborContractTerms.SETRANGE("Operation Type","Operation Type");
+        LaborContractTerms.SETRANGE("Supplement No.","Supplement No.");
+        LaborContractTerms.SETRANGE("Line Type",LaborContractTerms."Line Type"::"Vacation Accrual");
+        IF LaborContractTerms.FINDSET THEN
+          REPEAT
+            EmplAbsenceEntry.RESET;
+            EmplAbsenceEntry.SETCURRENTKEY("Employee No.");
+            EmplAbsenceEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+            EmplAbsenceEntry.SETRANGE("Time Activity Code",LaborContractTerms."Time Activity Code");
+            EmplAbsenceEntry.SETRANGE("Entry Type",EmplAbsenceEntry."Entry Type"::Accrual);
+            EmplAbsenceEntry.SETRANGE(
+              "Start Date",
+              LaborContractTerms."Starting Date",
+              CALCDATE('<1Y-1D>',LaborContractTerms."Starting Date"));
+            EmplAbsenceEntry.MODIFYALL("Employee No.",'');
+          UNTIL LaborContractTerms.NEXT = 0;
+
+        LaborContractTerms.SETRANGE("Line Type",LaborContractTerms."Line Type"::"Payroll Element");
+        IF NOT LaborContractTerms.ISEMPTY THEN BEGIN
+          EmplLedgEntry.RESET;
+          EmplLedgEntry.SETRANGE("Contract No.","Contract No.");
+          EmplLedgEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+          EmplLedgEntry.SETRANGE("HR Order No.","Order No.");
+          EmplLedgEntry.SETRANGE("HR Order Date","Order Date");
+          IF EmplLedgEntry.FINDSET THEN BEGIN
+            REPEAT
+              PayrollStatus.CheckPayrollStatus(EmplLedgEntry."Period Code",EmplLedgEntry."Employee No.");
+              EmplLedgEntry."Employee No." := '';
+              EmplLedgEntry.MODIFY;
+            UNTIL EmplLedgEntry.NEXT = 0;
+          END;
+        END;
+
+        IF "Operation Type" = "Operation Type"::Dismissal THEN BEGIN
+          EmplLedgEntry.RESET;
+          EmplLedgEntry.SETRANGE("Employee No.",LaborContract."Employee No.");
+          EmplLedgEntry.SETRANGE("Action Ending Date","Starting Date");
+          EmplLedgEntry.MODIFYALL("Action Ending Date",0D);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateLastVacPeriodCalcEntry@1210025(EmployeeNo@1210000 : Code[20];EndingDate@1210001 : Date;RestoreEndingDate@1210002 : Boolean);
+    VAR
+      EmplAbsenceEntry@1210003 : Record 17389;
+    BEGIN
+      WITH EmplAbsenceEntry DO BEGIN
+        SETRANGE("Employee No.",LaborContract."Employee No.");
+        SETRANGE("Entry Type","Entry Type"::Accrual);
+        SETFILTER("Start Date",'..%1',EndingDate);
+        SETFILTER("End Date",'%1..',EndingDate);
+        IF FINDFIRST THEN BEGIN
+          IF RestoreEndingDate THEN
+            "End Date" := CALCDATE('<1Y-1D>',"Start Date")
+          ELSE
+            "End Date" := EndingDate;
+          MODIFY;
+        END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

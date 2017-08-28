@@ -1,0 +1,204 @@
+OBJECT Codeunit 12472 Copy FA Document Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1034 : TextConst 'ENU=Please enter a Document No.;RUS=Введите номер документа';
+      Text001@1033 : TextConst 'ENU=%1 %2 cannot be copied onto itself.;RUS=%1 %2 нельзя скопировать в себя.';
+      Text002@1032 : TextConst 'ENU=The existing lines for %1 %2 will be deleted.\\;RUS=Существующие строки для %1 %2 будут удалены.\\';
+      Text003@1031 : TextConst 'ENU=Do you want to continue?;RUS=Продолжить?';
+      Text004@1030 : TextConst 'ENU=The document line(s) with a G/L account where direct posting is not allowed have not been copied to the new document by the Copy Document batch job.;RUS=Строки документа со счетами ГК, для которых не разрешен прямой учет, не были скопированы в новый документ пакетным заданием "Копировать документ".';
+      FADocType@1002 : 'Writeoff,Release,Disposal,Posted Writeoff,Posted Release,Posted Disposal';
+      IncludeHeader@1001 : Boolean;
+      CreateToHeader@1011 : Boolean;
+
+    PROCEDURE SetProperties@2(NewIncludeHeader@1001 : Boolean;NewCreateToHeader@1002 : Boolean);
+    BEGIN
+      IncludeHeader := NewIncludeHeader;
+      CreateToHeader := NewCreateToHeader;
+    END;
+
+    PROCEDURE FADocHeaderDocType@1(DocType@1001 : Option) : Integer;
+    VAR
+      FADocHeader@1000 : Record 12470;
+    BEGIN
+      CASE DocType OF
+        FADocType::Writeoff:
+          EXIT(FADocHeader."Document Type"::Writeoff);
+        FADocType::Release:
+          EXIT(FADocHeader."Document Type"::Release);
+        FADocType::Disposal:
+          EXIT(FADocHeader."Document Type"::Movement);
+      END;
+    END;
+
+    PROCEDURE CopyFADoc@16(FromDocType@1007 : Option;FromDocNo@1006 : Code[20];VAR ToFADocHeader@1008 : Record 12470);
+    VAR
+      FASetup@1004 : Record 311;
+      ToFADocLine@1025 : Record 12477;
+      OldFADocHeader@1024 : Record 12470;
+      FromFADocHeader@1023 : Record 12470;
+      FromFADocLine@1022 : Record 12477;
+      FromPostedFADocHeader@1021 : Record 12471;
+      FromPostedFADocLine@1020 : Record 12472;
+      NextLineNo@1003 : Integer;
+      LinesNotCopied@1000 : Integer;
+    BEGIN
+      WITH ToFADocHeader DO BEGIN
+        IF NOT CreateToHeader THEN BEGIN
+          IF FromDocNo = '' THEN
+            ERROR(Text000);
+          FIND;
+        END;
+        CASE FromDocType OF
+          FADocType::Writeoff,
+          FADocType::Release,
+          FADocType::Disposal:
+            BEGIN
+              FromFADocHeader.GET(FADocHeaderDocType(FromDocType),FromDocNo);
+              IF (FromFADocHeader."Document Type" = "Document Type") AND
+                 (FromFADocHeader."No." = "No.")
+              THEN
+                ERROR(
+                  Text001,
+                  "Document Type","No.");
+            END;
+          FADocType::"Posted Writeoff",
+          FADocType::"Posted Release",
+          FADocType::"Posted Disposal":
+            FromPostedFADocHeader.GET(FADocHeaderDocType(FromDocType - 3),FromDocNo);
+        END;
+
+        ToFADocLine.LOCKTABLE;
+
+        IF CreateToHeader THEN BEGIN
+          INSERT(TRUE);
+          ToFADocLine.SETRANGE("Document Type","Document Type");
+          ToFADocLine.SETRANGE("Document No.","No.");
+        END ELSE BEGIN
+          ToFADocLine.SETRANGE("Document Type","Document Type");
+          ToFADocLine.SETRANGE("Document No.","No.");
+          IF IncludeHeader THEN
+            IF NOT ToFADocLine.ISEMPTY THEN BEGIN
+              COMMIT;
+              IF NOT
+                 CONFIRM(
+                   Text002 +
+                   Text003,TRUE,
+                   "Document Type","No.")
+              THEN
+                EXIT;
+              ToFADocLine.DELETEALL(TRUE);
+            END;
+        END;
+
+        IF ToFADocLine.FINDLAST THEN
+          NextLineNo := ToFADocLine."Line No."
+        ELSE
+          NextLineNo := 0;
+
+        IF IncludeHeader THEN BEGIN
+          OldFADocHeader := ToFADocHeader;
+          CASE FromDocType OF
+            FADocType::Writeoff,
+            FADocType::Release,
+            FADocType::Disposal:
+              BEGIN
+                TRANSFERFIELDS(FromFADocHeader,FALSE);
+                "Posting Date" := OldFADocHeader."Posting Date";
+              END;
+            FADocType::"Posted Writeoff",
+            FADocType::"Posted Release",
+            FADocType::"Posted Disposal":
+              TRANSFERFIELDS(FromPostedFADocHeader,FALSE);
+          END;
+          "No. Series" := OldFADocHeader."No. Series";
+          "Posting Description" := OldFADocHeader."Posting Description";
+          "Posting No." := OldFADocHeader."Posting No.";
+          "Posting No. Series" := OldFADocHeader."Posting No. Series";
+          "No. Printed" := 0;
+        END;
+
+        LinesNotCopied := 0;
+        CASE FromDocType OF
+          FADocType::Writeoff,
+          FADocType::Release,
+          FADocType::Disposal:
+            BEGIN
+              FromFADocLine.RESET;
+              FromFADocLine.SETRANGE("Document Type",FromFADocHeader."Document Type");
+              FromFADocLine.SETRANGE("Document No.",FromFADocHeader."No.");
+              IF FromFADocLine.FINDSET THEN
+                REPEAT
+                  CopyFADocLine(ToFADocHeader,ToFADocLine,FromFADocLine,NextLineNo,LinesNotCopied);
+                UNTIL FromFADocLine.NEXT = 0;
+            END;
+          FADocType::"Posted Writeoff",
+          FADocType::"Posted Release",
+          FADocType::"Posted Disposal":
+            BEGIN
+              FASetup.GET;
+              FromFADocHeader.TRANSFERFIELDS(FromPostedFADocHeader);
+              FromPostedFADocLine.RESET;
+              FromPostedFADocLine.SETRANGE("Document No.",FromPostedFADocHeader."No.");
+              IF FromPostedFADocLine.FINDSET THEN
+                REPEAT
+                  FromFADocLine.TRANSFERFIELDS(FromPostedFADocLine);
+                  CopyFADocLine(
+                    ToFADocHeader,ToFADocLine,FromFADocLine,
+                    NextLineNo,LinesNotCopied);
+                UNTIL FromPostedFADocLine.NEXT = 0;
+            END;
+        END;
+      END;
+
+      IF LinesNotCopied > 0 THEN
+        MESSAGE(Text004);
+    END;
+
+    PROCEDURE ShowFADoc@15(ToFADocHeader@1000 : Record 12470);
+    BEGIN
+      WITH ToFADocHeader DO
+        CASE "Document Type" OF
+          "Document Type"::Writeoff:
+            PAGE.RUN(PAGE::"FA Writeoff Act",ToFADocHeader);
+          "Document Type"::Release:
+            PAGE.RUN(PAGE::"FA Release Act",ToFADocHeader);
+          "Document Type"::Movement:
+            PAGE.RUN(PAGE::"FA Movement Act",ToFADocHeader);
+        END;
+    END;
+
+    LOCAL PROCEDURE CopyFADocLine@7(VAR ToFADocHeader@1004 : Record 12470;VAR ToFADocLine@1001 : Record 12477;VAR FromFADocLine@1002 : Record 12477;VAR NextLineNo@1003 : Integer;VAR LinesNotCopied@1006 : Integer);
+    VAR
+      CopyThisLine@1000 : Boolean;
+    BEGIN
+      CopyThisLine := TRUE;
+      ToFADocLine := FromFADocLine;
+      NextLineNo := NextLineNo + 10000;
+      ToFADocLine."Document Type" := ToFADocHeader."Document Type";
+      ToFADocLine."Document No." := ToFADocHeader."No.";
+      ToFADocLine."Line No." := NextLineNo;
+      IF CopyThisLine THEN
+        ToFADocLine.INSERT
+      ELSE
+        LinesNotCopied := LinesNotCopied + 1;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

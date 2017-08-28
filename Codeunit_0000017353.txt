@@ -1,0 +1,148 @@
+OBJECT Codeunit 17353 Change Person Name
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17351=rid;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PersonNameHistory@1210002 : Record 17351;
+      LaborContractLine@1210000 : Record 17361;
+      Text001@1210006 : TextConst 'ENU=Approved hire contract is not found for person %1.;RUS=Утвержденный трудовой договор для физического лица %1 не найден.';
+      Text002@1210005 : TextConst 'ENU=Start date %1 must be greater than hire contract starting date %2.;RUS=Дата начала %1 должна быть больше даты начала работы по договору %2.';
+      Text003@1210004 : TextConst 'ENU=Start date %1 must be greater then last change name date %2.;RUS=Дата начала %1 должна быть больше последней даты изменения имени %2.';
+      Text004@1210003 : TextConst 'ENU=Before you can cancel this change, you must first cancel all changes that were made after it.;RUS=Чтобы отменить это изменение, необходимо сначала отменить все изменения, сделанные после него.';
+      Text005@1210008 : TextConst 'ENU=Person name %1 will be changed to\%2. Continue?;RUS=Имя физического лица %1 будет изменено на\%2. Продолжить?';
+
+    PROCEDURE ChangeName@1210000(PersonNo@1210006 : Code[20];NewFirstName@1210005 : Text[30];NewMiddleName@1210004 : Text[30];NewLastName@1210003 : Text[30];OrderNo@1210002 : Code[20];OrderDate@1210001 : Date;StartDate@1210000 : Date;Description@1210008 : Text[50]);
+    VAR
+      Person@1210007 : Record 17350;
+    BEGIN
+      PersonNameHistory.SETRANGE("Person No.",PersonNo);
+      IF NOT PersonNameHistory.FINDLAST THEN BEGIN
+        Person.GET(PersonNo);
+        LaborContractLine.SETRANGE("Person No.",PersonNo);
+        LaborContractLine.SETRANGE(Status,LaborContractLine.Status::Approved);
+        IF NOT LaborContractLine.FINDFIRST THEN
+          ERROR(Text001,PersonNo);
+
+        IF StartDate <= LaborContractLine."Starting Date" THEN
+          ERROR(Text002,StartDate,LaborContractLine."Starting Date");
+
+        PersonNameHistory."Person No." := PersonNo;
+        PersonNameHistory."Start Date" := LaborContractLine."Starting Date";
+        PersonNameHistory."First Name" := Person."First Name";
+        PersonNameHistory."Middle Name" := Person."Middle Name";
+        PersonNameHistory."Last Name" := Person."Last Name";
+        PersonNameHistory."Order No." := LaborContractLine."Order No.";
+        PersonNameHistory."Order Date" := LaborContractLine."Order Date";
+        PersonNameHistory."User ID" := USERID;
+        PersonNameHistory."Creation Date" := TODAY;
+        PersonNameHistory.INSERT;
+      END ELSE
+        IF StartDate <= PersonNameHistory."Start Date" THEN
+          ERROR(Text003,StartDate,PersonNameHistory."Start Date");
+
+      PersonNameHistory.INIT;
+      PersonNameHistory."Person No." := PersonNo;
+      PersonNameHistory."Start Date" := StartDate;
+      PersonNameHistory."First Name" := NewFirstName;
+      PersonNameHistory."Middle Name" := NewMiddleName;
+      PersonNameHistory."Last Name" := NewLastName;
+      PersonNameHistory."Order No." := OrderNo;
+      PersonNameHistory."Order Date" := OrderDate;
+      PersonNameHistory.Description := Description;
+      PersonNameHistory."User ID" := USERID;
+      PersonNameHistory."Creation Date" := TODAY;
+      PersonNameHistory.INSERT;
+
+      UpdatePersonName(
+        PersonNo,
+        NewFirstName,
+        NewMiddleName,
+        NewLastName,
+        StartDate);
+    END;
+
+    LOCAL PROCEDURE UpdatePersonName@1210001(PersonNo@1210006 : Code[20];NewFirstName@1210003 : Text[30];NewMiddleName@1210002 : Text[30];NewLastName@1210001 : Text[30];StartDate@1210000 : Date);
+    VAR
+      Employee@1210005 : Record 5200;
+      Person@1210004 : Record 17350;
+    BEGIN
+      WITH Person DO BEGIN
+        GET(PersonNo);
+        "First Name" := NewFirstName;
+        "Middle Name" := NewMiddleName;
+        "Last Name" := NewLastName;
+        Initials := COPYSTR("First Name",1,1) + '.' + COPYSTR("Middle Name",1,1) + '.';
+        "Last Name Change Date" := StartDate;
+        VALIDATE("Full Name",GetFullName);
+        MODIFY;
+
+        Employee.RESET;
+        Employee.SETCURRENTKEY("Person No.");
+        Employee.SETRANGE("Person No.",PersonNo);
+        Employee.SETRANGE("Employment Date",0D,StartDate);
+        Employee.SETFILTER("Termination Date",'%1|%2..',0D,StartDate);
+        IF Employee.FINDSET(TRUE) THEN
+          REPEAT
+            Employee.VALIDATE("First Name","First Name");
+            Employee.VALIDATE("Middle Name","Middle Name");
+            Employee.VALIDATE("Last Name","Last Name");
+            Employee.MODIFY;
+          UNTIL Employee.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CancelChanges@1210007(VAR PersonNameHistoryToCancel@1210000 : Record 17351);
+    VAR
+      PrevPersonName@1210001 : Record 17351;
+    BEGIN
+      PersonNameHistory.COPY(PersonNameHistoryToCancel);
+
+      PersonNameHistory.FINDLAST;
+      IF PersonNameHistory."Start Date" <> PersonNameHistoryToCancel."Start Date" THEN
+        ERROR(Text004);
+
+      PrevPersonName.COPY(PersonNameHistoryToCancel);
+      PrevPersonName.NEXT(-1);
+
+      IF NOT CONFIRM(
+           Text005,
+           TRUE,
+           PersonNameHistoryToCancel.GetFullName,
+           PrevPersonName.GetFullName)
+      THEN
+        EXIT;
+
+      UpdatePersonName(
+        PrevPersonName."Person No.",
+        PrevPersonName."First Name",
+        PrevPersonName."Middle Name",
+        PrevPersonName."Last Name",
+        TODAY);
+
+      IF PersonNameHistory.COUNT <> 2 THEN
+        PersonNameHistory.SETRECFILTER;
+
+      IF PersonNameHistory.FINDFIRST THEN
+        REPEAT
+          PersonNameHistory.DELETE;
+        UNTIL PersonNameHistory.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

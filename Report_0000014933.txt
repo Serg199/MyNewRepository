@@ -1,0 +1,679 @@
+OBJECT Report 14933 Calculate Group Depreciation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Group Depreciation;
+               RUS=Расчет групповой амортизации];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  TaxRegisterSetup.GET;
+                  DeprBook.GET(DeprBookCode);
+                  DeprBook.TESTFIELD("Allow Depreciation",TRUE);
+
+                  Window.OPEN(
+                    Text003 +
+                    Text004 +
+                    Text005);
+                END;
+
+  }
+  DATASET
+  {
+    { 8491;    ;DataItem;                    ;
+               DataItemTable=Table12476;
+               OnAfterGetRecord=BEGIN
+                                  TESTFIELD("Tax Depreciation Rate");
+                                  TESTFIELD("Depreciation Factor");
+                                  CheckGroupElimination(Code);
+
+                                  DeprRate := "Tax Depreciation Rate" * "Depreciation Factor";
+
+                                  TotalDeprAmount := 0;
+                                  GroupBookValue := CalcGroupBookValue(Code,DatePeriod."Period Start",NORMALDATE(DatePeriod."Period End"));
+                                  GroupDeprAmount :=
+                                    DepreciationCalc.CalcRounding(DeprBookCode,GroupBookValue * DeprRate * 0.01);
+
+                                  IF TaxRegisterSetup."Write-off in Charges" AND
+                                     (GroupBookValue < TaxRegisterSetup."Min. Group Balance")
+                                  THEN BEGIN
+                                    CheckGroupDepreciation(Code);
+                                    GroupDisposal(Code);
+                                    CurrReport.SKIP;
+                                  END;
+
+                                  IF NOT ChangeDetails THEN
+                                    PostingDescription := STRSUBSTNO(Text008,FORMAT(Period,0,'<Month Text>'),DATE2DMY(Period,3),Code);
+                                END;
+
+               ReqFilterFields=Code }
+
+    { 3794;1   ;DataItem;                    ;
+               DataItemTable=Table5600;
+               DataItemTableView=SORTING(Depreciation Group)
+                                 WHERE(Blocked=CONST(No));
+               OnPreDataItem=BEGIN
+                               GenJnlLineTmp.RESET;
+                               GenJnlLineTmp.DELETEALL;
+
+                               FAJnlLineTmp.RESET;
+                               FAJnlLineTmp.DELETEALL;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  DeprAmount@1210000 : Decimal;
+                                  OK@1210001 : Boolean;
+                                BEGIN
+                                  IF FADeprBook.GET("No.",DeprBookCode) THEN
+                                    IF CheckDeprBook THEN BEGIN
+                                      OK := FALSE;
+                                      CASE ExistingDeprPeriods("No.",DeprBookCode,Period) OF
+                                        0:
+                                          IF FADeprBook."Depreciation Starting Date" < DatePeriod."Period Start" THEN // it's not first depr
+                                            MESSAGE(Text12400 + Text12402,Period,"No.",DeprBookCode)
+                                          ELSE
+                                            OK := TRUE;
+                                        1,3:
+                                          MESSAGE(Text12401 + Text12402,Period,"No.",DeprBookCode);
+                                        4:
+                                          MESSAGE(Text007,CALCDATE('<+1M>',Period),"No.",DeprBookCode);
+                                        2:
+                                          OK := TRUE;
+                                      END;
+
+                                      IF NOT OK THEN
+                                        CurrReport.SKIP;
+
+                                      DeprAmount :=
+                                        DepreciationCalc.CalcRounding(DeprBookCode,
+                                          GetBookValue("No.",DatePeriod."Period Start",NORMALDATE(DatePeriod."Period End")) * DeprRate * 0.01);
+
+                                      TotalDeprAmount := TotalDeprAmount + DeprAmount;
+                                      NumberOfDays := DepreciationCalc.DeprDays(
+                                          DatePeriod."Period Start",
+                                          DatePeriod."Period End",
+                                          DeprBook."Fiscal Year 365 Days");
+
+                                      IF NOT DeprBook."G/L Integration - Depreciation" OR "Budgeted Asset" THEN BEGIN
+                                        FAJnlLineTmp."FA No." := "No.";
+                                        FAJnlLineTmp."FA Posting Type" := FAJnlLineTmp."FA Posting Type"::Depreciation;
+                                        FAJnlLineTmp.Amount := - DeprAmount;
+                                        FAJnlLineTmp."No. of Depreciation Days" := NumberOfDays;
+                                        FAJnlLineTmp."Line No." := FAJnlLineTmp."Line No." + 1;
+                                        FAJnlLineTmp."Depr. Period Starting Date" := Period;
+                                        FAJnlLineTmp."Location Code" := "Fixed Asset"."FA Location Code";
+                                        FAJnlLineTmp."Employee No." := "Fixed Asset"."Responsible Employee";
+                                        FAJnlLineTmp.INSERT;
+                                      END ELSE BEGIN
+                                        GenJnlLineTmp."Account No." := "No.";
+                                        GenJnlLineTmp."FA Posting Type" := GenJnlLineTmp."FA Posting Type"::Depreciation;
+                                        GenJnlLineTmp.Amount := - DeprAmount;
+                                        GenJnlLineTmp."No. of Depreciation Days" := NumberOfDays;
+                                        GenJnlLineTmp."Line No." := GenJnlLineTmp."Line No." + 1;
+                                        GenJnlLineTmp."FA Location Code" := "Fixed Asset"."FA Location Code";
+                                        GenJnlLineTmp."Employee No." := "Fixed Asset"."Responsible Employee";
+                                        GenJnlLineTmp."Depr. Period Starting Date" := Period;
+                                        GenJnlLineTmp.INSERT;
+                                      END;
+                                    END;
+                                END;
+
+               OnPostDataItem=VAR
+                                MaxAmountFAJnlLineNo@1210000 : Integer;
+                                MaxAmountGenJnlLineNo@1210001 : Integer;
+                                MaxAmountGenJnlBalLineNo@1470000 : Integer;
+                                MaxFAJnlAmount@1210002 : Decimal;
+                                MaxGenJnlAmount@1210003 : Decimal;
+                              BEGIN
+                                DeprDiff := GroupDeprAmount - TotalDeprAmount;
+
+                                WITH FAJnlLine DO BEGIN
+                                  IF FAJnlLineTmp.FINDSET THEN BEGIN
+                                    LOCKTABLE;
+                                    FAJnlSetup.FAJnlName(DeprBook,FAJnlLine,FAJnlNextLineNo);
+                                    NoSeries := FAJnlSetup.GetFANoSeries(FAJnlLine);
+                                    IF DocumentNo = '' THEN
+                                      DocumentNo2 := FAJnlSetup.GetFAJnlDocumentNo(FAJnlLine,DeprUntilDate,TRUE)
+                                    ELSE
+                                      DocumentNo2 := DocumentNo;
+                                  END;
+                                  IF FAJnlLineTmp.FINDSET THEN BEGIN
+                                    REPEAT
+                                      INIT;
+                                      "Line No." := 0;
+                                      FAJnlSetup.SetFAJnlTrailCodes(FAJnlLine);
+                                      LineNo := LineNo + 1;
+                                      Window.UPDATE(3,LineNo);
+                                      "Posting Date" := PostingDate;
+                                      "FA Posting Date" := DeprUntilDate;
+                                      IF "Posting Date" = "FA Posting Date" THEN
+                                        "Posting Date" := 0D;
+                                      "FA Posting Type" := FAJnlLineTmp."FA Posting Type";
+                                      VALIDATE("FA No.",FAJnlLineTmp."FA No.");
+                                      "Document No." := DocumentNo2;
+                                      "Posting No. Series" := NoSeries;
+                                      Description := PostingDescription;
+                                      VALIDATE("Depreciation Book Code",DeprBookCode);
+                                      VALIDATE(Amount,FAJnlLineTmp.Amount);
+                                      "No. of Depreciation Days" := FAJnlLineTmp."No. of Depreciation Days";
+                                      "FA Error Entry No." := FAJnlLineTmp."FA Error Entry No.";
+                                      FAJnlNextLineNo := FAJnlNextLineNo + 10000;
+                                      "Line No." := FAJnlNextLineNo;
+                                      "Location Code" := FAJnlLineTmp."Location Code";
+                                      "Employee No." := FAJnlLineTmp."Employee No.";
+                                      "Depr. Period Starting Date" := FAJnlLineTmp."Depr. Period Starting Date";
+                                      INSERT(TRUE);
+
+                                      IF ABS(Amount) >= MaxFAJnlAmount THEN BEGIN
+                                        MaxFAJnlAmount := ABS(Amount);
+                                        MaxAmountFAJnlLineNo := "Line No.";
+                                      END;
+
+                                    UNTIL FAJnlLineTmp.NEXT = 0;
+
+                                    IF DeprDiff <> 0 THEN BEGIN
+                                      "Line No." := MaxAmountFAJnlLineNo;
+                                      FIND;
+                                      VALIDATE(Amount,Amount - DeprDiff);
+                                      MODIFY;
+                                    END;
+                                  END;
+                                END;
+
+                                WITH GenJnlLine DO BEGIN
+                                  IF GenJnlLineTmp.FINDSET THEN BEGIN
+                                    LOCKTABLE;
+                                    FAJnlSetup.GenJnlName(DeprBook,GenJnlLine,GenJnlNextLineNo);
+                                    NoSeries := FAJnlSetup.GetGenNoSeries(GenJnlLine);
+                                    IF DocumentNo = '' THEN
+                                      DocumentNo2 := FAJnlSetup.GetGenJnlDocumentNo(GenJnlLine,DeprUntilDate,TRUE)
+                                    ELSE
+                                      DocumentNo2 := DocumentNo;
+
+                                  END;
+                                  IF GenJnlLineTmp.FINDSET THEN BEGIN
+                                    REPEAT
+                                      INIT;
+                                      "Line No." := 0;
+                                      FAJnlSetup.SetGenJnlTrailCodes(GenJnlLine);
+                                      LineNo := LineNo + 1;
+                                      Window.UPDATE(3,LineNo);
+                                      "Posting Date" := PostingDate;
+                                      "FA Posting Date" := DeprUntilDate;
+                                      IF "Posting Date" = "FA Posting Date" THEN
+                                        "FA Posting Date" := 0D;
+                                      "FA Posting Type" := GenJnlLineTmp."FA Posting Type";
+                                      "Account Type" := "Account Type"::"Fixed Asset";
+                                      VALIDATE("Account No.",GenJnlLineTmp."Account No.");
+                                      Description := PostingDescription;
+                                      "Document No." := DocumentNo2;
+                                      "Posting No. Series" := NoSeries;
+                                      VALIDATE("Depreciation Book Code",DeprBookCode);
+                                      VALIDATE(Amount,GenJnlLineTmp.Amount);
+                                      "No. of Depreciation Days" := GenJnlLineTmp."No. of Depreciation Days";
+                                      "FA Error Entry No." := GenJnlLineTmp."FA Error Entry No.";
+                                      GenJnlNextLineNo := GenJnlNextLineNo + 10000;
+                                      "Line No." := GenJnlNextLineNo;
+                                      "Employee No." := GenJnlLineTmp."Employee No.";
+                                      "FA Location Code" := GenJnlLineTmp."FA Location Code";
+                                      "Depr. Period Starting Date" := GenJnlLineTmp."Depr. Period Starting Date";
+                                      INSERT(TRUE);
+                                      IF BalAccount THEN
+                                        FAInsertGLAcc.GetBalAcc2(GenJnlLine,GenJnlNextLineNo);
+
+                                      IF ABS(Amount) >= MaxGenJnlAmount THEN BEGIN
+                                        MaxGenJnlAmount := ABS(Amount);
+                                        MaxAmountGenJnlLineNo := "Line No.";
+                                        MaxAmountGenJnlBalLineNo := GenJnlNextLineNo;
+                                      END;
+                                    UNTIL GenJnlLineTmp.NEXT = 0;
+
+                                    IF DeprDiff <> 0 THEN BEGIN
+                                      "Line No." := MaxAmountGenJnlLineNo;
+                                      FIND;
+                                      VALIDATE(Amount,Amount - DeprDiff);
+                                      MODIFY;
+
+                                      IF BalAccount THEN BEGIN
+                                        "Line No." := MaxAmountGenJnlBalLineNo;
+                                        FIND;
+                                        VALIDATE(Amount,Amount + DeprDiff);
+                                        MODIFY;
+                                      END;
+                                    END;
+                                  END;
+                                END;
+                              END;
+
+               DataItemLink=Depreciation Group=FIELD(Code) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,ProgressiveTotal);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+
+                   IF DeprBookCode = '' THEN BEGIN
+                     TaxRegisterSetup.GET;
+                     TaxRegisterSetup.TESTFIELD("Tax Depreciation Book");
+                     DeprBookCode := TaxRegisterSetup."Tax Depreciation Book";
+                   END;
+
+                   Period := DatePeriod."Period Start";
+                   SetProperties;
+
+                   ChangeDetails := FALSE;
+
+                   BalAccount := TRUE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1210000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 1210001;1;Group     ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры];
+                  GroupType=Group }
+
+      { 1210002;2;Field     ;
+                  Name=DeprBookCode;
+                  CaptionML=[ENU=Depreciation Book;
+                             RUS=Книга амортизации];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DeprBookCode;
+                  TableRelation="Depreciation Book" }
+
+      { 1210003;2;Field     ;
+                  Name=AccountPeriod;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               IF NOT PeriodReportManagement.ParseCaptionPeriodName(AccountPeriod,CalendarPeriod,ProgressiveTotal) THEN
+                               BEGIN
+                                 PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                                 PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,ProgressiveTotal);
+                               END;
+
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+
+                               Period := DatePeriod."Period Start";
+                               SetProperties;
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,ProgressiveTotal);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 1210009;2;Field     ;
+                  Name=From;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE }
+
+      { 1210010;2;Field     ;
+                  Name=To;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE }
+
+      { 1210004;2;Field     ;
+                  Name=ChangeDetails;
+                  CaptionML=[ENU=Change Details;
+                             RUS=Изменить сведения];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ChangeDetails }
+
+      { 1210005;2;Field     ;
+                  Name=DeprUntilDate;
+                  CaptionML=[ENU=FA Posting Date;
+                             RUS=Дата учета ОС];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DeprUntilDate;
+                  Editable=ChangeDetails;
+                  OnValidate=BEGIN
+                               IF DeprUntilDate <> 0D THEN
+                                 IF (DeprUntilDate < Period) OR (DeprUntilDate > CALCDATE('<CM>',Period)) THEN
+                                   ERROR(Text12407);
+                             END;
+                              }
+
+      { 1210006;2;Field     ;
+                  Name=PostingDate;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PostingDate;
+                  Editable=ChangeDetails;
+                  OnValidate=BEGIN
+                               IF PostingDate <> 0D THEN
+                                 IF (PostingDate < Period) OR (PostingDate > CALCDATE('<CM>',Period)) THEN
+                                   ERROR(Text12409);
+                             END;
+                              }
+
+      { 1210007;2;Field     ;
+                  Name=DocumentNo;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Номер документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocumentNo;
+                  Editable=ChangeDetails }
+
+      { 1210008;2;Field     ;
+                  Name=PostingDescription;
+                  CaptionML=[ENU=Posting Description;
+                             RUS=Описание учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PostingDescription;
+                  Editable=ChangeDetails }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GenJnlLine@1210031 : Record 81;
+      GenJnlLineTmp@1210030 : TEMPORARY Record 81;
+      FAJnlLine@1210028 : Record 5621;
+      FAJnlLineTmp@1210027 : TEMPORARY Record 5621;
+      FAJnlSetup@1210026 : Record 5605;
+      DeprBook@1210022 : Record 5611;
+      FADeprBook@1210011 : Record 5612;
+      TaxRegisterSetup@1210021 : Record 17236;
+      CalendarPeriod@1210004 : Record 2000000007;
+      DatePeriod@1210000 : Record 2000000007;
+      DepreciationCalc@1210024 : Codeunit 5616;
+      PeriodReportManagement@1210003 : Codeunit 12406;
+      FAInsertGLAcc@1210042 : Codeunit 5601;
+      Window@1210038 : Dialog;
+      Period@1210006 : Date;
+      PostingDate@1210014 : Date;
+      DeprUntilDate@1210016 : Date;
+      AccountPeriod@1210002 : Text[30];
+      PostingDescription@1210012 : Text[50];
+      ProgressiveTotal@1210005 : Boolean;
+      ChangeDetails@1210018 : Boolean INDATASET;
+      BalAccount@1210041 : Boolean;
+      NumberOfDays@1210029 : Integer;
+      FAJnlNextLineNo@1210034 : Integer;
+      GenJnlNextLineNo@1210033 : Integer;
+      LineNo@1210037 : Integer;
+      NoSeries@1210035 : Code[10];
+      DeprBookCode@1210009 : Code[10];
+      DocumentNo@1210013 : Code[20];
+      Text002@1210049 : TextConst 'ENU=Fixed Asset %1 has been disposed %2. Depreciation cannot be calculated for %3.;RUS=ОС %1 было списано %2. Невозможно рассчитать амортизацию для %3.';
+      Text003@1210045 : TextConst 'ENU=Depreciating fixed asset      #1##########\;RUS=Амортизация ОС           #1##########\';
+      Text004@1210044 : TextConst 'ENU=Not depreciating fixed asset  #2##########\;RUS=Без амортизации ОС       #2##########\';
+      Text005@1210043 : TextConst 'ENU=Inserting journal lines       #3##########;RUS=Вставка строк журнала    #3##########';
+      Text006@1210050 : TextConst 'ENU=Group %4 cannot be written off.\;RUS=Нельзя списать группу %4.\';
+      Text007@1210051 : TextConst 'ENU="There is posted depreciation later then %1.\for FA Code %2\FA Depreciation Book Code %3 ";RUS="Существует учтенная амортизация позже %1.\для кода ОС %2\Код книги амортизации ОС %3 "';
+      Text008@1210053 : TextConst 'ENU=%1 %2 Group Depreciation FA (%3);RUS=%1 %2 ОС групповой амортизации (%3)';
+      Text009@1000 : TextConst 'ENU=You must check Change Details to use this field.;RUS=Выберите поле "Изменить сведения", чтобы использовать это поле.';
+      Text12400@1210047 : TextConst 'ENU=Previous periods Depreciation was not calculated;RUS=Амортизация за предыдущие периоды не рассчитана.';
+      Text12401@1210046 : TextConst 'ENU=Depreciation was already calculated;RUS=Амортизация уже рассчитана';
+      Text12402@1210048 : TextConst 'ENU=\for Depr. Period Starting Date %1\FA Code %2\FA Depreciation Book Code %3.;RUS=\для даты начала периода амортизации %1\Код ОС %2\Код книги амортизации ОС %3.';
+      DocumentNo2@1210036 : Code[20];
+      TotalDeprAmount@1210001 : Decimal;
+      GroupDeprAmount@1210019 : Decimal;
+      GroupBookValue@1210052 : Decimal;
+      DeprRate@1210020 : Decimal;
+      DeprDiff@1210025 : Decimal;
+      Text12407@1210008 : TextConst 'ENU=FA Posting Date must be into Accounting Period.;RUS=Дата учета ОС должна входить в учетный период';
+      Text12409@1210007 : TextConst 'ENU=Posting Date must be into Accounting Period.;RUS=Дата учета должна входить в учетный период';
+      Text12410@1210039 : TextConst 'ENU=Write-off the cost of group;RUS=Списание себестоимости группы';
+      Text12411@1210040 : TextConst 'ENU=DP-;RUS=AM-';
+
+    PROCEDURE SetProperties@1210006();
+    BEGIN
+      PostingDate := DatePeriod."Period End";
+      DeprUntilDate := DatePeriod."Period End";
+      IF DATE2DMY(DatePeriod."Period Start",2) > 9 THEN
+        DocumentNo := Text12411 + FORMAT(DatePeriod."Period Start",0,'<Year>-<Month>')
+      ELSE
+        DocumentNo := Text12411 + FORMAT(DatePeriod."Period Start",2,'<Year>') + '-0' + FORMAT(DatePeriod."Period Start",0,'<Month>');
+    END;
+
+    PROCEDURE InitializeRequest@1470000(NewDeprBookCode@1470000 : Code[10];NewPostingDate@1470001 : Date;NewDeprUntilDate@1470002 : Date;NewDocumentNo@1470003 : Code[20];NewPostingDescription@1470004 : Text[50]);
+    BEGIN
+      CLEARALL;
+      DeprBookCode := NewDeprBookCode;
+      PostingDate := NewPostingDate;
+      DocumentNo := NewDocumentNo;
+      PostingDescription := NewPostingDescription;
+      DeprUntilDate := NewDeprUntilDate;
+      BalAccount := TRUE;
+    END;
+
+    PROCEDURE CalcGroupBookValue@1210014(DepreciationGroupCode@1210001 : Code[10];StartDate@1210000 : Date;EndDate@1210003 : Date) Amount : Decimal;
+    VAR
+      FixedAsset@1210002 : Record 5600;
+    BEGIN
+      FixedAsset.SETCURRENTKEY("Depreciation Group");
+      FixedAsset.SETRANGE("Depreciation Group",DepreciationGroupCode);
+      FixedAsset.SETRANGE(Blocked,FALSE);
+      IF FixedAsset.FINDSET THEN
+        REPEAT
+          IF FADeprBook.GET(FixedAsset."No.",DeprBookCode) THEN
+            IF CheckDeprBook THEN
+              Amount := Amount + GetBookValue(FixedAsset."No.",StartDate,EndDate);
+        UNTIL FixedAsset.NEXT = 0;
+    END;
+
+    PROCEDURE GroupDisposal@1210039(DepreciationGroupCode@1210000 : Code[10]);
+    VAR
+      FixedAsset@1210001 : Record 5600;
+      GenJnlPostLine@1210004 : Codeunit 12;
+      FAJnlPostLine@1210003 : Codeunit 5632;
+    BEGIN
+      FixedAsset.SETCURRENTKEY("Depreciation Group");
+      FixedAsset.SETRANGE("Depreciation Group",DepreciationGroupCode);
+      FixedAsset.SETRANGE(Blocked,FALSE);
+      IF FixedAsset.FINDSET THEN
+        REPEAT
+          IF FADeprBook.GET(FixedAsset."No.",DeprBookCode) THEN
+            IF CheckDeprBook THEN
+              IF NOT DeprBook."G/L Integration - Depreciation" OR FixedAsset."Budgeted Asset" THEN BEGIN
+                WITH FAJnlLine DO BEGIN
+                  LOCKTABLE;
+                  FAJnlSetup.FAJnlName(DeprBook,FAJnlLine,FAJnlNextLineNo);
+                  NoSeries := FAJnlSetup.GetFANoSeries(FAJnlLine);
+                  IF DocumentNo = '' THEN
+                    DocumentNo2 := FAJnlSetup.GetFAJnlDocumentNo(FAJnlLine,DeprUntilDate,TRUE)
+                  ELSE
+                    DocumentNo2 := DocumentNo;
+
+                  INIT;
+                  FAJnlSetup.SetFAJnlTrailCodes(FAJnlLine);
+                  "Posting Date" := PostingDate;
+                  "FA Posting Date" := DeprUntilDate;
+                  IF "Posting Date" = "FA Posting Date" THEN
+                    "Posting Date" := 0D;
+                  VALIDATE("FA Posting Type","FA Posting Type"::Disposal);
+                  VALIDATE("FA No.",FixedAsset."No.");
+                  "Document No." := DocumentNo2;
+                  "Posting No. Series" := NoSeries;
+                  Description := Text12410;
+                  VALIDATE("Depreciation Book Code",DeprBookCode);
+                  "Location Code" := FixedAsset."FA Location Code";
+                  "Employee No." := FixedAsset."Responsible Employee";
+                  "Depr. Group Elimination" := TRUE;
+                  "Depr. until FA Posting Date" := FALSE;
+
+                  FAJnlPostLine.FAJnlPostLine(FAJnlLine,TRUE);
+                END;
+              END ELSE BEGIN
+                WITH GenJnlLine DO BEGIN
+                  LOCKTABLE;
+                  FAJnlSetup.GenJnlName(DeprBook,GenJnlLine,GenJnlNextLineNo);
+                  NoSeries := FAJnlSetup.GetGenNoSeries(GenJnlLine);
+                  IF DocumentNo = '' THEN
+                    DocumentNo2 := FAJnlSetup.GetGenJnlDocumentNo(GenJnlLine,DeprUntilDate,TRUE)
+                  ELSE
+                    DocumentNo2 := DocumentNo;
+
+                  INIT;
+                  FAJnlSetup.SetGenJnlTrailCodes(GenJnlLine);
+                  LineNo := LineNo + 1;
+                  Window.UPDATE(3,LineNo);
+                  "Posting Date" := PostingDate;
+                  "FA Posting Date" := DeprUntilDate;
+                  IF "Posting Date" = "FA Posting Date" THEN
+                    "FA Posting Date" := 0D;
+                  "Account Type" := "Account Type"::"Fixed Asset";
+                  VALIDATE("FA Posting Type","FA Posting Type"::Disposal);
+                  VALIDATE("Account No.",FixedAsset."No.");
+                  Description := Text12410;
+                  "Document No." := DocumentNo2;
+                  "Posting No. Series" := NoSeries;
+                  VALIDATE("Depreciation Book Code",DeprBookCode);
+                  "Employee No." := FixedAsset."Responsible Employee";
+                  "FA Location Code" := FixedAsset."FA Location Code";
+                  "Depr. Group Elimination" := TRUE;
+                  "Depr. until FA Posting Date" := FALSE;
+
+                  GenJnlPostLine.RunWithCheck(GenJnlLine);
+                END;
+              END;
+        UNTIL FixedAsset.NEXT = 0;
+    END;
+
+    PROCEDURE GetBookValue@1210001(FixedAssetNo@1210000 : Code[20];StartDate@1210001 : Date;EndDate@1210004 : Date) : Decimal;
+    VAR
+      BookValue@1210002 : Decimal;
+      DeprBonus@1210003 : Decimal;
+    BEGIN
+      FADeprBook.GET(FixedAssetNo,DeprBookCode);
+      FADeprBook.TESTFIELD("Depreciation Method",FADeprBook."Depreciation Method"::"DB/SL-RU Tax Group");
+      FADeprBook.SETFILTER("FA Posting Date Filter",'..%1',StartDate);
+      FADeprBook.CALCFIELDS("Book Value");
+      BookValue := FADeprBook."Book Value";
+      FADeprBook.SETFILTER("FA Posting Date Filter",'%1..%2',StartDate,EndDate);
+      FADeprBook.CALCFIELDS("Depreciation Bonus");
+      DeprBonus := FADeprBook."Depreciation Bonus";
+      EXIT(BookValue + DeprBonus);
+    END;
+
+    PROCEDURE CheckGroupElimination@1210002(DeprGroup@1210001 : Code[10]);
+    VAR
+      FixedAsset@1210000 : Record 5600;
+      FALedgerEntry@1210002 : Record 5601;
+    BEGIN
+      FixedAsset.SETCURRENTKEY("Depreciation Group");
+      FixedAsset.SETRANGE("Depreciation Group",DeprGroup);
+      FixedAsset.SETRANGE(Blocked,FALSE);
+      IF FixedAsset.FINDSET THEN
+        REPEAT
+          IF FADeprBook.GET(FixedAsset."No.",DeprBookCode) THEN
+            IF FADeprBook."Depreciation Method" = FADeprBook."Depreciation Method"::"DB/SL-RU Tax Group" THEN BEGIN
+              FALedgerEntry.SETCURRENTKEY(
+                "FA No.","Depreciation Book Code","FA Posting Category","FA Posting Type","FA Posting Date",
+                "Part of Book Value","Reclassification Entry","FA Location Code","Global Dimension 1 Code",
+                "Global Dimension 2 Code","Initial Acquisition","Employee No.","Depr. Bonus","Depr. Group Elimination");
+              FALedgerEntry.SETRANGE("FA No.",FixedAsset."No.");
+              FALedgerEntry.SETRANGE("Depreciation Book Code",DeprBookCode);
+              FALedgerEntry.SETRANGE("FA Posting Type",FALedgerEntry."FA Posting Type"::"Proceeds on Disposal");
+              FALedgerEntry.SETFILTER("FA Posting Date",'%1..%2',DatePeriod."Period Start",DatePeriod."Period End");
+              FALedgerEntry.SETRANGE("Depr. Group Elimination",TRUE);
+              FALedgerEntry.SETRANGE(Reversed,FALSE);
+              IF FALedgerEntry.FINDFIRST THEN
+                ERROR(Text002,
+                  FixedAsset."No.",
+                  FALedgerEntry."FA Posting Date",
+                  AccountPeriod);
+            END;
+        UNTIL FixedAsset.NEXT = 0;
+    END;
+
+    PROCEDURE ExistingDeprPeriods@1210003(FANo@1210003 : Code[20];DeprBookCode@1210002 : Code[10];StartDate@1210001 : Date) NoOfPeriods : Integer;
+    VAR
+      FALedgEntry@1210000 : Record 5601;
+      DeprCalculation@1210004 : Codeunit 5616;
+    BEGIN
+      NoOfPeriods := 0;
+      DeprCalculation.SetFAFilter(FALedgEntry,FANo,DeprBookCode,TRUE);
+      FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::Depreciation);
+      FALedgEntry.SETRANGE("Depr. Bonus",FALSE);
+      WITH FALedgEntry DO BEGIN
+        SETRANGE("FA Posting Date",StartDate,CALCDATE('<CM>',StartDate));
+        IF FINDFIRST THEN
+          NoOfPeriods := 1; // depreciation for current month already exists
+        SETRANGE("FA Posting Date",CALCDATE('<-1M>',StartDate),CALCDATE('<-1M+CM>',StartDate));
+        IF FINDFIRST THEN
+          NoOfPeriods := NoOfPeriods + 2; // depreciation for previous month already exists
+        SETFILTER("FA Posting Date",'%1..',CALCDATE('<+1M>',StartDate));
+        IF FINDFIRST THEN
+          NoOfPeriods := 4; // depreciation for next month already exists
+      END;
+      EXIT(NoOfPeriods);
+    END;
+
+    PROCEDURE CheckGroupDepreciation@1210004(DeprGroup@1210000 : Code[10]);
+    VAR
+      FixedAsset@1210001 : Record 5600;
+    BEGIN
+      FixedAsset.SETCURRENTKEY("Depreciation Group");
+      FixedAsset.SETRANGE("Depreciation Group",DeprGroup);
+      FixedAsset.SETRANGE(Blocked,FALSE);
+      IF FixedAsset.FINDSET THEN
+        REPEAT
+          IF FADeprBook.GET(FixedAsset."No.",DeprBookCode) THEN
+            IF CheckDeprBook THEN BEGIN
+              CASE ExistingDeprPeriods(FixedAsset."No.",DeprBookCode,Period) OF
+                0:
+                  IF FADeprBook."Depreciation Starting Date" < DatePeriod."Period Start" THEN // it's not first depr
+                    ERROR(Text006 + Text12400 + Text12402,Period,FixedAsset."No.",DeprBookCode,DeprGroup);
+                1,3:
+                  ERROR(Text006 + Text12401 + Text12402,Period,FixedAsset."No.",DeprBookCode,DeprGroup);
+                4:
+                  ERROR(Text006 + Text007,CALCDATE('<+1M>',Period),FixedAsset."No.",DeprBookCode,DeprGroup);
+              END;
+            END;
+        UNTIL FixedAsset.NEXT = 0;
+    END;
+
+    PROCEDURE CheckDeprBook@1210011() : Boolean;
+    BEGIN
+      EXIT(
+        (FADeprBook."Depreciation Method" = FADeprBook."Depreciation Method"::"DB/SL-RU Tax Group") AND
+        (FADeprBook."Depreciation Starting Date" <= DatePeriod."Period Start") AND
+        (FADeprBook."Acquisition Date" <> 0D) AND
+        (FADeprBook."Disposal Date" = 0D) AND
+        (FADeprBook."Acquisition Date" <= DatePeriod."Period Start"));
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

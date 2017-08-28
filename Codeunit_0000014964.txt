@@ -1,0 +1,818 @@
+OBJECT Codeunit 14964 Payroll Analysis Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Period;RUS=Период';
+      Text001@1008 : TextConst 'ENU=<Sign><Integer Thousand><Decimals,2>;RUS=<Sign><Integer Thousand><Decimals,2>';
+      Text003@1006 : TextConst 'ENU=%1 is not a valid line definition.;RUS=%1 не является допустимым определением строки.';
+      Text004@1005 : TextConst 'ENU=%1 is not a valid column definition.;RUS=%1 не является допустимым определением столбца.';
+      Text005@1004 : TextConst 'ENU=1,6,,Dimension 1 Filter;RUS=1,6,,Фильтр измерения 1';
+      Text006@1003 : TextConst 'ENU=1,6,,Dimension 2 Filter;RUS=1,6,,Фильтр измерения 2';
+      Text007@1002 : TextConst 'ENU=1,6,,Dimension 3 Filter;RUS=1,6,,Фильтр измерения 3';
+      Text008@1210000 : TextConst 'ENU=1,6,,Dimension 4 Filter;RUS=1,6,,Фильтр измерения 4';
+      Text009@1009 : TextConst 'ENU=DEFAULT;RUS=СТАНДАРТ';
+      Text010@1001 : TextConst 'ENU=Default analysis view;RUS=Аналитический отчет по умолчанию';
+      PrevPayrollAnalysisView@1010 : Record 14965;
+      CurrentPayrollAnalysisViewCode@1210001 : Code[10];
+      CurrLineDimOption@1210005 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';
+      CurrLineDimCodeBuf@1210004 : Record 367;
+      CurrColDimOption@1210003 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';
+      CurrColDimCodeBuf@1210002 : Record 367;
+
+    LOCAL PROCEDURE DimCodeNotAllowed@24(DimCode@1000 : Text[30];PayrollAnalysisView@1001 : Record 14965) : Boolean;
+    VAR
+      PayrollElement@1210003 : Record 17400;
+      PayrollElementGroup@1210002 : Record 17412;
+      Employee@1210001 : Record 5200;
+      OrgUnit@1210000 : Record 12422;
+    BEGIN
+      EXIT(
+        NOT (UPPERCASE(DimCode) IN
+             [UPPERCASE(PayrollElement.TABLECAPTION),
+              UPPERCASE(PayrollElementGroup.TABLECAPTION),
+              UPPERCASE(Employee.TABLECAPTION),
+              UPPERCASE(OrgUnit.TABLECAPTION),
+              UPPERCASE(Text000),
+              PayrollAnalysisView."Dimension 1 Code",
+              PayrollAnalysisView."Dimension 2 Code",
+              PayrollAnalysisView."Dimension 3 Code",
+              PayrollAnalysisView."Dimension 4 Code",
+              '']));
+    END;
+
+    LOCAL PROCEDURE DimCodeToOption@21(DimCode@1000 : Text[30];PayrollAnalysisView@1002 : Record 14965) : Integer;
+    VAR
+      PayrollElement@1001 : Record 17400;
+      PayrollElementGroup@1003 : Record 17412;
+      Employee@1210000 : Record 5200;
+      OrgUnit@1210001 : Record 12422;
+    BEGIN
+      CASE DimCode OF
+        PayrollElement.TABLECAPTION:
+          EXIT(0);
+        PayrollElementGroup.TABLECAPTION:
+          EXIT(1);
+        Employee.TABLECAPTION:
+          EXIT(2);
+        OrgUnit.TABLECAPTION:
+          EXIT(3);
+        Text000:
+          EXIT(4);
+        PayrollAnalysisView."Dimension 1 Code":
+          EXIT(5);
+        PayrollAnalysisView."Dimension 2 Code":
+          EXIT(6);
+        PayrollAnalysisView."Dimension 3 Code":
+          EXIT(7);
+        PayrollAnalysisView."Dimension 4 Code":
+          EXIT(8);
+        ELSE
+          EXIT(-1);
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyElementToBuf@1(VAR PayrollElement@1000 : Record 17400;VAR DimCodeBuf@1001 : Record 367);
+    BEGIN
+      WITH DimCodeBuf DO BEGIN
+        INIT;
+        Code := PayrollElement.Code;
+        Name := PayrollElement.Description;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyElementGroupToBuf@1210003(VAR PayrollElementGroup@1000 : Record 17412;VAR DimCodeBuf@1001 : Record 367);
+    BEGIN
+      WITH DimCodeBuf DO BEGIN
+        INIT;
+        Code := PayrollElementGroup.Code;
+        Name := PayrollElementGroup.Name;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyPeriodToBuf@8(VAR Period@1000 : Record 2000000007;VAR DimCodeBuf@1001 : Record 367;DateFilter@1003 : Text[30]);
+    VAR
+      Period2@1002 : Record 2000000007;
+    BEGIN
+      WITH DimCodeBuf DO BEGIN
+        INIT;
+        Code := FORMAT(Period."Period Start");
+        "Period Start" := Period."Period Start";
+        "Period End" := Period."Period End";
+        IF DateFilter <> '' THEN BEGIN
+          Period2.SETFILTER("Period End",DateFilter);
+          IF Period2.GETRANGEMAX("Period End") < "Period End" THEN
+            "Period End" := Period2.GETRANGEMAX("Period End");
+        END;
+        Name := Period."Period Name";
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyEmployeeToBuf@5(VAR Employee@1000 : Record 5200;VAR DimCodeBuf@1001 : Record 367);
+    BEGIN
+      WITH DimCodeBuf DO BEGIN
+        INIT;
+        Code := Employee."No.";
+        Name := Employee."Short Name";
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyOrgUnitToBuf@1210004(VAR OrgUnit@1000 : Record 12422;VAR DimCodeBuf@1001 : Record 367);
+    BEGIN
+      WITH DimCodeBuf DO BEGIN
+        INIT;
+        Code := OrgUnit.Code;
+        Name := OrgUnit.Name;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyDimValueToBuf@9(VAR DimVal@1000 : Record 349;VAR DimCodeBuf@1001 : Record 367);
+    BEGIN
+      WITH DimCodeBuf DO BEGIN
+        INIT;
+        Code := DimVal.Code;
+        Name := DimVal.Name;
+        Totaling := DimVal.Totaling;
+        Indentation := DimVal.Indentation;
+        "Show in Bold" :=
+          DimVal."Dimension Value Type" <> DimVal."Dimension Value Type"::Standard;
+      END;
+    END;
+
+    LOCAL PROCEDURE FilterPayrollAnalyViewEntry@75(VAR PayrollStatisticsBuffer@1000 : Record 14969;VAR PayrollAnalysisViewEntry@1001 : Record 14966);
+    BEGIN
+      WITH PayrollStatisticsBuffer DO BEGIN
+        COPYFILTER("Analysis View Filter",PayrollAnalysisViewEntry."Analysis View Code");
+
+        IF GETFILTER("Element Type Filter") <> '' THEN
+          COPYFILTER("Element Type Filter",PayrollAnalysisViewEntry."Payroll Element Type");
+
+        IF GETFILTER("Element Filter") <> '' THEN
+          COPYFILTER("Element Filter",PayrollAnalysisViewEntry."Element Code");
+
+        IF GETFILTER("Element Group Filter") <> '' THEN
+          COPYFILTER("Element Group Filter",PayrollAnalysisViewEntry."Element Group");
+
+        IF GETFILTER("Employee Filter") <> '' THEN
+          COPYFILTER("Employee Filter",PayrollAnalysisViewEntry."Employee No.");
+
+        IF GETFILTER("Org. Unit Filter") <> '' THEN
+          COPYFILTER("Org. Unit Filter",PayrollAnalysisViewEntry."Org. Unit Code");
+
+        IF GETFILTER("Use PF Accum. System Filter") <> '' THEN
+          COPYFILTER("Use PF Accum. System Filter",PayrollAnalysisViewEntry."Use PF Accum. System");
+
+        IF GETFILTER("Date Filter") <> '' THEN
+          COPYFILTER("Date Filter",PayrollAnalysisViewEntry."Posting Date");
+
+        IF GETFILTER("Dimension 1 Filter") <> '' THEN
+          COPYFILTER("Dimension 1 Filter",PayrollAnalysisViewEntry."Dimension 1 Value Code");
+
+        IF GETFILTER("Dimension 2 Filter") <> '' THEN
+          COPYFILTER("Dimension 2 Filter",PayrollAnalysisViewEntry."Dimension 2 Value Code");
+
+        IF GETFILTER("Dimension 3 Filter") <> '' THEN
+          COPYFILTER("Dimension 3 Filter",PayrollAnalysisViewEntry."Dimension 3 Value Code");
+
+        IF GETFILTER("Dimension 4 Filter") <> '' THEN
+          COPYFILTER("Dimension 4 Filter",PayrollAnalysisViewEntry."Dimension 4 Value Code");
+      END;
+    END;
+
+    LOCAL PROCEDURE SetDimFilters@17(VAR PayrollStatisticsBuffer@1000 : Record 14969;DimOption@1002 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';DimCodeBuf@1001 : Record 367);
+    BEGIN
+      WITH PayrollStatisticsBuffer DO
+        CASE DimOption OF
+          DimOption::Element:
+            SETRANGE("Element Filter",DimCodeBuf.Code);
+          DimOption::Period:
+            SETRANGE("Date Filter",DimCodeBuf."Period Start",DimCodeBuf."Period End");
+          DimOption::"Element Group":
+            SETRANGE("Element Group Filter",DimCodeBuf.Code);
+          DimOption::Employee:
+            SETRANGE("Employee Filter",DimCodeBuf.Code);
+          DimOption::"Org. Unit":
+            SETRANGE("Org. Unit Filter",DimCodeBuf.Code);
+          DimOption::"Dimension 1":
+            IF DimCodeBuf.Totaling <> '' THEN
+              SETFILTER("Dimension 1 Filter",DimCodeBuf.Totaling)
+            ELSE
+              SETRANGE("Dimension 1 Filter",DimCodeBuf.Code);
+          DimOption::"Dimension 2":
+            IF DimCodeBuf.Totaling <> '' THEN
+              SETFILTER("Dimension 2 Filter",DimCodeBuf.Totaling)
+            ELSE
+              SETRANGE("Dimension 2 Filter",DimCodeBuf.Code);
+          DimOption::"Dimension 3":
+            IF DimCodeBuf.Totaling <> '' THEN
+              SETFILTER("Dimension 3 Filter",DimCodeBuf.Totaling)
+            ELSE
+              SETRANGE("Dimension 3 Filter",DimCodeBuf.Code);
+          DimOption::"Dimension 4":
+            IF DimCodeBuf.Totaling <> '' THEN
+              SETFILTER("Dimension 4 Filter",DimCodeBuf.Totaling)
+            ELSE
+              SETRANGE("Dimension 4 Filter",DimCodeBuf.Code);
+        END;
+    END;
+
+    PROCEDURE SetCommonFilters@15(VAR PayrollStatisticsBuffer@1000 : Record 14969;CurrentAnalysisViewCode@1010 : Code[10];ElementTypeFilter@1210003 : Code[250];ElementFilter@1009 : Code[250];ElementGroupFilter@1004 : Code[250];EmployeeFilter@1210000 : Code[250];OrgUnitFilter@1210001 : Code[250];UsePFAccumSystemFilter@1210004 : ' ,Yes,No';DateFilter@1006 : Text[30];Dim1Filter@1003 : Code[250];Dim2Filter@1002 : Code[250];Dim3Filter@1001 : Code[250];Dim4Filter@1210002 : Code[250]);
+    BEGIN
+      WITH PayrollStatisticsBuffer DO BEGIN
+        RESET;
+        SETRANGE("Analysis View Filter",CurrentAnalysisViewCode);
+
+        IF ElementTypeFilter <> '' THEN
+          SETFILTER("Element Type Filter",ElementTypeFilter);
+        IF ElementFilter <> '' THEN
+          SETFILTER("Element Filter",ElementFilter);
+        IF ElementGroupFilter <> '' THEN
+          SETFILTER("Element Group Filter",ElementGroupFilter);
+        IF EmployeeFilter <> '' THEN
+          SETFILTER("Employee Filter",EmployeeFilter);
+        IF OrgUnitFilter <> '' THEN
+          SETFILTER("Org. Unit Filter",OrgUnitFilter);
+        CASE UsePFAccumSystemFilter OF
+          1:
+            SETRANGE("Use PF Accum. System Filter",TRUE);
+          2:
+            SETRANGE("Use PF Accum. System Filter",FALSE);
+        END;
+        IF DateFilter <> '' THEN
+          SETFILTER("Date Filter",DateFilter);
+        IF Dim1Filter <> '' THEN
+          SETFILTER("Dimension 1 Filter",Dim1Filter);
+        IF Dim2Filter <> '' THEN
+          SETFILTER("Dimension 2 Filter",Dim2Filter);
+        IF Dim3Filter <> '' THEN
+          SETFILTER("Dimension 3 Filter",Dim3Filter);
+        IF Dim4Filter <> '' THEN
+          SETFILTER("Dimension 4 Filter",Dim4Filter);
+      END;
+    END;
+
+    PROCEDURE AnalysisViewSelection@22(VAR CurrentPayrollAnalysisViewCode@1000 : Code[10];VAR PayrollAnalysisView@1002 : Record 14965;VAR PayrollStatisticsBuffer@1003 : Record 14969;VAR Dim1Filter@1006 : Text;VAR Dim2Filter@1005 : Text;VAR Dim3Filter@1004 : Text;VAR Dim4Filter@1210000 : Text);
+    BEGIN
+      IF NOT PayrollAnalysisView.GET(CurrentPayrollAnalysisViewCode) THEN BEGIN
+        IF NOT PayrollAnalysisView.FIND('-') THEN BEGIN
+          PayrollAnalysisView.INIT;
+          PayrollAnalysisView.Code := Text009;
+          PayrollAnalysisView.Name := Text010;
+          PayrollAnalysisView.INSERT(TRUE);
+        END;
+        CurrentPayrollAnalysisViewCode := PayrollAnalysisView.Code;
+      END;
+
+      SetPayrollAnalysisView(
+        CurrentPayrollAnalysisViewCode,PayrollAnalysisView,PayrollStatisticsBuffer,
+        Dim1Filter,Dim2Filter,Dim3Filter,Dim4Filter);
+    END;
+
+    PROCEDURE CheckAnalysisView@18(CurrentPayrollAnalysisViewCode@1001 : Code[10];VAR PayrollAnalysisView@1000 : Record 14965);
+    BEGIN
+      PayrollAnalysisView.GET(CurrentPayrollAnalysisViewCode);
+    END;
+
+    PROCEDURE SetPayrollAnalysisView@16(CurrentPayrollAnalysisViewCode@1002 : Code[10];VAR PayrollAnalysisView@1001 : Record 14965;VAR PayrollStatisticsBuffer@1000 : Record 14969;VAR Dim1Filter@1005 : Text;VAR Dim2Filter@1004 : Text;VAR Dim3Filter@1003 : Text;VAR Dim4Filter@1210000 : Text);
+    BEGIN
+      PayrollStatisticsBuffer.SETRANGE("Analysis View Filter",CurrentPayrollAnalysisViewCode);
+
+      IF PrevPayrollAnalysisView.Code <> '' THEN BEGIN
+        IF PayrollAnalysisView."Dimension 1 Code" <> PrevPayrollAnalysisView."Dimension 1 Code" THEN
+          Dim1Filter := '';
+        IF PayrollAnalysisView."Dimension 2 Code" <> PrevPayrollAnalysisView."Dimension 2 Code" THEN
+          Dim2Filter := '';
+        IF PayrollAnalysisView."Dimension 3 Code" <> PrevPayrollAnalysisView."Dimension 3 Code" THEN
+          Dim3Filter := '';
+        IF PayrollAnalysisView."Dimension 4 Code" <> PrevPayrollAnalysisView."Dimension 4 Code" THEN
+          Dim4Filter := '';
+      END;
+      PayrollStatisticsBuffer.SETFILTER("Dimension 1 Filter",Dim1Filter);
+      PayrollStatisticsBuffer.SETFILTER("Dimension 2 Filter",Dim2Filter);
+      PayrollStatisticsBuffer.SETFILTER("Dimension 3 Filter",Dim3Filter);
+      PayrollStatisticsBuffer.SETFILTER("Dimension 4 Filter",Dim4Filter);
+
+      PrevPayrollAnalysisView := PayrollAnalysisView;
+    END;
+
+    PROCEDURE LookupPayrollAnalysisView@14(VAR CurrentPayrollAnalysisViewCode@1005 : Code[10];VAR PayrollAnalysisView@1004 : Record 14965;VAR PayrollStatisticsBuffer@1003 : Record 14969;VAR Dim1Filter@1002 : Text;VAR Dim2Filter@1001 : Text;VAR Dim3Filter@1000 : Text;VAR Dim4Filter@1210000 : Text);
+    VAR
+      PayrollAnalysisView2@1006 : Record 14965;
+    BEGIN
+      PayrollAnalysisView2.COPY(PayrollAnalysisView);
+      IF PAGE.RUNMODAL(0,PayrollAnalysisView2) = ACTION::LookupOK THEN BEGIN
+        PayrollAnalysisView := PayrollAnalysisView2;
+        CurrentPayrollAnalysisViewCode := PayrollAnalysisView.Code;
+        SetPayrollAnalysisView(
+          CurrentPayrollAnalysisViewCode,PayrollAnalysisView,PayrollStatisticsBuffer,
+          Dim1Filter,Dim2Filter,Dim3Filter,Dim4Filter);
+      END ELSE
+        AnalysisViewSelection(
+          CurrentPayrollAnalysisViewCode,PayrollAnalysisView,PayrollStatisticsBuffer,
+          Dim1Filter,Dim2Filter,Dim3Filter,Dim4Filter);
+    END;
+
+    PROCEDURE LookUpCode@4(DimOption@1000 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';DimCode@1001 : Text[30];Code@1002 : Text[30]);
+    VAR
+      PayrollElement@1210003 : Record 17400;
+      PayrollElementGroup@1210002 : Record 17412;
+      Employee@1210001 : Record 5200;
+      OrgUnit@1210000 : Record 12422;
+      DimVal@1005 : Record 349;
+      DimValList@1006 : Page 560;
+    BEGIN
+      CASE DimOption OF
+        DimOption::Element:
+          BEGIN
+            PayrollElement.GET(Code);
+            PAGE.RUNMODAL(0,PayrollElement);
+          END;
+        DimOption::"Element Group":
+          BEGIN
+            PayrollElementGroup.GET(Code);
+            PAGE.RUNMODAL(0,PayrollElementGroup);
+          END;
+        DimOption::Employee:
+          BEGIN
+            Employee.GET(Code);
+            PAGE.RUNMODAL(0,Employee);
+          END;
+        DimOption::"Org. Unit":
+          BEGIN
+            OrgUnit.GET(Code);
+            PAGE.RUNMODAL(0,OrgUnit);
+          END;
+        DimOption::Period:
+          ;
+        DimOption::"Dimension 1",
+        DimOption::"Dimension 2",
+        DimOption::"Dimension 3",
+        DimOption::"Dimension 3":
+          BEGIN
+            DimVal.SETRANGE("Dimension Code",DimCode);
+            DimVal.GET(DimCode,Code);
+            DimValList.SETTABLEVIEW(DimVal);
+            DimValList.SETRECORD(DimVal);
+            DimValList.RUNMODAL;
+          END;
+      END;
+    END;
+
+    PROCEDURE LookUpDimFilter@57(Dim@1000 : Code[20];VAR Text@1001 : Text[250]) : Boolean;
+    VAR
+      DimVal@1002 : Record 349;
+      DimValList@1003 : Page 560;
+    BEGIN
+      IF Dim = '' THEN
+        EXIT(FALSE);
+      DimValList.LOOKUPMODE(TRUE);
+      DimVal.SETRANGE("Dimension Code",Dim);
+      DimValList.SETTABLEVIEW(DimVal);
+      IF DimValList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        DimValList.GETRECORD(DimVal);
+        Text := DimValList.GetSelectionFilter;
+        EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE DrillDown@30(PayrollStatisticsBuffer@1015 : Record 14969;CurrentPayrollAnalysisViewCode@1013 : Code[10];ElementTypeFilter@1210005 : Code[250];ElementFilter@1210004 : Code[250];ElementGroupFilter@1210003 : Code[250];EmployeeFilter@1210002 : Code[250];OrgUnitFilter@1210001 : Code[250];UsePFAccumSystemFilter@1210006 : ' ,Yes,No';DateFilter@1011 : Text[30];Dim1Filter@1008 : Code[250];Dim2Filter@1007 : Code[250];Dim3Filter@1006 : Code[250];Dim4Filter@1210000 : Code[250];LineDimOption@1005 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';LineDimCodeBuf@1004 : Record 367;ColDimOption@1003 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';ColDimCodeBuf@1000 : Record 367;SetColumnFilter@1012 : Boolean;ValueType@1017 : 'Payroll Amount,Taxable Amount');
+    VAR
+      PayrollAnalysisViewEntry@1001 : Record 14966;
+    BEGIN
+      SetCommonFilters(
+        PayrollStatisticsBuffer,
+        CurrentPayrollAnalysisViewCode,
+        ElementTypeFilter,
+        ElementFilter,
+        ElementGroupFilter,
+        EmployeeFilter,
+        OrgUnitFilter,
+        UsePFAccumSystemFilter,
+        DateFilter,
+        Dim1Filter,
+        Dim2Filter,
+        Dim3Filter,
+        Dim4Filter);
+      SetDimFilters(PayrollStatisticsBuffer,LineDimOption,LineDimCodeBuf);
+      IF SetColumnFilter THEN
+        SetDimFilters(PayrollStatisticsBuffer,ColDimOption,ColDimCodeBuf);
+
+      FilterPayrollAnalyViewEntry(PayrollStatisticsBuffer,PayrollAnalysisViewEntry);
+      CASE ValueType OF
+        ValueType::"Payroll Amount":
+          PAGE.RUN(0,PayrollAnalysisViewEntry,PayrollAnalysisViewEntry."Payroll Amount");
+        ValueType::"Taxable Amount":
+          PAGE.RUN(0,PayrollAnalysisViewEntry,PayrollAnalysisViewEntry."Taxable Amount");
+      END;
+    END;
+
+    PROCEDURE SetLineAndColDim@2(PayrollAnalysisView@1005 : Record 14965;VAR LineDimCode@1000 : Text[30];VAR LineDimOption@1006 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';VAR ColumnDimCode@1003 : Text[30];VAR ColumnDimOption@1001 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4');
+    VAR
+      PayrollElement@1004 : Record 17400;
+    BEGIN
+      IF (LineDimCode = '') AND (ColumnDimCode = '') THEN BEGIN
+        LineDimCode := PayrollElement.TABLECAPTION;
+        ColumnDimCode := Text000;
+      END;
+      LineDimOption := DimCodeToOption(LineDimCode,PayrollAnalysisView);
+      ColumnDimOption := DimCodeToOption(ColumnDimCode,PayrollAnalysisView);
+    END;
+
+    PROCEDURE GetDimSelection@3(OldDimSelCode@1000 : Text[30];VAR PayrollAnalysisView@1001 : Record 14965) : Text[30];
+    VAR
+      PayrollElement@1210003 : Record 17400;
+      PayrollElementGroup@1210002 : Record 17412;
+      Employee@1210001 : Record 5200;
+      OrgUnit@1210000 : Record 12422;
+      DimSelection@1002 : Page 568;
+    BEGIN
+      DimSelection.InsertDimSelBuf(FALSE,PayrollElement.TABLECAPTION,PayrollElement.TABLECAPTION);
+      DimSelection.InsertDimSelBuf(FALSE,PayrollElementGroup.TABLECAPTION,PayrollElementGroup.TABLECAPTION);
+      DimSelection.InsertDimSelBuf(FALSE,Employee.TABLECAPTION,Employee.TABLECAPTION);
+      DimSelection.InsertDimSelBuf(FALSE,OrgUnit.TABLECAPTION,OrgUnit.TABLECAPTION);
+      DimSelection.InsertDimSelBuf(FALSE,Text000,Text000);
+      IF PayrollAnalysisView."Dimension 1 Code" <> '' THEN
+        DimSelection.InsertDimSelBuf(FALSE,PayrollAnalysisView."Dimension 1 Code",'');
+      IF PayrollAnalysisView."Dimension 2 Code" <> '' THEN
+        DimSelection.InsertDimSelBuf(FALSE,PayrollAnalysisView."Dimension 2 Code",'');
+      IF PayrollAnalysisView."Dimension 3 Code" <> '' THEN
+        DimSelection.InsertDimSelBuf(FALSE,PayrollAnalysisView."Dimension 3 Code",'');
+      IF PayrollAnalysisView."Dimension 4 Code" <> '' THEN
+        DimSelection.InsertDimSelBuf(FALSE,PayrollAnalysisView."Dimension 4 Code",'');
+
+      DimSelection.LOOKUPMODE := TRUE;
+      IF DimSelection.RUNMODAL = ACTION::LookupOK THEN
+        EXIT(DimSelection.GetDimSelCode);
+      EXIT(OldDimSelCode);
+    END;
+
+    PROCEDURE ValidateLineDimCode@20(PayrollAnalysisView@1006 : Record 14965;VAR LineDimCode@1004 : Text[30];VAR LineDimOption@1007 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';ColumnDimOption@1010 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';VAR InternalDateFilter@1005 : Text;VAR DateFilter@1008 : Text;VAR PayrollStatisticsBuffer@1009 : Record 14969;VAR PeriodInitialized@1011 : Boolean);
+    BEGIN
+      IF DimCodeNotAllowed(LineDimCode,PayrollAnalysisView) THEN BEGIN
+        MESSAGE(Text003,LineDimCode);
+        LineDimCode := '';
+      END;
+      LineDimOption := DimCodeToOption(LineDimCode,PayrollAnalysisView);
+      InternalDateFilter := PayrollStatisticsBuffer.GETFILTER("Date Filter");
+      IF (LineDimOption <> LineDimOption::Period) AND (ColumnDimOption <> ColumnDimOption::Period) THEN BEGIN
+        DateFilter := InternalDateFilter;
+        IF STRPOS(DateFilter,'&') > 1 THEN
+          DateFilter := COPYSTR(DateFilter,1,STRPOS(DateFilter,'&') - 1);
+      END ELSE
+        PeriodInitialized := FALSE;
+    END;
+
+    PROCEDURE ValidateColumnDimCode@19(PayrollAnalysisView@1006 : Record 14965;VAR ColumnDimCode@1004 : Text[30];VAR ColumnDimOption@1007 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';LineDimOption@1010 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';VAR InternalDateFilter@1005 : Text;VAR DateFilter@1008 : Text;VAR PayrollStatisticsBuffer@1009 : Record 14969;VAR PeriodInitialized@1011 : Boolean);
+    BEGIN
+      IF DimCodeNotAllowed(ColumnDimCode,PayrollAnalysisView) THEN BEGIN
+        MESSAGE(Text004,ColumnDimCode);
+        ColumnDimCode := '';
+      END;
+      ColumnDimOption := DimCodeToOption(ColumnDimCode,PayrollAnalysisView);
+      InternalDateFilter := PayrollStatisticsBuffer.GETFILTER("Date Filter");
+      IF (ColumnDimOption <> ColumnDimOption::Period) AND (LineDimOption <> LineDimOption::Period) THEN BEGIN
+        DateFilter := InternalDateFilter;
+        IF STRPOS(DateFilter,'&') > 1 THEN
+          DateFilter := COPYSTR(DateFilter,1,STRPOS(DateFilter,'&') - 1);
+      END ELSE
+        PeriodInitialized := FALSE;
+    END;
+
+    PROCEDURE FormatAmount@23(VAR Text@1005 : Text[250];RoundingFactor@1002 : 'None,1,1000,1000000');
+    VAR
+      Amount@1001 : Decimal;
+    BEGIN
+      IF (Text = '') OR (RoundingFactor = RoundingFactor::None) THEN
+        EXIT;
+      EVALUATE(Amount,Text);
+      CASE RoundingFactor OF
+        RoundingFactor::"1":
+          Amount := ROUND(Amount,1);
+        RoundingFactor::"1000":
+          Amount := ROUND(Amount / 1000,0.1);
+        RoundingFactor::"1000000":
+          Amount := ROUND(Amount / 1000000,0.1);
+      END;
+      IF Amount = 0 THEN
+        Text := ''
+      ELSE
+        CASE RoundingFactor OF
+          RoundingFactor::"1":
+            Text := FORMAT(Amount);
+          RoundingFactor::"1000",RoundingFactor::"1000000":
+            Text := FORMAT(Amount,0,Text001);
+        END;
+    END;
+
+    PROCEDURE FindRec@59(PayrollAnalysisView@1011 : Record 14965;DimOption@1000 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';VAR DimCodeBuf@1001 : Record 367;Which@1002 : Text[250];ElementFilter@1210004 : Code[250];ElementGroupFilter@1210003 : Code[250];EmployeeFilter@1210002 : Code[250];OrgUnitFilter@1210001 : Code[250];PeriodType@1017 : 'Day,Week,Month,Quarter,Year,Accounting Period';VAR DateFilter@1016 : Text[30];VAR PeriodInitialized@1015 : Boolean;InternalDateFilter@1014 : Text[30];Dim1Filter@1013 : Code[250];Dim2Filter@1012 : Code[250];Dim3Filter@1010 : Code[250];Dim4Filter@1210000 : Code[250]) : Boolean;
+    VAR
+      PayrollElement@1210009 : Record 17400;
+      PayrollElementGroup@1210008 : Record 17412;
+      Employee@1210007 : Record 5200;
+      OrgUnit@1210006 : Record 12422;
+      Period@1005 : Record 2000000007;
+      DimVal@1006 : Record 349;
+      PeriodFormMgt@1007 : Codeunit 359;
+      Found@1008 : Boolean;
+    BEGIN
+      CASE DimOption OF
+        DimOption::Element:
+          BEGIN
+            PayrollElement.Code := DimCodeBuf.Code;
+            IF ElementFilter <> '' THEN
+              PayrollElement.SETFILTER(Code,ElementFilter);
+            Found := PayrollElement.FIND(Which);
+            IF Found THEN
+              CopyElementToBuf(PayrollElement,DimCodeBuf);
+          END;
+        DimOption::"Element Group":
+          BEGIN
+            PayrollElementGroup.Code := DimCodeBuf.Code;
+            IF ElementGroupFilter <> '' THEN
+              PayrollElementGroup.SETFILTER(Code,ElementGroupFilter);
+            Found := PayrollElementGroup.FIND(Which);
+            IF Found THEN
+              CopyElementGroupToBuf(PayrollElementGroup,DimCodeBuf);
+          END;
+        DimOption::Employee:
+          BEGIN
+            Employee."No." := DimCodeBuf.Code;
+            IF EmployeeFilter <> '' THEN
+              Employee.SETFILTER("No.",EmployeeFilter);
+            Found := Employee.FIND(Which);
+            IF Found THEN
+              CopyEmployeeToBuf(Employee,DimCodeBuf);
+          END;
+        DimOption::"Org. Unit":
+          BEGIN
+            OrgUnit.Code := COPYSTR(DimCodeBuf.Code,1,MAXSTRLEN(OrgUnit.Code));
+            IF OrgUnitFilter <> '' THEN
+              OrgUnit.SETFILTER(Code,OrgUnitFilter);
+            Found := OrgUnit.FIND(Which);
+            IF Found THEN
+              CopyOrgUnitToBuf(OrgUnit,DimCodeBuf);
+          END;
+        DimOption::Period:
+          BEGIN
+            IF NOT PeriodInitialized THEN
+              DateFilter := '';
+            PeriodInitialized := TRUE;
+            Period."Period Start" := DimCodeBuf."Period Start";
+            IF DateFilter <> '' THEN
+              Period.SETFILTER("Period Start",DateFilter)
+            ELSE
+              IF NOT PeriodInitialized AND (InternalDateFilter <> '') THEN
+                Period.SETFILTER("Period Start",InternalDateFilter);
+            Found := PeriodFormMgt.FindDate(Which,Period,PeriodType);
+            IF Found THEN
+              CopyPeriodToBuf(Period,DimCodeBuf,DateFilter);
+          END;
+        DimOption::"Dimension 1":
+          BEGIN
+            IF Dim1Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim1Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 1 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            Found := DimVal.FIND(Which);
+            IF Found THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+        DimOption::"Dimension 2":
+          BEGIN
+            IF Dim2Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim2Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 2 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            Found := DimVal.FIND(Which);
+            IF Found THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+        DimOption::"Dimension 3":
+          BEGIN
+            IF Dim3Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim3Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 3 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            Found := DimVal.FIND(Which);
+            IF Found THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+        DimOption::"Dimension 4":
+          BEGIN
+            IF Dim4Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim4Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 4 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            Found := DimVal.FIND(Which);
+            IF Found THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+      END;
+      EXIT(Found);
+    END;
+
+    PROCEDURE NextRec@60(PayrollAnalysisView@1009 : Record 14965;DimOption@1000 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';VAR DimCodeBuf@1001 : Record 367;Steps@1002 : Integer;ElementFilter@1210003 : Code[250];ElementGroupFilter@1210002 : Code[250];EmployeeFilter@1210001 : Code[250];OrgUnitFilter@1210000 : Code[250];PeriodType@1016 : 'Day,Week,Month,Quarter,Year,Accounting Period';DateFilter@1015 : Text[30];Dim1Filter@1012 : Code[250];Dim2Filter@1011 : Code[250];Dim3Filter@1010 : Code[250];Dim4Filter@1210004 : Code[250]) : Integer;
+    VAR
+      PayrollElement@1210008 : Record 17400;
+      PayrollElementGroup@1210007 : Record 17412;
+      Employee@1210006 : Record 5200;
+      OrgUnit@1210005 : Record 12422;
+      Period@1005 : Record 2000000007;
+      DimVal@1006 : Record 349;
+      PeriodFormMgt@1007 : Codeunit 359;
+      ResultSteps@1008 : Integer;
+    BEGIN
+      CASE DimOption OF
+        DimOption::Element:
+          BEGIN
+            PayrollElement.Code := DimCodeBuf.Code;
+            IF ElementFilter <> '' THEN
+              PayrollElement.SETFILTER(Code,ElementFilter);
+            ResultSteps := PayrollElement.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyElementToBuf(PayrollElement,DimCodeBuf);
+          END;
+        DimOption::"Element Group":
+          BEGIN
+            PayrollElementGroup.Code := DimCodeBuf.Code;
+            IF ElementGroupFilter <> '' THEN
+              PayrollElementGroup.SETFILTER(Code,ElementGroupFilter);
+            ResultSteps := PayrollElementGroup.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyElementGroupToBuf(PayrollElementGroup,DimCodeBuf);
+          END;
+        DimOption::Employee:
+          BEGIN
+            Employee."No." := DimCodeBuf.Code;
+            IF EmployeeFilter <> '' THEN
+              Employee.SETFILTER("No.",EmployeeFilter);
+            ResultSteps := Employee.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyEmployeeToBuf(Employee,DimCodeBuf);
+          END;
+        DimOption::"Org. Unit":
+          BEGIN
+            OrgUnit.Code := DimCodeBuf.Code;
+            IF OrgUnitFilter <> '' THEN
+              OrgUnit.SETFILTER(Code,OrgUnitFilter);
+            ResultSteps := OrgUnit.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyOrgUnitToBuf(OrgUnit,DimCodeBuf);
+          END;
+        DimOption::Period:
+          BEGIN
+            IF DateFilter <> '' THEN
+              Period.SETFILTER("Period Start",DateFilter);
+            Period."Period Start" := DimCodeBuf."Period Start";
+            ResultSteps := PeriodFormMgt.NextDate(Steps,Period,PeriodType);
+            IF ResultSteps <> 0 THEN
+              CopyPeriodToBuf(Period,DimCodeBuf,DateFilter);
+          END;
+        DimOption::"Dimension 1":
+          BEGIN
+            IF Dim1Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim1Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 1 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            ResultSteps := DimVal.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+        DimOption::"Dimension 2":
+          BEGIN
+            IF Dim2Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim2Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 2 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            ResultSteps := DimVal.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+        DimOption::"Dimension 3":
+          BEGIN
+            IF Dim3Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim3Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 3 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            ResultSteps := DimVal.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+        DimOption::"Dimension 4":
+          BEGIN
+            IF Dim4Filter <> '' THEN
+              DimVal.SETFILTER(Code,Dim4Filter);
+            DimVal."Dimension Code" := PayrollAnalysisView."Dimension 4 Code";
+            DimVal.SETRANGE("Dimension Code",DimVal."Dimension Code");
+            DimVal.Code := DimCodeBuf.Code;
+            ResultSteps := DimVal.NEXT(Steps);
+            IF ResultSteps <> 0 THEN
+              CopyDimValueToBuf(DimVal,DimCodeBuf);
+          END;
+      END;
+      EXIT(ResultSteps);
+    END;
+
+    PROCEDURE GetCaptionClass@12(AnalysisViewDimType@1000 : Integer;PayrollAnalysisView@1001 : Record 14965) : Text[250];
+    BEGIN
+      CASE AnalysisViewDimType OF
+        1:
+          BEGIN
+            IF PayrollAnalysisView."Dimension 1 Code" <> '' THEN
+              EXIT('1,6,' + PayrollAnalysisView."Dimension 1 Code");
+            EXIT(Text005);
+          END;
+        2:
+          BEGIN
+            IF PayrollAnalysisView."Dimension 2 Code" <> '' THEN
+              EXIT('1,6,' + PayrollAnalysisView."Dimension 2 Code");
+            EXIT(Text006);
+          END;
+        3:
+          BEGIN
+            IF PayrollAnalysisView."Dimension 3 Code" <> '' THEN
+              EXIT('1,6,' + PayrollAnalysisView."Dimension 3 Code");
+            EXIT(Text007);
+          END;
+        4:
+          BEGIN
+            IF PayrollAnalysisView."Dimension 4 Code" <> '' THEN
+              EXIT('1,6,' + PayrollAnalysisView."Dimension 4 Code");
+            EXIT(Text008);
+          END;
+      END;
+    END;
+
+    PROCEDURE SetCalcAmountParameters@1210001(PayrollAnalysisViewCode@1210000 : Code[10];LineDimOption@1210004 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';LineDimCodeBuf@1210003 : Record 367;ColDimOption@1210002 : 'Element,Element Group,Employee,Org. Unit,Period,Dimension 1,Dimension 2,Dimension 3,Dimension 4';ColDimCodeBuf@1210001 : Record 367);
+    BEGIN
+      CurrentPayrollAnalysisViewCode := PayrollAnalysisViewCode;
+      CurrLineDimOption := LineDimOption;
+      CurrLineDimCodeBuf := LineDimCodeBuf;
+      CurrColDimOption := ColDimOption;
+      CurrColDimCodeBuf := ColDimCodeBuf;
+    END;
+
+    PROCEDURE CalcAmount@7(SetColumnFilter@1210009 : Boolean;ValueType@1017 : 'Payroll Amount,Taxable Amount';VAR PayrollStatisticsBuffer@1015 : Record 14969;ElementTypeFilter@1210005 : Text[250];ElementFilter@1210004 : Code[250];ElementGroupFilter@1210003 : Code[250];EmployeeFilter@1210002 : Code[250];OrgUnitFilter@1210001 : Code[250];UsePFAccumSystemFilter@1210010 : ' ,Yes,No';DateFilter@1010 : Text[20];Dim1Filter@1210008 : Code[250];Dim2Filter@1210007 : Code[250];Dim3Filter@1210006 : Code[250];Dim4Filter@1210000 : Code[250]) : Decimal;
+    VAR
+      Amount@1001 : Decimal;
+    BEGIN
+      SetCommonFilters(
+        PayrollStatisticsBuffer,
+        CurrentPayrollAnalysisViewCode,
+        ElementTypeFilter,
+        ElementFilter,
+        ElementGroupFilter,
+        EmployeeFilter,
+        OrgUnitFilter,
+        UsePFAccumSystemFilter,
+        DateFilter,
+        Dim1Filter,
+        Dim2Filter,
+        Dim3Filter,
+        Dim4Filter
+        );
+
+      SetDimFilters(PayrollStatisticsBuffer,CurrLineDimOption,CurrLineDimCodeBuf);
+      IF SetColumnFilter THEN
+        SetDimFilters(PayrollStatisticsBuffer,CurrColDimOption,CurrColDimCodeBuf);
+
+      CASE ValueType OF
+        ValueType::"Payroll Amount":
+          BEGIN
+            PayrollStatisticsBuffer.CALCFIELDS("Analysis - Payroll Amount");
+            Amount := PayrollStatisticsBuffer."Analysis - Payroll Amount";
+          END;
+        ValueType::"Taxable Amount":
+          BEGIN
+            PayrollStatisticsBuffer.CALCFIELDS("Analysis - Taxable Amount");
+            Amount := PayrollStatisticsBuffer."Analysis - Taxable Amount";
+          END;
+      END;
+
+      EXIT(Amount);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,416 @@
+OBJECT Table 12404 VAT Ledger
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    OnInsert=BEGIN
+               IF Code = '' THEN BEGIN
+                 GLSetup.GET;
+                 IF Type = Type::Purchase THEN BEGIN
+                   GLSetup.TESTFIELD("VAT Purch. Ledger No. Series");
+                   NoSeriesMgt.InitSeries(GLSetup."VAT Purch. Ledger No. Series",xRec."No. Series",0D,Code,"No. Series");
+                 END ELSE BEGIN
+                   GLSetup.TESTFIELD("VAT Sales Ledger No. Series");
+                   NoSeriesMgt.InitSeries(GLSetup."VAT Sales Ledger No. Series",xRec."No. Series",0D,Code,"No. Series");
+                 END;
+               END;
+             END;
+
+    OnDelete=BEGIN
+               VATLedgerLine.SETRANGE(Type,Type);
+               VATLedgerLine.SETRANGE(Code,Code);
+               VATLedgerLine.DELETEALL;
+
+               CASE Type OF
+                 Type::Purchase:
+                   BEGIN
+                     VATLedgerConnection.SETRANGE("Purch. Ledger Code",Code);
+                     VATLedgerConnection.DELETEALL;
+                   END;
+                 Type::Sales:
+                   BEGIN
+                     VATLedgerConnection.SETRANGE("Sales Ledger Code",Code);
+                     VATLedgerConnection.DELETEALL;
+                   END;
+               END;
+             END;
+
+    CaptionML=[ENU=VAT Ledger;
+               RUS=Книга НДС];
+    LookupPageID=Page12412;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Type                ;Option        ;CaptionML=[ENU=Type;
+                                                              RUS=Тип];
+                                                   OptionCaptionML=[ENU=Purchase,Sales;
+                                                                    RUS=Покупки,Продажи];
+                                                   OptionString=Purchase,Sales }
+    { 2   ;   ;Code                ;Code20        ;OnValidate=BEGIN
+                                                                IF Code <> xRec.Code THEN BEGIN
+                                                                  CheckVATLedgerStatus;
+                                                                  GLSetup.GET;
+                                                                  IF Type = Type::Purchase THEN
+                                                                    NoSeriesMgt.TestManual(GLSetup."VAT Purch. Ledger No. Series")
+                                                                  ELSE
+                                                                    NoSeriesMgt.TestManual(GLSetup."VAT Sales Ledger No. Series");
+                                                                  "No. Series" := '';
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Code;
+                                                              RUS=Код] }
+    { 3   ;   ;Description         ;Text100       ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 4   ;   ;Start Date          ;Date          ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                                ComposeDescription;
+                                                              END;
+
+                                                   CaptionML=[ENU=Start Date;
+                                                              RUS=Дата начала] }
+    { 5   ;   ;End Date            ;Date          ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                                ComposeDescription;
+                                                              END;
+
+                                                   CaptionML=[ENU=End Date;
+                                                              RUS=Дата окончания] }
+    { 6   ;   ;From No.            ;Integer       ;FieldClass=FlowField;
+                                                   CalcFormula=Min("VAT Ledger Line"."Line No." WHERE (Type=FIELD(Type),
+                                                                                                       Code=FIELD(Code)));
+                                                   CaptionML=[ENU=From No.;
+                                                              RUS=От номера];
+                                                   Editable=No }
+    { 7   ;   ;To No.              ;Integer       ;FieldClass=FlowField;
+                                                   CalcFormula=Max("VAT Ledger Line"."Line No." WHERE (Type=FIELD(Type),
+                                                                                                       Code=FIELD(Code)));
+                                                   CaptionML=[ENU=To No.;
+                                                              RUS=До номера];
+                                                   Editable=No }
+    { 8   ;   ;No. Series          ;Code10        ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=No. Series;
+                                                              RUS=Серия номеров];
+                                                   Editable=No }
+    { 9   ;   ;Accounting Period   ;Date          ;TableRelation="Accounting Period";
+                                                   OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                                AccPeriod.GET("Accounting Period");
+                                                                VALIDATE("Start Date",AccPeriod."Starting Date");
+                                                                IF AccPeriod.NEXT > 0 THEN
+                                                                  VALIDATE("End Date",CALCDATE('<-1D>',AccPeriod."Starting Date"))
+                                                                ELSE
+                                                                  ERROR(Text12405);
+                                                              END;
+
+                                                   CaptionML=[ENU=Accounting Period;
+                                                              RUS=Учетный период] }
+    { 10  ;   ;Start Page No.      ;Integer       ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Start Page No.;
+                                                              RUS=Номер начальной страницы] }
+    { 20  ;   ;C/V Filter          ;Text250       ;TableRelation=IF (Type=CONST(Purchase)) Vendor
+                                                                 ELSE IF (Type=CONST(Sales)) Customer;
+                                                   OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   ValidateTableRelation=No;
+                                                   TestTableRelation=No;
+                                                   CaptionML=[ENU=C/V Filter;
+                                                              RUS=Фильтр К/П] }
+    { 21  ;   ;VAT Product Group Filter;Text250   ;TableRelation="VAT Product Posting Group";
+                                                   OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   ValidateTableRelation=No;
+                                                   TestTableRelation=No;
+                                                   CaptionML=[ENU=VAT Product Group Filter;
+                                                              RUS=НДС товарная группа - фильтр] }
+    { 22  ;   ;VAT Business Group Filter;Text250  ;TableRelation="VAT Business Posting Group";
+                                                   OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   ValidateTableRelation=No;
+                                                   TestTableRelation=No;
+                                                   CaptionML=[ENU=VAT Business Group Filter;
+                                                              RUS=НДС бизнес-группа - фильтр] }
+    { 23  ;   ;Purchase Sorting    ;Option        ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Purchase Sorting;
+                                                              RUS=Сортировка покупок];
+                                                   OptionCaptionML=[ENU=" ,Document Date,Document No.,Last Date";
+                                                                    RUS=" ,Дата документа,Номер документа,Последняя дата"];
+                                                   OptionString=[ ,Document Date,Document No.,Last Date] }
+    { 24  ;   ;Sales Sorting       ;Option        ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Sales Sorting;
+                                                              RUS=Сортировка продаж];
+                                                   OptionCaptionML=[ENU=" ,Document Date,Document No.,Customer No.";
+                                                                    RUS=" ,Дата документа,Номер документа,Код клиента"];
+                                                   OptionString=[ ,Document Date,Document No.,Customer No.] }
+    { 25  ;   ;Use External Doc. No.;Boolean      ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Use External Doc. No.;
+                                                              RUS=Использ. номер внешнего док.] }
+    { 26  ;   ;Clear Lines         ;Boolean       ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Clear Lines;
+                                                              RUS=Очистка строк] }
+    { 27  ;   ;Start Numbering     ;Integer       ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Start Numbering;
+                                                              RUS=Начало нумерации] }
+    { 28  ;   ;Other Rates         ;Option        ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Other Rates;
+                                                              RUS=Другие ставки];
+                                                   OptionCaptionML=[ENU=Do Not Show,Summarized,Detailed;
+                                                                    RUS=Не показывать,Сводка,Подробно];
+                                                   OptionString=Do Not Show,Summarized,Detailed }
+    { 29  ;   ;Show Realized VAT   ;Boolean       ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Show Realized VAT;
+                                                              RUS=Показать реализованный НДС] }
+    { 30  ;   ;Show Unrealized VAT ;Boolean       ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Show Unrealized VAT;
+                                                              RUS=Показать нереализованный НДС] }
+    { 31  ;   ;Show Amount Differences;Boolean    ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Show Amount Differences;
+                                                              RUS=Показать суммовые разницы] }
+    { 32  ;   ;Show Customer Prepayments;Boolean  ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Show Customer Prepayments;
+                                                              RUS=Показать предоплаты клиентов] }
+    { 33  ;   ;Show Vendor Prepayments;Boolean    ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Show Vendor Prepayments;
+                                                              RUS=Показать предоплаты поставщиков] }
+    { 34  ;   ;Show VAT Reinstatement;Boolean     ;OnValidate=BEGIN
+                                                                CheckVATLedgerStatus;
+                                                              END;
+
+                                                   CaptionML=[ENU=Show VAT Reinstatement;
+                                                              RUS=Показать восстановление НДС] }
+    { 35  ;   ;Total VAT Amt VAT Purch Ledger;Decimal;
+                                                   CaptionML=[ENU=Total VAT Amt VAT Purch Ledger;
+                                                              RUS=Общая сумма НДС - книга НДС покупок] }
+    { 36  ;   ;Tot Base18 Amt VAT Sales Ledg;Decimal;
+                                                   CaptionML=[ENU=Tot Base18 Amt VAT Sales Ledg;
+                                                              RUS=Общая сумма база18 - книга НДС продаж] }
+    { 37  ;   ;Tot Base 10 Amt VAT Sales Ledg;Decimal;
+                                                   CaptionML=[ENU=Tot Base 10 Amt VAT Sales Ledg;
+                                                              RUS=Общая сумма база 10 - книга НДС продаж] }
+    { 38  ;   ;Tot Base 0 Amt VAT Sales Ledg;Decimal;
+                                                   CaptionML=[ENU=Tot Base 0 Amt VAT Sales Ledg;
+                                                              RUS=Общая сумма база 0 - книга НДС продаж] }
+    { 39  ;   ;Total VAT18 Amt VAT Sales Ledg;Decimal;
+                                                   CaptionML=[ENU=Total VAT18 Amt VAT Sales Ledg;
+                                                              RUS=Общая сумма НДС18 - книга НДС продаж] }
+    { 40  ;   ;Total VAT10 Amt VAT Sales Ledg;Decimal;
+                                                   CaptionML=[ENU=Total VAT10 Amt VAT Sales Ledg;
+                                                              RUS=Общая сумма НДС10 - книга НДС продаж] }
+    { 41  ;   ;Total VATExempt Amt VAT S Ledg;Decimal;
+                                                   CaptionML=[ENU=Total VATExempt Amt VAT S Ledg;
+                                                              RUS=Общая сумма освоб. от НДС - кн. НДС продаж] }
+  }
+  KEYS
+  {
+    {    ;Type,Code                               ;Clustered=Yes }
+    {    ;Type,Start Date                          }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1210000 : Record 98;
+      VATLedger@1210002 : Record 12404;
+      VATLedgerLine@1210003 : Record 12405;
+      VATLedgerConnection@1210012 : Record 12406;
+      AccPeriod@1210004 : Record 50;
+      Text12404@1210008 : TextConst 'ENU=You cannot change fields for already created ledger.;RUS=Невозможно изменить поля уже созданной книги.';
+      Text12405@1210009 : TextConst 'ENU=Please create next accounting period.;RUS=Создайте следующий учетный период.';
+      Text12406@1210010 : TextConst 'ENU=VAT Purchase Ledger for period from %1 to %2;RUS=НДС - книга покупок за период с %1 по %2';
+      Text12407@1210011 : TextConst 'ENU=VAT Sales Ledger for period from %1 to %2;RUS=НДС - книга продаж за период с %1 по %2';
+      NoSeriesMgt@1210001 : Codeunit 396;
+
+    PROCEDURE AssistEdit@2(OldVATLedger@1000 : Record 12404) : Boolean;
+    BEGIN
+      WITH VATLedger DO BEGIN
+        VATLedger := Rec;
+        GLSetup.GET;
+        IF Type = Type::Purchase THEN BEGIN
+          GLSetup.TESTFIELD("VAT Purch. Ledger No. Series");
+          IF NoSeriesMgt.SelectSeries(GLSetup."VAT Purch. Ledger No. Series",OldVATLedger."No. Series","No. Series") THEN BEGIN
+            GLSetup.GET;
+            GLSetup.TESTFIELD("VAT Purch. Ledger No. Series");
+            NoSeriesMgt.SetSeries(Code);
+            Rec := VATLedger;
+            EXIT(TRUE);
+          END;
+        END ELSE BEGIN
+          GLSetup.TESTFIELD("VAT Sales Ledger No. Series");
+          IF NoSeriesMgt.SelectSeries(GLSetup."VAT Sales Ledger No. Series",OldVATLedger."No. Series","No. Series") THEN BEGIN
+            GLSetup.GET;
+            GLSetup.TESTFIELD("VAT Purch. Ledger No. Series");
+            NoSeriesMgt.SetSeries(Code);
+            Rec := VATLedger;
+            EXIT(TRUE);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ComposeDescription@1210000();
+    BEGIN
+      IF Type = Type::Purchase THEN
+        Description := STRSUBSTNO(Text12406,"Start Date","End Date")
+      ELSE
+        Description := STRSUBSTNO(Text12407,"Start Date","End Date");
+    END;
+
+    PROCEDURE CheckVATLedgerStatus@1210001();
+    BEGIN
+      CALCFIELDS("To No.");
+      IF "To No." > 0 THEN
+        ERROR(Text12404);
+    END;
+
+    PROCEDURE CreateVATLedger@1210002();
+    VAR
+      CreateVATPurchaseLedger@1210000 : Report 12455;
+      CreateVATSalesLedger@1210001 : Report 12456;
+    BEGIN
+      VATLedger := Rec;
+      VATLedger.SETRECFILTER;
+      CASE Type OF
+        Type::Sales:
+          BEGIN
+            CreateVATSalesLedger.SetParameters(
+              "C/V Filter",
+              "VAT Product Group Filter",
+              "VAT Business Group Filter",
+              "Sales Sorting",
+              "Clear Lines",
+              "Show Realized VAT",
+              "Show Unrealized VAT",
+              "Show Customer Prepayments",
+              "Show Amount Differences",
+              "Show Vendor Prepayments",
+              "Show VAT Reinstatement");
+            CreateVATSalesLedger.SETTABLEVIEW(VATLedger);
+            CreateVATSalesLedger.RUNMODAL;
+          END;
+        Type::Purchase:
+          BEGIN
+            CreateVATPurchaseLedger.SetParameters(
+              "C/V Filter",
+              "VAT Product Group Filter",
+              "VAT Business Group Filter",
+              "Purchase Sorting",
+              "Use External Doc. No.",
+              "Clear Lines",
+              "Start Numbering",
+              "Other Rates",
+              "Show Realized VAT",
+              "Show Unrealized VAT",
+              "Show Amount Differences",
+              "Show Customer Prepayments");
+            CreateVATPurchaseLedger.SETTABLEVIEW(VATLedger);
+            CreateVATPurchaseLedger.RUNMODAL;
+          END;
+      END;
+    END;
+
+    PROCEDURE CreateAddSheet@1210003();
+    VAR
+      CreateVATPurchLedAdSh@1210000 : Report 14962;
+      CreateVATSalesLedAdSh@1210001 : Report 14963;
+    BEGIN
+      VATLedger := Rec;
+      VATLedger.SETRECFILTER;
+      CASE Type OF
+        Type::Sales:
+          BEGIN
+            CreateVATSalesLedAdSh.SetParameters(
+              "C/V Filter",
+              "VAT Product Group Filter",
+              "VAT Business Group Filter",
+              "Sales Sorting",
+              "Clear Lines",
+              "Show Realized VAT",
+              "Show Unrealized VAT",
+              "Show Customer Prepayments",
+              "Show Amount Differences",
+              "Show Vendor Prepayments");
+            CreateVATSalesLedAdSh.SETTABLEVIEW(VATLedger);
+            CreateVATSalesLedAdSh.RUNMODAL;
+          END;
+        Type::Purchase:
+          BEGIN
+            CreateVATPurchLedAdSh.SetParameters(
+              "C/V Filter",
+              "VAT Product Group Filter",
+              "VAT Business Group Filter",
+              "Purchase Sorting",
+              "Use External Doc. No.",
+              "Clear Lines",
+              "Start Numbering",
+              "Other Rates",
+              "Show Realized VAT",
+              "Show Unrealized VAT",
+              "Show Amount Differences",
+              "Show Customer Prepayments");
+            CreateVATPurchLedAdSh.SETTABLEVIEW(VATLedger);
+            CreateVATPurchLedAdSh.RUNMODAL;
+          END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

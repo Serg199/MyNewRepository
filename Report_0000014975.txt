@@ -1,0 +1,315 @@
+OBJECT Report 14975 Calculate Item Doc. Whse. Adj.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Item Doc. Whse. Adj.;
+               RUS=Расчет тов. док. корр. склада];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   ByLocation := TRUE;
+                   ByBin := FALSE;
+                 END;
+
+  }
+  DATASET
+  {
+    { 8129;    ;DataItem;                    ;
+               DataItemTable=Table27;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               NextLineNo := 0;
+
+                               IF NOT HideValidationDialog THEN
+                                 Window.OPEN(Text002,Item."No.");
+
+                               IF GETFILTER("Location Filter") <> '' THEN
+                                 ByLocation := TRUE;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF NOT HideValidationDialog THEN
+                                    Window.UPDATE;
+                                END;
+
+               ReqFilterFields=No.,Location Filter,Variant Filter }
+
+    { 5444;1   ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=CONST(1));
+               OnPreDataItem=BEGIN
+                               CLEAR(Location);
+                               WhseEntry.RESET;
+                               WhseEntry.SETCURRENTKEY("Item No.","Bin Code","Location Code","Variant Code");
+                               WhseEntry.ASCENDING(FALSE);
+                               WhseEntry.SETRANGE("Item No.",Item."No.");
+                               Item.COPYFILTER("Variant Filter",WhseEntry."Variant Code");
+
+                               IF WhseEntry.ISEMPTY THEN
+                                 CurrReport.BREAK;
+
+                               QuantityOnHandBuffer.RESET;
+                               QuantityOnHandBuffer.DELETEALL;
+
+                               WhseQty := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  WITH QuantityOnHandBuffer DO BEGIN
+                                    WhseEntry.SETRANGE("Location Code",ItemDocHeader."Location Code");
+                                    WhseEntry.SETRANGE("Bin Code",ItemDocHeader."Whse. Adj. Bin Code");
+                                    IF WhseEntry.FINDSET THEN
+                                      REPEAT
+                                        IF WhseEntry."Qty. (Base)" <> 0 THEN BEGIN
+                                          RESET;
+                                          SETRANGE("Item No.",WhseEntry."Item No.");
+                                          SETRANGE("Variant Code",WhseEntry."Variant Code");
+                                          SETRANGE("Location Code",WhseEntry."Location Code");
+                                          SETRANGE("Bin Code",WhseEntry."Bin Code");
+                                          IF WhseEntry."Lot No." <> '' THEN
+                                            SETRANGE("Lot No.",WhseEntry."Lot No.");
+                                          IF WhseEntry."Serial No." <> '' THEN
+                                            SETRANGE("Serial No.",WhseEntry."Serial No.");
+                                          IF FINDFIRST THEN BEGIN
+                                            Quantity := Quantity + WhseEntry."Qty. (Base)";
+                                            MODIFY;
+                                          END ELSE BEGIN
+                                            "Item No." := WhseEntry."Item No.";
+                                            "Variant Code" := WhseEntry."Variant Code";
+                                            "Location Code" := WhseEntry."Location Code";
+                                            "Bin Code" := WhseEntry."Bin Code";
+                                            "Lot No." := WhseEntry."Lot No.";
+                                            "Serial No." := WhseEntry."Serial No.";
+                                            Quantity := WhseEntry."Qty. (Base)";
+                                            INSERT;
+                                          END;
+                                        END;
+                                      UNTIL WhseEntry.NEXT = 0;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                WITH QuantityOnHandBuffer DO BEGIN
+                                  RESET;
+                                  SETCURRENTKEY("Location Code","Variant Code",Quantity);
+                                  IF FINDSET THEN
+                                    REPEAT
+                                      IF "Location Code" <> '' THEN
+                                        SETRANGE("Location Code","Location Code");
+                                      SETRANGE("Variant Code","Variant Code");
+
+                                      CASE ItemDocHeader."Document Type" OF
+                                        ItemDocHeader."Document Type"::Receipt:
+                                          BEGIN
+                                            SETFILTER(Quantity,'>0');
+                                            CALCSUMS(Quantity);
+                                            WhseQty := - Quantity;
+                                            IF WhseQty <> 0 THEN BEGIN
+                                              FINDFIRST;
+                                              InsertItemDocLine(
+                                                "Item No.","Variant Code","Location Code",
+                                                WhseQty,Item."Base Unit of Measure",
+                                                ItemDocLine."Document Type"::Shipment);
+                                            END;
+                                          END;
+                                        ItemDocHeader."Document Type"::Shipment:
+                                          BEGIN
+                                            SETFILTER(Quantity,'<0');
+                                            CALCSUMS(Quantity);
+                                            WhseQty := - Quantity;
+                                            IF WhseQty <> 0 THEN BEGIN
+                                              FINDFIRST;
+                                              InsertItemDocLine(
+                                                "Item No.","Variant Code","Location Code",
+                                                WhseQty,Item."Base Unit of Measure",
+                                                ItemDocLine."Document Type"::Shipment);
+                                            END;
+                                          END;
+                                      END;
+
+                                      SETRANGE(Quantity);
+                                      FINDLAST;
+                                      SETRANGE("Location Code");
+                                      SETRANGE("Variant Code");
+                                    UNTIL NEXT = 0;
+                                  RESET;
+                                  DELETEALL;
+                                END;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      CaptionML=[ENU=Calculate Inventory;
+                 RUS=Расчет запасов];
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text002@1002 : TextConst 'ENU=Processing items    #1##########;RUS=Обработка товаров   #1##########';
+      ItemDocHeader@1004 : Record 12450;
+      ItemDocLine@1005 : Record 12453;
+      WhseEntry@1006 : Record 7312;
+      Location@1031 : Record 14;
+      SourceCodeSetup@1008 : Record 242;
+      QuantityOnHandBuffer@1038 : TEMPORARY Record 307;
+      Window@1019 : Dialog;
+      WhseQty@1032 : Decimal;
+      NextLineNo@1023 : Integer;
+      ByLocation@1024 : Boolean;
+      ByBin@1025 : Boolean;
+      ZeroQty@1026 : Boolean;
+      HideValidationDialog@1028 : Boolean;
+
+    PROCEDURE SetItemDocHeader@1(VAR NewItemDocHeader@1000 : Record 12450);
+    BEGIN
+      ItemDocHeader := NewItemDocHeader;
+      ItemDocHeader.TESTFIELD("Location Code");
+      Location.GET(ItemDocHeader."Location Code");
+      Location.TESTFIELD("Directed Put-away and Pick",TRUE);
+      Item.SETRANGE("Location Filter",ItemDocHeader."Location Code");
+      ItemDocHeader.TESTFIELD("Whse. Adj. Bin Code");
+    END;
+
+    PROCEDURE InsertItemDocLine@6(ItemNo@1000 : Code[20];VariantCode2@1001 : Code[10];LocationCode2@1003 : Code[10];Quantity2@1005 : Decimal;UOM2@1009 : Code[10];EntryType2@1011 : 'Receipt,Shipment');
+    VAR
+      Location@1008 : Record 14;
+      WhseEntry2@1012 : Record 7312;
+      WhseEntry3@1015 : Record 7312;
+      ReservEntry@1007 : Record 337;
+      CreateReservEntry@1004 : Codeunit 99000830;
+    BEGIN
+      WITH ItemDocLine DO BEGIN
+        IF NextLineNo = 0 THEN BEGIN
+          LOCKTABLE;
+          SETRANGE("Document Type","Document Type");
+          SETRANGE("Document No.","Document No.");
+          IF FINDLAST THEN
+            NextLineNo := "Line No.";
+
+          SourceCodeSetup.GET;
+        END;
+        NextLineNo := NextLineNo + 10000;
+
+        IF Quantity2 <> 0 THEN BEGIN
+          INIT;
+          "Line No." := NextLineNo;
+          VALIDATE("Posting Date",ItemDocHeader."Posting Date");
+          VALIDATE("Document Type",ItemDocHeader."Document Type");
+          VALIDATE("Document No.",ItemDocHeader."No.");
+          VALIDATE("Item No.",ItemNo);
+          VALIDATE("Variant Code",VariantCode2);
+          VALIDATE("Location Code",LocationCode2);
+          IF ItemDocHeader."Document Type" = ItemDocHeader."Document Type"::Receipt THEN
+            VALIDATE("Source Code",SourceCodeSetup."Item Receipt")
+          ELSE
+            VALIDATE("Source Code",SourceCodeSetup."Item Shipment");
+          VALIDATE("Unit of Measure Code",UOM2);
+          IF LocationCode2 <> '' THEN
+            Location.GET(LocationCode2);
+          VALIDATE(Quantity,ABS(Quantity2));
+          INSERT(TRUE);
+
+          IF Location.Code <> '' THEN
+            IF Location."Directed Put-away and Pick" THEN BEGIN
+              WhseEntry2.SETCURRENTKEY(
+                "Item No.","Bin Code","Location Code","Variant Code","Unit of Measure Code",
+                "Lot No.","Serial No.","Entry Type");
+              WhseEntry2.SETRANGE("Item No.","Item No.");
+              WhseEntry2.SETRANGE("Bin Code",Location."Adjustment Bin Code");
+              WhseEntry2.SETRANGE("Location Code","Location Code");
+              WhseEntry2.SETRANGE("Variant Code","Variant Code");
+              WhseEntry2.SETRANGE("Unit of Measure Code","Unit of Measure Code");
+              WhseEntry2.SETRANGE("Entry Type",EntryType2);
+              IF WhseEntry2.FINDSET THEN
+                REPEAT
+                  WhseEntry2.SETRANGE("Lot No.",WhseEntry2."Lot No.");
+                  WhseEntry2.SETRANGE("Serial No.",WhseEntry2."Serial No.");
+                  WhseEntry2.CALCSUMS("Qty. (Base)");
+
+                  WhseEntry3.SETCURRENTKEY(
+                    "Item No.","Bin Code","Location Code","Variant Code","Unit of Measure Code",
+                    "Lot No.","Serial No.","Entry Type");
+                  WhseEntry3.COPYFILTERS(WhseEntry2);
+                  CASE EntryType2 OF
+                    EntryType2::Receipt:
+                      WhseEntry3.SETRANGE("Entry Type",WhseEntry3."Entry Type"::"Negative Adjmt.");
+                    EntryType2::Shipment:
+                      WhseEntry3.SETRANGE("Entry Type",WhseEntry3."Entry Type"::"Positive Adjmt.");
+                  END;
+                  WhseEntry3.CALCSUMS("Qty. (Base)");
+                  IF ABS(WhseEntry3."Qty. (Base)") > ABS(WhseEntry2."Qty. (Base)") THEN
+                    WhseEntry2."Qty. (Base)" := 0
+                  ELSE
+                    WhseEntry2."Qty. (Base)" := WhseEntry2."Qty. (Base)" + WhseEntry3."Qty. (Base)";
+
+                  IF WhseEntry2."Qty. (Base)" <> 0 THEN BEGIN
+                    CreateReservEntry.CreateReservEntryFor(
+                      DATABASE::"Item Journal Line",
+                      "Document Type",
+                      "Document No.",
+                      '',
+                      0,
+                      "Line No.",
+                      "Qty. per Unit of Measure",
+                      ABS(WhseEntry2.Quantity),
+                      ABS(WhseEntry2."Qty. (Base)"),
+                      WhseEntry2."Serial No.",
+                      WhseEntry2."Lot No.",
+                      WhseEntry2."CD No.");
+                    CreateReservEntry.CreateEntry(
+                      "Item No.",
+                      "Variant Code",
+                      "Location Code",
+                      Description,
+                      0D,
+                      0D,
+                      0,
+                      ReservEntry."Reservation Status"::Prospect);
+                  END;
+                  WhseEntry2.FINDLAST;
+                  WhseEntry2.SETRANGE("Lot No.");
+                  WhseEntry2.SETRANGE("Serial No.");
+                UNTIL WhseEntry2.NEXT = 0;
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE InitializeRequest@2(NewPostingDate@1000 : Date;DocNo@1001 : Code[20];ItemsNotOnInvt@1002 : Boolean;ByLocation2@1003 : Boolean;ByBin2@1004 : Boolean);
+    BEGIN
+      ZeroQty := ItemsNotOnInvt;
+      ByLocation := ByLocation2;
+      ByBin := ByBin2;
+    END;
+
+    PROCEDURE SetHideValidationDialog@7380(NewHideValidationDialog@1000 : Boolean);
+    BEGIN
+      HideValidationDialog := NewHideValidationDialog;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,646 @@
+OBJECT Codeunit 17206 Create Tax Register Item Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17212;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text21000901@1001 : TextConst 'ENU=%1 %2 from %3;RUS=%1 %2 от %3';
+      TaxDimMgt@1002 : Codeunit 17202;
+      Text21000902@1003 : TextConst 'ENU=Adjust Cost Item Entries & Post Inventory Cost to G/L needed.;RUS=Необходимо выполнить коррекцию и учет себестоимости запасов в ГК.';
+      Window@1210000 : Dialog;
+
+    PROCEDURE CreateRegister@1(SectionCode@1210000 : Code[10];StartDate@1000 : Date;EndDate@1001 : Date);
+    VAR
+      Item@1003 : Record 27;
+      ItemApplEntry@1004 : Record 339;
+      ItemApplEntry2@1005 : Record 339;
+      ItemLedgEntry@1006 : Record 32;
+      ItemLedgEntry2@1007 : Record 32;
+      ValueEntryPostedToGL@1008 : Record 5802;
+      TaxRegItemEntry@1009 : Record 17212;
+      TaxRegGLCorrEntry@1012 : Record 17203;
+      TaxRegMgt@1015 : Codeunit 17201;
+      Total@1017 : Integer;
+      Procesing@1018 : Integer;
+      QtyEntry@1019 : Decimal;
+      AmountEntry@1020 : Decimal;
+      SecondaryBatch@1021 : Boolean;
+      AmountForTaxAccounting@1022 : Decimal;
+      DocumentAmountForTaxAccounting@1023 : Decimal;
+    BEGIN
+      TaxRegMgt.ValidateAbsenceItemEntriesDate(StartDate,EndDate,SectionCode);
+
+      IF NOT TaxRegItemEntry.FINDLAST THEN
+        TaxRegItemEntry."Entry No." := 0;
+
+      CLEAR(TaxDimMgt);
+
+      Window.OPEN(Text21000900);
+      Window.UPDATE(1,StartDate);
+      Window.UPDATE(2,EndDate);
+
+      ValueEntryPostedToGL.SETCURRENTKEY("Item Ledger Entry No.","Entry Type");
+      WITH ItemLedgEntry DO BEGIN
+        Window.UPDATE(4,TABLECAPTION);
+
+        SETCURRENTKEY("Item No.","Posting Date");
+        SETRANGE("Posting Date",StartDate,EndDate);
+
+        SETFILTER("Entry Type",'%1|%2|%3|%4',
+          "Entry Type"::Purchase,
+          "Entry Type"::Sale,
+          "Entry Type"::"Positive Adjmt.",
+          "Entry Type"::"Negative Adjmt.");
+
+        Total := COUNT;
+        Procesing := 0;
+
+        IF FINDSET THEN
+          REPEAT
+            Procesing += 1;
+            IF (Procesing MOD 50) = 1 THEN
+              Window.UPDATE(3,ROUND((Procesing / Total) * 10000,1));
+            Item.GET("Item No.");
+
+            CALCFIELDS("Cost Amount (Actual)");
+            ValueEntryPostedToGL.SETRANGE("Item Ledger Entry No.","Entry No.");
+            ValueEntryPostedToGL.CALCSUMS("Cost Posted to G/L");
+            IF "Cost Amount (Actual)" <> ValueEntryPostedToGL."Cost Posted to G/L" THEN
+              ERROR(Text21000902);
+            TaxRegItemEntry.INIT;
+            TaxRegItemEntry."Section Code" := SectionCode;
+            TaxRegItemEntry."Starting Date" := StartDate;
+            TaxRegItemEntry."Ending Date" := EndDate;
+            TaxRegItemEntry."Posting Date" := "Posting Date";
+            TaxRegItemEntry."Ledger Entry No." := "Entry No.";
+            TaxDimMgt.SetLedgEntryDim(SectionCode,"Dimension Set ID");
+            TaxRegItemEntry."Item No." := Item."No.";
+            UpdateDescription(ItemLedgEntry,TaxRegItemEntry);
+            UpdatePostingData(TaxRegItemEntry);
+            IF TaxRegGLCorrEntry.GET(SectionCode,TaxRegItemEntry."Debit Account No.",'',TaxRegGLCorrEntry."Register Type"::Item) OR
+               TaxRegGLCorrEntry.GET(SectionCode,'',TaxRegItemEntry."Credit Account No.",TaxRegGLCorrEntry."Register Type"::Item)
+            THEN
+              IF NOT TaxDimMgt.WhereUsedByDimensions(TaxRegGLCorrEntry,TaxRegItemEntry."Where Used Register IDs",
+                   TaxRegItemEntry."Dimension 1 Value Code",TaxRegItemEntry."Dimension 2 Value Code",
+                   TaxRegItemEntry."Dimension 3 Value Code",TaxRegItemEntry."Dimension 4 Value Code")
+              THEN
+                TaxRegItemEntry."Where Used Register IDs" := '';
+
+            CheckWhereUsedByCostingMetod(TaxRegItemEntry,Item);
+            IF TaxRegItemEntry."Where Used Register IDs" <> '' THEN
+              IF Positive THEN BEGIN
+                TaxRegItemEntry."Original Amount" := "Cost Amount (Actual)";
+                TaxRegItemEntry."Qty. (Document)" := Quantity;
+                AmountForTaxAccounting := CalcAmountForTaxAccounting(ItemLedgEntry);
+                TaxRegItemEntry."Amount (Document)" := AmountForTaxAccounting;
+                TaxRegItemEntry."Entry Type" := TaxRegItemEntry."Entry Type"::Incoming;
+                TaxRegItemEntry."Batch Date" := "Posting Date";
+                TaxRegItemEntry."Appl. Entry No." := "Entry No.";
+                TaxRegItemEntry."Batch Qty." := Quantity;
+                TaxRegItemEntry."Batch Amount" := AmountForTaxAccounting;
+                TaxRegItemEntry."Debit Unit Cost" :=
+                  ROUND(AmountForTaxAccounting / Quantity);
+                TaxRegItemEntry."Credit Qty." := Quantity;
+                TaxRegItemEntry."Credit Amount" := AmountForTaxAccounting;
+                TaxRegItemEntry."Entry No." += 1;
+                TaxRegItemEntry.INSERT;
+              END ELSE BEGIN
+                DocumentAmountForTaxAccounting := 0;
+                TaxRegItemEntry."Qty. (Document)" := -Quantity;
+                TaxRegItemEntry."Amount (Document)" := -"Cost Amount (Actual)";
+                TaxRegItemEntry."Entry Type" := TaxRegItemEntry."Entry Type"::Spending;
+                QtyEntry := Quantity;
+                AmountEntry := "Cost Amount (Actual)";
+                ItemApplEntry.SETRANGE("Item Ledger Entry No.","Entry No.");
+                SecondaryBatch := FALSE;
+                IF ItemApplEntry.FINDSET THEN
+                  REPEAT
+                    IF ItemApplEntry.Quantity < 0 THEN BEGIN
+                      IF NOT ItemLedgEntry2.GET(ItemApplEntry."Inbound Item Entry No.") THEN
+                        ItemLedgEntry2.INIT;
+                      IF ItemLedgEntry2."Entry Type" = ItemLedgEntry2."Entry Type"::Transfer THEN
+                        REPEAT
+                          ItemApplEntry2.SETRANGE("Item Ledger Entry No.",ItemLedgEntry2."Entry No.");
+                          ItemApplEntry2.FINDFIRST;
+                          IF NOT ItemLedgEntry2.GET(ItemApplEntry2."Transferred-from Entry No.") THEN
+                            ItemLedgEntry2.INIT;
+                        UNTIL ItemLedgEntry2."Entry Type" <> ItemLedgEntry2."Entry Type"::Transfer;
+
+                      IF ItemLedgEntry2.Quantity <> 0 THEN
+                        IF ItemLedgEntry2."Entry Type" IN
+                           [ItemLedgEntry2."Entry Type"::Purchase,ItemLedgEntry2."Entry Type"::Sale,
+                            ItemLedgEntry2."Entry Type"::"Positive Adjmt."]
+                        THEN BEGIN
+                          ItemLedgEntry2.CALCFIELDS("Cost Amount (Actual)");
+                          AmountForTaxAccounting := CalcAmountForTaxAccounting(ItemLedgEntry2);
+                          TaxRegItemEntry."Batch Date" := ItemLedgEntry2."Posting Date";
+                          TaxRegItemEntry."Appl. Entry No." := ItemLedgEntry2."Entry No.";
+                          TaxRegItemEntry."Batch Qty." := ItemLedgEntry2.Quantity;
+                          TaxRegItemEntry."Batch Amount" := AmountForTaxAccounting;
+                          TaxRegItemEntry."Debit Unit Cost" :=
+                            ROUND(AmountForTaxAccounting / ItemLedgEntry2.Quantity);
+                          TaxRegItemEntry."Qty. (Batch)" := ItemApplEntry.Quantity;
+                          TaxRegItemEntry."Original Amount" :=
+                            ROUND(ItemLedgEntry2."Cost Amount (Actual)" / ItemLedgEntry2.Quantity * ItemApplEntry.Quantity);
+                          TaxRegItemEntry."Amount (Batch)" :=
+                            ROUND(AmountForTaxAccounting / ItemLedgEntry2.Quantity * ItemApplEntry.Quantity);
+                          TaxRegItemEntry."Debit Qty." := -TaxRegItemEntry."Qty. (Batch)";
+                          TaxRegItemEntry."Debit Amount" := -TaxRegItemEntry."Amount (Batch)";
+                          DocumentAmountForTaxAccounting += TaxRegItemEntry."Amount (Batch)";
+                          TaxRegItemEntry."Entry Secondary Batch" := SecondaryBatch;
+                          InsertTaxRegEntry(TaxRegItemEntry,SecondaryBatch);
+                        END;
+                      QtyEntry -= -TaxRegItemEntry."Debit Qty.";
+                      AmountEntry -= TaxRegItemEntry."Original Amount";
+                      IF (QtyEntry = 0) AND (AmountEntry <> 0) THEN BEGIN
+                        TaxRegItemEntry."Amount (Batch)" += AmountEntry;
+                        TaxRegItemEntry."Debit Amount" := -TaxRegItemEntry."Amount (Batch)";
+                        DocumentAmountForTaxAccounting += TaxRegItemEntry."Amount (Batch)";
+                        TaxRegItemEntry.MODIFY;
+                        AmountEntry := 0;
+                      END;
+                    END;
+                  UNTIL ItemApplEntry.NEXT(1) = 0;
+                IF QtyEntry <> 0 THEN BEGIN
+                  TaxRegItemEntry."Batch Date" := 0D;
+                  TaxRegItemEntry."Appl. Entry No." := 0;
+                  TaxRegItemEntry."Batch Qty." := 0;
+                  TaxRegItemEntry."Batch Amount" := 0;
+                  TaxRegItemEntry."Debit Unit Cost" := 0;
+                  TaxRegItemEntry."Qty. (Batch)" := QtyEntry;
+                  TaxRegItemEntry."Amount (Batch)" := AmountEntry;
+                  TaxRegItemEntry."Debit Qty." := -TaxRegItemEntry."Qty. (Batch)";
+                  TaxRegItemEntry."Debit Amount" := -TaxRegItemEntry."Amount (Batch)";
+                  DocumentAmountForTaxAccounting += TaxRegItemEntry."Amount (Batch)";
+                  TaxRegItemEntry."Entry Secondary Batch" := SecondaryBatch;
+                  TaxRegItemEntry."Entry No." += 1;
+                  TaxRegItemEntry.INSERT;
+                END;
+                ModifyTaxRegEntry(TaxRegItemEntry,DocumentAmountForTaxAccounting);
+              END;
+          UNTIL NEXT(1) = 0;
+      END;
+
+      CreateTaxRegAccumulation(StartDate,EndDate,SectionCode);
+    END;
+
+    LOCAL PROCEDURE UpdateDescription@2(ItemLedgEntry2@1000 : Record 32;VAR TaxRegItemEntry@1001 : Record 17212);
+    BEGIN
+      WITH ItemLedgEntry2 DO BEGIN
+        TaxRegItemEntry."Document No." := "Document No.";
+        TaxRegItemEntry."Document Type" :=
+          SearchDocument(ItemLedgEntry2,TaxRegItemEntry);
+        TaxRegItemEntry.Description :=
+          DELCHR(
+            STRSUBSTNO(
+              Text21000901,
+              TaxRegItemEntry."Document Type",TaxRegItemEntry."Document No.",TaxRegItemEntry."Posting Date"));
+      END;
+    END;
+
+    LOCAL PROCEDURE SearchDocument@3(ItemLedgEntry2@1000 : Record 32;VAR TaxRegItemEntry@1001 : Record 17212) : Integer;
+    VAR
+      SalesShipmentHeader@1002 : Record 110;
+      SalesInvoiceHeader@1003 : Record 112;
+      SalesCrMemoHeader@1004 : Record 114;
+      PurchRcptHeader@1005 : Record 120;
+      PurchInvHeader@1006 : Record 122;
+      PurchCrMemoHdr@1007 : Record 124;
+      ItemRcptHeader@1008 : Record 12451;
+      ItemShptHeader@1470000 : Record 12454;
+      ReturnShptHeader@1009 : Record 6650;
+      ReturnRcptHeader@1010 : Record 6660;
+    BEGIN
+      WITH ItemLedgEntry2 DO
+        CASE "Entry Type" OF
+          "Entry Type"::Purchase:
+            IF "Source Type" = "Source Type"::Vendor THEN
+              IF Positive THEN BEGIN
+                IF PurchInvHeader.GET("Document No.") AND
+                   (PurchInvHeader."Posting Date" = "Posting Date") AND
+                   (PurchInvHeader."Buy-from Vendor No." = "Source No.")
+                THEN
+                  EXIT(TaxRegItemEntry."Document Type"::Invoice);
+                IF PurchRcptHeader.GET("Document No.") AND
+                   (PurchRcptHeader."Posting Date" = "Posting Date") AND
+                   (PurchRcptHeader."Buy-from Vendor No." = "Source No.")
+                THEN BEGIN
+                  PurchInvHeader.SETRANGE("Posting Description",PurchRcptHeader."Posting Description");
+                  IF PurchInvHeader.FINDFIRST AND
+                     (PurchInvHeader."Posting Date" = "Posting Date") AND
+                     (PurchInvHeader."Buy-from Vendor No." = "Source No.")
+                  THEN BEGIN
+                    TaxRegItemEntry."Document No." := PurchInvHeader."No.";
+                    EXIT(TaxRegItemEntry."Document Type"::Invoice);
+                  END;
+                  EXIT(TaxRegItemEntry."Document Type"::Receipt);
+                END;
+              END ELSE BEGIN
+                IF PurchCrMemoHdr.GET("Document No.") AND
+                   (PurchCrMemoHdr."Posting Date" = "Posting Date") AND
+                   (PurchCrMemoHdr."Buy-from Vendor No." = "Source No.")
+                THEN BEGIN
+                  TaxRegItemEntry.Correction := PurchCrMemoHdr.Correction;
+                  EXIT(TaxRegItemEntry."Document Type"::"Credit Memo");
+                END;
+                IF ReturnShptHeader.GET("Document No.") AND
+                   (ReturnShptHeader."Posting Date" = "Posting Date") AND
+                   (ReturnShptHeader."Buy-from Vendor No." = "Source No.")
+                THEN
+                  EXIT(TaxRegItemEntry."Document Type"::"Return Shpt.");
+              END;
+          "Entry Type"::Sale:
+            IF "Source Type" = "Source Type"::Customer THEN
+              IF NOT Positive THEN BEGIN
+                IF SalesInvoiceHeader.GET("Document No.") AND
+                   (SalesInvoiceHeader."Posting Date" = "Posting Date") AND
+                   (SalesInvoiceHeader."Sell-to Customer No." = "Source No.")
+                THEN
+                  EXIT(TaxRegItemEntry."Document Type"::Invoice);
+                IF SalesShipmentHeader.GET("Document No.") AND
+                   (SalesShipmentHeader."Posting Date" = "Posting Date") AND
+                   (SalesShipmentHeader."Sell-to Customer No." = "Source No.")
+                THEN BEGIN
+                  SalesInvoiceHeader.SETRANGE("Posting Description",PurchRcptHeader."Posting Description");
+                  IF SalesInvoiceHeader.FINDFIRST AND
+                     (SalesInvoiceHeader."Posting Date" = "Posting Date") AND
+                     (SalesInvoiceHeader."Sell-to Customer No." = "Source No.")
+                  THEN BEGIN
+                    TaxRegItemEntry."Document No." := SalesInvoiceHeader."No.";
+                    EXIT(TaxRegItemEntry."Document Type"::Invoice);
+                  END;
+                  EXIT(TaxRegItemEntry."Document Type"::Shipment);
+                END;
+              END ELSE BEGIN
+                IF SalesCrMemoHeader.GET("Document No.") AND
+                   (SalesCrMemoHeader."Posting Date" = "Posting Date") AND
+                   (SalesCrMemoHeader."Sell-to Customer No." = "Source No.")
+                THEN BEGIN
+                  TaxRegItemEntry.Correction := SalesCrMemoHeader.Correction;
+                  EXIT(TaxRegItemEntry."Document Type"::"Credit Memo");
+                END;
+                IF ReturnRcptHeader.GET("Document No.") AND
+                   (ReturnRcptHeader."Posting Date" = "Posting Date") AND
+                   (ReturnRcptHeader."Sell-to Customer No." = "Source No.")
+                THEN
+                  EXIT(TaxRegItemEntry."Document Type"::"Return Rcpt.");
+              END;
+          "Entry Type"::"Positive Adjmt.":
+            IF ItemRcptHeader.GET("Document No.") AND
+               (ItemRcptHeader."Posting Date" = "Posting Date")
+            THEN
+              EXIT(TaxRegItemEntry."Document Type"::"Positive Adj.");
+          "Entry Type"::"Negative Adjmt.":
+            IF ItemShptHeader.GET("Document No.") AND
+               (ItemShptHeader."Posting Date" = "Posting Date")
+            THEN
+              EXIT(TaxRegItemEntry."Document Type"::"Negative Adj.");
+        END;
+    END;
+
+    LOCAL PROCEDURE UpdatePostingData@4(VAR TaxRegItemEntry@1000 : Record 17212);
+    VAR
+      InventoryPostingToGL@1001 : Codeunit 5802;
+    BEGIN
+      InventoryPostingToGL.TaxRegisterPostGrps(
+        TaxRegItemEntry."Ledger Entry No.",
+        TaxRegItemEntry."Sales/Purch. Account No.",TaxRegItemEntry."Inventory Account No.",TaxRegItemEntry."Direct Cost Account No.",
+        TaxRegItemEntry."Sales/Purch. Posting Code",TaxRegItemEntry."Location Code",TaxRegItemEntry."Inventory Posting Group",
+        TaxRegItemEntry."Gen. Bus. Posting Group",TaxRegItemEntry."Gen. Prod. Posting Group");
+
+      TaxRegItemEntry.CALCFIELDS("Ledger Entry Type","Item Ledger Source Type");
+
+      IF (TaxRegItemEntry."Ledger Entry Type" = TaxRegItemEntry."Ledger Entry Type"::"Positive Adjmt.") AND
+         ((TaxRegItemEntry."Item Ledger Source Type" = TaxRegItemEntry."Item Ledger Source Type"::Vendor) OR
+          (TaxRegItemEntry."Item Ledger Source Type" = TaxRegItemEntry."Item Ledger Source Type"::Customer)) AND
+         (TaxRegItemEntry."Posting Date" < 311202D)
+      THEN
+        IF TaxRegItemEntry."Item Ledger Source Type" = TaxRegItemEntry."Item Ledger Source Type"::Vendor THEN
+          TaxRegItemEntry."Ledger Entry Type" := TaxRegItemEntry."Ledger Entry Type"::Purchase
+        ELSE
+          TaxRegItemEntry."Ledger Entry Type" := TaxRegItemEntry."Ledger Entry Type"::Sale;
+
+      CASE TaxRegItemEntry."Ledger Entry Type" OF
+        TaxRegItemEntry."Ledger Entry Type"::Purchase:
+          IF (TaxRegItemEntry."Document Type" = TaxRegItemEntry."Document Type"::"Credit Memo") AND
+             NOT TaxRegItemEntry.Correction
+          THEN BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Sales/Purch. Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Inventory Account No.";
+          END ELSE BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Inventory Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Sales/Purch. Account No.";
+          END;
+        TaxRegItemEntry."Ledger Entry Type"::Sale:
+          IF (TaxRegItemEntry."Document Type" = TaxRegItemEntry."Document Type"::"Credit Memo") AND
+             NOT TaxRegItemEntry.Correction
+          THEN BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Inventory Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Direct Cost Account No.";
+          END ELSE BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Direct Cost Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Inventory Account No.";
+          END;
+        TaxRegItemEntry."Ledger Entry Type"::"Positive Adjmt.":
+          IF TaxRegItemEntry."Batch Amount" >= 0 THEN BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Inventory Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Direct Cost Account No.";
+          END ELSE BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Direct Cost Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Inventory Account No.";
+          END;
+        TaxRegItemEntry."Ledger Entry Type"::"Negative Adjmt.":
+          IF TaxRegItemEntry."Batch Amount" < 0 THEN BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Inventory Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Direct Cost Account No.";
+          END ELSE BEGIN
+            TaxRegItemEntry."Debit Account No." := TaxRegItemEntry."Direct Cost Account No.";
+            TaxRegItemEntry."Credit Account No." := TaxRegItemEntry."Inventory Account No.";
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertTaxRegEntry@5(VAR TaxRegItemEntry@1000 : Record 17212;VAR SecondaryBatch@1001 : Boolean);
+    VAR
+      TaxRegItemEntry2@1002 : Record 17212;
+    BEGIN
+      TaxRegItemEntry2.SETCURRENTKEY("Section Code","Starting Date");
+      TaxRegItemEntry2.SETRANGE("Section Code",TaxRegItemEntry."Section Code");
+      TaxRegItemEntry2.SETRANGE("Starting Date",TaxRegItemEntry."Starting Date");
+      TaxRegItemEntry2.SETRANGE("Ending Date",TaxRegItemEntry."Ending Date");
+      TaxRegItemEntry2.SETRANGE("Appl. Entry No.",TaxRegItemEntry."Appl. Entry No.");
+      TaxRegItemEntry2.SETRANGE("Ledger Entry No.",TaxRegItemEntry."Ledger Entry No.");
+      IF TaxRegItemEntry2.FINDFIRST THEN BEGIN
+        TaxRegItemEntry2."Qty. (Batch)" += TaxRegItemEntry."Qty. (Batch)";
+        TaxRegItemEntry2."Amount (Batch)" += TaxRegItemEntry."Amount (Batch)";
+        TaxRegItemEntry2."Debit Qty." += TaxRegItemEntry."Debit Qty.";
+        TaxRegItemEntry2."Debit Amount" += TaxRegItemEntry."Debit Amount";
+        TaxRegItemEntry2.MODIFY;
+      END ELSE BEGIN
+        TaxRegItemEntry."Entry No." += 1;
+        TaxRegItemEntry.INSERT;
+        SecondaryBatch := TRUE;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateTaxRegAccumulation@6(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1003 : Record 17200;
+      TaxRegTemplate@1004 : Record 17202;
+      TaxRegAccumulation@1005 : Record 17208;
+      TaxRegItemEntry@1006 : Record 17212;
+      TaxRegLineSetup@1007 : Record 17201;
+      TempTaxRegTemplate@1008 : TEMPORARY Record 17202;
+      TempGLCorrEntry@1009 : TEMPORARY Record 12401;
+      TaxRegAccumulation2@1010 : Record 17208;
+      TaxRegTermMgt@1011 : Codeunit 17200;
+      AddValue@1012 : Decimal;
+      DebitAccountNo@1013 : Code[1024];
+      CreditAccountNo@1014 : Code[1024];
+      FoudGLCoresp@1015 : Boolean;
+    BEGIN
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register Item Entry");
+      IF NOT TaxReg.FINDFIRST THEN
+        EXIT;
+
+      TempGLCorrEntry.SETCURRENTKEY("Debit Account No.","Credit Account No.");
+      TempGLCorrEntry.INSERT;
+
+      TaxRegAccumulation.RESET;
+      IF NOT TaxRegAccumulation.FINDLAST THEN
+        TaxRegAccumulation."Entry No." := 0;
+
+      TaxRegAccumulation.RESET;
+      TaxRegAccumulation.INIT;
+      TaxRegAccumulation."Section Code" := SectionCode;
+      TaxRegAccumulation."Starting Date" := StartDate;
+      TaxRegAccumulation."Ending Date" := EndDate;
+
+      TaxRegLineSetup.RESET;
+      TaxRegLineSetup.SETRANGE("Section Code",SectionCode);
+
+      CLEAR(TaxDimMgt);
+
+      TaxReg.FINDSET;
+      REPEAT
+        TaxRegLineSetup.SETRANGE("Tax Register No.",TaxReg."No.");
+        IF TaxRegLineSetup.FINDFIRST THEN BEGIN
+          TempTaxRegTemplate.DELETEALL;
+          TaxRegTemplate.SETRANGE("Section Code",SectionCode);
+          TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+          IF TaxRegTemplate.FINDSET THEN
+            REPEAT
+              TempTaxRegTemplate := TaxRegTemplate;
+              TempTaxRegTemplate.Value := 0;
+              TempTaxRegTemplate.INSERT;
+            UNTIL TaxRegTemplate.NEXT = 0;
+
+          TaxRegItemEntry.RESET;
+          TaxRegItemEntry.SETCURRENTKEY("Section Code","Ending Date");
+          TaxRegItemEntry.SETRANGE("Section Code",SectionCode);
+          TaxRegItemEntry.SETRANGE("Ending Date",EndDate);
+          TaxRegItemEntry.SETFILTER("Where Used Register IDs",'*~' + TaxReg."Register ID" + '~*');
+          IF TaxRegItemEntry.FINDSET THEN
+            REPEAT
+              TaxDimMgt.SetTaxEntryDim(SectionCode,
+                TaxRegItemEntry."Dimension 1 Value Code",TaxRegItemEntry."Dimension 2 Value Code",
+                TaxRegItemEntry."Dimension 3 Value Code",TaxRegItemEntry."Dimension 4 Value Code");
+              TempGLCorrEntry."Debit Account No." := TaxRegItemEntry."Debit Account No.";
+              TempGLCorrEntry."Credit Account No." := TaxRegItemEntry."Credit Account No.";
+              TempGLCorrEntry.MODIFY;
+              TaxRegLineSetup.FINDSET;
+              REPEAT
+                IF (TaxRegLineSetup."Account No." <> '') OR
+                   (TaxRegLineSetup."Bal. Account No." <> '')
+                THEN BEGIN
+                  IF (TaxRegLineSetup."Account Type" = TaxRegLineSetup."Account Type"::"G/L Account") AND
+                     (TaxRegLineSetup."Amount Type" <> TaxRegLineSetup."Amount Type"::Debit)
+                  THEN BEGIN
+                    CreditAccountNo := TaxRegLineSetup."Account No.";
+                    DebitAccountNo := '';
+                  END ELSE BEGIN
+                    DebitAccountNo := TaxRegLineSetup."Account No.";
+                    CreditAccountNo := TaxRegLineSetup."Bal. Account No.";
+                  END;
+                  IF DebitAccountNo <> '' THEN
+                    TempGLCorrEntry.SETFILTER("Debit Account No.",DebitAccountNo)
+                  ELSE
+                    TempGLCorrEntry.SETRANGE("Debit Account No.");
+                  IF CreditAccountNo <> '' THEN
+                    TempGLCorrEntry.SETFILTER("Credit Account No.",CreditAccountNo)
+                  ELSE
+                    TempGLCorrEntry.SETRANGE("Credit Account No.");
+                  FoudGLCoresp := TempGLCorrEntry.FIND;
+                  IF NOT FoudGLCoresp AND
+                     (TaxRegLineSetup."Account Type" = TaxRegLineSetup."Account Type"::"G/L Account") AND
+                     (TaxRegLineSetup."Amount Type" = TaxRegLineSetup."Amount Type"::"Net Change")
+                  THEN BEGIN
+                    TempGLCorrEntry.SETRANGE("Debit Account No.");
+                    TempGLCorrEntry.SETFILTER("Credit Account No.",DebitAccountNo);
+                    FoudGLCoresp := TempGLCorrEntry.FIND;
+                  END;
+                  IF FoudGLCoresp THEN BEGIN
+                    TempTaxRegTemplate.SETRANGE("Link Tax Register No.",TaxRegLineSetup."Tax Register No.");
+                    TempTaxRegTemplate.SETFILTER("Term Line Code",'%1|%2','',TaxRegLineSetup."Line Code");
+                    IF TempTaxRegTemplate.FINDSET THEN
+                      REPEAT
+                        IF TaxDimMgt.ValidateTemplateDimFilters(TempTaxRegTemplate) THEN BEGIN
+                          CASE TempTaxRegTemplate."Sum Field No." OF
+                            TaxRegItemEntry.FIELDNO("Amount (Batch)"):
+                              AddValue := TaxRegItemEntry."Amount (Batch)";
+                            TaxRegItemEntry.FIELDNO("Credit Amount"):
+                              AddValue := TaxRegItemEntry."Credit Amount";
+                            TaxRegItemEntry.FIELDNO("Debit Amount"):
+                              AddValue := TaxRegItemEntry."Debit Amount";
+                            ELSE
+                              AddValue := 0;
+                          END;
+                          IF AddValue <> 0 THEN BEGIN
+                            TempTaxRegTemplate.Value += AddValue;
+                            TempTaxRegTemplate.MODIFY;
+                          END;
+                        END;
+                      UNTIL TempTaxRegTemplate.NEXT(1) = 0;
+                  END;
+                END;
+              UNTIL TaxRegLineSetup.NEXT(1) = 0;
+            UNTIL TaxRegItemEntry.NEXT(1) = 0;
+
+          TempTaxRegTemplate.RESET;
+          IF TempTaxRegTemplate.FINDSET THEN
+            REPEAT
+              TaxRegAccumulation."Report Line Code" := TempTaxRegTemplate."Report Line Code";
+              TaxRegAccumulation."Template Line Code" := TempTaxRegTemplate."Line Code";
+              TaxRegAccumulation."Section Code" := TempTaxRegTemplate."Section Code";
+              TaxRegAccumulation."Tax Register No." := TempTaxRegTemplate.Code;
+              TaxRegAccumulation.Indentation := TempTaxRegTemplate.Indentation;
+              TaxRegAccumulation.Bold := TempTaxRegTemplate.Bold;
+              TaxRegAccumulation.Description := TempTaxRegTemplate.Description;
+              TaxRegAccumulation.Amount := TempTaxRegTemplate.Value;
+              TaxRegAccumulation."Amount Period" := TempTaxRegTemplate.Value;
+              TaxRegAccumulation."Template Line No." := TempTaxRegTemplate."Line No.";
+              TaxRegAccumulation."Amount Date Filter" :=
+                TaxRegTermMgt.CalcIntervalDate(
+                  TaxRegAccumulation."Starting Date",
+                  TaxRegAccumulation."Ending Date",
+                  TempTaxRegTemplate.Period);
+              TaxRegAccumulation.Amount := TaxRegAccumulation."Amount Period";
+              TaxRegAccumulation."Entry No." += 1;
+              TaxRegAccumulation.INSERT;
+              IF TempTaxRegTemplate.Period <> '' THEN BEGIN
+                TaxRegAccumulation2 := TaxRegAccumulation;
+                TaxRegAccumulation2.RESET;
+                TaxRegAccumulation2.SETCURRENTKEY(
+                  "Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+                TaxRegAccumulation2.SETRANGE("Section Code",TaxRegAccumulation."Section Code");
+                TaxRegAccumulation2.SETRANGE("Tax Register No.",TaxRegAccumulation."Tax Register No.");
+                TaxRegAccumulation2.SETRANGE("Template Line No.",TaxRegAccumulation."Template Line No.");
+                TaxRegAccumulation2.SETFILTER("Starting Date",TaxRegAccumulation."Amount Date Filter");
+                TaxRegAccumulation2.SETFILTER("Ending Date",TaxRegAccumulation."Amount Date Filter");
+                TaxRegAccumulation2.CALCSUMS("Amount Period");
+                TaxRegAccumulation.Amount := TaxRegAccumulation2."Amount Period";
+                TaxRegAccumulation.MODIFY;
+              END;
+            UNTIL TempTaxRegTemplate.NEXT = 0;
+        END;
+      UNTIL TaxReg.NEXT(1) = 0;
+      TempTaxRegTemplate.DELETEALL;
+    END;
+
+    LOCAL PROCEDURE ModifyTaxRegEntry@7(TaxRegItemEntry@1000 : Record 17212;DocAmount@1001 : Decimal);
+    VAR
+      TaxRegItemEntry2@1002 : Record 17212;
+    BEGIN
+      IF TaxRegItemEntry2."Amount (Document)" = DocAmount THEN
+        EXIT;
+
+      TaxRegItemEntry2.SETCURRENTKEY("Section Code","Starting Date");
+      TaxRegItemEntry2.SETRANGE("Section Code",TaxRegItemEntry."Section Code");
+      TaxRegItemEntry2.SETRANGE("Starting Date",TaxRegItemEntry."Starting Date");
+      TaxRegItemEntry2.SETRANGE("Ending Date",TaxRegItemEntry."Ending Date");
+      TaxRegItemEntry2.SETRANGE("Appl. Entry No.",TaxRegItemEntry."Appl. Entry No.");
+      TaxRegItemEntry2.SETRANGE("Ledger Entry No.",TaxRegItemEntry."Ledger Entry No.");
+      IF TaxRegItemEntry2.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          TaxRegItemEntry2."Amount (Document)" := DocAmount;
+          TaxRegItemEntry2.MODIFY;
+        UNTIL TaxRegItemEntry2.NEXT(1) = 0;
+    END;
+
+    LOCAL PROCEDURE CalcAmountForTaxAccounting@8(ItemLedgEntry1@1000 : Record 32) FineAmount : Decimal;
+    VAR
+      ItemCharge@1001 : Record 5800;
+      ValueEntry@1002 : Record 5802;
+    BEGIN
+      FineAmount := ItemLedgEntry1."Cost Amount (Actual)";
+      ValueEntry.SETCURRENTKEY("Item Ledger Entry No.");
+      ValueEntry.SETRANGE("Item Ledger Entry No.",ItemLedgEntry1."Entry No.");
+      ValueEntry.SETFILTER("Item Charge No.",'<>''''');
+      IF ValueEntry.FINDSET THEN
+        REPEAT
+          ItemCharge.GET(ValueEntry."Item Charge No.");
+          IF ItemCharge."Exclude Cost for TA" THEN
+            FineAmount -= ValueEntry."Cost Amount (Actual)";
+        UNTIL ValueEntry.NEXT(1) = 0;
+    END;
+
+    LOCAL PROCEDURE CheckWhereUsedByCostingMetod@1000000000(VAR TaxRegItemEntry@1000000000 : Record 17212;Item@1000000001 : Record 27);
+    VAR
+      TaxReg@1000000002 : Record 17200;
+      WhereUsedRegisterIDs@1000000003 : Code[1024];
+    BEGIN
+      IF TaxRegItemEntry."Where Used Register IDs" = '' THEN
+        EXIT;
+
+      WhereUsedRegisterIDs := TaxRegItemEntry."Where Used Register IDs";
+      TaxRegItemEntry."Where Used Register IDs" := '';
+
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register Item Entry");
+      CASE Item."Costing Method" OF
+        Item."Costing Method"::FIFO:
+          TaxReg.SETFILTER("Costing Method",'%1|%2|%3',
+            TaxReg."Costing Method"::" ",
+            TaxReg."Costing Method"::FIFO,
+            TaxReg."Costing Method"::"FIFO+LIFO");
+        Item."Costing Method"::LIFO:
+          TaxReg.SETFILTER("Costing Method",'%1|%2|%3',
+            TaxReg."Costing Method"::" ",
+            TaxReg."Costing Method"::LIFO,
+            TaxReg."Costing Method"::"FIFO+LIFO");
+        Item."Costing Method"::Average:
+          TaxReg.SETFILTER("Costing Method",'%1|%2',
+            TaxReg."Costing Method"::" ",
+            TaxReg."Costing Method"::Average);
+        ELSE
+          TaxReg.SETRANGE("Costing Method",TaxReg."Costing Method"::" ");
+      END;
+
+      IF TaxReg.FINDSET THEN
+        REPEAT
+          IF STRPOS(WhereUsedRegisterIDs,'~' + TaxReg."Register ID" + '~') <> 0 THEN
+            TaxRegItemEntry."Where Used Register IDs" :=
+              TaxRegItemEntry."Where Used Register IDs" + TaxReg."Register ID" + '~';
+        UNTIL TaxReg.NEXT(1) = 0;
+      IF TaxRegItemEntry."Where Used Register IDs" <> '' THEN
+        TaxRegItemEntry."Where Used Register IDs" := '~' + TaxRegItemEntry."Where Used Register IDs";
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,645 @@
+OBJECT Report 12411 Order Factura-Invoice (A)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Order Factura-Invoice (A);
+               RUS=Счет-фактура заказа (А)];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   Proforma := FALSE;
+                   CopiesNumber := 0;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF (NOT CurrReport.USEREQUESTPAGE) AND (CopiesNumber = 0) THEN
+                    CopiesNumber := 1;
+
+                  FacturaInvoiceHelper.InitReportTemplate(GetTemplateCode(Proforma));
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     FacturaInvoiceHelper.ExportDataFile(FileName)
+                   ELSE
+                     FacturaInvoiceHelper.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7745;    ;DataItem;Header              ;
+               DataItemTable=Table36;
+               DataItemTableView=SORTING(Document Type,No.);
+               OnPreDataItem=BEGIN
+                               SalesSetup.GET;
+                               CompanyInfo.GET;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TESTFIELD(Status);
+                                  Customer.GET("Bill-to Customer No.");
+
+                                  AmountInvoiceCurrent := AmountInvoiceDone;
+                                  IF "Currency Code" = '' THEN
+                                    AmountInvoiceCurrent := AmountInvoiceCurrent::LCY;
+
+                                  IF "Document Type" = "Document Type"::"Return Order" THEN
+                                    StdRepMgt.SetSalesHeaderTypeOffset(2);
+
+                                  IF "Document Type" = "Document Type"::"Credit Memo" THEN
+                                    Sign := -1
+                                  ELSE
+                                    Sign := 1;
+
+                                  SalesLine1.RESET;
+                                  SalesLine1.SETRANGE("Document Type","Document Type");
+                                  SalesLine1.SETRANGE("Document No.","No.");
+                                  SalesLine1.SETFILTER("Attached to Line No.",'<>%1',0);
+                                  IF SalesLine1.FINDSET THEN
+                                    REPEAT
+                                      AttachedSalesLine := SalesLine1;
+                                      AttachedSalesLine.INSERT;
+                                    UNTIL SalesLine1.NEXT = 0;
+
+                                  SalesLine1.SETRANGE("Attached to Line No.",0);
+
+                                  IF "Currency Code" <> '' THEN BEGIN
+                                    IF NOT Currency.GET("Currency Code") THEN
+                                      Currency.Description := DollarUSATxt;
+                                  END;
+
+                                  CurrencyWrittenAmount := FacturaInvoiceHelper.GetCurrencyAmtCode("Currency Code",AmountInvoiceCurrent);
+                                  FacturaInvoiceHelper.GetCurrencyInfo(CurrencyWrittenAmount,CurrencyDigitalCode,CurrencyDescription);
+
+                                  IF PrintShortAddr("Document Type","No.") THEN
+                                    FacturaInvoiceHelper.InitAddressInfo(ConsignorName,ConsignorAddress,Receiver)
+                                  ELSE BEGIN
+                                    Receiver[1] := StdRepMgt.GetCustInfo("Document Type","No.",0,1);
+                                    Receiver[2] := StdRepMgt.GetCustInfo("Document Type","No.",1,1);
+                                    FacturaInvoiceHelper.GetConsignorInfo("Consignor No.",ConsignorName,ConsignorAddress);
+                                  END;
+
+                                  IF "KPP Code" <> '' THEN
+                                    KPPCode := "KPP Code"
+                                  ELSE
+                                    KPPCode := Customer."KPP Code";
+
+                                  ItemTrackingDocMgt.RetrieveDocumentItemTracking(
+                                    TrackingSpecBuffer,"No.",DATABASE::"Sales Header","Document Type");
+
+                                  IF NOT Preview THEN BEGIN
+                                    // IF ArchiveDocument THEN
+                                    //   ArchiveManagement.StoreSalesDocument(Header,LogInteraction);
+                                    IF LogInteraction THEN BEGIN
+                                      CALCFIELDS("No. of Archived Versions");
+                                      IF "Bill-to Contact No." <> '' THEN
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Contact,"Bill-to Contact No.",
+                                          "Salesperson Code","Campaign No.","Posting Description","Opportunity No.")
+                                      ELSE
+                                        SegManagement.LogDocument(
+                                          3,"No.","Doc. No. Occurrence",
+                                          "No. of Archived Versions",DATABASE::Customer,"Bill-to Customer No.",
+                                          "Salesperson Code","Campaign No.","Posting Description","Opportunity No.");
+                                    END;
+                                  END;
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 7804;1   ;DataItem;CopyCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               IF NOT SalesLine1.FIND('-') THEN
+                                 CurrReport.BREAK;
+
+                               IF Header."Posting No." = '' THEN BEGIN
+                                 CLEAR(NoSeriesManagement);
+                                 Header."Posting No." := NoSeriesManagement.GetNextNo(
+                                     Header."Posting No. Series",Header."Posting Date",NOT Preview);
+                                 IF NOT Preview THEN
+                                   Header.MODIFY;
+                               END;
+
+                               SETRANGE(Number,1,CopiesNumber);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CLEAR(TotalAmount);
+                                  CurrReport.PAGENO := 1;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT Preview THEN
+                                  CODEUNIT.RUN(CODEUNIT::"Sales-Printed",Header);
+                              END;
+                               }
+
+    { 5739;2   ;DataItem;LineCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               IF (AmountInvoiceCurrent = AmountInvoiceCurrent::"Invoice Currency") AND (Header."Currency Code" <> '') THEN
+                                 Currency.GET(Header."Currency Code")
+                               ELSE
+                                 Currency.InitRoundingPrecision;
+
+                               VATExemptTotal := TRUE;
+
+                               FillHeader(Proforma);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LineValues@1210000 : ARRAY [13] OF Text;
+                                BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT SalesLine1.FIND('-') THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF SalesLine1.NEXT(1) = 0 THEN BEGIN
+                                      FacturaInvoiceHelper.FormatTotalAmounts(
+                                        TotalAmountText,TotalAmount,Sign,FALSE,VATExemptTotal);
+                                      CurrReport.BREAK;
+                                    END;
+
+                                  COPYARRAY(LastTotalAmount,TotalAmount,1);
+
+                                  IF SalesLine1.Type <> SalesLine1.Type::" " THEN BEGIN
+                                    IF SalesLine1."Qty. to Invoice" = 0 THEN
+                                      CurrReport.SKIP;
+                                    IF AmountInvoiceCurrent = AmountInvoiceCurrent::LCY THEN BEGIN
+                                      SalesLine1.Amount := SalesLine1."Amount (LCY)";
+                                      SalesLine1."Amount Including VAT" := SalesLine1."Amount Including VAT (LCY)";
+                                    END;
+                                    SalesLine1.Amount :=
+                                      ROUND(SalesLine1.Amount * SalesLine1."Qty. to Invoice" / SalesLine1.Quantity,
+                                        Currency."Amount Rounding Precision");
+                                    SalesLine1."Amount Including VAT" :=
+                                      ROUND(SalesLine1."Amount Including VAT" * SalesLine1."Qty. to Invoice" / SalesLine1.Quantity,
+                                        Currency."Amount Rounding Precision");
+                                    SalesLine1."Unit Price" :=
+                                      ROUND(SalesLine1.Amount / SalesLine1."Qty. to Invoice",
+                                        Currency."Unit-Amount Rounding Precision");
+                                    IncrAmount(SalesLine1);
+                                    RetrieveCDSpecification;
+                                    TransferReportValues(LineValues,SalesLine1,CountryName,CDNo,CountryCode);
+                                  END ELSE BEGIN
+                                    SalesLine1."No." := '';
+                                    FacturaInvoiceHelper.TransferLineDescrValues(LineValues,SalesLine1.Description);
+                                  END;
+
+                                  FillBody(LineValues);
+                                END;
+
+               OnPostDataItem=VAR
+                                ResponsiblePerson@1210000 : ARRAY [2] OF Text;
+                              BEGIN
+                                FillRespPerson(ResponsiblePerson);
+                                FacturaInvoiceHelper.FinalizeReport(TotalAmountText,ResponsiblePerson,Proforma);
+                              END;
+                               }
+
+    { 6449;3   ;DataItem;AttachedLineCycle   ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               AttachedSalesLine.SETRANGE("Attached to Line No.",SalesLine1."Line No.");
+                               SETRANGE(Number,1,AttachedSalesLine.COUNT);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LineValues@1210000 : ARRAY [13] OF Text;
+                                BEGIN
+                                  IF Number = 1 THEN
+                                    AttachedSalesLine.FINDSET
+                                  ELSE
+                                    AttachedSalesLine.NEXT;
+
+                                  COPYARRAY(LastTotalAmount,TotalAmount,1);
+                                  FacturaInvoiceHelper.TransferLineDescrValues(LineValues,AttachedSalesLine.Description);
+                                  FillBody(LineValues);
+                                END;
+                                 }
+
+    { 6034;3   ;DataItem;ItemTrackingLine    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               IF NOT MultipleCD THEN
+                                 CurrReport.BREAK;
+
+                               SETRANGE(Number,1,TrackingSpecCount);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LineValues@1210000 : ARRAY [13] OF Text;
+                                BEGIN
+                                  IF Number = 1 THEN
+                                    TrackingSpecBuffer2.FINDSET
+                                  ELSE
+                                    TrackingSpecBuffer2.NEXT;
+
+                                  IF CDNoInfo.GET(
+                                       CDNoInfo.Type::Item,TrackingSpecBuffer2."Item No.",TrackingSpecBuffer2."Variant Code",TrackingSpecBuffer2."CD No.")
+                                  THEN BEGIN
+                                    CountryName := CDNoInfo.GetCountryName;
+                                    CountryCode := CDNoInfo.GetCountryLocalCode;
+                                  END;
+
+                                  COPYARRAY(LastTotalAmount,TotalAmount,1);
+                                  FacturaInvoiceHelper.TransferItemTrLineValues(LineValues,TrackingSpecBuffer2,CountryCode,CountryName,Sign);
+                                  FillBody(LineValues);
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   CopiesNumber := 1;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=No. of Copies;
+                             RUS=Число копий];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CopiesNumber;
+                  OnValidate=BEGIN
+                               IF CopiesNumber < 1 THEN
+                                 CopiesNumber := 1;
+                             END;
+                              }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Print Currency;
+                             RUS=Печать валюты];
+                  OptionCaptionML=[ENU=Invoice Currency,LCY;
+                                   RUS=Валюта счета,руб.];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AmountInvoiceDone }
+
+      { 1470000;2;Field     ;
+                  CaptionML=[ENU=Log Interaction;
+                             RUS=Регистрировать взаимодействие];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=LogInteraction }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Preview }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      DollarUSATxt@1210001 : TextConst 'ENU=US Dollar;RUS=Доллар США';
+      CompanyInfo@1210076 : Record 79;
+      Customer@1210075 : Record 18;
+      SalesLine1@1210074 : Record 37;
+      AttachedSalesLine@1210013 : TEMPORARY Record 37;
+      Currency@1210073 : Record 4;
+      SalesSetup@1210069 : Record 311;
+      CDNoInfo@1210025 : Record 12408;
+      TrackingSpecBuffer@1210022 : TEMPORARY Record 336;
+      TrackingSpecBuffer2@1210007 : TEMPORARY Record 336;
+      NoSeriesManagement@1210068 : Codeunit 396;
+      LocMgt@1210066 : Codeunit 12400;
+      StdRepMgt@1210065 : Codeunit 12401;
+      ArchiveManagement@1470003 : Codeunit 5063;
+      SegManagement@1470000 : Codeunit 5051;
+      ItemTrackingMgt@1210023 : Codeunit 6500;
+      ItemTrackingDocMgt@1210014 : Codeunit 6503;
+      FacturaInvoiceHelper@1210002 : Codeunit 14931;
+      CurrencyDescription@1210030 : Text;
+      TotalAmount@1210055 : ARRAY [3] OF Decimal;
+      LastTotalAmount@1210054 : ARRAY [3] OF Decimal;
+      CopiesNumber@1210050 : Integer;
+      AmountInvoiceDone@1210047 : 'Invoice Currency,LCY';
+      AmountInvoiceCurrent@1210046 : 'Invoice Currency,LCY';
+      MultipleCD@1210039 : Boolean;
+      CurrencyWrittenAmount@1210000 : Code[10];
+      ConsignorName@1210006 : Text;
+      ConsignorAddress@1210005 : Text;
+      Sign@1210110 : Decimal;
+      CountryCode@1210009 : Code[10];
+      CountryName@1210010 : Text;
+      ValueMissingErr@1210012 : TextConst 'ENU=%1 is missing for %2 items %3 in line %4.;RUS=%1 отсутствует для %2 товаров %3 в строке %4.';
+      LogInteraction@1470001 : Boolean;
+      ArchiveDocument@1210008 : Boolean;
+      CDNo@1470002 : Text;
+      KPPCode@1210011 : Code[10];
+      Receiver@1210017 : ARRAY [2] OF Text;
+      VATExemptTotal@1210020 : Boolean;
+      TotalAmountText@1210021 : ARRAY [3] OF Text;
+      TrackingSpecCount@1210024 : Integer;
+      CurrencyDigitalCode@1210031 : Code[3];
+      Preview@1210003 : Boolean;
+      Proforma@1210004 : Boolean;
+      FileName@1210015 : Text;
+
+    PROCEDURE InitializeRequest@1210002(NoOfCopies@1210000 : Integer;PrintCurr@1210001 : Option;IsLog@1210002 : Boolean;IsPreview@1210003 : Boolean;IsProforma@1210004 : Boolean);
+    BEGIN
+      CopiesNumber := NoOfCopies;
+      AmountInvoiceDone := PrintCurr;
+      LogInteraction := IsLog;
+      Preview := IsPreview;
+      Proforma := IsProforma;
+    END;
+
+    PROCEDURE IncrAmount@1210008(SalesLine2@1210000 : Record 37);
+    BEGIN
+      WITH SalesLine2 DO BEGIN
+        TotalAmount[1] := TotalAmount[1] + Amount;
+        TotalAmount[2] := TotalAmount[2] + "Amount Including VAT" - Amount;
+        TotalAmount[3] := TotalAmount[3] + "Amount Including VAT";
+      END;
+    END;
+
+    PROCEDURE TransferReportValues@1210003(VAR ReportValues@1210004 : ARRAY [12] OF Text;SalesLine2@1210001 : Record 37;CountryName2@1210000 : Text;CDNo2@1210002 : Text;CountryCode2@1210003 : Code[10]);
+    VAR
+      UoM@1210005 : Record 204;
+    BEGIN
+      ReportValues[1] := SalesLine2.Description;
+      ReportValues[2] := '-';
+      IF UoM.GET(SalesLine2."Unit of Measure Code") THEN
+        ReportValues[2] := StdRepMgt.FormatTextValue(UoM."OKEI Code");
+      ReportValues[3] := StdRepMgt.FormatTextValue(SalesLine2."Unit of Measure Code");
+      ReportValues[4] := FORMAT(Sign * SalesLine2."Qty. to Invoice");
+      ReportValues[5] := StdRepMgt.FormatReportValue(SalesLine2."Unit Price",2);
+      ReportValues[6] := StdRepMgt.FormatReportValue(Sign * SalesLine2.Amount,2);
+      ReportValues[7] := FORMAT(SalesLine1."VAT %");
+      ReportValues[8] :=
+        StdRepMgt.FormatReportValue(Sign * (SalesLine2."Amount Including VAT" - SalesLine2.Amount),2);
+      ReportValues[9] := StdRepMgt.FormatReportValue(Sign * SalesLine2."Amount Including VAT",2);
+      ReportValues[10] := StdRepMgt.FormatTextValue(CountryCode2);
+      ReportValues[11] := StdRepMgt.FormatTextValue(COPYSTR(CountryName2,1));
+      ReportValues[12] := StdRepMgt.FormatTextValue(COPYSTR(CDNo2,1));
+
+      IF StdRepMgt.VATExemptLine(SalesLine2."VAT Bus. Posting Group",SalesLine2."VAT Prod. Posting Group") THEN
+        StdRepMgt.FormatVATExemptLine(ReportValues[7],ReportValues[7])
+      ELSE
+        VATExemptTotal := FALSE;
+    END;
+
+    PROCEDURE TransferHeaderValues@1210011(VAR HeaderValue@1210000 : ARRAY [12] OF Text);
+    BEGIN
+      HeaderValue[1] := StdRepMgt.GetCompanyName;
+      HeaderValue[2] := StdRepMgt.GetLegalAddress;
+      HeaderValue[3] := CompanyInfo."VAT Registration No." + ' / ' + CompanyInfo."KPP Code";
+      HeaderValue[4] := ConsignorName + '  ' + ConsignorAddress;
+      HeaderValue[5] := Receiver[1] + '  ' + Receiver[2];
+      HeaderValue[6] := StdRepMgt.FormatTextValue(Header."External Document Text");
+      HeaderValue[7] := StdRepMgt.GetCustName(Header."Bill-to Customer No.");
+      HeaderValue[8] :=
+        Customer."Post Code" + ' ' + Header."Bill-to City" + ' ' + Header."Bill-to Address" + ' ' + Header."Bill-to Address 2";
+      HeaderValue[9] := Customer."VAT Registration No." + ' / ' + KPPCode;
+      HeaderValue[10] := CurrencyDigitalCode;
+      HeaderValue[11] := CurrencyDescription;
+      HeaderValue[12] := '';
+    END;
+
+    PROCEDURE PrintShortAddr@1210000(DocType@1210000 : Option;DocNo@1210001 : Code[20]) : Boolean;
+    VAR
+      SalesLine@1210002 : Record 37;
+    BEGIN
+      SalesLine.SETRANGE("Document Type",DocType);
+      SalesLine.SETRANGE("Document No.",DocNo);
+      SalesLine.SETFILTER(Type,'%1|%2',SalesLine.Type::Item,SalesLine.Type::"Fixed Asset");
+      SalesLine.SETFILTER("No.",'<>''''');
+      SalesLine.SETFILTER("Qty. to Invoice",'<>0');
+      EXIT(SalesLine.ISEMPTY);
+    END;
+
+    PROCEDURE RetrieveCDSpecification@1210001();
+    VAR
+      Item@1210006 : Record 27;
+      ItemTrackingCode@1210005 : Record 6502;
+      CDTrackingSetup@1210004 : Record 12410;
+      ReservEntry@1210011 : Record 337;
+      ReservEntry2@1210012 : Record 337;
+      TrackedQty@1210000 : Decimal;
+      SNRequired@1210001 : Boolean;
+      LNRequired@1210002 : Boolean;
+      CDRequired@1210003 : Boolean;
+      SNInfoRequired@1210010 : Boolean;
+      LNInfoRequired@1210009 : Boolean;
+      CDInfoRequired@1210008 : Boolean;
+    BEGIN
+      MultipleCD := FALSE;
+      CDNo := '';
+      CountryName := '';
+      CountryCode := '';
+      TrackedQty := 0;
+
+      CASE SalesLine1.Type OF
+        SalesLine1.Type::Item:
+          BEGIN
+            Item.GET(SalesLine1."No.");
+            IF Item."Item Tracking Code" <> '' THEN BEGIN
+              SalesLine1.TESTFIELD("Appl.-to Item Entry",0);
+              SalesLine1.TESTFIELD("Appl.-from Item Entry",0);
+              ItemTrackingCode.Code := Item."Item Tracking Code";
+              ItemTrackingMgt.GetItemTrackingSettings(
+                ItemTrackingCode,CDTrackingSetup,1,FALSE,SNRequired,LNRequired,CDRequired,SNInfoRequired,LNInfoRequired,
+                CDInfoRequired);
+              IF CDRequired THEN BEGIN
+                // find tracking specifiation
+                TrackingSpecBuffer.RESET;
+                TrackingSpecBuffer.SETCURRENTKEY("Source ID","Source Type","Source Subtype","Source Batch Name",
+                  "Source Prod. Order Line","Source Ref. No.");
+                TrackingSpecBuffer.SETRANGE("Source Type",DATABASE::"Sales Line");
+                TrackingSpecBuffer.SETRANGE("Source Subtype",SalesLine1."Document Type");
+                TrackingSpecBuffer.SETRANGE("Source ID",SalesLine1."Document No.");
+                TrackingSpecBuffer.SETRANGE("Source Ref. No.",SalesLine1."Line No.");
+                TrackingSpecBuffer2.DELETEALL;
+                IF TrackingSpecBuffer.FINDSET THEN
+                  REPEAT
+                    TrackingSpecBuffer2.SETRANGE("CD No.",TrackingSpecBuffer."CD No.");
+                    IF TrackingSpecBuffer2.FINDFIRST THEN BEGIN
+                      TrackingSpecBuffer2."Quantity (Base)" += TrackingSpecBuffer."Quantity (Base)";
+                      TrackedQty += TrackingSpecBuffer."Quantity (Base)";
+                      TrackingSpecBuffer2.MODIFY;
+                    END ELSE BEGIN
+                      TrackingSpecBuffer2.INIT;
+                      TrackingSpecBuffer2 := TrackingSpecBuffer;
+                      TrackingSpecBuffer2.TESTFIELD("Quantity (Base)");
+                      TrackedQty += TrackingSpecBuffer."Quantity (Base)";
+                      TrackingSpecBuffer2."Lot No." := '';
+                      TrackingSpecBuffer2."Serial No." := '';
+                      TrackingSpecBuffer2.INSERT;
+                    END;
+                  UNTIL TrackingSpecBuffer.NEXT = 0;
+                TrackingSpecBuffer2.RESET;
+                TrackingSpecCount := TrackingSpecBuffer2.COUNT;
+                IF TrackingSpecCount = 0 THEN BEGIN
+                  // find reservation specification
+                  SalesLine1.CALCFIELDS("Reserved Qty. (Base)");
+                  IF SalesLine1."Reserved Qty. (Base)" <> 0 THEN BEGIN
+                    ReservEntry.RESET;
+                    ReservEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype");
+                    ReservEntry.SETRANGE("Source Type",DATABASE::"Sales Line");
+                    ReservEntry.SETRANGE("Source Subtype",SalesLine1."Document Type");
+                    ReservEntry.SETRANGE("Source ID",SalesLine1."Document No.");
+                    ReservEntry.SETRANGE("Source Ref. No.",SalesLine1."Line No.");
+                    IF ReservEntry.FINDSET THEN
+                      REPEAT
+                        ReservEntry2.GET(ReservEntry."Entry No.",NOT ReservEntry.Positive);
+                        TrackingSpecBuffer2.INIT;
+                        TrackingSpecBuffer2.TRANSFERFIELDS(ReservEntry2);
+                        TrackedQty += TrackingSpecBuffer2."Quantity (Base)";
+                        TrackingSpecBuffer2."Lot No." := '';
+                        TrackingSpecBuffer2."Serial No." := '';
+                        TrackingSpecBuffer2.INSERT;
+                      UNTIL ReservEntry.NEXT = 0;
+                  END;
+                END;
+
+                IF TrackedQty <> SalesLine1."Qty. to Ship (Base)" THEN
+                  ERROR(ValueMissingErr,
+                    TrackingSpecBuffer2.FIELDCAPTION("CD No."),
+                    SalesLine1."Qty. to Ship (Base)" - TrackedQty,
+                    TrackingSpecBuffer2."Item No.",SalesLine1."Line No.");
+
+                TrackingSpecBuffer2.RESET;
+                TrackingSpecCount := TrackingSpecBuffer2.COUNT;
+                CASE TrackingSpecCount OF
+                  1:
+                    BEGIN
+                      TrackingSpecBuffer2.FINDFIRST;
+                      CDNo := TrackingSpecBuffer2."CD No.";
+                      IF CDNoInfo.GET(
+                           CDNoInfo.Type::Item,TrackingSpecBuffer2."Item No.",
+                           TrackingSpecBuffer2."Variant Code",TrackingSpecBuffer2."CD No.")
+                      THEN BEGIN
+                        CountryName := CDNoInfo.GetCountryName;
+                        CountryCode := CDNoInfo.GetCountryLocalCode;
+                      END;
+                    END;
+                  ELSE
+                    MultipleCD := TRUE;
+                END;
+              END;
+            END;
+          END;
+        SalesLine1.Type::"Fixed Asset":
+          FacturaInvoiceHelper.GetFAInfo(SalesLine1."No.",CDNo,CountryName);
+      END;
+    END;
+
+    LOCAL PROCEDURE FillDocHeader@1210005(VAR DocNo@1210005 : Code[20];VAR DocDate@1210003 : Text;VAR RevNo@1210004 : Code[20];VAR RevDate@1210002 : Text);
+    VAR
+      CorrDocMgt@1210000 : Codeunit 12422;
+    BEGIN
+      WITH Header DO
+        IF "Corrective Doc. Type" = "Corrective Doc. Type"::Revision THEN BEGIN
+          CASE "Original Doc. Type" OF
+            "Original Doc. Type"::Invoice:
+              DocDate := LocMgt.Date2Text(CorrDocMgt.GetSalesInvHeaderPostingDate("Original Doc. No."));
+            "Original Doc. Type"::"Credit Memo":
+              DocDate := LocMgt.Date2Text(CorrDocMgt.GetSalesCrMHeaderPostingDate("Original Doc. No."));
+          END;
+          DocNo := "Original Doc. No.";
+          RevNo := "Revision No.";
+          RevDate := LocMgt.Date2Text("Document Date");
+        END ELSE BEGIN
+          DocNo := "Posting No.";
+          DocDate := LocMgt.Date2Text("Document Date");
+          RevNo := '-';
+          RevDate := '-';
+        END;
+    END;
+
+    LOCAL PROCEDURE FillProformaHeader@1210017(VAR DocNo@1210003 : Code[20];VAR DocDate@1210002 : Text;VAR RevNo@1210001 : Code[20];VAR RevDate@1210000 : Text);
+    BEGIN
+      WITH Header DO BEGIN
+        DocNo := "No.";
+        DocDate := LocMgt.Date2Text("Document Date");
+        RevNo := '';
+        RevDate := '';
+      END;
+    END;
+
+    LOCAL PROCEDURE FillHeader@1210006(IsProforma@1210005 : Boolean);
+    VAR
+      DocNo@1210000 : Code[20];
+      RevNo@1210001 : Code[20];
+      DocDate@1210002 : Text;
+      RevDate@1210003 : Text;
+      HeaderValues@1210004 : ARRAY [12] OF Text;
+    BEGIN
+      IF IsProforma THEN
+        FillProformaHeader(DocNo,DocDate,RevNo,RevDate)
+      ELSE
+        FillDocHeader(DocNo,DocDate,RevNo,RevDate);
+      TransferHeaderValues(HeaderValues);
+
+      FacturaInvoiceHelper.FillHeader(DocNo,DocDate,RevNo,RevDate,HeaderValues);
+    END;
+
+    LOCAL PROCEDURE FillBody@1210012(LineValue@1210000 : ARRAY [12] OF Text);
+    BEGIN
+      FacturaInvoiceHelper.FillBody(LineValue);
+    END;
+
+    LOCAL PROCEDURE FillRespPerson@1210007(VAR ResponsiblePerson@1210000 : ARRAY [2] OF Text);
+    BEGIN
+      ResponsiblePerson[1] := StdRepMgt.GetDirectorName(FALSE,36,Header."Document Type",Header."No.");
+      ResponsiblePerson[2] := StdRepMgt.GetAccountantName(FALSE,36,Header."Document Type",Header."No.");
+    END;
+
+    LOCAL PROCEDURE GetTemplateCode@1210013(IsProforma@1210000 : Boolean) : Code[10];
+    VAR
+      SalesReceivablesSetup@1210001 : Record 311;
+    BEGIN
+      SalesReceivablesSetup.GET;
+      IF IsProforma THEN BEGIN
+        SalesReceivablesSetup.TESTFIELD("Proforma Template Code");
+        EXIT(SalesReceivablesSetup."Proforma Template Code");
+      END;
+
+      SalesReceivablesSetup.TESTFIELD("Factura Template Code");
+      EXIT(SalesReceivablesSetup."Factura Template Code");
+    END;
+
+    PROCEDURE SetFileNameSilent@1210004(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

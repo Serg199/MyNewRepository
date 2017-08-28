@@ -1,0 +1,454 @@
+OBJECT Report 50180 Import Deals from OBS
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12.07.17;
+    Time=16:33:05;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   Tab[1] := 9;
+                 END;
+
+    OnPreReport=VAR
+                  repDelTDeal@1101495000 : Report 50184;
+                BEGIN
+                  //NC NOS-26 > SPA
+                  {
+                  IF NOT EXISTS(FileName) THEN
+                    ERROR(Text001,FILE);
+                  }
+                  ServerFileName := CommDialog.UploadFileSilentToServerPath(FileName,'');
+                  //NC NOS-26 < SPA
+
+                  Company.GET(COMPANYNAME);
+
+                  //NCS-2139 > AAP
+                  repDelTDeal.SetVar(TRUE);
+                  repDelTDeal.RUNMODAL;
+                  //NCS-2139 < AAP
+
+                  //NC NOS-26 > SPA
+                  //ImpBuffer(FileName);
+                  ImpBuffer(ServerFileName);
+                  //NC NOS-26 < SPA
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT NASSilentMode THEN
+                     MESSAGE(Text003);
+                 END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Field  ;
+                  CaptionML=[ENU=Path to files;
+                             RUS=Путь к файлам];
+                  SourceExpr=FileName;
+                  OnAssistEdit=BEGIN
+                                 FileName := CommDialog.OpenFileDialog(Text002,FileName,''); // NC NOS-26 SPA
+                               END;
+                                }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FileName@1101495006 : Text[1024];
+      CommDialog@1101495005 : Codeunit 419;
+      BufferDeal@1101495004 : Record 50036;
+      Tab@1101495003 : Text[1];
+      NASSilentMode@1101495002 : Boolean;
+      LineNo@1101495001 : Integer;
+      Company@1101495000 : Record 2000000006;
+      Text001@1101495010 : TextConst 'ENU=File %1 does not exist;RUS=Файл %1 не существует';
+      Text002@1101495009 : TextConst 'ENU=Select Folder;RUS=Выбор Файла';
+      Text003@1101495008 : TextConst 'ENU=File imported successfully;RUS=Файл успешно импортирован';
+      Text004@1101495007 : TextConst 'ENU=deals Directory, error occurs when import field: %1. Line No.: %2;RUS=Справочник Сделки, ошибка при загрузке поля: %1. Строка: %2';
+      ServerFileName@1101495011 : Text;
+
+    PROCEDURE SetParameters@1000000040(NewFileName@1000000000 : Text[1024];NewNASSilentMode@1101495000 : Boolean);
+    BEGIN
+      FileName := NewFileName;
+      NASSilentMode := NewNASSilentMode;
+      IF NASSilentMode THEN
+        CurrReport.USEREQUESTPAGE(FALSE);
+    END;
+
+    PROCEDURE GetSubstr@1000000007(MainStr@1000000000 : Text[1024];SubstrNo@1000000001 : Integer;separator@1000000002 : Text[1];MaxLen@1101495000 : Integer) SubStr : Text[1024];
+    VAR
+      i@1000000003 : Integer;
+      Pos@1000000004 : Integer;
+      Str@1000000005 : Text[1024];
+    BEGIN
+      SubStr := '';
+      Str := MainStr;
+      IF STRLEN(Str) = 0 THEN
+       EXIT;
+
+      i := STRPOS(Str,separator);
+      IF i = 0 THEN
+        EXIT;
+
+      FOR i := 1 TO SubstrNo DO BEGIN
+        Pos := STRPOS(Str,separator);
+        IF i = SubstrNo THEN BEGIN
+          IF Pos <> 0 THEN
+            SubStr := COPYSTR(Str,1,Pos-1)
+          ELSE
+            SubStr := COPYSTR(Str,1,STRLEN(Str));
+          IF MaxLen <> 0 THEN
+            SubStr := COPYSTR(SubStr, 1, MaxLen);
+          EXIT(SubStr);
+        END ELSE
+          Str := COPYSTR(Str,Pos+1,STRLEN(Str));
+      END;
+    END;
+
+    PROCEDURE ImpBuffer@1000000011(File@1000000000 : Text[1024]);
+    VAR
+      Str@1000000001 : Text[1024];
+      InStr@1000000004 : InStream;
+      SrcFile@1000000003 : File;
+      CrLf@1101495000 : Char;
+    BEGIN
+      IF EXISTS(File) THEN
+        SrcFile.OPEN(File)
+      ELSE
+        EXIT;
+
+      IF SrcFile.LEN = 0 THEN
+        EXIT;
+
+      SrcFile.TEXTMODE(TRUE);
+      SrcFile.CREATEINSTREAM(InStr);
+
+      //SKIP HEADER TEXT           D
+      REPEAT
+        InStr.READ(CrLf);
+      UNTIL CrLf = 10;
+
+      LineNo := 1;
+
+      REPEAT
+        InStr.READTEXT(Str);
+        LineNo += 1;
+        InsertBuffer(Str);
+      UNTIL InStr.EOS;
+      SrcFile.CLOSE;
+
+      COMMIT;
+    END;
+
+    PROCEDURE InsertBuffer@1101495001(Str@1101495000 : Text[1024]);
+    VAR
+      DummyTxt@1101495001 : Text[30];
+    BEGIN
+      BufferDeal.INIT;
+      BufferDeal."Entry No." := 0;
+      BufferDeal."Id Legal Entity" := Company."Legal Entity Id";
+      IF NOT EVALUATE(BufferDeal."Id External System", GetSubstr(Str, 1, Tab, MAXSTRLEN(BufferDeal."Id External System")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Id External System"));
+      IF NOT EVALUATE(BufferDeal."Deal ID", GetSubstr(Str, 2, Tab, MAXSTRLEN(BufferDeal."Deal ID")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Deal ID"));
+      IF NOT EVALUATE(BufferDeal."Type Deal", GetSubstr(Str, 3, Tab, MAXSTRLEN(BufferDeal."Type Deal")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Type Deal"));
+      IF NOT EVALUATE(BufferDeal."Company No.", GetSubstr(Str, 4, Tab, MAXSTRLEN(BufferDeal."Company No.")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Company No."));
+      IF NOT EVALUATE(BufferDeal."Book left FO", GetSubstr(Str, 5, Tab, MAXSTRLEN(BufferDeal."Book left FO")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Book left FO"));
+      IF NOT EVALUATE(BufferDeal."Profit Center", GetSubstr(Str, 6, Tab, MAXSTRLEN(BufferDeal."Profit Center")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Profit Center"));
+      DummyTxt := GetSubstr(Str, 7, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Type of Loan", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Type of Loan"));
+      IF NOT EVALUATE(BufferDeal."Customer No.", GetSubstr(Str, 8, Tab, MAXSTRLEN(BufferDeal."Customer No.")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Customer No."));
+      DummyTxt := GetSubstr(Str, 9, Tab, 0);
+      IF ( DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Agreement Date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Agreement Date"));
+      IF NOT EVALUATE(BufferDeal."Agreement No.", GetSubstr(Str, 10, Tab, MAXSTRLEN(BufferDeal."Agreement No.")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Agreement No."));
+      DummyTxt := GetSubstr(Str, 11, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Trade Date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Trade Date"));
+      IF NOT EVALUATE(BufferDeal."Type of Collateral", GetSubstr(Str, 12, Tab, MAXSTRLEN(BufferDeal."Type of Collateral")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Type of Collateral"));
+      IF NOT EVALUATE(BufferDeal."Loan Agreement No.", GetSubstr(Str, 13, Tab, MAXSTRLEN(BufferDeal."Loan Agreement No.")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Loan Agreement No."));
+      IF NOT EVALUATE(BufferDeal.Currency, GetSubstr(Str, 14, Tab, MAXSTRLEN(BufferDeal.Currency)), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME(Currency));
+      DummyTxt := GetSubstr(Str, 15, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Interest Rate Fixing Rules", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Interest Rate Fixing Rules"));
+      IF NOT EVALUATE(BufferDeal."Floating Rate Type 1", GetSubstr(Str, 16, Tab, MAXSTRLEN(BufferDeal."Floating Rate Type 1")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Floating Rate Type 1"));
+      IF NOT EVALUATE(BufferDeal."Floating Rate Type 2", GetSubstr(Str, 17, Tab, MAXSTRLEN(BufferDeal."Floating Rate Type 2")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Floating Rate Type 2"));
+      DummyTxt := GetSubstr(Str, 18, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Fixed Interest Rate 1", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Fixed Interest Rate 1"));
+      DummyTxt := GetSubstr(Str, 19, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Fixed Interest Rate 2", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Fixed Interest Rate 2"));
+      DummyTxt := GetSubstr(Str, 20, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Renegotiation History", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Renegotiation History"));
+      DummyTxt := GetSubstr(Str, 21, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal.Covenants, DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME(Covenants));
+      IF NOT EVALUATE(BufferDeal."Payment Currency", GetSubstr(Str, 22, Tab, MAXSTRLEN(BufferDeal."Payment Currency")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Payment Currency"));
+      DummyTxt := GetSubstr(Str, 23, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Payment Currency Rate", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Payment Currency Rate"));
+      DummyTxt := GetSubstr(Str, 24, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Term Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Term Type"));
+      DummyTxt := GetSubstr(Str, 25, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Market Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Market Type"));
+      DummyTxt := GetSubstr(Str, 26, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Price per FI", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Price per FI"));
+      DummyTxt := GetSubstr(Str, 27, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal.Quantity, DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME(Quantity));
+      DummyTxt := GetSubstr(Str, 28, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Discount/Premium", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Discount/Premium"));
+      IF NOT EVALUATE(BufferDeal."CCY Buy", GetSubstr(Str, 29, Tab, MAXSTRLEN(BufferDeal."CCY Buy")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("CCY Buy"));
+      DummyTxt := GetSubstr(Str, 30, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."CCY Buy Amount", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("CCY Buy Amount"));
+      IF NOT EVALUATE(BufferDeal."CCY Sell", GetSubstr(Str, 31, Tab, MAXSTRLEN(BufferDeal."CCY Sell")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("CCY Sell"));
+      DummyTxt := GetSubstr(Str, 32, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."CCY Sell Amount", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("CCY Sell Amount"));
+      DummyTxt := GetSubstr(Str, 33, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Settlement Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Settlement Type"));
+      DummyTxt := GetSubstr(Str, 34, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Trade Direction", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Trade Direction"));
+      DummyTxt := GetSubstr(Str, 35, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."First Ch. Flow Date,Issue Date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("First Ch. Flow Date,Issue Date"));
+      DummyTxt := GetSubstr(Str, 36, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Delivery Date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Delivery Date"));
+      IF NOT EVALUATE(BufferDeal."Underlying FI No", GetSubstr(Str, 37, Tab, MAXSTRLEN(BufferDeal."Underlying FI No")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Underlying FI No"));
+      IF NOT EVALUATE(BufferDeal."Financial instrument No.", GetSubstr(Str, 38, Tab,
+                      MAXSTRLEN(BufferDeal."Financial instrument No.")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Financial instrument No."));
+      DummyTxt := GetSubstr(Str, 39, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Start Date Buy", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Start Date Buy"));
+      DummyTxt := GetSubstr(Str, 40, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Maturity Date Buy", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Maturity Date Buy"));
+      DummyTxt := GetSubstr(Str, 41, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Margin 1", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Margin 1"));
+      DummyTxt := GetSubstr(Str, 42, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Rate Convention 1", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Rate Convention 1"));
+      DummyTxt := GetSubstr(Str, 43, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Start Date Sell", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Start Date Sell"));
+      DummyTxt := GetSubstr(Str, 44, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Maturity Date Sell", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Maturity Date Sell"));
+      DummyTxt := GetSubstr(Str, 45, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Margin 2", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Margin 2"));
+      DummyTxt := GetSubstr(Str, 46, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Rate Convention 2", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Rate Convention 2"));
+      DummyTxt := GetSubstr(Str, 47, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Maturity Date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Maturity Date"));
+      DummyTxt := GetSubstr(Str, 48, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Fee Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Fee Type"));
+      DummyTxt := GetSubstr(Str, 49, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Fixed Fee Amount", DummyTxt, 9)  THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Fixed Fee Amount"));
+      IF NOT EVALUATE(BufferDeal."Fee Currency", GetSubstr(Str, 50, Tab, MAXSTRLEN(BufferDeal."Fee Currency")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Fee Currency"));
+      DummyTxt := GetSubstr(Str, 51, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Standard Fee Rate", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Standard Fee Rate"));
+      DummyTxt := GetSubstr(Str, 52, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Payment frequency Buy", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Payment frequency Buy"));
+      DummyTxt := GetSubstr(Str, 53, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Payment frequency Sell", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Payment frequency Sell"));
+      DummyTxt := GetSubstr(Str, 54, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Amount 1 (principal)", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Amount 1 (principal)"));
+      DummyTxt := GetSubstr(Str, 55, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Amount 2 (principal)", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Amount 2 (principal)"));
+      DummyTxt := GetSubstr(Str, 56, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Accrued Coupon 1", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Accrued Coupon 1"));
+      DummyTxt := GetSubstr(Str, 57, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Accrued Coupon 2", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Accrued Coupon 2"));
+      DummyTxt := GetSubstr(Str, 58, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Fixed fee Payment Date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Fixed fee Payment Date"));
+      IF NOT EVALUATE(BufferDeal."Deal Relation ID", GetSubstr(Str, 59, Tab, MAXSTRLEN(BufferDeal."Deal Relation ID")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Deal Relation ID"));
+      DummyTxt := GetSubstr(Str, 60, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal.Flag, DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME(Flag));
+      DummyTxt := GetSubstr(Str, 61, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Contract Flag", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Contract Flag"));
+      IF NOT EVALUATE(BufferDeal.Number, GetSubstr(Str, 62, Tab, MAXSTRLEN(BufferDeal.Number)), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME(Number));
+      IF NOT EVALUATE(BufferDeal."Book Rt.", GetSubstr(Str, 63, Tab, MAXSTRLEN(BufferDeal."Book Rt.")), 9) THEN
+        RiseErrorMsg(BufferDeal.FIELDNAME("Book Rt."));
+      DummyTxt := GetSubstr(Str, 64, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."CH Business Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("CH Business Type"));
+      DummyTxt := GetSubstr(Str, 65, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Interest Frequency Days", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Interest Frequency Days"));
+      DummyTxt := GetSubstr(Str, 66, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Interest Rate Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Interest Rate Type"));
+      DummyTxt := GetSubstr(Str, 67, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."Interest fixing date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Interest fixing date"));
+      DummyTxt := GetSubstr(Str, 68, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Payment frequency", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Payment frequency"));
+      DummyTxt := GetSubstr(Str, 69, Tab, 0);
+      IF (DummyTxt <> '') AND (DummyTxt <> '0000-00-00') AND (DummyTxt <> '00-00-00') AND (DummyTxt <> '0') THEN
+        IF NOT EVALUATE(BufferDeal."First payment date", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("First payment date"));
+      DummyTxt := GetSubstr(Str, 70, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Liquidity flag", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Liquidity flag"));
+      DummyTxt := GetSubstr(Str, 71, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Contract volume", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Contract volume"));
+      //NC S1992 > PCH
+      DummyTxt := GetSubstr(Str, 72, Tab, MAXSTRLEN(BufferDeal."Entry Type"));
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferDeal."Entry Type", DummyTxt, 9) THEN
+          RiseErrorMsg(BufferDeal.FIELDNAME("Entry Type"));
+      //NC S1992 < PCH
+
+      IF BufferDeal.Currency = 'RUB' THEN
+        BufferDeal.Currency := 'RUR';
+      IF BufferDeal."Payment Currency" = 'RUB' THEN
+        BufferDeal."Payment Currency" := 'RUR';
+      IF BufferDeal."CCY Buy" = 'RUB' THEN
+        BufferDeal."CCY Buy" := 'RUR';
+      IF BufferDeal."CCY Sell" = 'RUB' THEN
+        BufferDeal."CCY Sell" := 'RUR';
+      IF BufferDeal."Fee Currency" = 'RUB' THEN
+        BufferDeal."Fee Currency" := 'RUR';
+      IF BufferDeal."Settlement Cur" = 'RUB' THEN
+        BufferDeal."Settlement Cur" := 'RUR';
+
+      BufferDeal."Time Creation" := CREATEDATETIME(WORKDATE, TIME);
+      BufferDeal.INSERT;
+    END;
+
+    PROCEDURE RiseErrorMsg@1101495003(FieldName@1101495000 : Text[50]);
+    BEGIN
+      ERROR(Text004, FieldName, LineNo);
+    END;
+
+    BEGIN
+    {
+      NC NCS-1884 SPA Created report
+      NC S1992 PCH загрузка "Entry Type"
+      NCS-2139 AAP: Удаление всех T-Сделок перед загрузкой
+      ------------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

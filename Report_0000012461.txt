@@ -1,0 +1,832 @@
+OBJECT Report 12461 VAT Ledger Export XML
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=VAT Ledger Export XML;
+               RUS=ù™·ØÆ‡‚ ™≠®£® çÑë ¢ XML];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  TempErrorMessage.ClearLog;
+                  CompanyInfo.GET;
+                  CompanyInfo.TESTFIELD("VAT Registration No.");
+                  StatutoryReportSetup.GET;
+                  StatutoryReportSetup.TESTFIELD("Electronic Files Folder Name");
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT TempErrorMessage.HasErrors(FALSE) THEN BEGIN
+                     FileNameSilent := StatutoryReportSetup."Electronic Files Folder Name";
+                     IF COPYSTR(FileNameSilent,STRLEN(FileNameSilent),1) <> '\' THEN
+                       FileNameSilent += '\';
+                     FileNameSilent += FileId;
+                     FileNameSilent += '.xml';
+                     IF SaveXMLFile(XmlDoc,FileNameSilent) THEN
+                       MESSAGE(CompletedMsg);
+                   END;
+
+                   TempErrorMessage.ShowErrorMessages(FALSE);
+                 END;
+
+  }
+  DATASET
+  {
+    { 4710;    ;DataItem;VATLedger           ;
+               DataItemTable=Table12404;
+               DataItemTableView=SORTING(Type,Code);
+               OnPreDataItem=BEGIN
+                               SETRANGE(Type,VATLedgerType);
+                               SETRANGE(Code,VATLedgerCode);
+                               LineNo := 1;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CreateXMLDoc(XmlDoc,XMLCurrNode);
+                                  CreateFileElement(FileId);
+                                  CreateDocumentElement(VATLedgerType,CorrectionNo);
+                                  IF ActCriteria THEN
+                                    CurrReport.SKIP;
+                                  IF VATLedgerType = Type::Sales THEN
+                                    CreateSalesLedgerElement(VATLedger)
+                                  ELSE
+                                    CreatePurchaseLedgerElement(VATLedger);
+                                END;
+                                 }
+
+    { 7765;1   ;DataItem;SalesVATLedgerLine  ;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Sales),
+                                       Additional Sheet=CONST(No));
+               OnPreDataItem=BEGIN
+                               IF AddSheet OR (VATLedgerType = VATLedger.Type::Purchase) THEN
+                                 CurrReport.BREAK;
+                               SETRANGE(Type,VATLedgerType);
+                               SETRANGE(Code,VATLedgerCode);
+                               SETRANGE("Additional Sheet",AddSheet);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CheckVATRegistrationNo("C/V Type","C/V No.");
+                                  CreateSalesLedgerLineElement(SalesVATLedgerLine);
+                                END;
+
+               DataItemLinkReference=VATLedger;
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+    { 2061;1   ;DataItem;PurchVATLedgerLine  ;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Purchase),
+                                       Additional Sheet=CONST(No));
+               OnPreDataItem=BEGIN
+                               IF AddSheet OR (VATLedgerType = VATLedger.Type::Sales) THEN
+                                 CurrReport.BREAK;
+                               SETRANGE(Type,VATLedgerType);
+                               SETRANGE(Code,VATLedgerCode);
+                               SETRANGE("Additional Sheet",AddSheet);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CheckVATRegistrationNo("C/V Type","C/V No.");
+                                  CreatePurchaseLedgerLineElement(PurchVATLedgerLine);
+                                END;
+
+               DataItemLinkReference=VATLedger;
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+    { 6469;1   ;DataItem;SalesVATLedgerLineAddSheet;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Sales),
+                                       Additional Sheet=CONST(Yes));
+               OnPreDataItem=BEGIN
+                               IF (NOT AddSheet) OR (VATLedgerType = VATLedger.Type::Purchase) THEN
+                                 CurrReport.BREAK;
+                               SETRANGE(Type,VATLedgerType);
+                               SETRANGE(Code,VATLedgerCode);
+                               SETRANGE("Additional Sheet",AddSheet);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  SalesInvHeader@1210000 : Record 112;
+                                  SalesCrMemoHeader@1210001 : Record 114;
+                                  CorrDocAddSheet@1210002 : Boolean;
+                                BEGIN
+                                  CheckVATRegistrationNo("C/V Type","C/V No.");
+
+                                  IF SalesInvHeader.GET("Document No.") THEN
+                                    CorrDocAddSheet := SalesInvHeader."Additional VAT Ledger Sheet";
+                                  IF SalesCrMemoHeader.GET("Document No.") THEN
+                                    CorrDocAddSheet := SalesCrMemoHeader."Additional VAT Ledger Sheet";
+
+                                  IF CorrDocAddSheet THEN
+                                    "Document Date" := "Corr. VAT Entry Posting Date";
+
+                                  CreateSalesLedgerLineElement(SalesVATLedgerLineAddSheet);
+                                END;
+
+               DataItemLinkReference=VATLedger;
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+    { 8171;1   ;DataItem;PurchVATLedgerLineAddSheet;
+               DataItemTable=Table12405;
+               DataItemTableView=SORTING(Type,Code,Line No.)
+                                 WHERE(Type=CONST(Purchase),
+                                       Additional Sheet=CONST(Yes));
+               OnPreDataItem=BEGIN
+                               IF (NOT AddSheet) OR (VATLedgerType = VATLedger.Type::Sales) THEN
+                                 CurrReport.BREAK;
+
+                               SETRANGE(Type,VATLedgerType);
+                               SETRANGE(Code,VATLedgerCode);
+                               SETRANGE("Additional Sheet",AddSheet);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CheckVATRegistrationNo("C/V Type","C/V No.");
+                                  CreatePurchaseLedgerLineElement(PurchVATLedgerLineAddSheet);
+                                END;
+
+               DataItemLinkReference=VATLedger;
+               DataItemLink=Type=FIELD(Type),
+                            Code=FIELD(Code) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   GetFileName;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=è†‡†¨•‚‡Î] }
+
+      { 1210001;2;Field     ;
+                  Name=CorrectiveSubmission;
+                  CaptionML=[ENU=Corrective Entry;
+                             RUS=äÆ‡‡•™‚®‡„ÓÈ†Ô ÆØ•‡†Ê®Ô];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CorrectiveSubmission;
+                  Enabled=TRUE;
+                  Editable=TRUE;
+                  OnValidate=BEGIN
+                               IF NOT CorrectiveSubmission THEN BEGIN
+                                 CorrectionNo := 0;
+                                 ActCriteria := FALSE;
+                               END ELSE
+                                 CorrectionNo := 1;
+                             END;
+                              }
+
+      { 1210003;2;Field     ;
+                  Name=CorrectionNo;
+                  CaptionML=[ENU=Correction Number;
+                             RUS=çÆ¨•‡ ™Æ‡‡•™‚®‡Æ¢™®];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CorrectionNo;
+                  MinValue=1;
+                  MaxValue=999;
+                  Enabled=CorrectiveSubmission }
+
+      { 1210004;2;Field     ;
+                  Name=ActCriteria;
+                  CaptionML=[ENU=Previously Sent Data Still Current;
+                             RUS=ê†≠•• Æ‚Ø‡†¢´•≠≠Î• §†≠≠Î• ¢·• •È• Ô¢´ÔÓ‚·Ô ‚•™„È®¨®];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ActCriteria;
+                  Enabled=CorrectiveSubmission }
+
+      { 1210005;2;Field     ;
+                  Name=File Name;
+                  CaptionML=[ENU=File Name;
+                             RUS=à¨Ô ‰†©´†];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=FileId }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210000 : Record 79;
+      StatutoryReportSetup@1210028 : Record 26569;
+      TempErrorMessage@1210001 : TEMPORARY Record 700;
+      FileManagement@1210011 : Codeunit 419;
+      LocalReportMgt@1210081 : Codeunit 12401;
+      XMLNewChild@1210024 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";
+      XMLCurrNode@1210006 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";
+      XmlDoc@1210005 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlDocument";
+      VATLedgerType@1210003 : Option;
+      VATLedgerCode@1210004 : Code[20];
+      AddSheet@1210016 : Boolean;
+      FileNameSilent@1210029 : Text[360];
+      FileId@1210007 : Text[100];
+      CorrectionNo@1210012 : Integer;
+      CorrectiveSubmission@1210021 : Boolean INDATASET;
+      ActCriteria@1210022 : Boolean;
+      CVVATRegistrationNo@1210008 : Text[20];
+      CVKPPCode@1210002 : Text[10];
+      CompletedMsg@1210009 : TextConst 'ENU=The data was exported successfully.;RUS=Ñ†≠≠Î• „·Ø•Ë≠Æ Ì™·ØÆ‡‚®‡Æ¢†≠Î.';
+      LineNo@1210010 : Integer;
+      DocumentTxt@1210013 : TextConst '@@@=Should be translated as ÑÆ™„¨•≠‚;ENU=Document;RUS=ÑÆ™„¨•≠‚';
+      IndexTxt@1210014 : TextConst '@@@=Should be translated as à≠§•™·;ENU=Index;RUS=à≠§•™·';
+      PriznSvedTxt@1210015 : TextConst '@@@=Should be translated as è‡®ß≠ë¢•§;ENU=PriznSved;RUS=è‡®ß≠ë¢•§';
+      NomCorrTxt@1210017 : TextConst '@@@=Should be translated as çÆ¨äÆ‡‡;ENU=NomCorr;RUS=çÆ¨äÆ‡‡';
+      FileTxt@1210018 : TextConst '@@@=Should be translated as î†©´;ENU=File;RUS=î†©´';
+      FileIDTxt@1210019 : TextConst '@@@=Should be translated as à§î†©´;ENU=FileID;RUS=à§î†©´';
+      VersProgTxt@1210020 : TextConst '@@@=Should be translated as Ç•‡·è‡Æ£;ENU=VersProg;RUS=Ç•‡·è‡Æ£';
+      VersFormTxt@1210023 : TextConst '@@@=Should be translated as Ç•‡·îÆ‡¨;ENU=VersForm;RUS=Ç•‡·îÆ‡¨';
+      SvProdTxt@1210025 : TextConst '@@@=Should be translated as ë¢è‡Æ§;ENU=SvProd;RUS=ë¢è‡Æ§';
+      SvPokupTxt@1210038 : TextConst '@@@=Should be translated as ë¢èÆ™„Ø;ENU=SvPokup;RUS=ë¢èÆ™„Ø';
+      SvedULTxt@1210026 : TextConst '@@@=Should be translated as ë¢•§ûã;ENU=SvedUL;RUS=ë¢•§ûã';
+      SvedIPTxt@1210027 : TextConst '@@@=Should be translated as ë¢•§àè;ENU=SvedIP;RUS=ë¢•§àè';
+      INNULTxt@1210030 : TextConst '@@@=Should be translated as àççûã;ENU=INNUL;RUS=àççûã';
+      INNFLTxt@1210031 : TextConst '@@@=Should be translated as àççîã;ENU=INNFL;RUS=àççîã';
+      KPPTxt@1210032 : TextConst '@@@=Should be translated as äèè;ENU=KPP;RUS=äèè';
+      KnigaProdTxt@1210040 : TextConst '@@@=Should be translated as ä≠®£†è‡Æ§;ENU=KnigaProd;RUS=ä≠®£†è‡Æ§';
+      KnigaProdDLTxt@1210039 : TextConst '@@@=Should be translated as ä≠®£†è‡Æ§Ñã;ENU=KnigaProdDL;RUS=ä≠®£†è‡Æ§Ñã';
+      KnProdDLStrTxt@1210050 : TextConst '@@@=Should be translated as ä≠è‡Æ§Ñãë‚‡;ENU=KnProdDLStr;RUS=ä≠è‡Æ§Ñãë‚‡';
+      KnProdStrTxt@1210051 : TextConst '@@@=Should be translated as ä≠è‡Æ§ë‚‡;ENU=KnProdStr;RUS=ä≠è‡Æ§ë‚‡';
+      KnigaPokupTxt@1210033 : TextConst '@@@=Should be translated as ä≠®£†èÆ™„Ø;ENU=KnigaPokup;RUS=ä≠®£†èÆ™„Ø';
+      KnigaPokupDLTxt@1210034 : TextConst '@@@=Should be translated as ä≠®£†èÆ™„ØÑã;ENU=KnigaPokupDL;RUS=ä≠®£†èÆ™„ØÑã';
+      KnPokDLStrTxt@1210077 : TextConst '@@@=Should be translated as ä≠èÆ™Ñãë‚‡;ENU=KnPokDLStr;RUS=ä≠èÆ™Ñãë‚‡';
+      KnPokStrTxt@1210076 : TextConst '@@@=Should be translated as ä≠èÆ™ë‚‡;ENU=KnPokStr;RUS=ä≠èÆ™ë‚‡';
+      SumNDSTxt@1210078 : TextConst '@@@=Should be translated as ë„¨çÑë;ENU=SumNDS;RUS=ë„¨çÑë';
+      SumNDSVicTxt@1210079 : TextConst '@@@=Should be translated as ë„¨çÑëÇÎÁ;ENU=SumNDSVic;RUS=ë„¨çÑëÇÎÁ';
+      SumNDSItKPkTxt@1210035 : TextConst '@@@=Should be translated as ë„¨çÑëà‚äè™;ENU=SumNDSItKPk;RUS=ë„¨çÑëà‚äè™';
+      SumNDSItP1R8Txt@1210036 : TextConst '@@@=Should be translated as ë„¨çÑëà‚è1ê8;ENU=SumNDSItP1R8;RUS=ë„¨çÑëà‚è1ê8';
+      SumNDSVsKPkTxt@1210037 : TextConst '@@@=Should be translated as ë„¨çÑëÇ·äè™;ENU=SumNDSVsKPk;RUS=ë„¨çÑëÇ·äè™';
+      ItStProdKPrTxt@1210041 : TextConst '@@@=Should be translated as à‚ë‚è‡Æ§äè‡;ENU=ItStProdKPr;RUS=à‚ë‚è‡Æ§äè‡';
+      SumNDSItKPrTxt@1210042 : TextConst '@@@=Should be translated as ë„¨çÑëà‚äè‡;ENU=SumNDSItKPr;RUS=ë„¨çÑëà‚äè‡';
+      ItStProdOsvKPrTxt@1210043 : TextConst '@@@=Should be translated as à‚ë‚è‡Æ§é·¢äè‡;ENU=ItStProdOsvKPr;RUS=à‚ë‚è‡Æ§é·¢äè‡';
+      StProdVsP1R9Txt@1210044 : TextConst '@@@=Should be translated as ë‚è‡Æ§Ç·è1ê9;ENU=StProdVsP1R9;RUS=ë‚è‡Æ§Ç·è1ê9';
+      SumNDSVsP1R9Txt@1210045 : TextConst '@@@=Should be translated as ë„¨çÑëÇ·è1ê9;ENU=SumNDSVsP1R9;RUS=ë„¨çÑëÇ·è1ê9';
+      StProdOsvP1R9VsTxt@1210046 : TextConst '@@@=Should be translated as ë‚è‡Æ§é·¢è1ê9Ç·;ENU=StProdOsvP1R9Vs;RUS=ë‚è‡Æ§é·¢è1ê9Ç·';
+      StProdBezNDSTxt@1210047 : TextConst '@@@=Should be translated as ë‚è‡Æ§Å•ßçÑë;ENU=StProdBezNDS;RUS=ë‚è‡Æ§Å•ßçÑë';
+      SumNDSVsKPrTxt@1210048 : TextConst '@@@=Should be translated as ë„¨çÑëÇ·äè‡;ENU=SumNDSVsKPr;RUS=ë„¨çÑëÇ·äè‡';
+      StProdOsvVsKPrTxt@1210049 : TextConst '@@@=Should be translated as ë‚è‡Æ§é·¢Ç·äè‡;ENU=StProdOsvVsKPr;RUS=ë‚è‡Æ§é·¢Ç·äè‡';
+      NomerPorTxt@1210052 : TextConst '@@@=Should be translated as çÆ¨•‡èÆ‡;ENU=NomerPor;RUS=çÆ¨•‡èÆ‡';
+      NomScFProdTxt@1210053 : TextConst '@@@=Should be translated as çÆ¨ëÁîè‡Æ§;ENU=NomScFProd;RUS=çÆ¨ëÁîè‡Æ§';
+      DataScFProdTxt@1210054 : TextConst '@@@=Should be translated as Ñ†‚†ëÁîè‡Æ§;ENU=DataScFProd;RUS=Ñ†‚†ëÁîè‡Æ§';
+      NomIsprScFTxt@1210055 : TextConst '@@@=Should be translated as çÆ¨à·Ø‡ëÁî;ENU=NomIsprScF;RUS=çÆ¨à·Ø‡ëÁî';
+      DataIsprScFTxt@1210056 : TextConst '@@@=Should be translated as Ñ†‚†à·Ø‡ëÁî;ENU=DataIsprScF;RUS=Ñ†‚†à·Ø‡ëÁî';
+      NomKScFProdTxt@1210057 : TextConst '@@@=Should be translated as çÆ¨äëÁîè‡Æ§;ENU=NomKScFProd;RUS=çÆ¨äëÁîè‡Æ§';
+      DataKScFProdTxt@1210058 : TextConst '@@@=Should be translated as Ñ†‚†äëÁîè‡Æ§;ENU=DataKScFProd;RUS=Ñ†‚†äëÁîè‡Æ§';
+      NomIsprKScFTxt@1210059 : TextConst '@@@=Should be translated as çÆ¨à·Ø‡äëÁî;ENU=NomIsprKScF;RUS=çÆ¨à·Ø‡äëÁî';
+      DataIsprKScFTxt@1210060 : TextConst '@@@=Should be translated as Ñ†‚†à·Ø‡äëÁî;ENU=DataIsprKScF;RUS=Ñ†‚†à·Ø‡äëÁî';
+      NomTDTxt@1210071 : TextConst '@@@=Should be translated as çÆ¨íÑ;ENU=NomTD;RUS=çÆ¨íÑ';
+      OKVTxt@1210061 : TextConst '@@@=Should be translated as éäÇ;ENU=OKV;RUS=éäÇ';
+      StoimProdSFVTxt@1210062 : TextConst '@@@=Should be translated as ë‚Æ®¨è‡Æ§ëîÇ;ENU=StoimProdSFV;RUS=ë‚Æ®¨è‡Æ§ëîÇ';
+      StoimProdSFTxt@1210063 : TextConst '@@@=Should be translated as ë‚Æ®¨è‡Æ§ëî;ENU=StoimProdSF;RUS=ë‚Æ®¨è‡Æ§ëî';
+      StoimPokupVTxt@1210072 : TextConst '@@@=Should be translated as ë‚Æ®¨èÆ™„ØÇ;ENU=StoimPokupV;RUS=ë‚Æ®¨èÆ™„ØÇ';
+      SumNDSSFTxt@1210064 : TextConst '@@@=Should be translated as ë„¨çÑëëî;ENU=SumNDSSF;RUS=ë„¨çÑëëî';
+      StoimProdOsvTxt@1210065 : TextConst '@@@=Should be translated as ë‚Æ®¨è‡Æ§é·¢;ENU=StoimProdOsv;RUS=ë‚Æ®¨è‡Æ§é·¢';
+      KodVidOperTxt@1210066 : TextConst '@@@=Should be translated as äÆ§Ç®§éØ•‡;ENU=KodVidOper;RUS=äÆ§Ç®§éØ•‡';
+      DocPdtvOplTxt@1210067 : TextConst '@@@=Should be translated as ÑÆ™è§‚¢éØ´;ENU=DocPdtvOpl;RUS=ÑÆ™è§‚¢éØ´';
+      NomDocPdtvOplTxt@1210068 : TextConst '@@@=Should be translated as çÆ¨ÑÆ™è§‚¢éØ´;ENU=NomDocPdtvOpl;RUS=çÆ¨ÑÆ™è§‚¢éØ´';
+      DataDocPdtvOplTxt@1210069 : TextConst '@@@=Should be translated as Ñ†‚†è§‚¢éØ´;ENU=DataDocPdtvOpl;RUS=Ñ†‚†è§‚¢éØ´';
+      DocPdtvUplTxt@1210075 : TextConst '@@@=Should be translated as ÑÆ™è§‚¢ìØ´;ENU=DocPdtvUpl;RUS=ÑÆ™è§‚¢ìØ´';
+      NomDocPdtvUplTxt@1210074 : TextConst '@@@=Should be translated as çÆ¨ÑÆ™è§‚¢ìØ´;ENU=NomDocPdtvUpl;RUS=çÆ¨ÑÆ™è§‚¢ìØ´';
+      DataDocPdtvUplTxt@1210073 : TextConst '@@@=Should be translated as Ñ†‚†è§‚¢ìØ´;ENU=DataDocPdtvUpl;RUS=Ñ†‚†è§‚¢ìØ´';
+      DataUcTovTxt@1210080 : TextConst '@@@=Should be translated as Ñ†‚†ìÁíÆ¢;ENU=DataUcTov;RUS=Ñ†‚†ìÁíÆ¢';
+
+    PROCEDURE InitializeReport@1210007(NewVATLedgerType@1210000 : Option;NewVATLedgerCode@1210001 : Code[20];NewAddSheet@1210002 : Boolean);
+    BEGIN
+      VATLedgerType := NewVATLedgerType;
+      VATLedgerCode := NewVATLedgerCode;
+      AddSheet := NewAddSheet;
+    END;
+
+    LOCAL PROCEDURE CheckVATRegistrationNo@1210026(CVType@1210000 : 'Vendor,Customer';CVNo@1210003 : Code[20]);
+    VAR
+      Customer@1210001 : Record 18;
+      Vendor@1210002 : Record 23;
+    BEGIN
+      CVVATRegistrationNo := '';
+      CVKPPCode := '';
+      IF CVType = CVType::Customer THEN BEGIN
+        IF VATLedgerType = VATLedger.Type::Sales THEN BEGIN
+          IF Customer.GET(CVNo) THEN;
+          IF STRLEN(Customer."VAT Registration No.") = 10 THEN
+            TempErrorMessage.LogIfEmpty(Customer,Customer.FIELDNO("KPP Code"),TempErrorMessage."Message Type"::Error);
+          IF TempErrorMessage.HasErrors(FALSE) THEN
+            CurrReport.SKIP;
+          CVVATRegistrationNo := Customer."VAT Registration No.";
+          CVKPPCode := Customer."KPP Code";
+        END ELSE
+          CheckCompanyVATRegNoKPP;
+      END ELSE BEGIN
+        IF Vendor.GET(CVNo) THEN;
+        IF VATLedgerType = VATLedger.Type::Purchase THEN BEGIN
+          IF NOT Vendor."VAT Agent" OR (Vendor."VAT Agent Type" <> Vendor."VAT Agent Type"::"Non-resident") THEN BEGIN
+            TempErrorMessage.LogIfEmpty(Vendor,Vendor.FIELDNO("VAT Registration No."),TempErrorMessage."Message Type"::Error);
+            IF STRLEN(Vendor."VAT Registration No.") = 10 THEN
+              TempErrorMessage.LogIfEmpty(Vendor,Vendor.FIELDNO("KPP Code"),TempErrorMessage."Message Type"::Error);
+            IF TempErrorMessage.HasErrors(FALSE) THEN
+              CurrReport.SKIP;
+          END;
+          CVVATRegistrationNo := Vendor."VAT Registration No.";
+          CVKPPCode := Vendor."KPP Code";
+        END ELSE
+          CheckCompanyVATRegNoKPP;
+      END
+    END;
+
+    LOCAL PROCEDURE CheckCompanyVATRegNoKPP@1210005();
+    BEGIN
+      TempErrorMessage.LogIfEmpty(
+        CompanyInfo,CompanyInfo.FIELDNO("VAT Registration No."),TempErrorMessage."Message Type"::Error);
+      IF STRLEN(CompanyInfo."VAT Registration No.") = 10 THEN
+        TempErrorMessage.LogIfEmpty(
+          CompanyInfo,CompanyInfo.FIELDNO("KPP Code"),TempErrorMessage."Message Type"::Error);
+      IF TempErrorMessage.HasErrors(FALSE) THEN
+        CurrReport.SKIP;
+      CVVATRegistrationNo := CompanyInfo."VAT Registration No.";
+      CVKPPCode := CompanyInfo."KPP Code";
+    END;
+
+    LOCAL PROCEDURE CreateDocumentElement@1210016(VATLedgerType@1210002 : Option;CorrectionNo@1210001 : Integer);
+    VAR
+      ActCriteriaAttributeName@1210116 : Text[250];
+    BEGIN
+      XMLAddComplexElement(DocumentTxt);
+
+      IF VATLedgerType = VATLedger.Type::Sales THEN
+        IF AddSheet THEN BEGIN
+          XMLAddAttribute(XMLCurrNode,IndexTxt,'0000091');
+          ActCriteriaAttributeName := PriznSvedTxt + '91';
+        END ELSE BEGIN
+          XMLAddAttribute(XMLCurrNode,IndexTxt,'0000090');
+          ActCriteriaAttributeName := PriznSvedTxt + '9';
+        END
+      ELSE
+        IF AddSheet THEN BEGIN
+          XMLAddAttribute(XMLCurrNode,IndexTxt,'0000081');
+          ActCriteriaAttributeName := PriznSvedTxt + '81';
+        END ELSE BEGIN
+          XMLAddAttribute(XMLCurrNode,IndexTxt,'0000080');
+          ActCriteriaAttributeName := PriznSvedTxt + '8';
+        END;
+
+      XMLAddAttribute(XMLCurrNode,NomCorrTxt,FORMAT(CorrectionNo));
+      IF CorrectionNo > 0 THEN
+        XMLAddAttribute(XMLCurrNode,ActCriteriaAttributeName,GetActCriteria);
+    END;
+
+    LOCAL PROCEDURE CreateFileElement@1210071(FileID@1210000 : Text[100]);
+    BEGIN
+      XMLAddComplexElement(FileTxt);
+      XMLAddAttribute(XMLCurrNode,FileIDTxt,FileID);
+      XMLAddAttribute(XMLCurrNode,VersProgTxt,'1.0');
+      XMLAddAttribute(XMLCurrNode,VersFormTxt,'5.04');
+      XMLCurrNode := XMLNewChild;
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseCVInfoElement@1210006();
+    BEGIN
+      XMLAddComplexElement(SvProdTxt);
+      IF STRLEN(CVVATRegistrationNo) = 10 THEN BEGIN
+        XMLAddComplexElement(SvedULTxt);
+        XMLAddAttribute(XMLCurrNode,INNULTxt,CVVATRegistrationNo);
+        XMLAddAttribute(XMLCurrNode,KPPTxt,CVKPPCode);
+      END ELSE BEGIN
+        XMLAddComplexElement(SvedIPTxt);
+        XMLAddAttribute(XMLCurrNode,INNFLTxt,CVVATRegistrationNo);
+      END;
+      XMLCurrNode := XMLCurrNode.ParentNode;
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseLedgerElement@1210117(VATLedger@1210003 : Record 12404);
+    VAR
+      VATLedgerLine@1210002 : Record 12405;
+      TotalVATLCY@1210000 : Decimal;
+    BEGIN
+      IF AddSheet THEN
+        XMLAddComplexElement(KnigaPokupDLTxt)
+      ELSE
+        XMLAddComplexElement(KnigaPokupTxt);
+
+      WITH VATLedgerLine DO BEGIN
+        SETRANGE(Type,VATLedger.Type);
+        SETRANGE(Code,VATLedger.Code);
+        SETRANGE("Additional Sheet",AddSheet);
+        IF FINDSET THEN
+          REPEAT
+            TotalVATLCY += Amount10 + Amount18;
+          UNTIL NEXT = 0;
+      END;
+
+      IF AddSheet THEN BEGIN
+        XMLAddAttribute(XMLCurrNode,SumNDSItKPkTxt,VATLedger."Total VAT Amt VAT Purch Ledger");
+        XMLAddAttribute(XMLCurrNode,SumNDSItP1R8Txt,TotalVATLCY + VATLedger."Total VAT Amt VAT Purch Ledger");
+      END ELSE
+        XMLAddAttribute(XMLCurrNode,SumNDSVsKPkTxt,TotalVATLCY);
+    END;
+
+    LOCAL PROCEDURE CreatePurchaseLedgerLineElement@1210118(VATLedgerLine@1210002 : Record 12405);
+    VAR
+      ItemRealizeDate@1210000 : Date;
+    BEGIN
+      IF AddSheet THEN
+        XMLAddComplexElement(KnPokDLStrTxt)
+      ELSE
+        XMLAddComplexElement(KnPokStrTxt);
+
+      // purchase line
+      WITH VATLedgerLine DO BEGIN
+        XMLAddAttribute(XMLCurrNode,NomerPorTxt,FORMAT(LineNo));
+        XMLAddAttribute(XMLCurrNode,NomScFProdTxt,FORMAT("Document No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataScFProdTxt,GetFormattedDate("Document Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomIsprScFTxt,FORMAT("Revision No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataIsprScFTxt,GetFormattedDate("Revision Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomKScFProdTxt,FORMAT("Correction No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataKScFProdTxt,GetFormattedDate("Correction Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomIsprKScFTxt,FORMAT("Revision of Corr. No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataIsprKScFTxt,GetFormattedDate("Revision of Corr. Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomTDTxt,FORMAT("CD No."));
+
+        CASE TRUE OF
+          LocalReportMgt.IsForeignCurrency("Currency Code") AND
+          NOT LocalReportMgt.IsConventionalCurrency("Currency Code") AND
+          NOT LocalReportMgt.HasRelationalCurrCode("Currency Code","Document Date"):
+            BEGIN
+              XMLAddOptionalAttribute(XMLCurrNode,OKVTxt,FORMAT(GetCurrencyInfo("Currency Code")));
+              XMLAddAttribute(XMLCurrNode,StoimPokupVTxt,LocalReportMgt.FormatAmount(Amount));
+            END;
+          LocalReportMgt.IsCustomerPrepayment(VATLedgerLine):
+            XMLAddAttribute(XMLCurrNode,StoimPokupVTxt,LocalReportMgt.FormatAmount(Amount));
+          ELSE
+            XMLAddAttribute(XMLCurrNode,StoimPokupVTxt,LocalReportMgt.GetVATLedgerAmounInclVATFCY(VATLedgerLine));
+        END;
+
+        IF AddSheet THEN
+          XMLAddAttribute(XMLCurrNode,SumNDSTxt,Amount10 + Amount18)
+        ELSE
+          XMLAddAttribute(XMLCurrNode,SumNDSVicTxt,Amount10 + Amount18);
+        XMLAddSimpleElement(KodVidOperTxt,"VAT Entry Type");
+
+        // payment document
+        CreatePurchPaymentDocElement(VATLedgerLine);
+        ItemRealizeDate := LocalReportMgt.GetVATLedgerItemRealizeDate(VATLedgerLine);
+        IF ItemRealizeDate <> 0D THEN
+          XMLAddSimpleElement(DataUcTovTxt,GetFormattedDate(ItemRealizeDate));
+
+        // C/V info element
+        CreatePurchaseCVInfoElement;
+        XMLCurrNode := XMLCurrNode.ParentNode;
+      END;
+      XMLCurrNode := XMLCurrNode.ParentNode;
+      LineNo += 1;
+    END;
+
+    LOCAL PROCEDURE CreatePurchPaymentDocElement@1210119(VATLedgerLine@1210001 : Record 12405);
+    VAR
+      TempVendorLedgerEntry@1210000 : TEMPORARY Record 25;
+    BEGIN
+      WITH VATLedgerLine DO
+        CASE TRUE OF
+          "Full VAT Amount" <> 0:
+            BEGIN
+              GetPmtVendorDtldLedgerLines(VATLedger."End Date",TempVendorLedgerEntry);
+              IF TempVendorLedgerEntry.FINDSET THEN
+                REPEAT
+                  XMLAddComplexElement(DocPdtvUplTxt);
+                  XMLAddAttribute(XMLCurrNode,NomDocPdtvUplTxt,TempVendorLedgerEntry."External Document No.");
+                  XMLAddAttribute(XMLCurrNode,DataDocPdtvUplTxt,GetFormattedDate(TempVendorLedgerEntry."Posting Date"));
+                  XMLCurrNode := XMLCurrNode.ParentNode;
+                UNTIL TempVendorLedgerEntry.NEXT = 0;
+              EXIT;
+            END;
+          Prepayment,
+          LocalReportMgt.IsVATAgentVendor("C/V No.","C/V Type"):
+            BEGIN
+              XMLAddComplexElement(DocPdtvUplTxt);
+              XMLAddAttribute(XMLCurrNode,NomDocPdtvUplTxt,"External Document No.");
+              XMLAddAttribute(XMLCurrNode,DataDocPdtvUplTxt,GetFormattedDate("Payment Date"));
+              XMLCurrNode := XMLCurrNode.ParentNode;
+            END;
+        END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesCVInfoElement@1210120();
+    BEGIN
+      IF CVVATRegistrationNo = '' THEN
+        EXIT;
+      XMLAddComplexElement(SvPokupTxt);
+      IF STRLEN(CVVATRegistrationNo) = 10 THEN BEGIN
+        XMLAddComplexElement(SvedULTxt);
+        XMLAddAttribute(XMLCurrNode,INNULTxt,CVVATRegistrationNo);
+        XMLAddAttribute(XMLCurrNode,KPPTxt,CVKPPCode);
+      END ELSE BEGIN
+        XMLAddComplexElement(SvedIPTxt);
+        XMLAddAttribute(XMLCurrNode,INNFLTxt,CVVATRegistrationNo);
+      END;
+      XMLCurrNode := XMLCurrNode.ParentNode;
+    END;
+
+    LOCAL PROCEDURE CreateSalesLedgerElement@1210017(VATLedger@1210002 : Record 12404);
+    VAR
+      VATLedgerLine@1210001 : Record 12405;
+      TotalBase18@1210000 : Decimal;
+      TotalBase10@1210003 : Decimal;
+      TotalBase0@1210004 : Decimal;
+      TotalAmount18@1210005 : Decimal;
+      TotalAmount10@1210006 : Decimal;
+      TotalAmount0@1210007 : Decimal;
+    BEGIN
+      IF AddSheet THEN
+        XMLAddComplexElement(KnigaProdDLTxt)
+      ELSE
+        XMLAddComplexElement(KnigaProdTxt);
+
+      COMMIT;
+      WITH VATLedgerLine DO BEGIN
+        SETRANGE(Type,VATLedger.Type);
+        SETRANGE(Code,VATLedger.Code);
+        SETRANGE("Additional Sheet",AddSheet);
+        IF FINDSET THEN
+          REPEAT
+            IF NOT Prepayment THEN BEGIN
+              TotalBase18 += Base18;
+              TotalBase10 += Base10;
+              TotalBase0 += Base0;
+            END;
+            TotalAmount0 += "Base VAT Exempt";
+            TotalAmount18 += Amount18;
+            TotalAmount10 += Amount10;
+          UNTIL NEXT = 0;
+
+        IF AddSheet THEN BEGIN
+          XMLAddOptionalAttribute(XMLCurrNode,ItStProdKPrTxt + '18',VATLedger."Tot Base18 Amt VAT Sales Ledg");
+          XMLAddOptionalAttribute(XMLCurrNode,ItStProdKPrTxt + '10',VATLedger."Tot Base 10 Amt VAT Sales Ledg");
+          XMLAddOptionalAttribute(XMLCurrNode,ItStProdKPrTxt + '0',VATLedger."Tot Base 0 Amt VAT Sales Ledg");
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSItKPrTxt + '18',VATLedger."Total VAT18 Amt VAT Sales Ledg");
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSItKPrTxt + '10',VATLedger."Total VAT10 Amt VAT Sales Ledg");
+          XMLAddOptionalAttribute(XMLCurrNode,ItStProdOsvKPrTxt,VATLedger."Total VATExempt Amt VAT S Ledg");
+          XMLAddOptionalAttribute(XMLCurrNode,StProdVsP1R9Txt + '_18',VATLedger."Tot Base18 Amt VAT Sales Ledg" + TotalBase18);
+          XMLAddOptionalAttribute(XMLCurrNode,StProdVsP1R9Txt + '_10',VATLedger."Tot Base 10 Amt VAT Sales Ledg" + TotalBase10);
+          XMLAddOptionalAttribute(XMLCurrNode,StProdVsP1R9Txt + '_0',VATLedger."Tot Base 0 Amt VAT Sales Ledg" + TotalBase0);
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSVsP1R9Txt + '_18',VATLedger."Total VAT18 Amt VAT Sales Ledg" + TotalAmount18);
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSVsP1R9Txt + '_10',VATLedger."Total VAT10 Amt VAT Sales Ledg" + TotalAmount10);
+          XMLAddOptionalAttribute(XMLCurrNode,StProdOsvP1R9VsTxt,VATLedger."Total VATExempt Amt VAT S Ledg" + TotalAmount0);
+        END ELSE BEGIN
+          XMLAddOptionalAttribute(XMLCurrNode,StProdBezNDSTxt + '18',TotalBase18);
+          XMLAddOptionalAttribute(XMLCurrNode,StProdBezNDSTxt + '10',TotalBase10);
+          XMLAddOptionalAttribute(XMLCurrNode,StProdBezNDSTxt + '0',TotalBase0);
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSVsKPrTxt + '18',TotalAmount18);
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSVsKPrTxt + '10',TotalAmount10);
+          XMLAddOptionalAttribute(XMLCurrNode,StProdOsvVsKPrTxt,TotalAmount0);
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesLedgerLineElement@1210018(VATLedgerLineLocal@1210002 : Record 12405);
+    BEGIN
+      IF AddSheet THEN
+        XMLAddComplexElement(KnProdDLStrTxt)
+      ELSE
+        XMLAddComplexElement(KnProdStrTxt);
+
+      WITH VATLedgerLineLocal DO BEGIN
+        XMLAddAttribute(XMLCurrNode,NomerPorTxt,FORMAT(LineNo));
+        XMLAddAttribute(XMLCurrNode,NomScFProdTxt,FORMAT("Document No."));
+        XMLAddAttribute(XMLCurrNode,DataScFProdTxt,GetFormattedDate("Document Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomIsprScFTxt,FORMAT("Revision No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataIsprScFTxt,GetFormattedDate("Revision Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomKScFProdTxt,FORMAT("Correction No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataKScFProdTxt,GetFormattedDate("Correction Date"));
+        XMLAddOptionalAttribute(XMLCurrNode,NomIsprKScFTxt,FORMAT("Revision of Corr. No."));
+        XMLAddOptionalAttribute(XMLCurrNode,DataIsprKScFTxt,GetFormattedDate("Revision of Corr. Date"));
+
+        IF LocalReportMgt.IsForeignCurrency("Currency Code") AND
+           NOT LocalReportMgt.IsConventionalCurrency("Currency Code") AND
+           NOT LocalReportMgt.HasRelationalCurrCode("Currency Code","Document Date")
+        THEN BEGIN
+          XMLAddOptionalAttribute(XMLCurrNode,OKVTxt,FORMAT(GetCurrencyInfo("Currency Code")));
+          XMLAddOptionalAttribute(XMLCurrNode,StoimProdSFVTxt,LocalReportMgt.FormatAmount(ABS(Amount)));
+        END;
+
+        XMLAddOptionalAttribute(XMLCurrNode,StoimProdSFTxt,LocalReportMgt.GetVATLedgerAmounInclVATFCY(VATLedgerLineLocal));
+        XMLAddOptionalAttribute(XMLCurrNode,StoimProdSFTxt + '18',GetBaseValue(Base18,Prepayment));
+        XMLAddOptionalAttribute(XMLCurrNode,StoimProdSFTxt + '10',GetBaseValue(Base10,Prepayment));
+        XMLAddOptionalAttribute(XMLCurrNode,StoimProdSFTxt + '0',GetBaseValue(Base0,Prepayment));
+
+        IF Base18 <> 0 THEN
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSSFTxt + '18',Amount18);
+
+        IF Base10 <> 0 THEN
+          XMLAddOptionalAttribute(XMLCurrNode,SumNDSSFTxt + '10',Amount10);
+
+        XMLAddOptionalAttribute(XMLCurrNode,StoimProdOsvTxt,"Base VAT Exempt");
+        XMLAddSimpleElement(KodVidOperTxt,"VAT Entry Type");
+
+        // payment document
+        CreateSalesPaymentDocElement(VATLedgerLineLocal);
+
+        // C/V info element
+        CreateSalesCVInfoElement;
+
+        XMLCurrNode := XMLCurrNode.ParentNode;
+      END;
+      XMLCurrNode := XMLCurrNode.ParentNode;
+      LineNo += 1;
+    END;
+
+    LOCAL PROCEDURE CreateSalesPaymentDocElement@1210019(VATLedgerLine@1210001 : Record 12405);
+    BEGIN
+      WITH VATLedgerLine DO
+        IF Prepayment OR LocalReportMgt.IsVATAgentVendor("C/V No.","C/V Type") THEN BEGIN
+          XMLAddComplexElement(DocPdtvOplTxt);
+          XMLAddAttribute(XMLCurrNode,NomDocPdtvOplTxt,"External Document No.");
+          XMLAddAttribute(XMLCurrNode,DataDocPdtvOplTxt,GetFormattedDate("Payment Date"));
+          XMLCurrNode := XMLCurrNode.ParentNode;
+        END;
+    END;
+
+    LOCAL PROCEDURE CreateXMLDoc@1210038(VAR XmlDoc@1210005 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlDocument";VAR ProcInstr@1210000 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlProcessingInstruction");
+    VAR
+      XMLDeclaration@1210001 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlDeclaration";
+    BEGIN
+      XmlDoc := XmlDoc.XmlDocument;
+      XMLDeclaration := XmlDoc.CreateXmlDeclaration('1.0','windows-1251','');
+      ProcInstr := XmlDoc.CreateProcessingInstruction('xml','version="1.0" encoding="windows-1251"');
+      XmlDoc.AppendChild(ProcInstr);
+    END;
+
+    LOCAL PROCEDURE EvaluateNodeValue@1210003(NodeValue@1210000 : Variant;VAR NodeValueText@1210002 : Text) : Boolean;
+    VAR
+      NodeValueDecimal@1210001 : Decimal;
+    BEGIN
+      IF NodeValue.ISINTEGER OR NodeValue.ISDECIMAL THEN BEGIN
+        NodeValueText := LocalReportMgt.FormatAmount(NodeValue);
+        NodeValueDecimal := NodeValue;
+        IF NodeValueDecimal = 0 THEN
+          EXIT(TRUE);
+      END ELSE
+        NodeValueText := FORMAT(NodeValue);
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE GetBaseValue@1210002(VATBase@1210000 : Decimal;Prepayment@1210001 : Boolean) : Decimal;
+    BEGIN
+      IF VATBase <> 0 THEN BEGIN
+        IF Prepayment THEN
+          EXIT(0);
+      END;
+      EXIT(VATBase);
+    END;
+
+    LOCAL PROCEDURE GetActCriteria@1210047() : Text[1];
+    BEGIN
+      IF ActCriteria THEN
+        EXIT('1');
+      EXIT('0')
+    END;
+
+    LOCAL PROCEDURE GetCurrencyInfo@1210050(CurrencyCode@1210002 : Code[10]) : Text[260];
+    VAR
+      GeneralLedgerSetup@1210000 : Record 98;
+      Currency@1210001 : Record 4;
+    BEGIN
+      IF CurrencyCode = '' THEN
+        EXIT('');
+
+      GeneralLedgerSetup.GET;
+      IF GeneralLedgerSetup."LCY Code" = CurrencyCode THEN
+        EXIT('');
+
+      IF LocalReportMgt.IsConventionalCurrency(CurrencyCode) THEN
+        EXIT('');
+
+      IF Currency.GET(CurrencyCode) THEN BEGIN
+        IF Currency."RU Bank Digital Code" <> '' THEN
+          EXIT(Currency."RU Bank Digital Code");
+        EXIT(Currency.Code);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetFileName@1210013();
+    BEGIN
+      FileId := COPYSTR(LocalReportMgt.GetVATLedgerXMLFileName(VATLedgerType,AddSheet),1,MAXSTRLEN(FileId));
+    END;
+
+    LOCAL PROCEDURE GetFormattedDate@1210054(InputDate@1210000 : Date) : Text[250];
+    BEGIN
+      IF InputDate <> 0D THEN
+        EXIT(FORMAT(InputDate,10,'<Day,2>.<Month,2>.<Year4>'));
+      EXIT('')
+    END;
+
+    LOCAL PROCEDURE SaveXMLFile@1210036(VAR XmlDoc@1000 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlDocument";FileName@1210000 : Text[360]) : Boolean;
+    VAR
+      dotNetFile@1210004 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      Encoding@1210002 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Text.Encoding";
+      ServerFileNameUTF8@1210001 : Text;
+      ServerFileNameWindows1251@1210003 : Text;
+    BEGIN
+      ServerFileNameUTF8 := FileManagement.ServerTempFileName('xml');
+      ServerFileNameWindows1251 := FileManagement.ServerTempFileName('xml');
+      XmlDoc.Save(ServerFileNameUTF8);
+      dotNetFile.WriteAllText(ServerFileNameWindows1251,
+        dotNetFile.ReadAllText(ServerFileNameUTF8,Encoding.GetEncoding('utf-8')),
+        Encoding.GetEncoding('windows-1251'));
+
+      FileId += '.xml';
+      IF NOT FileManagement.IsWebClient THEN
+        FileManagement.DownloadToFile(ServerFileNameWindows1251,FileName)
+      ELSE
+        DOWNLOAD(ServerFileNameWindows1251,'',StatutoryReportSetup."Electronic Files Folder Name",'(*.xml)|*.xml',FileId);
+
+      FileManagement.DeleteServerFile(ServerFileNameUTF8);
+      FileManagement.DeleteServerFile(ServerFileNameWindows1251);
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE XMLAddElement@1210033(VAR XMLNode@1210133 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";NodeName@1002 : Text[250];NodeText@1210134 : Text[250];NameSpace@1210135 : Text[250];VAR CreatedXMLNode@1210136 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode");
+    VAR
+      NewChildNode@1210139 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";
+      XmlNodeType@1210000 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNodeType";
+    BEGIN
+      NewChildNode := XMLNode.OwnerDocument.CreateNode(XmlNodeType.Element,NodeName,NameSpace);
+
+      IF NodeText <> '' THEN
+        NewChildNode.InnerText := NodeText;
+
+      IF XMLNode.NodeType.Equals(XmlNodeType.ProcessingInstruction) THEN
+        CreatedXMLNode := XMLNode.OwnerDocument.AppendChild(NewChildNode)
+      ELSE BEGIN
+        XMLNode.AppendChild(NewChildNode);
+        CreatedXMLNode := NewChildNode;
+      END;
+    END;
+
+    LOCAL PROCEDURE XMLAddAttribute@2(VAR XMLNode@1210145 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";Name@1210142 : Text[260];NodeValue@1210000 : Variant);
+    VAR
+      XMLNewAttributeNode@1210141 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";
+      NodeValueText@1210001 : Text;
+    BEGIN
+      XMLNewAttributeNode := XMLNode.OwnerDocument.CreateAttribute(Name);
+      EvaluateNodeValue(NodeValue,NodeValueText);
+
+      IF NodeValueText <> '' THEN
+        XMLNewAttributeNode.Value := NodeValueText;
+
+      XMLNode.Attributes.SetNamedItem(XMLNewAttributeNode);
+    END;
+
+    LOCAL PROCEDURE XMLAddOptionalAttribute@1210186(VAR XMLNode@1210145 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";Name@1210142 : Text;NodeValue@1210000 : Variant);
+    VAR
+      XMLNewAttributeNode@1210185 : DotNet "'System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";
+      NodeValueText@1210001 : Text;
+      IsZero@1210002 : Boolean;
+    BEGIN
+      XMLNewAttributeNode := XMLNode.OwnerDocument.CreateAttribute(Name);
+      IsZero := EvaluateNodeValue(NodeValue,NodeValueText);
+
+      IF (NodeValueText = '') OR IsZero THEN
+        EXIT;
+
+      XMLNewAttributeNode.Value := NodeValueText;
+      XMLNode.Attributes.SetNamedItem(XMLNewAttributeNode);
+    END;
+
+    LOCAL PROCEDURE XMLAddSimpleElement@1210031(NodeName@1210001 : Text[250];NodeText@1210000 : Text[250]);
+    BEGIN
+      XMLAddElement(XMLCurrNode,NodeName,UPPERCASE(NodeText),'',XMLNewChild);
+    END;
+
+    LOCAL PROCEDURE XMLAddComplexElement@1210025(NodeName@1210001 : Text[250]);
+    BEGIN
+      XMLAddElement(XMLCurrNode,NodeName,'','',XMLNewChild);
+      XMLCurrNode := XMLNewChild;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

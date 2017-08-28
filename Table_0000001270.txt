@@ -1,0 +1,264 @@
+OBJECT Table 1270 OCR Service Setup
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVW110.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 1261=rimd;
+    OnInsert=BEGIN
+               TESTFIELD("Primary Key",'');
+               SetURLsToDefault;
+             END;
+
+    OnDelete=VAR
+               OCRServiceDocTemplate@1000 : Record 1271;
+             BEGIN
+               DeletePassword("Password Key");
+               DeletePassword("Authorization Key");
+               OCRServiceDocTemplate.DELETEALL(TRUE)
+             END;
+
+    CaptionML=[ENU=OCR Service Setup;
+               RUS=Настройка OCR];
+  }
+  FIELDS
+  {
+    { 1   ;   ;Primary Key         ;Code10        ;CaptionML=[ENU=Primary Key;
+                                                              RUS=Первичный ключ] }
+    { 2   ;   ;User Name           ;Text50        ;CaptionML=[ENU=User Name;
+                                                              RUS=Имя пользователя] }
+    { 3   ;   ;Password Key        ;GUID          ;TableRelation="Service Password".Key;
+                                                   CaptionML=[ENU=Password Key;
+                                                              RUS=Ключ пароля] }
+    { 4   ;   ;Sign-up URL         ;Text250       ;ExtendedDatatype=URL;
+                                                   CaptionML=[ENU=Sign-up URL;
+                                                              RUS=URL-адрес регистрации] }
+    { 5   ;   ;Service URL         ;Text250       ;OnValidate=VAR
+                                                                HttpWebRequestMgt@1000 : Codeunit 1297;
+                                                              BEGIN
+                                                                IF "Service URL" = '' THEN
+                                                                  EXIT;
+                                                                HttpWebRequestMgt.CheckUrl("Service URL");
+                                                                WHILE (STRLEN("Service URL") > 8) AND ("Service URL"[STRLEN("Service URL")] = '/') DO
+                                                                  "Service URL" := COPYSTR("Service URL",1,STRLEN("Service URL") - 1);
+                                                              END;
+
+                                                   ExtendedDatatype=URL;
+                                                   CaptionML=[ENU=Service URL;
+                                                              RUS=URL-адрес службы] }
+    { 6   ;   ;Sign-in URL         ;Text250       ;ExtendedDatatype=URL;
+                                                   CaptionML=[ENU=Sign-in URL;
+                                                              RUS=URL-адрес входа] }
+    { 7   ;   ;Authorization Key   ;GUID          ;TableRelation="Service Password".Key;
+                                                   CaptionML=[ENU=Authorization Key;
+                                                              RUS=Ключ авторизации] }
+    { 8   ;   ;Customer Name       ;Text80        ;CaptionML=[ENU=Customer Name;
+                                                              RUS=Название клиента];
+                                                   Editable=No }
+    { 9   ;   ;Customer ID         ;Text50        ;CaptionML=[ENU=Customer ID;
+                                                              RUS=Код клиента];
+                                                   Editable=No }
+    { 10  ;   ;Customer Status     ;Text30        ;CaptionML=[ENU=Customer Status;
+                                                              RUS=Статус клиента];
+                                                   Editable=No }
+    { 11  ;   ;Organization ID     ;Text50        ;CaptionML=[ENU=Organization ID;
+                                                              RUS=Код организации];
+                                                   Editable=No }
+    { 12  ;   ;Default OCR Doc. Template;Code20   ;TableRelation="OCR Service Document Template";
+                                                   OnValidate=VAR
+                                                                IncomingDocument@1000 : Record 130;
+                                                              BEGIN
+                                                                IF xRec."Default OCR Doc. Template" <> '' THEN
+                                                                  EXIT;
+                                                                IncomingDocument.SETRANGE("OCR Service Doc. Template Code",'');
+                                                                IncomingDocument.MODIFYALL("OCR Service Doc. Template Code","Default OCR Doc. Template");
+                                                              END;
+
+                                                   OnLookup=VAR
+                                                              OCRServiceDocumentTemplate@1000 : Record 1271;
+                                                              OCRServiceMgt@1001 : Codeunit 1294;
+                                                            BEGIN
+                                                              IF OCRServiceDocumentTemplate.ISEMPTY THEN BEGIN
+                                                                OCRServiceMgt.SetupConnection(Rec);
+                                                                COMMIT;
+                                                              END;
+
+                                                              IF PAGE.RUNMODAL(PAGE::"OCR Service Document Templates",OCRServiceDocumentTemplate) = ACTION::LookupOK THEN
+                                                                "Default OCR Doc. Template" := OCRServiceDocumentTemplate.Code;
+                                                            END;
+
+                                                   CaptionML=[ENU=Default OCR Doc. Template;
+                                                              RUS=Шаблон документа OCR по умолчанию] }
+    { 13  ;   ;Enabled             ;Boolean       ;OnValidate=VAR
+                                                                CompanyInformation@1001 : Record 79;
+                                                                PermissionManager@1000 : Codeunit 9002;
+                                                                OCRServiceMgt@1002 : Codeunit 1294;
+                                                              BEGIN
+                                                                IF Enabled THEN BEGIN
+                                                                  OCRServiceMgt.SetupConnection(Rec);
+                                                                  IF PermissionManager.SoftwareAsAService AND ("Default OCR Doc. Template" = '') THEN
+                                                                    IF CompanyInformation.GET THEN
+                                                                      CASE CompanyInformation."Country/Region Code" OF
+                                                                        'US','USA':
+                                                                          VALIDATE("Default OCR Doc. Template",'USA_PO');
+                                                                        'CA':
+                                                                          VALIDATE("Default OCR Doc. Template",'CAN_PO');
+                                                                      END;
+                                                                  MODIFY;
+                                                                  TESTFIELD("Default OCR Doc. Template");
+                                                                  IF NOT PermissionManager.SoftwareAsAService THEN BEGIN
+                                                                    ScheduleJobQueueEntries;
+                                                                    IF CONFIRM(JobQEntriesCreatedQst) THEN
+                                                                      ShowJobQueueEntry;
+                                                                  END;
+                                                                END ELSE
+                                                                  CancelJobQueueEntries;
+                                                              END;
+
+                                                   CaptionML=[ENU=Enabled;
+                                                              RUS=Включено] }
+  }
+  KEYS
+  {
+    {    ;Primary Key                             ;Clustered=Yes }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      MustBeEnabledErr@1001 : TextConst '@@@="OCR = Optical Character Recognition";ENU=The OCR service is not enabled.\\In the OCR Service Setup window, select the Enabled check box.;RUS=Сервис OCR не включен.\\Установите в окне "Настройка OCR" флажок в поле "Включено".';
+      JobQEntriesCreatedQst@1002 : TextConst 'ENU=Job queue entries for sending and receiving electronic documents have been created.\\Do you want to open the Job Queue Entries window?;RUS=Операции очереди работ для отправки и получения электронных документов созданы.\\Открыть окно операций очереди работ?';
+
+    PROCEDURE SavePassword@1(VAR PasswordKey@1001 : GUID;PasswordText@1000 : Text);
+    VAR
+      ServicePassword@1002 : Record 1261;
+    BEGIN
+      IF ISNULLGUID(PasswordKey) OR NOT ServicePassword.GET(PasswordKey) THEN BEGIN
+        ServicePassword.SavePassword(PasswordText);
+        ServicePassword.INSERT(TRUE);
+        PasswordKey := ServicePassword.Key;
+        MODIFY;
+      END ELSE BEGIN
+        ServicePassword.SavePassword(PasswordText);
+        ServicePassword.MODIFY;
+      END;
+      COMMIT;
+    END;
+
+    PROCEDURE GetPassword@2(PasswordKey@1001 : GUID) : Text;
+    VAR
+      ServicePassword@1000 : Record 1261;
+    BEGIN
+      ServicePassword.GET(PasswordKey);
+      EXIT(ServicePassword.GetPassword);
+    END;
+
+    LOCAL PROCEDURE DeletePassword@4(PasswordKey@1000 : GUID);
+    VAR
+      ServicePassword@1001 : Record 1261;
+    BEGIN
+      IF ServicePassword.GET(PasswordKey) THEN
+        ServicePassword.DELETE;
+    END;
+
+    PROCEDURE HasPassword@3(PasswordKey@1001 : GUID) : Boolean;
+    VAR
+      ServicePassword@1000 : Record 1261;
+    BEGIN
+      IF NOT ServicePassword.GET(PasswordKey) THEN
+        EXIT(FALSE);
+      EXIT(ServicePassword.GetPassword <> '');
+    END;
+
+    PROCEDURE SetURLsToDefault@5();
+    VAR
+      OCRServiceMgt@1000 : Codeunit 1294;
+    BEGIN
+      OCRServiceMgt.SetURLsToDefaultRSO(Rec);
+    END;
+
+    PROCEDURE CheckEnabled@7();
+    BEGIN
+      IF NOT Enabled THEN
+        ERROR(MustBeEnabledErr);
+    END;
+
+    LOCAL PROCEDURE ScheduleJobQueueEntries@10();
+    BEGIN
+      ScheduleJobQueueReceive;
+      ScheduleJobQueueSend;
+    END;
+
+    PROCEDURE ScheduleJobQueueSend@13();
+    VAR
+      JobQueueEntry@1000 : Record 472;
+      DummyRecId@1001 : RecordID;
+    BEGIN
+      CancelJobQueueSend;
+      JobQueueEntry.ScheduleRecurrentJobQueueEntry(JobQueueEntry."Object Type to Run"::Codeunit,
+        CODEUNIT::"OCR - Send to Service",DummyRecId);
+    END;
+
+    PROCEDURE ScheduleJobQueueReceive@14();
+    VAR
+      JobQueueEntry@1000 : Record 472;
+      DummyRecId@1001 : RecordID;
+    BEGIN
+      CancelJobQueueReceive;
+      JobQueueEntry.ScheduleRecurrentJobQueueEntry(JobQueueEntry."Object Type to Run"::Codeunit,
+        CODEUNIT::"OCR - Receive from Service",DummyRecId);
+    END;
+
+    LOCAL PROCEDURE CancelJobQueueEntries@11();
+    BEGIN
+      CancelJobQueueReceive;
+      CancelJobQueueSend;
+    END;
+
+    LOCAL PROCEDURE CancelJobQueueEntry@16(ObjType@1001 : Option;ObjID@1002 : Integer);
+    VAR
+      JobQueueEntry@1000 : Record 472;
+    BEGIN
+      IF JobQueueEntry.FindJobQueueEntry(ObjType,ObjID) THEN
+        JobQueueEntry.Cancel;
+    END;
+
+    PROCEDURE CancelJobQueueSend@9();
+    VAR
+      JobQueueEntry@1000 : Record 472;
+    BEGIN
+      CancelJobQueueEntry(JobQueueEntry."Object Type to Run"::Codeunit,
+        CODEUNIT::"OCR - Send to Service");
+    END;
+
+    PROCEDURE CancelJobQueueReceive@12();
+    VAR
+      JobQueueEntry@1000 : Record 472;
+    BEGIN
+      CancelJobQueueEntry(JobQueueEntry."Object Type to Run"::Codeunit,
+        CODEUNIT::"OCR - Receive from Service");
+    END;
+
+    PROCEDURE ShowJobQueueEntry@8();
+    VAR
+      JobQueueEntry@1000 : Record 472;
+    BEGIN
+      JobQueueEntry.SETRANGE("Object Type to Run",JobQueueEntry."Object Type to Run"::Codeunit);
+      JobQueueEntry.SETFILTER("Object ID to Run",'%1|%2',
+        CODEUNIT::"OCR - Send to Service",
+        CODEUNIT::"OCR - Receive from Service");
+      IF JobQueueEntry.FINDFIRST THEN
+        PAGE.RUN(PAGE::"Job Queue Entries",JobQueueEntry);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

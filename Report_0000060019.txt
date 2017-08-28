@@ -1,0 +1,1065 @@
+OBJECT Report 60019 ConsolidationOld
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:19;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=rimd,
+                TableData 45=rimd,
+                TableData 87=rimd,
+                TableData 355=imd;
+    CaptionML=[ENU=Consolidation;
+               RUS=Консолидация];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   //NC PIF001.3 > DP
+                   IsUpdateAnalysisView :=FALSE;
+                   //NC PIF001.3 < DP
+                 END;
+
+    OnPreReport=VAR
+                  BU@1101495000 : Record 220;
+                BEGIN
+                  //NC TEST > PCH
+                  //Log.WriteLogFile('Консолидация ' + FORMAT(ToSourceEntry-FromSourceEntry),TRUE,FALSE,1);
+                  //NC TEST < PCH
+                  ConsSetup.GET;
+                  ConsSetup.TESTFIELD("Gen. Jnl. Template");
+                  //NC MDA01 > MP
+                  {
+                  ConsSetup.TESTFIELD("Source Code");
+                  }
+                  SourceCodeSetup.GET;
+                  SourceCodeSetup.TESTFIELD(Consolidation);
+                  //NC MDA01 < MP
+                  ConsSource.LOCKTABLE;
+                  ConsSetup.LOCKTABLE;
+                  Currency.LOCKTABLE;
+                  Currency.SETCURRENTKEY("Source Currency Code");
+                  ConsSetup.TESTFIELD("Exception Batch Name");
+                  ConsSetup.TESTFIELD("Exception G/L Account No.");
+                  //NC MDC01 > MP
+                  ConsSetup.TESTFIELD("IC Dimension Code");
+                  ICCode := ConsSetup."IC Dimension Code";
+                  ConsSetup.TESTFIELD("Counterparty Dim Code");
+                  CPCode := ConsSetup."Counterparty Dim Code";
+                  ConsSource.GET(ConsSourceCode);
+                  ConsSource.TESTFIELD("Mapping Code");
+                  ConsSource.TESTFIELD("Business Unit Code");
+                  //NC MDC01 < MP
+                  //NC MDR01 > MP
+                  BU.GET(ConsSource."Business Unit Code");
+                  IF BU."Consolidation %" = 0 THEN
+                    BU.FIELDERROR("Consolidation %");
+                  ConsCoeff := BU."Consolidation %" / 100;
+                  MovingDataSetup.GET;
+                  IF MovingDataSetup."Max Entries in Transformation" = 0 THEN
+                    MovingDataSetup.FIELDERROR("Max Entries in Transformation");
+                  //NC MDR01 < MP
+                END;
+
+    OnPostReport=BEGIN
+                   //MESSAGE(Text55015);
+
+                   //NC PIF001.3 > DP
+                   AnalysisViewFilter :='';
+                   IF IsUpdateAnalysisView THEN BEGIN
+                     IF AnalysisViewFilter <> '' THEN
+                     AnalysisView1.SETFILTER(Code,AnalysisViewFilter);
+                     AnalysisView1.SETRANGE(Blocked,FALSE);
+                     IF AnalysisView1.FINDSET THEN
+                       REPEAT
+                         UpdateAnalysisView.Update(AnalysisView1,2,TRUE);
+                         COMMIT;
+                       UNTIL AnalysisView1.NEXT=0;
+                   END;
+                   //NC PIF001.3 < DP
+
+                   //NC TEST > PCH
+                   //Log.WriteLogFile('Консолидация ' + FORMAT(ToSourceEntry-FromSourceEntry),FALSE,TRUE,1);
+                   //NC TEST < PCH
+                 END;
+
+  }
+  DATASET
+  {
+    { 8183;    ;DataItem;CheckGLEntry        ;
+               DataItemTable=Table17;
+               DataItemTableView=SORTING(Entry No.);
+               OnPreDataItem=BEGIN
+                               CheckGLEntry.CHANGECOMPANY(ConsSource."Company Name");
+                               CheckGLEntry.SETFILTER("Entry No.",'%1..%2',ConsSource."Last G/L Entry No." + 1,ToSourceEntry);
+                               TotalEntries := CheckGLEntry.COUNT;
+
+                               //CheckGLEntry.SETRANGE("Not Consolidate",FALSE);
+                               IF CheckGLEntry.ISEMPTY THEN BEGIN
+                                 MESSAGE(Text55010,ConsSource."Company Name");
+                                 CurrReport.QUIT;
+                               END;
+
+                               InitConsRegister(ConsSource,ConsSource."Last G/L Entry No." + 1);
+                               CheckGLMapping(ConsSource."Mapping Code",ConsRegister."No.");
+                               IF IsGlobalError THEN BEGIN
+                                 UpdateConsRegister(0);
+                                 MESSAGE(Text55030,ConsRegister."No.");
+                                 COMMIT;
+                                 CurrReport.QUIT;
+                               END;
+
+                               CheckLedgEntryDimIC.CHANGECOMPANY(ConsSource."Company Name");
+                               CheckLedgEntryDimCP.CHANGECOMPANY(ConsSource."Company Name");
+
+                               TotalEntries2Cons := CheckGLEntry.COUNT;
+                               NoOfGLEntries := 0;
+
+                               //NC MDM02 > PCH
+                               IF GUIALLOWED THEN
+                               //NC MDM02 < PCH
+                                 Window.OPEN(
+                                   Text55040 + ' ' + ConsSource."Company Name" + '...\\' +
+                                   Text55012);
+                               CoAMapp.RESET;
+                               CoAMapp.SETCURRENTKEY("Mapping Code",
+                                                     "Source Account Code",
+                                                     "Operation Type",
+                                                     "Source Dimension Code 1",
+                                                     "Source Dimension Value Code 1",
+                                                     "Source Dimension Code 2",
+                                                     "Source Dimension Value Code 2",
+                                                     "Source Dimension Code 3",
+                                                     "Source Dimension Value Code 3");
+                               CoAMapp.SETRANGE("Mapping Code",ConsSource."Mapping Code");
+                               CoAMapp.SETRANGE(Active,TRUE);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  GLMapping@1101495000 : Record 50002;
+                                  LinkedDimValue@1101495001 : Record 50016;
+                                  GLAcc2@1101495002 : Record 15;
+                                BEGIN
+                                  NoOfGLEntries += 1;
+                                  //NC MDM02 > PCH
+                                  IF GUIALLOWED THEN
+                                  //NC MDM02 < PCH
+                                    IF NoOfGLEntries MOD 100 = 1 THEN
+                                      Window.UPDATE(1,ROUND(NoOfGLEntries / TotalEntries2Cons * 10000,1));
+
+                                  IF (NOT CheckLedgEntryDimIC.GET(17,"Entry No.",ICCode)) AND (NOT CheckLedgEntryDimCP.GET(17,"Entry No.",CPCode))
+                                  THEN
+                                    CurrReport.SKIP;
+
+                                  IF NOT LinkedDimValue.GET(CPCode,CheckLedgEntryDimCP."Dimension Value Code",ICCode) THEN
+                                    CurrReport.SKIP;
+                                  IF LinkedDimValue."Linked Dimension Value" <> CheckLedgEntryDimIC."Dimension Value Code" THEN
+                                    CurrReport.SKIP;
+
+                                  //Это операция - IC
+                                  CoAMapp.SETRANGE("Source Account Code","G/L Account No.");
+                                  CoAMapp.SETRANGE("Source Dimension Code 1",CPCode);
+                                  CoAMapp.SETRANGE("Source Dimension Value Code 1",CheckLedgEntryDimCP."Dimension Value Code");
+                                  CoAMapp.SETRANGE("Source Dimension Code 2",ICCode);
+                                  CoAMapp.SETRANGE("Source Dimension Value Code 2",CheckLedgEntryDimIC."Dimension Value Code");
+                                  CoAMapp.SETRANGE("Company Name",ConsSource."Company Name");
+                                  IF NOT CoAMapp.FINDFIRST THEN BEGIN
+                                    CoAMapp.SETRANGE("Company Name",'');
+                                    IF NOT CoAMapp.FINDFIRST THEN BEGIN
+                                      IsGlobalError := TRUE;
+                                      IF NOT GLAcc2.GET("G/L Account No.") THEN;
+                                      ErrDescr := Text55041 + FORMAT("G/L Account No.") + Text55042 + FORMAT(CPCode) + ' ' +
+                                                  FORMAT(CheckLedgEntryDimCP."Dimension Value Code") + Text55043 +
+                                                  FORMAT(ICCode) + ' ' + FORMAT(CheckLedgEntryDimIC."Dimension Value Code") +
+                                                  Text55044;
+                                      ErrorJournal.AddErrorGLEntryGLAcc(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                                                      ConsSource.Code,ConsRegister."No.",'EDC01',ErrDescr,
+                                                                      ConsSource."Company Name",CheckGLEntry,GLAcc2,JobProcStatusLineNo);
+                                    END ELSE BEGIN
+                                      TempICCoA."Entry No." := "Entry No.";
+                                      TempICCoA."Account No." := CoAMapp."Receiver Account Code";
+                                      TempICCoA.INSERT;
+                                    END;
+                                  END ELSE BEGIN
+                                    TempICCoA."Entry No." := "Entry No.";
+                                    TempICCoA."Account No." := CoAMapp."Receiver Account Code";
+                                    TempICCoA.INSERT;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF IsGlobalError THEN BEGIN
+                                  UpdateConsRegister(0);
+                                  MESSAGE(Text55030,ConsRegister."No.");
+                                  COMMIT;
+                                  CurrReport.QUIT;
+                                END;
+                              END;
+                               }
+
+    { 7344;    ;DataItem;SourceGLEntry       ;
+               DataItemTable=Table17;
+               DataItemTableView=SORTING(Entry No.);
+               OnPreDataItem=BEGIN
+                               SourceGLEntry.CHANGECOMPANY(ConsSource."Company Name");
+                               SourceGLEntry.SETFILTER("Entry No.",'%1..%2',ConsSource."Last G/L Entry No." + 1,ToSourceEntry);
+
+                               //SourceGLEntry.SETRANGE("Not Consolidate",FALSE);
+
+                               //NC MDC01 > MP
+                               {
+                               IF SourceGLEntry.ISEMPTY THEN BEGIN
+                                 MESSAGE(Text55010,ConsSource."Company Name");
+                                 CurrReport.QUIT;
+                               END;
+
+                               InitConsRegister(ConsSource,ConsSource."Last G/L Entry No." + 1);
+                               }
+                               //NC MDC01 < MP
+                               SourceLedgEntryDim.CHANGECOMPANY(ConsSource."Company Name");
+
+                               LastTrNo := 0;
+                               CurrentGLEntry.RESET;
+                               IF CurrentGLEntry.FINDLAST THEN BEGIN
+                                 ConsLastEntryNo := CurrentGLEntry."Entry No.";
+                                 ConsLastTransNo := CurrentGLEntry."Transaction No.";
+                               END;
+
+                               TotalEntries := SourceGLEntry.COUNT;
+                               NoOfGLEntries := 0;
+                               TotalSuccessLoaded := 0;
+                               TotalLoadedWithousJnl := 0;
+                               TotalExcLoaded := 0;
+                               InitGLRegister;
+
+                               //NC MDM02 > PCH
+                               IF GUIALLOWED THEN
+                               //NC MDM02 < PCH
+                                 Window.OPEN(
+                                   Text55011 + ' ' + ConsSource."Company Name" + '...\\' +
+                                   Text55012);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  UpdateTransNo@1210000 : Boolean;
+                                BEGIN
+                                  IF NOT SourceGLEntry."Not Consolidate" THEN BEGIN
+                                    UpdateTransNo := FALSE;
+                                    IF LastTrNo <> SourceGLEntry."Transaction No." THEN BEGIN
+                                      IF CommitEntryNo > MovingDataSetup."Max Entries in Transformation" THEN
+                                        CommitTransaction;
+                                      UpdateTransNo := TRUE;
+                                    END;
+                                    CopyGLEntryToGLEntry(SourceGLEntry,UpdateTransNo);
+                                    NoOfGLEntries += 1;
+                                    //NC MDM02 > PCH
+                                    IF GUIALLOWED THEN
+                                    //NC MDM02 < PCH
+                                      IF NoOfGLEntries MOD 100 = 1 THEN
+                                        Window.UPDATE(1,ROUND(NoOfGLEntries / TotalEntries * 10000,1));
+                                    LastTrNo := SourceGLEntry."Transaction No.";
+                                    TotalSuccessLoaded += 1;
+                                  END ELSE BEGIN
+                                    IF NOT SourceGLEntry."System-Created Entry" THEN BEGIN
+                                      CreateJnlLine(ConsSource,SourceGLEntry,ConsRegisterNo);
+                                      TotalExcLoaded += 1;
+                                    END ELSE BEGIN
+                                      TotalLoadedWithousJnl += 1;
+                                    END;
+                                  END;
+                                  LastSourceEntryNo := "Entry No.";
+                                  CommitEntryNo += 1;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                UpdateGLRegister;
+                                UpdateConsRegister(ToSourceEntry);
+                                ConsSource."Last G/L Entry No." := (ToSourceEntry);
+                                ConsSource."Last Consolidation Date" := TODAY;
+                                ConsSource."Last Consolidation Time" := TIME;
+                                ConsSource.MODIFY;
+
+                                COMMIT;
+                              END;
+                               }
+
+    { 7788;1   ;DataItem;SourceLedgEntryDim  ;
+               DataItemTable=Table355;
+               DataItemTableView=SORTING(Field1,Field2,Field3);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Table ID",17);
+                               SETRANGE("Entry No.",SourceGLEntry."Entry No.");
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LedgEntryDim@1210000 : Record 355;
+                                  DimValue3@1210001 : Record 349;
+                                  DimValue4@1210002 : Record 349;
+                                  JnlLineDim@1000000000 : Record 356;
+                                BEGIN
+                                  IF NOT SourceGLEntry."Not Consolidate" THEN BEGIN
+                                    LedgEntryDim.INIT;
+                                    LedgEntryDim.TRANSFERFIELDS(SourceLedgEntryDim);
+                                    LedgEntryDim."Entry No." := ConsLastEntryNo;
+                                    LedgEntryDim.INSERT;
+                                  END ELSE BEGIN
+                                    IF NOT SourceGLEntry."System-Created Entry" THEN BEGIN
+                                      JnlLineDim.INIT;
+                                      JnlLineDim."Table ID" := 81;
+                                      JnlLineDim."Journal Template Name" := ConsSetup."Gen. Jnl. Template";
+                                      JnlLineDim."Journal Batch Name" := ConsSetup."Exception Batch Name";
+                                      JnlLineDim."Journal Line No." := LineNo;
+                                      JnlLineDim."Allocation Line No." := 0;
+                                      JnlLineDim."Dimension Code" := SourceLedgEntryDim."Dimension Code";
+                                      JnlLineDim."Dimension Value Code" := SourceLedgEntryDim."Dimension Value Code";
+                                      JnlLineDim.INSERT;
+                                    END;
+                                  END;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU="This batch job deletes entries. ";RUS="Это задание удаляет операции. "';
+      Text001@1001 : TextConst 'ENU=Therefore, it is important that you make a backup of the database before you run the batch job.\\;RUS=Следовательно, важно сделать резервную копию базы данных перед запуском пакетного задания.\\';
+      Text002@1002 : TextConst 'ENU=Do you want to date compress the entries?;RUS=Вы хотите выполнить компрессию операций?';
+      Text003@1003 : TextConst 'ENU=%1 must be specified.;RUS=%1 должно быть определено.';
+      Text004@1004 : TextConst 'ENU=Date compressing G/L entries...\\;RUS=Компрессия финансовых операций...\\';
+      Text005@1005 : TextConst 'ENU=G/L Account No.                 #1######\;RUS=Фин. Счет Но.                   #1######\';
+      Text006@1006 : TextConst 'ENU=Date                            #2######\\;RUS=Дата                            #2######\\';
+      Text007@1007 : TextConst 'ENU=No. of new entries              #3######\;RUS=Число новых операций            #3######\';
+      Text008@1008 : TextConst 'ENU=No. of entries del.             #4######\;RUS=Число удал. операций            #4######\';
+      Text009@1009 : TextConst 'ENU=Date Compressed:;RUS=Дата Компрессии:';
+      Text010@1010 : TextConst 'ENU=Retain Dimensions;RUS=Сохранить Измерения';
+      SourceCodeSetup@1011 : Record 242;
+      DateComprReg@1012 : Record 87;
+      EntrdDateComprReg@1013 : Record 87;
+      GLReg@1014 : Record 45;
+      EntrdGLEntry@1015 : Record 17;
+      NewGLEntry@1016 : Record 17;
+      GLEntryBuff2@1017 : Record 50018;
+      Window@1025 : Dialog;
+      NoOfFields@1026 : Integer;
+      NoOfFieldsContents@1027 : Integer;
+      Retain@1028 : ARRAY [10] OF Boolean;
+      FieldNumber@1029 : ARRAY [10] OF Integer;
+      FieldNameArray@1030 : ARRAY [10] OF Text[100];
+      LastEntryNo@1031 : Integer;
+      NextTransactionNo@1032 : Integer;
+      NoOfDeleted@1033 : Integer;
+      GLRegExists@1034 : Boolean;
+      i@1035 : Integer;
+      "NCV>"@1210000 : Integer;
+      ConsSource@1210001 : Record 50001;
+      ConsSetup@1210002 : Record 50000;
+      ConsSourceCode@1210003 : Code[20];
+      GLEntry2@1000000003 : Record 17;
+      LastTrNo@1210012 : Integer;
+      IncInCompr@1210013 : Boolean;
+      CurrentGLEntry@1210015 : Record 17;
+      ConsLastEntryNo@1210016 : Integer;
+      ConsLastTransNo@1210017 : Integer;
+      "NCT>"@1210022 : TextConst;
+      Text55004@1210021 : TextConst 'ENU=Copying G/L entries...\\;RUS=Копирование финансовых операций...\\';
+      Text55007@1210018 : TextConst 'ENU=No. of G\L Entries            #1######\;RUS=Число операций в Главной Книге #1######\';
+      Text55008@1210014 : TextConst 'ENU=No. of entries in compr.       #2######;RUS=Число операций в Компрессии    #2######\';
+      NoOfGLEntries@1210019 : Integer;
+      NoOfCompEntries@1210020 : Integer;
+      TotalEntries@1210023 : Integer;
+      Text55009@1210024 : TextConst 'ENU=@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text55010@1210025 : TextConst 'ENU=There are no new entries in company %1.;RUS=В компании %1 нет новых операций.';
+      ConsRegisterNo@1210026 : Integer;
+      ConsRegister@1210028 : Record 50005;
+      Text55011@1210029 : TextConst 'ENU=Loading G/L entries from;RUS=Загрузка финансовых операций из компании';
+      Text55012@1210030 : TextConst 'ENU=@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text55013@1210031 : TextConst 'ENU=Total Entries                   #5######\;RUS=Всего операций                  #5######\';
+      Text55014@1210032 : TextConst 'ENU=@6@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=@6@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      TotalGLBufferEntry@1210033 : Integer;
+      Text55015@1210034 : TextConst 'ENU=Consolidation was done succesfully.;RUS=Консолидация завершена успешно.';
+      PostingDescription@1210035 : Text[50];
+      FromSourceEntry@1210036 : Integer;
+      ToSourceEntry@1210037 : Integer;
+      Text55016@1210038 : TextConst 'ENU=To Entry No. cannot be less than From Entry No.;RUS=До Операция Но. не может быть меньше От Операция Но.';
+      Currency@1000000000 : Record 4;
+      ConsRegisterExists@1210039 : Boolean;
+      TempGLEntryBuffer@1210040 : TEMPORARY Record 50018;
+      NoOfDel@1210041 : Integer;
+      GLSetup@1210042 : Record 98;
+      TempDimComp@1210043 : TEMPORARY Record 348;
+      IsUpdateAnalysisView@1210047 : Boolean;
+      AnalysisView1@1210046 : Record 363;
+      UpdateAnalysisView@1210045 : Codeunit 410;
+      AnalysisViewFilter@1210044 : Text[50];
+      Log@1101495000 : Codeunit 50014;
+      CheckLedgEntryDimIC@1101495001 : Record 355;
+      CheckLedgEntryDimCP@1101495014 : Record 355;
+      ErrorJournal@1101495002 : Record 50023;
+      IsGlobalError@1101495003 : Boolean;
+      ICCode@1101495004 : Code[20];
+      CPCode@1101495005 : Code[20];
+      ErrDescr@1101495006 : Text[250];
+      Text55020@1101495007 : TextConst 'ENU=" must be ";RUS=" должно быть "';
+      Text55021@1101495008 : TextConst 'ENU=filled.;RUS=заполнено.';
+      Text55022@1101495009 : TextConst 'ENU=" must not be ";RUS=" не должно быть "';
+      Text55023@1101495010 : TextConst 'ENU="G/L Account No. ";RUS="Фин. Счет Но. "';
+      Text55024@1101495011 : TextConst 'ENU=" does not exist in CoA.";RUS=" не существует в плане счетов."';
+      Text55030@1101495012 : TextConst 'ENU=Consolidation is interupted. See Error Journal due to Register %1.;RUS=Консолидация не выполнена. Ошибки консолидации сохранены в журнале ошибок по регистру %1.';
+      Text55040@1101495013 : TextConst 'ENU=Checking G/L entries from;RUS=Проверка финансовых операций из компании';
+      CoAMapp@1101495015 : Record 50002;
+      Text55041@1101495016 : TextConst 'ENU="For G/L Account ";RUS="Для счета "';
+      Text55042@1101495017 : TextConst 'ENU=", dimensions ";RUS=", измерений "';
+      Text55043@1101495018 : TextConst 'ENU=" and ";RUS=" и "';
+      Text55044@1101495019 : TextConst 'ENU=" there is no G/L Account in consolidation.";RUS=" не задан счет в консолидации."';
+      TempICCoA@1101495020 : TEMPORARY Record 5637;
+      ConsCoeff@1101495021 : Decimal;
+      DimMgt@1000000001 : Codeunit 408;
+      LineNo@1000000002 : Integer;
+      TotalSuccessLoaded@1000000004 : Integer;
+      TotalLoadedWithousJnl@1000000005 : Integer;
+      TotalEntries2Cons@1000000006 : Integer;
+      TotalExcLoaded@1000000007 : Integer;
+      MovingDataSetup@1000000010 : Record 50064;
+      LastSourceEntryNo@1000000011 : Integer;
+      CommitEntryNo@1000000012 : Integer;
+      "NCV> MDM03"@1000000008 : Integer;
+      JobProcStatusLineNo@1000000009 : Integer;
+
+    LOCAL PROCEDURE InitRegisters@4();
+    BEGIN
+      IF GLReg.FIND('+') THEN;
+      GLReg.INIT;
+      GLReg."No." := GLReg."No." + 1;
+      GLReg."Creation Date" := TODAY;
+      GLReg."Source Code" := SourceCodeSetup."Compress G/L";
+      GLReg."User ID" := USERID;
+      GLReg."From Entry No." := LastEntryNo + 1;
+
+      IF DateComprReg.FIND('+') THEN;
+      DateComprReg.INIT;
+      DateComprReg."No." := DateComprReg."No." + 1;
+      DateComprReg."Table ID" := DATABASE::"G/L Entry";
+      DateComprReg."Creation Date" := TODAY;
+      DateComprReg."Starting Date" := EntrdDateComprReg."Starting Date";
+      DateComprReg."Ending Date" := EntrdDateComprReg."Ending Date";
+      DateComprReg."Period Length" := EntrdDateComprReg."Period Length";
+      FOR i := 1 TO NoOfFieldsContents DO
+        IF Retain[i] THEN
+          DateComprReg."Retain Field Contents" :=
+            COPYSTR(
+              DateComprReg."Retain Field Contents" + ',' + FieldNameArray[i],1,
+              MAXSTRLEN(DateComprReg."Retain Field Contents"));
+      DateComprReg."Retain Field Contents" := COPYSTR(DateComprReg."Retain Field Contents",2);
+      FOR i := NoOfFieldsContents + 1 TO NoOfFields DO
+        IF Retain[i] THEN
+          DateComprReg."Retain Totals" :=
+            COPYSTR(
+              DateComprReg."Retain Totals" + ',' + FieldNameArray[i],1,
+              MAXSTRLEN(DateComprReg."Retain Totals"));
+      DateComprReg."Retain Totals" := COPYSTR(DateComprReg."Retain Totals",2);
+      DateComprReg."Register No." := GLReg."No.";
+      DateComprReg."Source Code" := SourceCodeSetup."Compress G/L";
+      DateComprReg."User ID" := USERID;
+      DateComprReg."Cons. Source Code" := ConsSource.Code;
+      DateComprReg."Cons. Register No." := ConsRegister."No.";
+
+      GLRegExists := FALSE;
+      NoOfDeleted := 0;
+    END;
+
+    LOCAL PROCEDURE InsertRegisters@1(VAR GLReg@1000 : Record 45;VAR DateComprReg@1001 : Record 87);
+    BEGIN
+      GLReg."To Entry No." := NewGLEntry."Entry No.";
+
+      IF GLRegExists THEN BEGIN
+        GLReg.MODIFY;
+        DateComprReg.MODIFY;
+      END ELSE BEGIN
+        GLReg.INSERT;
+        DateComprReg.INSERT;
+        GLRegExists := TRUE;
+      END;
+      //COMMIT;
+
+      NewGLEntry.LOCKTABLE;
+      GLReg.LOCKTABLE;
+      DateComprReg.LOCKTABLE;
+
+      GLEntry2.RESET;
+      IF GLEntry2.FIND('+') THEN;
+      IF LastEntryNo <> GLEntry2."Entry No." THEN BEGIN
+        LastEntryNo := GLEntry2."Entry No.";
+        NextTransactionNo := GLEntry2."Transaction No." + 1;
+        InitRegisters;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertField@2(Number@1000 : Integer;Name@1001 : Text[100]);
+    BEGIN
+      NoOfFields := NoOfFields + 1;
+      FieldNumber[NoOfFields] := Number;
+      FieldNameArray[NoOfFields] := Name;
+    END;
+
+    PROCEDURE "NCF>"@1210001();
+    BEGIN
+    END;
+
+    PROCEDURE CopyGLEntryToGLEntry@1210002(SourceGLEntry@1210000 : Record 17;UpdateTransNo@1210001 : Boolean);
+    VAR
+      ConsGLEntry@1210002 : Record 17;
+    BEGIN
+      ConsGLEntry.INIT;
+      ConsGLEntry.TRANSFERFIELDS(SourceGLEntry);
+      ConsLastEntryNo += 1;
+      ConsGLEntry."Entry No." := ConsLastEntryNo;
+      IF UpdateTransNo THEN
+        ConsLastTransNo += 1;
+      ConsGLEntry."Transaction No." := ConsLastTransNo;
+      ConsGLEntry."Export Cons. Source Code" := ConsSource.Code;
+      ConsGLEntry."Export Register No." := ConsRegisterNo;
+      ConsGLEntry."Business Unit Code" := ConsSource."Business Unit Code";
+      ConsGLEntry."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+      ConsGLEntry."Source Entry No." := SourceGLEntry."Entry No.";
+      //NC MDM07 > GM
+      ConsGLEntry."Cons. Time"  := CREATEDATETIME(WORKDATE, TIME);
+      //NC MDM07 < GM
+
+      //NC MDC01 > MP
+      {
+      IF ConsSource."Concolidate Add.-Curr. Amount" THEN BEGIN
+        IF (ConsSource."LCY Code" = SourceGLEntry."Original Currency Code") AND
+           (ConsSource."LCY Code" <> '')
+        THEN
+          ConsGLEntry."Original Currency Code" := '';
+
+        IF ((SourceGLEntry."Original Currency Code" = '') OR (SourceGLEntry."Original Currency Code" = 'РУБ')) AND
+           (ConsSource."LCY Code" <> '')
+        THEN BEGIN
+          Currency.SETFILTER("Source Currency Code",'=%1','');
+          IF Currency.FINDFIRST THEN
+            ConsGLEntry."Original Currency Code" := Currency.Code;
+          IF SourceGLEntry."Additional-Currency Amount" <> 0 THEN
+            ConsGLEntry."Original Currency Factor" := ROUND(SourceGLEntry."Original Amount" /
+                                                            SourceGLEntry."Additional-Currency Amount",0.0001);
+        END;
+
+        IF (ConsSource."LCY Code" <> SourceGLEntry."Original Currency Code") AND
+           ((SourceGLEntry."Original Currency Code" <> '') AND (SourceGLEntry."Original Currency Code" <> 'РУБ'))
+           AND (ConsSource."LCY Code" <> '')
+        THEN BEGIN
+          Currency.SETFILTER("Source Currency Code",'=%1',SourceGLEntry."Original Currency Code");
+          IF Currency.FINDFIRST THEN
+            ConsGLEntry."Original Currency Code" := Currency.Code;
+          IF SourceGLEntry."Additional-Currency Amount" <> 0 THEN
+            ConsGLEntry."Original Currency Factor" := ROUND(SourceGLEntry."Original Amount" /
+                                                            SourceGLEntry."Additional-Currency Amount",0.0001);
+        END;
+
+        ConsGLEntry.Amount := SourceGLEntry."Additional-Currency Amount";
+        ConsGLEntry."Debit Amount" := SourceGLEntry."Add.-Currency Debit Amount";
+        ConsGLEntry."Credit Amount" := SourceGLEntry."Add.-Currency Credit Amount";
+        ConsGLEntry."Additional-Currency Amount" := SourceGLEntry.Amount;
+        ConsGLEntry."Add.-Currency Debit Amount" := SourceGLEntry."Debit Amount";
+        ConsGLEntry."Add.-Currency Credit Amount" := SourceGLEntry."Credit Amount";
+      END;
+      }
+      IF TempICCoA.GET(SourceGLEntry."Entry No.") THEN BEGIN
+        ConsGLEntry."Source G/L Account No." := SourceGLEntry."G/L Account No.";
+        ConsGLEntry."G/L Account No." := TempICCoA."Account No.";
+      END;
+      //NC MDC01 < MP
+      //NC MDR01 > MP
+      IF ConsCoeff <> 1 THEN BEGIN
+        ConsGLEntry.Amount := ROUND(SourceGLEntry.Amount * ConsCoeff,0.01);
+        ConsGLEntry."Debit Amount" := ROUND(SourceGLEntry."Debit Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Credit Amount" := ROUND(SourceGLEntry."Credit Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Additional-Currency Amount" := ROUND(SourceGLEntry."Additional-Currency Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Add.-Currency Debit Amount" := ROUND(SourceGLEntry."Add.-Currency Debit Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Add.-Currency Credit Amount" := ROUND(SourceGLEntry."Add.-Currency Credit Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Original Amount" := ROUND(SourceGLEntry."Original Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Original Debit Amount" := ROUND(SourceGLEntry."Original Debit Amount" * ConsCoeff,0.01);
+        ConsGLEntry."Original Credit Amount" := ROUND(SourceGLEntry."Original Credit Amount" * ConsCoeff,0.01);
+      END;
+      //NC MDR01 < MP
+      //NC MDA01 > MP
+      ConsGLEntry."Source Code" := SourceCodeSetup.Consolidation;
+      //NC MDA01 < MP
+
+      ConsGLEntry.INSERT;
+    END;
+
+    PROCEDURE InitConsRegister@1210003(ConsSource@1210000 : Record 50001;FromEntryNo@1210001 : Integer);
+    BEGIN
+      ConsRegister.RESET;
+      ConsRegister.SETRANGE("Cons. Source Code",ConsSource.Code);
+      IF ConsRegister.FINDLAST THEN
+        ConsRegisterNo := ConsRegister."No." + 1
+      ELSE
+        ConsRegisterNo := 1;
+
+      ConsRegister.INIT;
+      ConsRegister."Cons. Source Code" := ConsSource.Code;
+      ConsRegister."No." := ConsRegisterNo;
+      ConsRegister."User ID" := USERID;
+      ConsRegister."Consolidation Date" := TODAY;
+      ConsRegister."From Entry No." := FromEntryNo;
+      ConsRegister."Gen. Journal Template" := ConsSetup."Gen. Jnl. Template";
+      ConsRegister."Gen. Journal Batch" := ConsSource."Gen. Journal Batch";
+      ConsRegister.Compression := ConsSource.Compression;
+      ConsRegister.INSERT;
+    END;
+
+    PROCEDURE UpdateConsRegister@1210004(ToEntryNo@1210000 : Integer);
+    BEGIN
+      IF ToEntryNo <> 0 THEN BEGIN
+        ConsRegister."To Entry No." := ToEntryNo;
+        ConsRegister."Consolidation Time" := TIME;
+        ConsRegister."Total Entries In Session" := TotalEntries;
+        ConsRegister."Total Success Loaded In Sess" := TotalSuccessLoaded;
+        ConsRegister."Total Exception In Sess" := TotalExcLoaded;
+        ConsRegister."Total Loaded without Jnl" := TotalLoadedWithousJnl;
+        ConsRegister."Total Unloaded In Session" := 0;
+        IF NOT ConsRegister.INSERT THEN
+          ConsRegister.MODIFY;
+      END ELSE BEGIN
+        ConsRegister."From Entry No." := ToEntryNo;
+        ConsRegister."To Entry No." := ToEntryNo;
+        ConsRegister."Consolidation Time" := TIME;
+        ConsRegister."Total Entries In Session" := TotalEntries;
+        ConsRegister."Total Success Loaded In Sess" := 0;
+        ConsRegister."Total Exception In Sess" := 0;
+        ConsRegister."Total Loaded without Jnl" := 0;
+        ConsRegister."Total Unloaded In Session" := TotalEntries;
+        IF NOT ConsRegister.INSERT THEN
+          ConsRegister.MODIFY;
+      END;
+    END;
+
+    PROCEDURE SetParameters@1210005(NewConsSourceCode@1210000 : Code[20]);
+    BEGIN
+      ConsSetup.GET;
+      ConsSourceCode := NewConsSourceCode;
+      EntrdDateComprReg."Period Length" := ConsSetup."Compression Period Length";
+    END;
+
+    PROCEDURE InitGLRegister@1210006();
+    VAR
+      GLEntry@1210000 : Record 17;
+    BEGIN
+      IF GLReg.FINDLAST THEN;
+      GLEntry.RESET;
+      IF GLEntry.FINDLAST THEN;
+      GLReg.INIT;
+      GLReg."No." := GLReg."No." + 1;
+      GLReg."Creation Date" := TODAY;
+      //NC MDA01 > MP
+      {
+      GLReg."Source Code" := ConsSetup."Source Code";
+      }
+      GLReg."Source Code" := SourceCodeSetup.Consolidation;
+      //NC MDA01 < MP
+      GLReg."User ID" := USERID;
+      GLReg."From Entry No." := GLEntry."Entry No." + 1;
+      GLRegExists := TRUE;
+      GLReg.INSERT;
+    END;
+
+    PROCEDURE UpdateGLRegister@1210009();
+    VAR
+      GLEntry@1210000 : Record 17;
+    BEGIN
+      GLEntry.RESET;
+      IF GLEntry.FINDLAST AND (GLReg."From Entry No." <> GLEntry."Entry No.") THEN BEGIN
+        GLReg."To Entry No." := GLEntry."Entry No.";
+        GLReg."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+        IF NOT GLRegExists THEN
+          GLReg.INSERT
+        ELSE
+          GLReg.MODIFY;
+      END;
+    END;
+
+    PROCEDURE FindLastGLEntry@1210007(CompName@1210000 : Text[30];ToSourceEntry@1210001 : Integer) : Integer;
+    VAR
+      GLEntry6@1210002 : Record 17;
+      TransactionNo@1210003 : Integer;
+    BEGIN
+      GLEntry6.CHANGECOMPANY(CompName);
+      GLEntry6.SETFILTER("Entry No.",'%1..',ToSourceEntry);
+      IF GLEntry6.FINDFIRST THEN BEGIN
+        TransactionNo := GLEntry6."Transaction No.";
+        REPEAT
+          IF GLEntry6."Transaction No." <> TransactionNo THEN
+            EXIT(GLEntry6."Entry No." - 1);
+        UNTIL GLEntry6.NEXT = 0;
+      END;
+      EXIT(GLEntry6."Entry No.");
+    END;
+
+    PROCEDURE GetRegisters@1210014();
+    BEGIN
+      IF NOT GLReg.FIND('+') THEN BEGIN
+        GLReg."No." := GLReg."No." + 1;
+        GLReg."Creation Date" := TODAY;
+        GLReg."Source Code" := SourceCodeSetup."Compress G/L";
+        GLReg."User ID" := USERID;
+        GLReg."From Entry No." := LastEntryNo + 1;
+        GLRegExists := FALSE;
+      END ELSE
+        GLRegExists := TRUE;
+
+      ConsRegister.RESET;
+      ConsSource.GET(GLEntryBuff2."Export Cons. Source Code");
+      ConsRegister.SETRANGE(ConsRegister."Cons. Source Code",GLEntryBuff2."Export Cons. Source Code");
+      ConsRegister.FINDLAST;
+      ConsRegisterExists := TRUE;
+
+      IF NOT DateComprReg.FIND('+') THEN BEGIN
+        DateComprReg.INIT;
+        DateComprReg."No." := DateComprReg."No." + 1;
+        DateComprReg."Table ID" := DATABASE::"G/L Entry";
+        DateComprReg."Creation Date" := TODAY;
+        DateComprReg."Starting Date" := EntrdDateComprReg."Starting Date";
+        DateComprReg."Ending Date" := EntrdDateComprReg."Ending Date";
+        DateComprReg."Period Length" := EntrdDateComprReg."Period Length";
+        FOR i := 1 TO NoOfFieldsContents DO
+          IF Retain[i] THEN
+            DateComprReg."Retain Field Contents" :=
+              COPYSTR(
+                DateComprReg."Retain Field Contents" + ',' + FieldNameArray[i],1,
+                MAXSTRLEN(DateComprReg."Retain Field Contents"));
+        DateComprReg."Retain Field Contents" := COPYSTR(DateComprReg."Retain Field Contents",2);
+        FOR i := NoOfFieldsContents + 1 TO NoOfFields DO
+          IF Retain[i] THEN
+            DateComprReg."Retain Totals" :=
+              COPYSTR(
+                DateComprReg."Retain Totals" + ',' + FieldNameArray[i],1,
+                MAXSTRLEN(DateComprReg."Retain Totals"));
+        DateComprReg."Retain Totals" := COPYSTR(DateComprReg."Retain Totals",2);
+        DateComprReg."Register No." := GLReg."No.";
+        DateComprReg."Source Code" := SourceCodeSetup."Compress G/L";
+        DateComprReg."User ID" := USERID;
+        DateComprReg."Cons. Source Code" := ConsSource.Code;
+        DateComprReg."Cons. Register No." := ConsRegisterNo;
+      END;
+
+      NoOfDeleted := 0;
+    END;
+
+    PROCEDURE InsertNewGLEntry@1210008();
+    BEGIN
+      LastEntryNo := LastEntryNo + 1;
+
+      WITH TempGLEntryBuffer DO BEGIN
+        NewGLEntry.INIT;
+        NewGLEntry."Entry No." := LastEntryNo;
+        NewGLEntry."G/L Account No." := "G/L Account No.";
+        NewGLEntry."Posting Date" := GETRANGEMIN("Posting Date");
+        NewGLEntry.Description := PostingDescription;
+        NewGLEntry."System-Created Entry" := TRUE;
+        NewGLEntry."Prior-Year Entry" := TRUE;
+        NewGLEntry."Source Code" := SourceCodeSetup."Compress G/L";
+        NewGLEntry.Amount := Amount;
+        NewGLEntry."Debit Amount" := "Debit Amount";
+        NewGLEntry."Credit Amount" := "Credit Amount";
+        NewGLEntry."Additional-Currency Amount" := "Additional-Currency Amount";
+        NewGLEntry."Add.-Currency Debit Amount" := "Add.-Currency Debit Amount";
+        NewGLEntry."Add.-Currency Credit Amount" := "Add.-Currency Credit Amount";
+
+        NewGLEntry."User ID" := USERID;
+        NewGLEntry."Transaction No." := NextTransactionNo;
+        NewGLEntry."Export Cons. Source Code" := ConsSource.Code;
+        NewGLEntry."Export Register No." := ConsRegister."No.";
+        NewGLEntry."Business Unit Code" := ConsSource."Business Unit Code";
+        NewGLEntry."Journal Batch Name" := ConsSource."Gen. Journal Batch";
+        IF (GETFILTER("Global Dimension 1 Code") <> '')
+           AND ("Global Dimension 1 Code" <> '')
+        THEN BEGIN
+          NewGLEntry."Global Dimension 1 Code" := "Global Dimension 1 Code";
+          InsertLedEntryDim(LastEntryNo,GLSetup."Global Dimension 1 Code","Global Dimension 1 Code");
+        END;
+
+        IF "Global Dimension 2 Code" <> '' THEN BEGIN
+          NewGLEntry."Global Dimension 2 Code" := "Global Dimension 2 Code";
+          InsertLedEntryDim(LastEntryNo,GLSetup."Global Dimension 2 Code","Global Dimension 2 Code");
+        END;
+        NewGLEntry.INSERT;
+        NoOfGLEntries += 1;
+      END;
+    END;
+
+    PROCEDURE InsertLedEntryDim@1210010(EntryNo@1210000 : Integer;DimCode@1210001 : Code[20];DimValueCode@1210002 : Code[20]);
+    VAR
+      LedgEntryDim@1210003 : Record 355;
+      DimValue3@1210004 : Record 349;
+      DimValue4@1210005 : Record 349;
+    BEGIN
+      IF NOT DimValue3.GET(DimCode,DimValueCode) THEN BEGIN
+        DimValue4.CHANGECOMPANY(ConsSource."Company Name");
+        DimValue4.GET(DimCode,DimValueCode);
+        DimValue3."Dimension Code" := DimValue4."Dimension Code";
+        DimValue3.Code := DimValue4.Code;
+        DimValue3.Name := DimValue4.Name;
+        DimValue3."Dimension Value Type" := DimValue4."Dimension Value Type";
+        DimValue3.Totaling := DimValue4.Totaling;
+        DimValue3.Blocked :=  DimValue4.Blocked;
+        DimValue3."Consolidation Code" := DimValue4."Consolidation Code";
+        DimValue3.Indentation :=  DimValue4.Indentation;
+        DimValue3."Global Dimension No." := DimValue4."Global Dimension No.";
+        DimValue3."Name 2" := DimValue4."Name 2";
+        DimValue3."Company Name" := DimValue4."Company Name";
+        DimValue3."Int Contragent Dim Value" :=  DimValue4."Int Contragent Dim Value";
+        DimValue3.INSERT(TRUE);
+      END;
+      LedgEntryDim.INIT;
+      LedgEntryDim."Table ID" := 17;
+      LedgEntryDim."Entry No." := EntryNo;
+      LedgEntryDim."Dimension Code" := DimCode;
+      LedgEntryDim."Dimension Value Code" := DimValueCode;
+      LedgEntryDim.INSERT;
+    END;
+
+    PROCEDURE CheckGLMapping@1101495011(MappingCode@1101495000 : Code[20];ConsRegNo@1101495001 : Integer);
+    VAR
+      GLMapping@1101495002 : Record 50002;
+      GLAcc@1101495003 : Record 15;
+    BEGIN
+      GLMapping.RESET;
+      GLMapping.SETCURRENTKEY("Mapping Code",
+                              "Company Name",
+                              "Source Account Code",
+                              "Source Corresp. Account Code",
+                              "Operation Type",
+                              "Rating Transformation",
+                              Active);
+      GLMapping.SETRANGE("Mapping Code",MappingCode);
+      GLMapping.SETFILTER("Source Account Code",'<>%1','');
+      GLMapping.SETRANGE(Active,TRUE);
+      IF GLMapping.FINDSET THEN
+        REPEAT
+          IF GLMapping."Source Dimension Code 1" <> CPCode THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrDescr := GLMapping.FIELDCAPTION("Source Dimension Code 1") + Text55020 + CPCode;
+            ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                        ConsSource.Code,ConsRegNo,'EDC02',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+          END ELSE BEGIN
+            IF GLMapping."Source Dimension Value Code 1" = '' THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrDescr := GLMapping.FIELDCAPTION("Source Dimension Value Code 1") + Text55020 + Text55021;
+              ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                          ConsSource.Code,ConsRegNo,'EDC03',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+            END;
+          END;
+          IF GLMapping."Source Dimension Code 2" <> ICCode THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrDescr := GLMapping.FIELDCAPTION("Source Dimension Code 2") + Text55020 + ICCode;
+            ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                        ConsSource.Code,ConsRegNo,'EDC04',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+          END ELSE BEGIN
+            IF GLMapping."Source Dimension Value Code 2" = '' THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrDescr := GLMapping.FIELDCAPTION("Source Dimension Value Code 2") + Text55020 + Text55021;
+              ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                          ConsSource.Code,ConsRegNo,'EDC05',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+            END;
+          END;
+          IF GLMapping."Source Dimension Code 3" <> '' THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrDescr := GLMapping.FIELDCAPTION("Source Dimension Code 3") + Text55022 + Text55021;
+            ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                        ConsSource.Code,ConsRegNo,'EDC06',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+          END;
+          IF GLMapping."Receiver Account Code" = '' THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrDescr := GLMapping.FIELDCAPTION("Receiver Account Code") + Text55020 + Text55021;
+            ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                        ConsSource.Code,ConsRegNo,'EDC07',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+
+          END ELSE
+            IF NOT GLAcc.GET(GLMapping."Receiver Account Code") THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrDescr := Text55023 + GLMapping."Receiver Account Code" + Text55024;
+              ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                          ConsSource.Code,ConsRegNo,'EDC08',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+            END;
+          {
+          IF GLMapping."Company Name" <> '' THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrDescr := GLMapping.FIELDCAPTION("Company Name") + Text55022 + Text55021;
+            ErrorJournal.AddErrorGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Consolidation,ErrorJournal.Type::Error,
+                                        ConsSource.Code,ConsRegNo,'EDC09',ErrDescr,COMPANYNAME,GLMapping,JobProcStatusLineNo);
+          END;
+          }
+        UNTIL  GLMapping.NEXT = 0;
+    END;
+
+    PROCEDURE CreateJnlLine@1000000014(ConsolidationSource@1000000000 : Record 50001;VAR GLEntry@1000000001 : Record 17;ConsSession@1000000012 : Integer);
+    VAR
+      ConvOfChartOfAccounts@1000000003 : Record 50002;
+      CurrExchRate@1000000004 : Record 330;
+      AccountingPeriod@1000000007 : Record 50;
+      GLAccount@1000000005 : Record 15;
+      Description@1000000008 : Text[150];
+      NextErrorEntryNo@1000000013 : Integer;
+      ConsRateType@1000000015 : 'Historical,Period Average,Weighted Average,End Period,User Defined';
+      PeriodType@1000000009 : 'Month,Year,Quarter,AccPeriod';
+      UserFactor@1000000016 : Decimal;
+      ConsSetupComp@1000000019 : Record 50000;
+      RepostedBatch@1000000021 : Code[10];
+      RepostedTemplate@1000000020 : Code[10];
+      EntryNo@1000000023 : Integer;
+      "NCV 015<"@1000000018 : Integer;
+      Currency@1210002 : Record 4;
+      CurrencyDate@1210005 : Date;
+      ConsolidationSource1@1210007 : Record 50001;
+      OriginalTranslationMethod@1210008 : Integer;
+      GLAccountCode@1000000010 : Code[20];
+      GenJournalLine@1000000002 : Record 81;
+    BEGIN
+      Log.StartCounter(-10);
+      GenJournalLine.RESET;
+      GenJournalLine.INIT;
+      GenJournalLine."Journal Template Name" := ConsSetup."Gen. Jnl. Template";
+
+      GenJournalLine."Journal Batch Name" := ConsolidationSource."Gen. Journal Batch";
+      GenJournalLine."Source Code" := SourceCodeSetup.Consolidation;
+      GenJournalLine."Journal Batch Name" := ConsSetup."Exception Batch Name";
+      GenJournalLine."Except Correspondence" := TRUE;
+
+
+      GenJournalLine."Posting Date" := GLEntry."Posting Date";
+      GenJournalLine."Document Date" := GLEntry."Document Date";
+      GenJournalLine."Source Historical Date" := GLEntry."Historical Date";
+      GenJournalLine."Line No." := GetNextLineNo(GenJournalLine."Journal Template Name",GenJournalLine."Journal Batch Name");
+
+      GenJournalLine."Document Type" := GenJournalLine."Document Type"::" ";
+      GenJournalLine."Account Type" := GenJournalLine."Account Type"::"G/L Account";
+      GenJournalLine."Account No." := GLEntry."G/L Account No.";
+      GenJournalLine.Description := GLEntry.Description;
+      GenJournalLine."Gen. Posting Type" := GenJournalLine."Gen. Posting Type"::" ";
+      GenJournalLine."Gen. Bus. Posting Group" := '';
+      GenJournalLine."Gen. Prod. Posting Group" := '';
+
+      IF ConsolidationSource."Business Unit Code" <> '' THEN
+        GenJournalLine."Business Unit Code" := ConsolidationSource."Business Unit Code";
+
+      GenJournalLine."Special Correspondense" := GLEntry."Special Correspondense";
+
+
+      GenJournalLine."Currency Code" := GLEntry."Original Currency Code";
+      GenJournalLine.Amount := ROUND(GLEntry."Original Amount",0.01);
+      GenJournalLine."Amount (LCY)" := ROUND(GLEntry.Amount,0.01);
+      GenJournalLine."Currency Factor" := GLEntry."Original Currency Factor";
+
+      IF (GLEntry."Debit Amount" < 0) OR (GLEntry."Credit Amount" < 0) THEN
+        GenJournalLine.Correction := TRUE;
+      GenJournalLine."Document No." := GLEntry."Document No.";
+      GenJournalLine."Export Cons. Source Code" := ConsolidationSource.Code;
+      GenJournalLine."Source Entry No." := GLEntry."Entry No.";
+      GenJournalLine."Register No." := GLEntry."Register No.";
+      GenJournalLine."Export Register No." := ConsSession;
+      GenJournalLine."External Document Type" := GLEntry."External Document Type";
+      GenJournalLine."External Document ID" := GLEntry."External Document ID";
+      GenJournalLine."External Document Date" := GLEntry."External Document Date";
+      GenJournalLine."External Operation No" := GLEntry."External Operation No";
+      GenJournalLine."External Document No." := GLEntry."External Document No.";
+      GenJournalLine."External System ID" := GLEntry."External System ID";
+      GenJournalLine.Removed := GLEntry.Removed;
+      GenJournalLine.Reposted := GLEntry.Reposted;
+
+      GenJournalLine."Local G/L Account" := GLEntry."Local G/L Account";
+
+      GenJournalLine."Buffer Entry No." := GLEntry."Buffer Entry No.";
+      GenJournalLine."Cons. Source Code" := GLEntry."Cons. Source Code";
+      GenJournalLine."Due Date" := GLEntry."Due Date";
+      GenJournalLine."Description 2" := GLEntry."Description 2";
+      GenJournalLine."Transaction Type" := GenJournalLine."Transaction Type"::Automatic;
+      GenJournalLine.VALIDATE(Quantity,GLEntry.Quantity);
+      GenJournalLine.INSERT;
+    END;
+
+    PROCEDURE GetNextLineNo@1000000007(JnlTemplateCode@1000000000 : Code[10];JnlBatchCode@1000000001 : Code[10]) : Integer;
+    VAR
+      GenJnlLine@1000000002 : Record 81;
+    BEGIN
+      GenJnlLine.RESET;
+      GenJnlLine.SETRANGE("Journal Template Name",JnlTemplateCode);
+      GenJnlLine.SETRANGE("Journal Batch Name",JnlBatchCode);
+      IF GenJnlLine.FINDLAST THEN
+        LineNo := GenJnlLine."Line No." + 3
+      ELSE
+        LineNo := 100;
+      EXIT(LineNo);
+    END;
+
+    PROCEDURE "NCF> MDM03"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE SetJobProcStatus@1000000001(VAR JobProcStatus@1000000000 : Record 50063);
+    BEGIN
+      //NC MDM03 > PCH
+      JobProcStatusLineNo := JobProcStatus."Line No.";
+      ConsSourceCode := JobProcStatus.Processor;
+      FromSourceEntry := JobProcStatus."Begin Entry No.";
+      ToSourceEntry := JobProcStatus."Last Entry No.";
+      //NC MDM03 < PCH
+    END;
+
+    PROCEDURE GetJobProcStatus@1000000003(VAR JobProcStatus@1000000000 : Record 50063);
+    BEGIN
+      //NC MDM03 > PCH
+      IF ConsRegisterNo <> 0 THEN BEGIN
+        JobProcStatus."Cons. Register" := ConsRegister."No.";
+        JobProcStatus."Begin Entry No." := ConsRegister."From Entry No.";
+        JobProcStatus."Last Entry No." := ConsRegister."To Entry No.";
+      END;
+      //NC MDM03 < PCH
+    END;
+
+    PROCEDURE CommitTransaction@1000000005();
+    BEGIN
+      UpdateGLRegister;
+      UpdateConsRegister(LastSourceEntryNo);
+      ConsSource."Last G/L Entry No." := (LastSourceEntryNo);
+      ConsSource."Last Consolidation Date" := TODAY;
+      ConsSource."Last Consolidation Time" := TIME;
+      ConsSource.MODIFY;
+      CommitEntryNo := 0;
+      COMMIT;
+    END;
+
+    BEGIN
+    {
+      NC PIF001 MP Разработано задание на базе стандартного задания 98 по компрессии
+      NC PIF001.01 MP Добавлена возвожность консолидации только по глобальным измерениям,
+                      Добавлены коммиты
+      NC MDC01 MP Проверка на мэппинг Интеркампани
+      NC MDC03 MP Изменения в коде
+      NC MDA01 MP Изменения в коде
+      NC MDM07 GM заполнение поля время консолидации
+      NC MDM02 PCH Добавлены функции SetJobProcStatus, GetJobProcStatus, подключение к интеграции
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

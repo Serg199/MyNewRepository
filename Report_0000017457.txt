@@ -1,0 +1,328 @@
+OBJECT Report 17457 Pay Sheet T-53
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Pay Sheet T-53;
+               RUS=Платежная ведомость Т-53];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF PeriodStartDate = 0D THEN
+                    ERROR(Text14800);
+                  IF PeriodEndDate = 0D THEN
+                    ERROR(Text14801);
+
+                  CompanyInfo.GET;
+
+                  HumanResSetup.GET;
+                  HumanResSetup.TESTFIELD("T-53 Template Code");
+
+                  IF PreviewMode THEN
+                    DocNo := 'XXXXXXXXXX'
+                  ELSE BEGIN
+                    HumanResSetup.TESTFIELD("Calculation Sheet Nos.");
+                    DocNo := NoSeriesMgt.GetNextNo(HumanResSetup."Calculation Sheet Nos.",WORKDATE,TRUE);
+                  END;
+
+                  FileName := ExcelTemplate.OpenTemplate(HumanResSetup."T-53 Template Code");
+                  ExcelMgt.OpenBook(FileName);
+                  ExcelMgt.OpenSheet('Sheet1');
+                  ExcelMgt.FillCell('A7',LocalReportMgt.GetCompanyName);
+                  IF DepartmentName <> '' THEN
+                    ExcelMgt.FillCell('A9',DepartmentName);
+                  ExcelMgt.FillCell('CP7',CompanyInfo."OKPO Code");
+
+                  ExcelMgt.FillCell('AX26',DocNo);
+                  ExcelMgt.FillCell('BN26',FORMAT(TODAY));
+                  ExcelMgt.FillCell('CG26',FORMAT(PeriodStartDate));
+                  ExcelMgt.FillCell('CS26',FORMAT(PeriodEndDate));
+
+                  IF CompanyInfo."Director No." <> '' THEN BEGIN
+                    Employee.GET(CompanyInfo."Director No.");
+                    ExcelMgt.FillCell('AA18',Employee.GetJobTitleName);
+                    ExcelMgt.FillCell('BQ18',Employee.GetNameInitials);
+                  END;
+
+                  IF CompanyInfo."Accountant No." <> '' THEN BEGIN
+                    Employee.GET(CompanyInfo."Accountant No.");
+                    ExcelMgt.FillCell('AO20',Employee.GetNameInitials);
+                  END;
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT TestMode THEN
+                     ExcelMgt.GiveUserControl
+                   ELSE
+                     ExcelMgt.QuitXlApp;
+                 END;
+
+  }
+  DATASET
+  {
+    { 5444;    ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               FillInEmployeeList;
+
+                               SETRANGE(Number,1,TempPerson.COUNT);
+                               Counter := 1;
+                               RowNo := 31;
+                               TemplateRowsQty := 33;
+
+                               TempPerson.SETCURRENTKEY("Last Name","First Name");
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    TempPerson.FINDFIRST
+                                  ELSE
+                                    TempPerson.NEXT;
+
+                                  WITH GenJnlLine DO BEGIN
+                                    SETRANGE("Journal Template Name",TemplateName);
+                                    SETRANGE("Journal Batch Name",BatchName);
+                                    SETRANGE("Posting Date",PeriodStartDate,PeriodEndDate);
+                                    SETRANGE("Account Type","Account Type"::Vendor);
+                                    SETRANGE("Account No.",TempPerson."Vendor No.");
+                                    IF FINDSET THEN
+                                      REPEAT
+                                        FillRow(Amount);
+                                      UNTIL NEXT = 0;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF TotalAmount <> 0 THEN BEGIN
+                                  LocMgt.Amount2Text2('',TotalAmount,WholeAmountText,HundredAmount);
+                                  ExcelMgt.FillCell('H14',WholeAmountText);
+                                  ExcelMgt.FillCell('BD16',FORMAT(HundredAmount));
+                                  ExcelMgt.FillCell('BQ16',FORMAT(ROUND(TotalAmount,1,'<')));
+                                  ExcelMgt.FillCell('CL16',FORMAT(HundredAmount));
+                                END;
+
+                                IF Counter >= TemplateRowsQty THEN
+                                  ExcelMgt.DeleteRows(RowNo,RowNo);
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodEndDate := CALCDATE('<-1M + CM>',WORKDATE);
+                   PeriodStartDate := CALCDATE('<-CM>',PeriodEndDate);
+                   DocNo := COPYSTR(FORMAT(DATE2DMY(PeriodStartDate,3)),3,2) +
+                     FORMAT(DATE2DMY(PeriodStartDate,2)) + '-';
+                   IF HiddenTemplateName <> '' THEN
+                     TemplateName := HiddenTemplateName;
+
+                   IF HiddenBatchName <> '' THEN
+                     BatchName := HiddenBatchName;
+
+                   RequestOptionsPage.UPDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210001;2;Field     ;
+                  CaptionML=[ENU=Template Name;
+                             RUS=Название шаблона];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=TemplateName;
+                  TableRelation="Gen. Journal Template" WHERE (Type=CONST(Payments));
+                  OnValidate=BEGIN
+                               IF PrevTemplateName <> TemplateName THEN
+                                 BatchName := '';
+
+                               PrevTemplateName := TemplateName;
+                             END;
+                              }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Batch Name;
+                             RUS=Код раздела];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BatchName;
+                  OnLookup=BEGIN
+                             LookupBatch;
+                           END;
+                            }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Starting Date of Period;
+                             RUS=Дата начала периода];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PeriodStartDate;
+                  OnValidate=BEGIN
+                               PeriodStartDateOnAfterValidate;
+                             END;
+                              }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Ending Date of Period;
+                             RUS=Дата окончания периода];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PeriodEndDate }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PreviewMode }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text14800@1210039 : TextConst 'ENU=Please enter Period Start Date.;RUS=Введите дату начала периода.';
+      Text14801@1210040 : TextConst 'ENU=Please enter Period End Date.;RUS=Введите дату окончания периода.';
+      GenJnlLine@1210000 : Record 81;
+      Employee@1210001 : Record 5200;
+      ExcelTemplate@1210002 : Record 14919;
+      HumanResSetup@1210003 : Record 5218;
+      CompanyInfo@1210004 : Record 79;
+      TempPerson@1210005 : TEMPORARY Record 17350;
+      LocMgt@1210006 : Codeunit 12400;
+      LocalReportMgt@1210007 : Codeunit 12401;
+      ExcelMgt@1210008 : Codeunit 12416;
+      NoSeriesMgt@1210009 : Codeunit 396;
+      PeriodEndDate@1210010 : Date;
+      PeriodStartDate@1210011 : Date;
+      FileName@1210012 : Text[1024];
+      WholeAmountText@1210013 : Text[1024];
+      DepartmentName@1210014 : Text[250];
+      DocNo@1210015 : Code[20];
+      TemplateName@1210016 : Code[10];
+      PrevTemplateName@1210017 : Code[10];
+      BatchName@1210018 : Code[10];
+      HiddenTemplateName@1210019 : Code[10];
+      HiddenBatchName@1210020 : Code[10];
+      Counter@1210021 : Integer;
+      PreviewMode@1210022 : Boolean;
+      RowNo@1210023 : Integer;
+      TemplateRowsQty@1210024 : Integer;
+      TotalAmount@1210025 : Decimal;
+      HundredAmount@1210026 : Decimal;
+      TestMode@1210027 : Boolean;
+
+    PROCEDURE FillCell@1210030(ColumnCode@1210000 : Code[10];Amount@1210001 : Decimal);
+    BEGIN
+      IF Amount <> 0 THEN
+        ExcelMgt.FillCell(ColumnCode + FORMAT(RowNo),FORMAT(Amount));
+    END;
+
+    PROCEDURE FillInEmployeeList@1210000();
+    VAR
+      Person@1210000 : Record 17350;
+      PersonNo@1210001 : Code[20];
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        SETRANGE("Journal Template Name",TemplateName);
+        SETRANGE("Journal Batch Name",BatchName);
+        SETRANGE("Posting Date",PeriodStartDate,PeriodEndDate);
+        SETRANGE("Account Type","Account Type"::Vendor);
+        IF FINDSET THEN
+          REPEAT
+            IF FindPersonNo("Account No.",PersonNo) THEN
+              IF NOT TempPerson.GET(PersonNo) THEN BEGIN
+                Person.GET(PersonNo);
+                TempPerson := Person;
+                TempPerson.INSERT;
+              END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FindPersonNo@1210001(VendorNo@1210000 : Code[20];VAR PersonNo@1210001 : Code[20]) : Boolean;
+    VAR
+      Person@1210002 : Record 17350;
+    BEGIN
+      Person.SETRANGE("Vendor No.",VendorNo);
+      IF Person.FINDFIRST THEN BEGIN
+        PersonNo := Person."No.";
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE FillRow@1210003(AmountToPay@1210000 : Decimal);
+    BEGIN
+      IF Counter >= TemplateRowsQty THEN
+        ExcelMgt.CopyRow(RowNo);
+
+      ExcelMgt.FillCell('A' + FORMAT(RowNo),FORMAT(Counter));
+      ExcelMgt.FillCell('J' + FORMAT(RowNo),TempPerson."No.");
+      ExcelMgt.FillCell('V' + FORMAT(RowNo),TempPerson.GetNameInitials);
+      FillCell('BF',AmountToPay);
+
+      RowNo += 1;
+      Counter += 1;
+
+      TotalAmount := TotalAmount + AmountToPay;
+    END;
+
+    PROCEDURE LookupBatch@1210004();
+    VAR
+      GenJnlBatch@1210000 : Record 232;
+    BEGIN
+      IF TemplateName = '' THEN
+        EXIT;
+
+      GenJnlBatch."Journal Template Name" := TemplateName;
+      GenJnlBatch.Name := BatchName;
+      GenJnlBatch.FILTERGROUP(2);
+      GenJnlBatch.SETRANGE("Journal Template Name",GenJnlBatch."Journal Template Name");
+      GenJnlBatch.FILTERGROUP(0);
+      IF PAGE.RUNMODAL(0,GenJnlBatch) = ACTION::LookupOK THEN
+        BatchName := GenJnlBatch.Name;
+    END;
+
+    PROCEDURE SetParameters@1210005(NewTemplateName@1210000 : Code[10];NewBatchName@1210001 : Code[10]);
+    BEGIN
+      TemplateName := NewTemplateName;
+      PrevTemplateName := NewTemplateName;
+      BatchName := NewBatchName;
+      HiddenTemplateName := NewTemplateName;
+      HiddenBatchName := NewBatchName;
+    END;
+
+    LOCAL PROCEDURE PeriodStartDateOnAfterValidate@19032405();
+    BEGIN
+      PeriodEndDate := CALCDATE('<CM>',PeriodStartDate);
+    END;
+
+    PROCEDURE SetTestMode@1210002(NewTestMode@1210000 : Boolean);
+    BEGIN
+      TestMode := NewTestMode;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

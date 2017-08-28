@@ -1,0 +1,521 @@
+OBJECT Report 14926 Inventory for Deferrals INV-11
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Inventory for Deferrals INV-11;
+               RUS=Акт инвентаризации РБП - ИНВ-11];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF (InvStartDate = 0D) OR (InvEndDate = 0D) THEN
+                    ERROR(InvtPeriodNotSpecifiedErr);
+
+                  InitReportTemplate;
+                  PopulateReportHeader;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     ExcelReportBuilderMgr.ExportDataToClientFile(FileName)
+                   ELSE
+                     ExcelReportBuilderMgr.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 5165;    ;DataItem;                    ;
+               DataItemTable=Table12430;
+               DataItemTableView=SORTING(User ID);
+               OnPreDataItem=BEGIN
+                               IF "Document Print Buffer".GET(USERID) THEN
+                                 IF "Document Print Buffer"."Table ID" <> DATABASE::"FA Journal Line" THEN
+                                   CurrReport.BREAK;
+                             END;
+
+               OnPostDataItem=BEGIN
+                                IF (LocationCode = '') AND (DepartmentsLocation <> '') THEN BEGIN
+                                  ExcelReportBuilderMgr.SetSheet('Sheet1');
+                                  ExcelReportBuilderMgr.AddDataToPreviousSection(
+                                    FirstPageID,'Department',COPYSTR(DepartmentsLocation,1,STRLEN(DepartmentsLocation) - 2));
+                                END;
+                              END;
+                               }
+
+    { 1210001;1;DataItem;FAJournalLine       ;
+               DataItemTable=Table5621;
+               DataItemTableView=SORTING(Journal Template Name,Journal Batch Name,Line No.);
+               OnPreDataItem=BEGIN
+                               DepartmentsLocation := '';
+                               TableLineCounter := 1;
+                               CLEAR(TotalAmounts);
+                               ExcelReportBuilderMgr.AddSection('PAGEHEADER');
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FADepreciationBook.RESET;
+                                  FADepreciationBook.SETRANGE("FA No.","FA No.");
+                                  FADepreciationBook.SETRANGE("Depreciation Book Code","Depreciation Book Code");
+                                  FADepreciationBook.SETRANGE("FA Posting Date Filter",0D,InvStartDate - 1);
+                                  IF (NOT FADepreciationBook.FINDFIRST) OR (FADepreciationBook."Acquisition Date" >= InvStartDate) THEN
+                                    CurrReport.SKIP;
+
+                                  IF (LocationCode = '') AND ("Location Code" <> '') AND (STRPOS(DepartmentsLocation,"Location Code") = 0) THEN
+                                    DepartmentsLocation := DepartmentsLocation + "Location Code" + ', ';
+
+                                  IF NOT IsBackSide THEN
+                                    IF NOT ExcelReportBuilderMgr.TryAddSectionWithPlaceForFooter('BODY','PAGEFOOTER') THEN BEGIN
+                                      PopulateTotals(TRUE);
+                                      ExcelReportBuilderMgr.SetSheet('Sheet2');
+                                      IsBackSide := TRUE;
+                                      ExcelReportBuilderMgr.AddSection('LASTPAGEHEADER');
+                                      ExcelReportBuilderMgr.AddSection('LASTPAGEBODY');
+                                      PopulateReportTable(FALSE);
+                                    END ELSE
+                                      PopulateReportTable(TRUE)
+                                  ELSE
+                                    IF NOT ExcelReportBuilderMgr.TryAddSectionWithPlaceForFooter('LASTPAGEBODY','LASTPAGEFOOTER,REPORTACTTOTAL') THEN BEGIN
+                                      PopulateTotals(FALSE);
+                                      ExcelReportBuilderMgr.AddPagebreak;
+                                      ExcelReportBuilderMgr.AddSection('LASTPAGEHEADER');
+                                      ExcelReportBuilderMgr.AddSection('LASTPAGEBODY');
+                                      PopulateReportTable(FALSE);
+                                    END ELSE
+                                      PopulateReportTable(FALSE);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT IsBackSide THEN BEGIN
+                                  PopulateTotals(TRUE);
+                                  ExcelReportBuilderMgr.SetSheet('Sheet2');
+                                  ExcelReportBuilderMgr.AddSection('LASTPAGEHEADER');
+                                  PopulateTotals(FALSE);
+                                END ELSE
+                                  PopulateTotals(FALSE);
+                                PopulateReportFooter;
+                              END;
+
+               DataItemLink=Journal Template Name=FIELD(Journal Template Name),
+                            Journal Batch Name=FIELD(Journal Batch Name) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Номер документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocNo }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Document Date;
+                             RUS=Дата документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocDate }
+
+      { 1210018;2;Field     ;
+                  CaptionML=[ENU=Location Code;
+                             RUS=Код склада];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=LocationCode;
+                  TableRelation="FA Location" }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Inventory Starting Date;
+                             RUS=Дата начала инвентаризации];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=InvStartDate;
+                  OnValidate=BEGIN
+                               IF (InvEndDate <> 0D) AND (InvEndDate < InvStartDate) THEN
+                                 ERROR(InvtEndDateErr);
+                             END;
+                              }
+
+      { 1210006;2;Field     ;
+                  CaptionML=[ENU=Inventory Ending Date;
+                             RUS=Дата окончания инвентаризации];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=InvEndDate;
+                  OnValidate=BEGIN
+                               IF (InvStartDate <> 0D) AND (InvEndDate < InvStartDate) THEN
+                                 ERROR(InvtEndDateErr);
+                             END;
+                              }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Chairman;
+                             RUS=Председатель];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Chairman;
+                  TableRelation=Employee }
+
+      { 1210013;2;Group     ;
+                  CaptionML=[ENU=Commission;
+                             RUS=Комиссия] }
+
+      { 1210010;3;Field     ;
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Commission[1];
+                  TableRelation=Employee }
+
+      { 1210012;3;Field     ;
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Commission[2];
+                  TableRelation=Employee }
+
+      { 1210014;3;Field     ;
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Commission[3];
+                  TableRelation=Employee }
+
+      { 1210017;2;Group     ;
+                  CaptionML=[ENU=Materially Responsible Person;
+                             RUS=Материально ответственное лицо] }
+
+      { 1210028;3;Field     ;
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=MatRespPerson[1];
+                  TableRelation=Employee }
+
+      { 1210030;3;Field     ;
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=MatRespPerson[2];
+                  TableRelation=Employee }
+
+      { 1210031;3;Field     ;
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=MatRespPerson[3];
+                  TableRelation=Employee }
+
+      { 1210015;2;Field     ;
+                  CaptionML=[ENU=Checked By;
+                             RUS=Код проверяющего];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CheckedBy;
+                  TableRelation=Employee }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FADepreciationBook@1210006 : Record 5612;
+      StdRepMgt@1210009 : Codeunit 12401;
+      ExcelReportBuilderMgr@1210007 : Codeunit 14930;
+      DocDate@1210001 : Date;
+      InvStartDate@1210002 : Date;
+      InvEndDate@1210003 : Date;
+      DocNo@1210000 : Code[20];
+      Chairman@1210004 : Code[20];
+      CheckedBy@1210008 : Code[20];
+      MatRespPerson@1210013 : ARRAY [3] OF Code[20];
+      LocationCode@1210012 : Code[10];
+      InvtEndDateErr@1210014 : TextConst 'ENU=Inventory Ending Date should be later than Inventory Starting Date.;RUS=Дата окончания инвентаризации должна быть более поздней, чем дата начала.';
+      Commission@1210005 : ARRAY [3] OF Text[250];
+      DepartmentsLocation@1210011 : Text[250];
+      InventoryTxt@1210020 : TextConst 'ENU="Inventory ";RUS="Запасы "';
+      FileName@1210010 : Text;
+      TableLineCounter@1210026 : Integer;
+      InvtPeriodNotSpecifiedErr@1210025 : TextConst 'ENU=Inventory period should be specified.;RUS=Период инвентаризации должен быть определен.';
+      FirstPageID@1210015 : Integer;
+      TotalAmounts@1210029 : ARRAY [9] OF Decimal;
+      TotalReportAmounts@1210016 : ARRAY [9] OF Decimal;
+      IsBackSide@1210018 : Boolean;
+
+    LOCAL PROCEDURE PopulateReportHeader@1210000();
+    VAR
+      CompanyAddress@1210001 : Record 12425;
+      CompanyInfo@1210000 : Record 79;
+      FALocation@1210002 : Record 5609;
+      LocManagement@1210003 : Codeunit 12400;
+    BEGIN
+      CompanyInfo.GET;
+
+      ExcelReportBuilderMgr.AddSection('REPORTHEADER');
+      ExcelReportBuilderMgr.AddDataToSection('OKPO',CompanyInfo."OKPO Code");
+
+      CompanyAddress.SETRANGE("Address Type",CompanyAddress."Address Type"::Legal);
+      IF CompanyAddress.FINDFIRST THEN
+        ExcelReportBuilderMgr.AddDataToSection('CompanyName',CompanyAddress.Name + ' ' + CompanyAddress."Name 2")
+      ELSE
+        ExcelReportBuilderMgr.AddDataToSection('CompanyName',StdRepMgt.GetCompanyName);
+
+      IF LocationCode <> '' THEN BEGIN
+        FALocation.GET(LocationCode);
+        ExcelReportBuilderMgr.AddDataToSection('Department',FALocation.Name);
+      END;
+
+      ExcelReportBuilderMgr.AddDataToSection('ActivityType',CompanyInfo."Principal Activity");
+      ExcelReportBuilderMgr.AddDataToSection('StartDate',FORMAT(InvStartDate));
+      ExcelReportBuilderMgr.AddDataToSection('EndDate',FORMAT(InvEndDate));
+      ExcelReportBuilderMgr.AddDataToSection('OperationType',InventoryTxt);
+      ExcelReportBuilderMgr.AddDataToSection('InventoryOrder',DocNo);
+      ExcelReportBuilderMgr.AddDataToSection('DocumentNum',DocNo);
+      IF DocDate <> 0D THEN BEGIN
+        ExcelReportBuilderMgr.AddDataToSection('InventoryDate',FORMAT(DocDate));
+        ExcelReportBuilderMgr.AddDataToSection('DocumentDate',FORMAT(DocDate));
+        ExcelReportBuilderMgr.AddDataToSection('DayDateEnd',FORMAT(DATE2DMY(DocDate,1)));
+        ExcelReportBuilderMgr.AddDataToSection('MonthDateEnd',LocManagement.Month2Text(DocDate));
+        ExcelReportBuilderMgr.AddDataToSection('YearDateEnd',FORMAT(DATE2DMY(DocDate,3)));
+      END;
+      FirstPageID := ExcelReportBuilderMgr.GetCurrentSectionId;
+    END;
+
+    LOCAL PROCEDURE PopulateReportTable@1210002(FirstTable@1210005 : Boolean);
+    VAR
+      FixedAsset@1210003 : Record 5600;
+      AmortizeMonths@1210002 : Integer;
+      NumberOfMonths@1210007 : Integer;
+      NumberOfDepreciationMonths@1210009 : Integer;
+      DepreciationAmountPerMonth@1210001 : Decimal;
+      InventoryAmount@1210000 : Decimal;
+      CalcDepreciationAmount@1210006 : Decimal;
+    BEGIN
+      WITH FAJournalLine DO BEGIN
+        FixedAsset.GET("FA No.");
+
+        FADepreciationBook.CALCFIELDS("Acquisition Cost",Depreciation);
+        FADepreciationBook.TESTFIELD("No. of Depreciation Months");
+        NumberOfDepreciationMonths := FADepreciationBook."No. of Depreciation Months";
+
+        TotalAmounts[1] := TotalAmounts[1] + FADepreciationBook."Acquisition Cost";
+        CalcDepreciationAmount :=
+          ROUND(FADepreciationBook."Acquisition Cost" / NumberOfDepreciationMonths,0.01);
+
+        TotalAmounts[2] := TotalAmounts[2] + CalcDepreciationAmount;
+        TotalAmounts[3] := TotalAmounts[3] + ABS(FADepreciationBook.Depreciation);
+        TotalAmounts[4] := TotalAmounts[4] + FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation);
+
+        NumberOfMonths := DATE2DMY(InvStartDate,2) - DATE2DMY(FADepreciationBook."Acquisition Date",2);
+        AmortizeMonths :=
+          NumberOfMonths + (DATE2DMY(InvStartDate,3) - DATE2DMY(FADepreciationBook."Acquisition Date",3)) * 12;
+
+        IF AmortizeMonths = 0 THEN BEGIN
+          AmortizeMonths := 1;
+          NumberOfMonths := 1;
+        END;
+
+        IF DATE2DMY(InvStartDate,3) - DATE2DMY(FADepreciationBook."Acquisition Date",3) <> 0 THEN
+          NumberOfMonths := DATE2DMY(InvStartDate,2) - 1;
+
+        DepreciationAmountPerMonth := ROUND("Actual Amount" / NumberOfDepreciationMonths,0.01);
+        TotalAmounts[5] := TotalAmounts[5] + DepreciationAmountPerMonth;
+        IF NumberOfMonths * DepreciationAmountPerMonth >
+           FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)
+        THEN
+          TotalAmounts[6] := TotalAmounts[6] + FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)
+        ELSE
+          TotalAmounts[6] := TotalAmounts[6] + NumberOfMonths * DepreciationAmountPerMonth;
+        TotalAmounts[7] := TotalAmounts[7] + "Actual  Remaining Amount";
+
+        InventoryAmount := "Actual  Remaining Amount" - FADepreciationBook."Acquisition Cost" +
+          ABS(FADepreciationBook.Depreciation);
+        IF InventoryAmount < 0 THEN
+          TotalAmounts[8] := TotalAmounts[8] - InventoryAmount
+        ELSE
+          TotalAmounts[9] := TotalAmounts[9] + InventoryAmount;
+
+        IF FirstTable THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection('LineNo',FORMAT(TableLineCounter));
+          ExcelReportBuilderMgr.AddDataToSection('Name',FixedAsset.Description);
+          ExcelReportBuilderMgr.AddDataToSection('Code',"FA No.");
+          ExcelReportBuilderMgr.AddDataToSection('DeferralsAmount',
+            FormatDecimal(FADepreciationBook."Acquisition Cost"));
+          ExcelReportBuilderMgr.AddDataToSection('AcquisitionDate',FORMAT(FADepreciationBook."Acquisition Date"));
+          ExcelReportBuilderMgr.AddDataToSection('LifeTime',FORMAT(NumberOfDepreciationMonths));
+
+          ExcelReportBuilderMgr.AddDataToSection('CalcWritingOffAmount',
+            FormatDecimal(CalcDepreciationAmount));
+          ExcelReportBuilderMgr.AddDataToSection('WritingOffAmount',
+            FormatDecimal(ABS(FADepreciationBook.Depreciation)));
+          ExcelReportBuilderMgr.AddDataToSection(
+            'RemainAmount',
+            FormatDecimal(FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)));
+
+          ExcelReportBuilderMgr.AddDataToSection('Months',FORMAT(AmortizeMonths));
+          ExcelReportBuilderMgr.AddDataToSection('WritingOffReportMonth',
+            FormatDecimal(DepreciationAmountPerMonth));
+          IF NumberOfMonths * DepreciationAmountPerMonth >
+             FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)
+          THEN
+            ExcelReportBuilderMgr.AddDataToSection(
+              'WritingOffReportYear',
+              FormatDecimal(FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)))
+          ELSE
+            ExcelReportBuilderMgr.AddDataToSection('WritingOffReportYear',
+              FormatDecimal(NumberOfMonths * DepreciationAmountPerMonth));
+          ExcelReportBuilderMgr.AddDataToSection('CalcRemainAmount',
+            FormatDecimal("Actual  Remaining Amount"));
+          IF InventoryAmount < 0 THEN
+            ExcelReportBuilderMgr.AddDataToSection('SubjectToWriteOff',
+              FormatDecimal(ABS(InventoryAmount)));
+          IF InventoryAmount > 0 THEN
+            ExcelReportBuilderMgr.AddDataToSection('ExcessivelyWrittenOff',
+              FormatDecimal(InventoryAmount));
+        END ELSE BEGIN
+          ExcelReportBuilderMgr.AddDataToSection('LineNoLast',FORMAT(TableLineCounter));
+          ExcelReportBuilderMgr.AddDataToSection('NameLast',FixedAsset.Description);
+          ExcelReportBuilderMgr.AddDataToSection('CodeLast',"FA No.");
+          ExcelReportBuilderMgr.AddDataToSection('DeferralsAmountLast',
+            FormatDecimal(FADepreciationBook."Acquisition Cost"));
+          ExcelReportBuilderMgr.AddDataToSection('AcquisitionDateLast',FORMAT(FADepreciationBook."Acquisition Date"));
+          ExcelReportBuilderMgr.AddDataToSection('LifeTimeLast',FORMAT(NumberOfDepreciationMonths));
+          ExcelReportBuilderMgr.AddDataToSection('CalcWritingOffAmountLast',
+            FormatDecimal(CalcDepreciationAmount));
+          ExcelReportBuilderMgr.AddDataToSection('WritingOffAmountTotalLast',
+            FormatDecimal(ABS(FADepreciationBook.Depreciation)));
+          ExcelReportBuilderMgr.AddDataToSection(
+            'RemainAmountLast',
+            FormatDecimal(FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)));
+
+          ExcelReportBuilderMgr.AddDataToSection('MonthsLast',FORMAT(AmortizeMonths));
+          ExcelReportBuilderMgr.AddDataToSection('WritingOffReportMonthLast',
+            FormatDecimal(DepreciationAmountPerMonth));
+
+          IF NumberOfMonths * DepreciationAmountPerMonth >
+             FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)
+          THEN
+            ExcelReportBuilderMgr.AddDataToSection(
+              'WritingOffReportYearLast',
+              FormatDecimal(FADepreciationBook."Acquisition Cost" - ABS(FADepreciationBook.Depreciation)))
+          ELSE
+            ExcelReportBuilderMgr.AddDataToSection('WritingOffReportYearLast',
+              FormatDecimal(NumberOfMonths * DepreciationAmountPerMonth));
+          ExcelReportBuilderMgr.AddDataToSection('CalcRemainAmountLast',
+            FormatDecimal("Actual  Remaining Amount"));
+          IF InventoryAmount < 0 THEN
+            ExcelReportBuilderMgr.AddDataToSection('SubjectToWriteOffLast',
+              FormatDecimal(ABS(InventoryAmount)));
+          IF InventoryAmount > 0 THEN
+            ExcelReportBuilderMgr.AddDataToSection('ExcessivelyWrittenOffLast',
+              FormatDecimal(InventoryAmount));
+        END
+      END;
+      TableLineCounter += 1;
+    END;
+
+    LOCAL PROCEDURE PopulateTotals@1210013(FirstTable@1210000 : Boolean);
+    VAR
+      Count@1210002 : Integer;
+    BEGIN
+      IF FirstTable THEN BEGIN
+        ExcelReportBuilderMgr.AddSection('PAGEFOOTER');
+        ExcelReportBuilderMgr.AddDataToSection('PGDefSum',FormatDecimal(TotalAmounts[1]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWritingOffAmount',FormatDecimal(TotalAmounts[2]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWrittenOffAmount',FormatDecimal(TotalAmounts[3]));
+        ExcelReportBuilderMgr.AddDataToSection('PgRemainAmount',FormatDecimal(TotalAmounts[4]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWritingOffReportMonth',FormatDecimal(TotalAmounts[5]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWritingOffReportYear',FormatDecimal(TotalAmounts[6]));
+        ExcelReportBuilderMgr.AddDataToSection('PgCalcRemainAmount',FormatDecimal(TotalAmounts[7]));
+        ExcelReportBuilderMgr.AddDataToSection('SubjectToWOffTotal',FormatDecimal(TotalAmounts[8]));
+        ExcelReportBuilderMgr.AddDataToSection('ExcessivelyWOffTotal',FormatDecimal(TotalAmounts[9]));
+      END ELSE BEGIN
+        ExcelReportBuilderMgr.AddSection('LASTPAGEFOOTER');
+        ExcelReportBuilderMgr.AddDataToSection('PGDefSumLast',FormatDecimal(TotalAmounts[1]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWritingOffAmountLast',FormatDecimal(TotalAmounts[2]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWrittenOffAmountLast',FormatDecimal(TotalAmounts[3]));
+        ExcelReportBuilderMgr.AddDataToSection('PgRemainAmountLast',FormatDecimal(TotalAmounts[4]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWritingOffReportMonthLast',FormatDecimal(TotalAmounts[5]));
+        ExcelReportBuilderMgr.AddDataToSection('PgWritingOffReportYearLast',FormatDecimal(TotalAmounts[6]));
+        ExcelReportBuilderMgr.AddDataToSection('PgCalcRemainAmountLast',FormatDecimal(TotalAmounts[7]));
+        ExcelReportBuilderMgr.AddDataToSection('SubjectToWOffLastTotal',FormatDecimal(TotalAmounts[8]));
+        ExcelReportBuilderMgr.AddDataToSection('ExcessivelyWOffLastTotal',FormatDecimal(TotalAmounts[9]));
+      END;
+
+      FOR Count := 1 TO ARRAYLEN(TotalAmounts) DO
+        TotalReportAmounts[Count] += TotalAmounts[Count];
+
+      CLEAR(TotalAmounts);
+    END;
+
+    LOCAL PROCEDURE PopulateReportFooter@1210001();
+    BEGIN
+      ExcelReportBuilderMgr.AddSection('REPORTACTTOTAL');
+      ExcelReportBuilderMgr.AddDataToSection('TotDefSumLast',FormatDecimal(TotalReportAmounts[1]));
+      ExcelReportBuilderMgr.AddDataToSection('TotWritingOffAmountLast',FormatDecimal(TotalReportAmounts[2]));
+      ExcelReportBuilderMgr.AddDataToSection('TotWrittenOffAmountLast',FormatDecimal(TotalReportAmounts[3]));
+      ExcelReportBuilderMgr.AddDataToSection('TotRemainAmountLast',FormatDecimal(TotalReportAmounts[4]));
+      ExcelReportBuilderMgr.AddDataToSection('TotWritingOffReportMonthLast',FormatDecimal(TotalReportAmounts[5]));
+      ExcelReportBuilderMgr.AddDataToSection('TotWritingOffReportYearLast',FormatDecimal(TotalReportAmounts[6]));
+      ExcelReportBuilderMgr.AddDataToSection('TotCalcRemainAmountLast',FormatDecimal(TotalReportAmounts[7]));
+      ExcelReportBuilderMgr.AddDataToSection('TotSubjectToWOffLastTotal',FormatDecimal(TotalReportAmounts[8]));
+      ExcelReportBuilderMgr.AddDataToSection('TotExcessivelyWOffLastTotal' ,FormatDecimal(TotalReportAmounts[9]));
+
+      ExcelReportBuilderMgr.AddSection('REPORTFOOTER');
+      ExcelReportBuilderMgr.AddDataToSection('ChairmanTitle',StdRepMgt.GetEmpPosition(Chairman));
+      ExcelReportBuilderMgr.AddDataToSection('Chairman',StdRepMgt.GetEmpName(Chairman));
+      ExcelReportBuilderMgr.AddDataToSection('Member1Title',StdRepMgt.GetEmpPosition(Commission[1]));
+      ExcelReportBuilderMgr.AddDataToSection('Member1',StdRepMgt.GetEmpName(Commission[1]));
+      ExcelReportBuilderMgr.AddDataToSection('Member2Title',StdRepMgt.GetEmpPosition(Commission[2]));
+      ExcelReportBuilderMgr.AddDataToSection('Member2',StdRepMgt.GetEmpName(Commission[2]));
+      ExcelReportBuilderMgr.AddDataToSection('Member3Title',StdRepMgt.GetEmpPosition(Commission[3]));
+      ExcelReportBuilderMgr.AddDataToSection('Member3',StdRepMgt.GetEmpName(Commission[3]));
+
+      ExcelReportBuilderMgr.AddDataToSection('ItemsCount',FORMAT(TableLineCounter - 1));
+
+      ExcelReportBuilderMgr.AddDataToSection('InChargeTitle',StdRepMgt.GetEmpPosition(MatRespPerson[1]));
+      ExcelReportBuilderMgr.AddDataToSection('InCharge1',StdRepMgt.GetEmpName(MatRespPerson[1]));
+      ExcelReportBuilderMgr.AddDataToSection('InChargeTitle2',StdRepMgt.GetEmpPosition(MatRespPerson[2]));
+      ExcelReportBuilderMgr.AddDataToSection('InCharge2',StdRepMgt.GetEmpName(MatRespPerson[2]));
+      ExcelReportBuilderMgr.AddDataToSection('InChargeTitle3',StdRepMgt.GetEmpPosition(MatRespPerson[3]));
+      ExcelReportBuilderMgr.AddDataToSection('InCharge3',StdRepMgt.GetEmpName(MatRespPerson[3]));
+
+      ExcelReportBuilderMgr.AddDataToSection('AccountantTitle',StdRepMgt.GetEmpPosition(CheckedBy));
+      ExcelReportBuilderMgr.AddDataToSection('Accountant',StdRepMgt.GetEmpName(CheckedBy));
+    END;
+
+    LOCAL PROCEDURE InitReportTemplate@1210006();
+    VAR
+      FASetup@1210000 : Record 5603;
+    BEGIN
+      FASetup.GET;
+      FASetup.TESTFIELD("INV-11 Template Code");
+
+      ExcelReportBuilderMgr.InitTemplate(FASetup."INV-11 Template Code");
+      ExcelReportBuilderMgr.SetSheet('Sheet1');
+    END;
+
+    PROCEDURE InitializeRequest@1210003(NewInvStartDate@1210007 : Date;NewInvEndDate@1210006 : Date);
+    BEGIN
+      InvStartDate := NewInvStartDate;
+      InvEndDate := NewInvEndDate;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210009(NewFileName@1210000 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    LOCAL PROCEDURE FormatDecimal@1210030(Value@1210000 : Decimal) : Text;
+    BEGIN
+      EXIT(StdRepMgt.FormatReportValue(Value,2));
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

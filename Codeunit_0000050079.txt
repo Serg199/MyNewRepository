@@ -1,0 +1,183 @@
+OBJECT Codeunit 50079 FI Jnl.-Post Batch
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26.12.16;
+    Time=13:09:28;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50220;
+    Permissions=TableData 50219=imd;
+    OnRun=BEGIN
+            FIJnlLine.COPY(Rec);
+            Code;
+            Rec := FIJnlLine;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=cannot exceed %1 characters;RUS=не может превосходить %1 символов';
+      Text001@1001 : TextConst 'ENU=Journal Batch Name    #1##########\\;RUS=Код Раздела           #1##########\\';
+      Text002@1002 : TextConst 'ENU=Checking lines        #2######\;RUS=Проверка строк        #2######\';
+      Text005@1005 : TextConst 'ENU=Posting lines         #3###### @4@@@@@@@@@@@@@;RUS=Учет строк            #3###### @4@@@@@@@@@@@@@';
+      FIJnlLine@1008 : Record 50220;
+      FIJnlLine2@1009 : Record 50220;
+      FIJnlLine3@1010 : Record 50220;
+      FIJnlTemplate@1011 : Record 50218;
+      FIJnlBatch@1012 : Record 50219;
+      FIReg@1013 : Record 50109;
+      LedgEntryDim@1014 : Record 355;
+      FILedgEntry@1015 : Record 50106;
+      FIJnlCheckLine@1018 : Codeunit 50076;
+      FIJnlPostLine@1019 : Codeunit 50077;
+      DimMgt@1022 : Codeunit 408;
+      Window@1023 : Dialog;
+      LineCount@1024 : Integer;
+      StartLineNo@1025 : Integer;
+      NoOfRecords@1026 : Integer;
+      FIRegNo@1027 : Integer;
+      LastDocNo@1028 : Code[20];
+      LastDocNo2@1029 : Code[20];
+      LastPostedDocNo@1030 : Code[20];
+
+    LOCAL PROCEDURE Code@1();
+    VAR
+      JnlLineDim@1000 : Record 356;
+      TempJnlLineDim@1001 : TEMPORARY Record 356;
+    BEGIN
+      WITH FIJnlLine DO BEGIN
+        SETRANGE("Journal Template Name","Journal Template Name");
+        SETRANGE("Journal Batch Name","Journal Batch Name");
+        IF RECORDLEVELLOCKING THEN
+          LOCKTABLE;
+
+        FIJnlTemplate.GET("Journal Template Name");
+        FIJnlBatch.GET("Journal Template Name","Journal Batch Name");
+        IF STRLEN(INCSTR(FIJnlBatch.Name)) > MAXSTRLEN(FIJnlBatch.Name) THEN
+          FIJnlBatch.FIELDERROR(
+            Name,
+            STRSUBSTNO(
+              Text000,
+              MAXSTRLEN(FIJnlBatch.Name)));
+
+        IF NOT FIND('=><') THEN BEGIN
+          "Line No." := 0;
+          COMMIT;
+          EXIT;
+        END;
+
+        IF GUIALLOWED THEN BEGIN
+          Window.OPEN(
+            Text001 +
+            Text002 +
+            Text005);
+          Window.UPDATE(1,"Journal Batch Name");
+        END;
+        // Check lines
+        LineCount := 0;
+        StartLineNo := "Line No.";
+        REPEAT
+          LineCount := LineCount + 1;
+
+          IF GUIALLOWED THEN BEGIN
+            Window.UPDATE(2,LineCount);
+          END;
+
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"FI Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name","Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.","Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          TempJnlLineDim.DELETEALL;
+          DimMgt.CopyJnlLineDimToJnlLineDim(JnlLineDim,TempJnlLineDim);
+          FIJnlCheckLine.RunCheck(FIJnlLine,TempJnlLineDim);
+          IF NEXT = 0 THEN
+            FIND('-');
+        UNTIL "Line No." = StartLineNo;
+        NoOfRecords := LineCount;
+
+        LedgEntryDim.LOCKTABLE;
+        FILedgEntry.LOCKTABLE;
+        IF RECORDLEVELLOCKING THEN
+          IF FILedgEntry.FINDLAST THEN;
+        FIReg.LOCKTABLE;
+        IF FIReg.FINDLAST THEN
+          FIRegNo := FIReg."No." + 1
+        ELSE
+          FIRegNo := 1;
+
+        // Post lines
+        LineCount := 0;
+        LastDocNo := '';
+        LastDocNo2 := '';
+        LastPostedDocNo := '';
+        FIND('-');
+        REPEAT
+          LineCount := LineCount + 1;
+
+          IF GUIALLOWED THEN BEGIN
+            Window.UPDATE(3,LineCount);
+            Window.UPDATE(4,ROUND(LineCount / NoOfRecords * 10000,1));
+          END;
+
+          LastDocNo2 := "Document No.";
+
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"FI Journal Line");
+          JnlLineDim.SETRANGE("Journal Template Name","Journal Template Name");
+          JnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+          JnlLineDim.SETRANGE("Journal Line No.","Line No.");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          TempJnlLineDim.DELETEALL;
+          DimMgt.CopyJnlLineDimToJnlLineDim(JnlLineDim,TempJnlLineDim);
+          FIJnlPostLine.RunWithCheck(FIJnlLine,TempJnlLineDim);
+        UNTIL NEXT = 0;
+
+        IF FIReg.FINDLAST THEN;
+        IF FIReg."No." <> FIRegNo THEN
+          FIRegNo := 0;
+
+        INIT;
+        "Line No." := FIRegNo;
+
+        // Update/delete lines
+        IF FIRegNo <> 0 THEN BEGIN
+          IF NOT RECORDLEVELLOCKING THEN BEGIN
+            JnlLineDim.LOCKTABLE(TRUE,TRUE);
+            LOCKTABLE(TRUE,TRUE);
+          END;
+          FIJnlLine2.COPYFILTERS(FIJnlLine);
+          FIJnlLine2.SETFILTER("FI No.",'<>%1','');
+          IF FIJnlLine2.FINDLAST THEN; // Remember the last line
+          JnlLineDim.SETRANGE("Table ID",DATABASE::"FI Journal Line");
+          JnlLineDim.COPYFILTER("Journal Template Name","Journal Template Name");
+          JnlLineDim.COPYFILTER("Journal Batch Name","Journal Batch Name");
+          JnlLineDim.SETRANGE("Allocation Line No.",0);
+          FIJnlLine3.COPY(FIJnlLine);
+          IF FIJnlLine3.FIND('-') THEN
+            REPEAT
+              JnlLineDim.SETRANGE("Journal Line No.",FIJnlLine3."Line No.");
+              JnlLineDim.DELETEALL;
+              FIJnlLine3.DELETE;
+            UNTIL FIJnlLine3.NEXT = 0;
+        END;
+
+        COMMIT;
+        CLEAR(FIJnlCheckLine);
+        CLEAR(FIJnlPostLine);
+      END;
+      COMMIT;
+    END;
+
+    BEGIN
+    {
+      NC NCS-2360 ORM Created
+    }
+    END.
+  }
+}
+

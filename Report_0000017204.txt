@@ -1,0 +1,272 @@
+OBJECT Report 17204 Create Tax Registers
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Tax Registers;
+               RUS=Расчет налоговых регистров];
+    ProcessingOnly=Yes;
+  }
+  DATASET
+  {
+    { 7598;    ;DataItem;                    ;
+               DataItemTable=Table17207;
+               DataItemTableView=SORTING(Code);
+               OnPreDataItem=BEGIN
+                               IF GETRANGEMIN(Code) <> GETRANGEMAX(Code) THEN
+                                 ERROR(Text1000);
+
+                               TESTFIELD(Status,Status::Open);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TaxRegTermMgt.CheckTaxRegTerm(TRUE,Code,
+                                    DATABASE::"Tax Register Term",DATABASE::"Tax Register Term Formula");
+
+                                  TaxRegTermMgt.CheckTaxRegLink(TRUE,Code,
+                                    DATABASE::"Tax Register Template");
+
+                                  CreateTaxRegGLEntry.BuildTaxRegGLCorresp(
+                                    Code,CALCDATE('<-CM>',NORMALDATE(DatePeriod."Period Start")),CALCDATE('<CM>',NORMALDATE(DatePeriod."Period End")));
+                                END;
+
+               ReqFilterFields=Code }
+
+    { 9857;1   ;DataItem;                    ;
+               DataItemTable=Table2000000007;
+               DataItemTableView=SORTING(Period Type,Period Start)
+                                 WHERE(Period Type=CONST(Month));
+               OnPreDataItem=BEGIN
+                               SETRANGE("Period Type","Period Type"::Month);
+                               SETRANGE("Period Start",NORMALDATE(DatePeriod."Period Start"),NORMALDATE(DatePeriod."Period End"));
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  StartDate := NORMALDATE("Period Start");
+                                  EndDate := NORMALDATE("Period End");
+
+                                  CASE TRUE OF
+                                    UseGLEntries:
+                                      CreateTaxRegGLEntry.CreateRegister("Tax Register Section".Code,StartDate,EndDate);
+                                    UseItemEntries:
+                                      CreateTaxRegItemEntry.CreateRegister("Tax Register Section".Code,StartDate,EndDate);
+                                    UseCVEntries:
+                                      CreateTaxRegCVEntry.CreateRegister("Tax Register Section".Code,StartDate,EndDate);
+                                    UseFAEntries:
+                                      CreateTaxRegFAEntry.CreateRegister("Tax Register Section".Code,StartDate,EndDate);
+                                    UseFEEntries:
+                                      CreateTaxRegFEEntry.CreateRegister("Tax Register Section".Code,StartDate,EndDate);
+                                    UsePREntries:
+                                      CreateTaxRegPREntry.CreateRegister("Tax Register Section".Code,StartDate,EndDate);
+                                    UseTemplates:
+                                      BEGIN
+                                        LinkAccumulateRecordRef.OPEN(DATABASE::"Tax Register Accumulation");
+                                        TaxRegAccumulation.RESET;
+                                        TaxRegAccumulation.SETCURRENTKEY("Section Code","Tax Register No.","Template Line No.");
+                                        TaxRegAccumulation.SETRANGE("Section Code","Tax Register Section".Code);
+                                        TaxRegAccumulation.SETRANGE("Ending Date",EndDate);
+                                        LinkAccumulateRecordRef.SETVIEW(GETVIEW(FALSE));
+                                        CycleLevel := 1;
+                                        WHILE CycleLevel <> 0 DO BEGIN
+                                          TaxReg.SETRANGE(Level,CycleLevel);
+                                          TaxReg.SETRANGE("Section Code","Tax Register Section".Code);
+                                          IF NOT TaxReg.FINDSET THEN
+                                            CycleLevel := 0
+                                          ELSE BEGIN
+                                            REPEAT
+                                              IF TaxReg."Storing Method" = TaxReg."Storing Method"::Calculation THEN BEGIN
+                                                TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+                                                TaxRegAccumulation.DELETEALL;
+                                                TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+                                                IF TaxRegTemplate.FINDFIRST THEN BEGIN
+                                                  TaxRegTemplate.SETRANGE("Section Code","Tax Register Section".Code);
+                                                  TaxRegTemplate.SETRANGE("Date Filter",StartDate,EndDate);
+                                                  TemplateRecordRef.GETTABLE(TaxRegTemplate);
+                                                  TemplateRecordRef.SETVIEW(TaxRegTemplate.GETVIEW(FALSE));
+                                                  TaxRegTermMgt.AccumulateTaxRegTemplate(
+                                                    TemplateRecordRef,EntryNoAmountBuffer,LinkAccumulateRecordRef);
+                                                  EntryNoAmountBuffer.DELETEALL;
+                                                END;
+                                              END;
+                                            UNTIL TaxReg.NEXT = 0;
+                                            CycleLevel += 1;
+                                          END;
+                                        END;
+                                      END;
+                                  END;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,Periodicity);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+
+                   UseItemEntries := TRUE;
+                   UseCVEntries := TRUE;
+                   UseGLEntries := TRUE;
+                   UseFAEntries := TRUE;
+                   UseFEEntries := TRUE;
+                   UseTemplates := TRUE;
+                   UsePREntries := TRUE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 23  ;2   ;Field     ;
+                  CaptionML=[ENU=Periodicity;
+                             RUS=Периодичность];
+                  OptionCaptionML=[ENU=Month,Quarter,Year;
+                                   RUS=Месяц,Квартал,Год];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Periodicity;
+                  OnValidate=BEGIN
+                               PeriodReportManagement.InitPeriod(CalendarPeriod,Periodicity);
+                               AccountPeriod := '';
+                               PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             END;
+                              }
+
+      { 21  ;2   ;Field     ;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,FALSE);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 18  ;2   ;Field     ;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE }
+
+      { 20  ;2   ;Field     ;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Templates;
+                             RUS=Шаблоны];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseTemplates }
+
+      { 11  ;2   ;Field     ;
+                  CaptionML=[ENU=G/L Entries;
+                             RUS=Операции ГК];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseGLEntries }
+
+      { 5   ;2   ;Field     ;
+                  CaptionML=[ENU=Items;
+                             RUS=Товары];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseItemEntries }
+
+      { 9   ;2   ;Field     ;
+                  CaptionML=[ENU=Vendors/Customers;
+                             RUS=Поставщики/клиенты];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseCVEntries }
+
+      { 13  ;2   ;Field     ;
+                  CaptionML=[ENU=Fixed Assets;
+                             RUS=Основные средства];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseFAEntries }
+
+      { 15  ;2   ;Field     ;
+                  CaptionML=[ENU=Future Expences;
+                             RUS=Расходы будущих периодов];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UseFEEntries }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Payroll Entries;
+                             RUS=Операции зарплаты];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=UsePREntries }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      TaxReg@1001 : Record 17200;
+      TaxRegTemplate@1002 : Record 17202;
+      TaxRegAccumulation@1003 : Record 17208;
+      EntryNoAmountBuffer@1004 : Record 386;
+      CalendarPeriod@1210004 : Record 2000000007;
+      DatePeriod@1210003 : Record 2000000007;
+      CreateTaxRegItemEntry@1007 : Codeunit 17206;
+      CreateTaxRegFEEntry@1008 : Codeunit 17207;
+      CreateTaxRegCVEntry@1010 : Codeunit 17204;
+      CreateTaxRegGLEntry@1011 : Codeunit 17203;
+      CreateTaxRegFAEntry@1012 : Codeunit 17205;
+      CreateTaxRegPREntry@1210012 : Codeunit 17208;
+      TaxRegTermMgt@1013 : Codeunit 17200;
+      PeriodReportManagement@1210001 : Codeunit 12406;
+      TemplateRecordRef@1210002 : RecordRef;
+      LinkAccumulateRecordRef@1210000 : RecordRef;
+      StartDate@1015 : Date;
+      EndDate@1016 : Date;
+      UseTemplates@1210005 : Boolean;
+      UseGLEntries@1210006 : Boolean;
+      UseFEEntries@1210007 : Boolean;
+      UseCVEntries@1210008 : Boolean;
+      UseFAEntries@1210009 : Boolean;
+      UseItemEntries@1210010 : Boolean;
+      UsePREntries@1210011 : Boolean;
+      Periodicity@1025 : 'Month,Quarter,Year';
+      AccountPeriod@1026 : Text[30];
+      CycleLevel@1027 : Integer;
+      Text1000@1029 : TextConst 'ENU=There is no filter for Section Code. Continue?;RUS=Нет фильтра для кода секции. Продолжить?';
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

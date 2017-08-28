@@ -1,0 +1,206 @@
+OBJECT Report 12458 Posted Cash Ingoing Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Posted Cash Ingoing Order;
+               RUS=Учт. прих. кассовый ордер];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CompanyInfo.GET;
+                  CashOrderReportHelper.InitIngoingReportTmpl;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     CashOrderReportHelper.ExportDataFile(FileName)
+                   ELSE
+                     CashOrderReportHelper.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 5439;    ;DataItem;                    ;
+               DataItemTable=Table272;
+               DataItemTableView=SORTING(Entry No.);
+               OnAfterGetRecord=BEGIN
+                                  CurrencyText := CurrencyTxt;
+                                  TESTFIELD("Entry Status","Entry Status"::Posted);
+                                  BankAcc.GET("Bank Account No.");
+                                  BankAcc.TESTFIELD("Account Type",BankAcc."Account Type"::"Cash Account");
+                                  BankGLAccPostingGr.GET(BankAcc."Bank Acc. Posting Group");
+                                  DebitGLNo := BankGLAccPostingGr."G/L Bank Account No.";
+                                  BAnkGLEntries.GET("Bank Account Ledger Entry No.");
+
+                                  CASE "Bal. Account Type" OF
+                                    "Bal. Account Type"::Customer:
+                                      BEGIN
+                                        CustomerGeneralLedger.SETCURRENTKEY("Transaction No.");
+                                        CustomerGeneralLedger.SETRANGE("Transaction No.",BAnkGLEntries."Transaction No.");
+                                        CustomerGeneralLedger.FINDFIRST;
+                                        CustomerPostingGr.GET(CustomerGeneralLedger."Customer Posting Group");
+                                        SettlAccNo := CustomerPostingGr."Receivables Account";
+                                      END;
+                                    "Bal. Account Type"::Vendor:
+                                      BEGIN
+                                        PurchaserGLEntry.SETCURRENTKEY("Transaction No.");
+                                        PurchaserGLEntry.SETRANGE("Transaction No.",BAnkGLEntries."Transaction No.");
+                                        PurchaserGLEntry.FINDFIRST;
+                                        VendorPostingGr.GET(PurchaserGLEntry."Vendor Posting Group");
+                                        SettlAccNo := VendorPostingGr."Payables Account";
+                                      END;
+                                    "Bal. Account Type"::"Bank Account":
+                                      BEGIN
+                                        BankAcc.GET("Bal. Account No.");
+                                        BankGLAccPostingGr.GET(BankAcc."Bank Acc. Posting Group");
+                                        SettlAccNo := BankGLAccPostingGr."G/L Bank Account No.";
+                                      END;
+                                    "Bal. Account Type"::"G/L Account":
+                                      BEGIN
+                                        SettlAccNo := "Bal. Account No."
+                                      END;
+                                  END;
+
+                                  DocAmount := "Debit Amount";
+                                  WrittenAmount := LocMgt.Amount2Text(BankAcc."Currency Code",DocAmount);
+
+                                  IF BankAcc."Currency Code" <> '' THEN BEGIN
+                                    Currency.GET(BankAcc."Currency Code");
+                                    CurrencyText := Currency.Description;
+                                    WrittenAmountNumber := FORMAT(DocAmount DIV 1) + ' ' + COPYSTR(Currency."Unit Name 1",1) + '. ' +
+                                    FormatAmount(DocAmount MOD 1 * 100) + ' ' + COPYSTR(Currency."Hundred Name 1",1) + '.';
+                                  END ELSE
+                                    WrittenAmountNumber :=
+                                      STRSUBSTNO(AmountCurrencyTxt,FORMAT(ABS(Amount) DIV 1),FormatAmount(ABS(Amount) MOD 1 * 100));
+
+                                  IF DocAmount < 0 THEN BEGIN
+                                    WrittenAmount := MinusTxt + WrittenAmount;
+                                    WrittenAmountNumber := MinusTxt + WrittenAmountNumber;
+                                  END;
+                                  CashierFullName := BankAcc.Contact;
+                                  PaymentCheckNo :=
+                                    LocMgt.DigitalPartCode("Document No.");
+
+                                  FillBody("Check Ledger Entry");
+                                END;
+
+               ReqFilterFields=Entry No. }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210003 : Record 79;
+      CustomerGeneralLedger@1210005 : Record 21;
+      PurchaserGLEntry@1210006 : Record 25;
+      BAnkGLEntries@1210007 : Record 271;
+      CustomerPostingGr@1210008 : Record 92;
+      VendorPostingGr@1210009 : Record 93;
+      BankAcc@1210010 : Record 270;
+      BankGLAccPostingGr@1210011 : Record 277;
+      Currency@1210000 : Record 4;
+      LocMgt@1210012 : Codeunit 12400;
+      LocRepMgt@1210021 : Codeunit 12401;
+      CashOrderReportHelper@1210004 : Codeunit 14936;
+      DocAmount@1210013 : Decimal;
+      WrittenAmount@1210014 : Text[250];
+      SettlAccNo@1210015 : Code[20];
+      DebitGLNo@1210016 : Code[20];
+      PaymentCheckNo@1210017 : Text[20];
+      CashierFullName@1210018 : Text[50];
+      WrittenAmountNumber@1210001 : Text[250];
+      AmountCurrencyTxt@1210019 : TextConst 'RUS=%1 rub. %2 kop.';
+      CurrencyText@1210002 : Text[30];
+      MinusTxt@1470000 : TextConst 'RUS="(minus) "';
+      FileName@1210022 : Text;
+      CurrencyTxt@1210020 : TextConst 'RUS=rub., kop.';
+
+    PROCEDURE FormatAmount@1(Amount@1210000 : Decimal) : Text[30];
+    BEGIN
+      IF Amount = 0 THEN
+        EXIT('00');
+      IF Amount < 10 THEN
+        EXIT('0' + FORMAT(FORMAT(Amount)));
+      EXIT(FORMAT(Amount));
+    END;
+
+    PROCEDURE TransferReportValues@1210006(VAR ReportValues@1210004 : ARRAY [13] OF Text;CheckLedgerEntry@1210001 : Record 272);
+    BEGIN
+      ReportValues[1] := LocRepMgt.GetCompanyName;
+      ReportValues[2] := CompanyInfo."OKPO Code";
+      ReportValues[3] := PaymentCheckNo;
+      ReportValues[4] := LocMgt.Date2Text(CheckLedgerEntry."Posting Date");
+      ReportValues[5] := CurrencyText;
+      ReportValues[6] := DebitGLNo;
+      ReportValues[7] := '-';
+      ReportValues[8] := SettlAccNo;
+      ReportValues[9] := LocRepMgt.FormatReportValue(CheckLedgerEntry."Debit Amount",2);
+      ReportValues[10] := BAnkGLEntries."Reason Code";
+      ReportValues[11] := CheckLedgerEntry.Description;
+      ReportValues[12] := CheckLedgerEntry."Payment Purpose";
+      ReportValues[13] := WrittenAmount;
+      ReportValues[14] := CheckLedgerEntry."Cash Order Including";
+      ReportValues[15] := CheckLedgerEntry."Cash Order Supplement";
+      ReportValues[16] := CompanyInfo."Accountant Name";
+      ReportValues[17] := CashierFullName;
+    END;
+
+    PROCEDURE TransferReceiptValues@1210004(VAR ReceiptValues@1210001 : ARRAY [14] OF Text;CheckLedgerEntry@1210002 : Record 272);
+    BEGIN
+      ReceiptValues[1] := LocRepMgt.GetCompanyName;
+      ReceiptValues[2] := PaymentCheckNo;
+      ReceiptValues[3] := LocMgt.Date2Text(CheckLedgerEntry."Posting Date");
+      ReceiptValues[4] := CheckLedgerEntry.Description;
+      ReceiptValues[5] := COPYSTR(CheckLedgerEntry."Payment Purpose",1,40);
+      ReceiptValues[6] := COPYSTR(CheckLedgerEntry."Payment Purpose",41,50);
+      ReceiptValues[7] := COPYSTR(CheckLedgerEntry."Payment Purpose",91);
+      ReceiptValues[8] := WrittenAmountNumber;
+      ReceiptValues[9] := COPYSTR(WrittenAmount,1,50);
+      ReceiptValues[10] := COPYSTR(WrittenAmount,51,50);
+      ReceiptValues[11] := COPYSTR(WrittenAmount,101);
+      ReceiptValues[12] := CheckLedgerEntry."Cash Order Including";
+      ReceiptValues[13] := CompanyInfo."Accountant Name";
+      ReceiptValues[14] := CashierFullName;
+    END;
+
+    LOCAL PROCEDURE FillBody@1210003(CheckLedgerEntry@1210000 : Record 272);
+    VAR
+      ReportValues@1210001 : ARRAY [17] OF Text;
+      ReceiptValues@1210002 : ARRAY [14] OF Text;
+    BEGIN
+      TransferReportValues(ReportValues,CheckLedgerEntry);
+      TransferReceiptValues(ReceiptValues,CheckLedgerEntry);
+      CashOrderReportHelper.FillBodyIngoing(ReportValues,ReceiptValues);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210000(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

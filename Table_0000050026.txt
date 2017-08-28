@@ -1,0 +1,357 @@
+OBJECT Table 50026 Report Template (Word/Excel)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.08.17;
+    Time=14:20:38;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    DataPerCompany=No;
+    DataCaptionFields=Report ID;
+    OnInsert=BEGIN
+               CALCFIELDS("Report Name");
+               //IF "Contragent Type" = '' THEN
+               //  "Contragent Type" := "Report Name";
+             END;
+
+    IncludeDataInDesc=Yes;
+    CaptionML=[ENU=Report Template (Word/Excel);
+               RUS=Отчет Шаблон (Word/Excel)];
+    LookupPageID=Page50060;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Report ID           ;Integer       ;TableRelation=Object.ID WHERE (Type=CONST(Report));
+                                                   OnValidate=BEGIN
+                                                                CALCFIELDS("Report Name");
+                                                              END;
+
+                                                   OnLookup=VAR
+                                                              DataBaseObjects@1101495000 : Record 2000000001;
+                                                              DataBaseObject@1101495001 : Page 50023;
+                                                            BEGIN
+                                                              //NC TR092 > DP
+                                                              CLEAR(DataBaseObject);
+                                                              DataBaseObjects.SETRANGE(Type,3);
+                                                              IF "Report ID"<>0 THEN
+                                                                IF DataBaseObjects.GET(3,'',"Report ID") THEN;
+
+                                                              DataBaseObject.SETTABLEVIEW(DataBaseObjects);
+                                                              IF DataBaseObject.RUNMODAL = ACTION::LookupOK THEN
+                                                                "Report ID" := DataBaseObjects.ID;
+                                                              // //NC TR092 < DP
+                                                            END;
+
+                                                   CaptionML=[ENU=Report ID;
+                                                              RUS=Отчет Но.] }
+    { 2   ;   ;Company Name        ;Text100       ;TableRelation=Company }
+    { 3   ;   ;Report Name         ;Text80        ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup(AllObjWithCaption."Object Caption" WHERE (Object Type=CONST(Report),
+                                                                                                                Object ID=FIELD(Report ID)));
+                                                   CaptionML=[ENU=Report Name;
+                                                              RUS=Имя отчета];
+                                                   Editable=No }
+    { 4   ;   ;Source Type         ;Option        ;OnValidate=BEGIN
+                                                                IF "Source Type" <> xRec."Source Type" THEN
+                                                                  "Source No." := '';
+                                                              END;
+
+                                                   CaptionML=[ENU=Contragent Type;
+                                                              RUS=Контрагент Тип];
+                                                   OptionCaptionML=[ENU=Customer,Vendor;
+                                                                    RUS=Клиент,Поставщик];
+                                                   OptionString=Customer,Vendor }
+    { 5   ;   ;Source No.          ;Code20        ;TableRelation=IF (Source Type=CONST(Customer)) Customer
+                                                                 ELSE IF (Source Type=CONST(Vendor)) Vendor;
+                                                   CaptionML=[ENU=Contragent No.;
+                                                              RUS=Контрагент Но.] }
+    { 6   ;   ;Agreement No.       ;Code20        ;TableRelation=IF (Source Type=CONST(Vendor)) "Vendor Agreement".No. WHERE (Vendor No.=FIELD(Source No.))
+                                                                 ELSE IF (Source Type=CONST(Customer)) "Customer Agreement".No. WHERE (Customer No.=FIELD(Source No.));
+                                                   CaptionML=[ENU=Agreement No.;
+                                                              RUS=Договор Но.] }
+    { 20  ;   ;Template File Name  ;Text250       ;OnValidate=BEGIN
+                                                                {NC EB зачем???
+                                                                IF "Template File Name" <> '' THEN BEGIN
+                                                                  IF EXISTS("Template File Name") THEN BEGIN
+                                                                    "Template File Name" := "Report Template".IMPORT("Template File Name", FALSE);
+                                                                    WHILE STRPOS("Template File Name", '\') <> 0 DO
+                                                                      "Template File Name" := COPYSTR("Template File Name",  STRPOS("Template File Name", '\') + 1);
+                                                                    IF "Template File Name" <> xRec."Template File Name" THEN
+                                                                      "Template Sheet Name" := '';
+                                                                  END ELSE
+                                                                    ERROR(Text000, CONVERTSTR("Template File Name", '\','/'));
+                                                                END ELSE
+                                                                  CLEAR("Report Template");
+                                                                 }
+                                                              END;
+
+                                                   CaptionML=[ENU=Template File Name;
+                                                              RUS=Имя файла] }
+    { 30  ;   ;Template Sheet Name ;Text250       ;CaptionML=[ENU=Template Sheet Name;
+                                                              RUS=Имя листа] }
+    { 40  ;   ;Report Template     ;BLOB          ;CaptionML=[ENU=Report Template;
+                                                              RUS=Шаблон] }
+    { 50  ;   ;Report Type         ;Option        ;InitValue=Excel;
+                                                   CaptionML=[ENU=Report Type;
+                                                              RUS=Тип отчета];
+                                                   OptionString=Excel,Word }
+  }
+  KEYS
+  {
+    {    ;Report ID,Company Name,Source Type,Source No.,Agreement No.;
+                                                   Clustered=Yes }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000000000 : TextConst 'ENU=File %1 is not found.;RUS=Файл %1 не найден.';
+      ExcelBuf@1000000001 : TEMPORARY Record 370;
+      Text001@1000000002 : TextConst 'ENU=Import File,Export File;RUS=Импорт файла,Экспорт файла';
+      ExportInProgress@1000000003 : Boolean;
+      Text002@1000000004 : TextConst 'ENU=Export is not initialized.;RUS=Инициализация Экспорта.';
+      Text003@1000000005 : TextConst 'ENU=Template File is not installed.;RUS=Файл Шаблона не установлен.';
+      FileName@1000000006 : Text[1024];
+      AccSchedReport@1000000007 : Record 50060;
+      AccSchedName@1000000008 : Code[10];
+      AccSchedColumns@1000000009 : Code[10];
+      Text50001@1101495000 : TextConst 'ENU=Import Excel File,Export Excel File;RUS=Импорт файла Шаблона,Экспорт Файла Шаблона';
+
+    PROCEDURE AssistFile@1000000000();
+    VAR
+      Menuresult@1000000000 : Integer;
+    BEGIN
+      ExcelBuf.DELETEALL;
+      Menuresult := STRMENU(Text50001, 1);
+      CASE Menuresult OF
+        1 : BEGIN
+          IF "Report Type"="Report Type"::Excel THEN
+            FileName := "Report Template".IMPORT('*.xls', TRUE)
+          ELSE
+            FileName := "Report Template".IMPORT('*.doc', TRUE);
+          IF FileName <> '' THEN BEGIN
+            "Template File Name" := FileName;
+            WHILE STRPOS("Template File Name",'\') <> 0 DO
+              "Template File Name" := COPYSTR("Template File Name",STRPOS("Template File Name",'\') + 1);
+          END ELSE
+            CLEAR("Report Template");
+          IF "Template File Name" <> xRec."Template File Name" THEN
+            "Template Sheet Name" := '';
+        END;
+        2 : BEGIN
+          CALCFIELDS("Report Template");
+          IF "Report Template".HASVALUE THEN
+            "Report Template".EXPORT("Template File Name", TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE AssistSheet@1000000001();
+    BEGIN
+      CLEAR(ExcelBuf);
+      CALCFIELDS("Report Template");
+      IF "Report Type"="Report Type"::Excel THEN
+        IF "Report Template".HASVALUE THEN BEGIN
+          //NC M1 > DP
+          //TDRAAPCOC-133 commented and uncommented >
+          //FileName := GetFileName;
+          FileName := ENVIRON('TMP') + '\' + "Template File Name";
+          //TDRAAPCOC-133 <
+          //NC M1 < DP
+          IF EXISTS(FileName) THEN ERASE(FileName);
+          "Report Template".EXPORT(FileName, FALSE);
+          "Template Sheet Name" := ExcelBuf.SelectSheetsName(FileName);
+          ERASE(FileName);
+          CLEAR(ExcelBuf);
+        END;
+    END;
+
+    PROCEDURE ValidateTemplate@1000000002("Object ID"@1000000000 : Text[30]);
+    VAR
+      iReportID@1000000001 : Integer;
+    BEGIN
+      //IF NOT ValidateAccShedTemplate() THEN
+      BEGIN
+
+      WHILE STRPOS("Object ID", ' ') <> 0 DO
+        "Object ID" := COPYSTR("Object ID",  STRPOS("Object ID", ' ') + 1);
+      EVALUATE(iReportID, "Object ID");
+      GET(iReportID);
+      CALCFIELDS("Report Template");
+      IF NOT "Report Template".HASVALUE THEN
+        ERROR(Text003);
+
+      END;
+    END;
+
+    PROCEDURE ExportStart@1000000005("Object ID"@1000000000 : Text[30]);
+    BEGIN
+      ExportInProgress := TRUE;
+      ValidateTemplate("Object ID");
+      ExcelBuf.DELETEALL;
+      CLEAR(ExcelBuf);
+    END;
+
+    PROCEDURE ExportNum@1000000006(RowNo@1000000000 : Integer;ColNo@1000000001 : Integer;dValue@1000000002 : Decimal);
+    BEGIN
+      IF NOT ExportInProgress THEN EXIT;
+      WITH ExcelBuf DO BEGIN
+        INIT;
+        VALIDATE("Row No.", RowNo);
+        VALIDATE("Column No.", ColNo);
+        "Cell Value as Text" := FORMAT(dValue, 0, 1);
+        IF NOT FIND('=') THEN INSERT(TRUE);
+        END;
+    END;
+
+    PROCEDURE ExportTxt@1000000007(RowNo@1000000002 : Integer;ColNo@1000000001 : Integer;tValue@1000000000 : Text[250]);
+    VAR
+      DecPoint@1000000003 : Text[1];
+      i@1000000004 : Integer;
+      txt@1000000005 : Text[1];
+      txt2@1000000006 : Text[100];
+    BEGIN
+      IF NOT ExportInProgress THEN EXIT;
+      WITH ExcelBuf DO BEGIN
+        INIT;
+        DecPoint := COPYSTR(FORMAT(1.1), 2, 1);
+        txt[1] := 255;
+        REPEAT
+          i += 1;
+        UNTIL (STRPOS('1234567890' + DecPoint + txt, COPYSTR(tValue, i, 1)) = 0) OR
+              (i = STRLEN(tValue));
+        IF (i = STRLEN(tValue)) AND
+           (STRPOS('1234567890' + DecPoint + txt, COPYSTR(tValue, i, 1)) <> 0) THEN
+          BEGIN
+            txt2 := DELCHR(tValue, '=', DecPoint);
+            IF (STRLEN(tValue) - 1 = STRLEN(txt2)) OR
+               (STRLEN(tValue) = STRLEN(txt2)) THEN tValue := DELCHR(tValue, '=', txt);
+          END;
+        VALIDATE("Row No.", RowNo);
+        VALIDATE("Column No.", ColNo);
+        Formula := tValue;
+        IF NOT FIND('=') THEN INSERT(TRUE);
+        END;
+    END;
+
+    PROCEDURE ExportNumFormat@1000000004(RowNo@1000000000 : Integer;ColNo@1000000001 : Integer;dValue@1000000002 : Decimal;isBold@1000000003 : Boolean;isItalic@1000000004 : Boolean);
+    BEGIN
+      IF NOT ExportInProgress THEN EXIT;
+      ExportNum(RowNo, ColNo, dValue);
+      ExcelBuf.Bold := isBold;
+      ExcelBuf.Italic := isItalic;
+      ExcelBuf.MODIFY;
+    END;
+
+    PROCEDURE ExportTxtFormat@1000000003(RowNo@1000000002 : Integer;ColNo@1000000001 : Integer;tValue@1000000000 : Text[250];isBold@1000000004 : Boolean;isItalic@1000000003 : Boolean);
+    BEGIN
+      IF NOT ExportInProgress THEN EXIT;
+      ExportTxt(RowNo, ColNo, tValue);
+      ExcelBuf.Bold := isBold;
+      ExcelBuf.Italic := isItalic;
+      ExcelBuf.MODIFY;
+    END;
+
+    PROCEDURE ExportFinish@1000000008();
+    BEGIN
+      IF NOT ExportInProgress THEN EXIT;
+      {IF ValidateAccShedTemplate() THEN
+      BEGIN
+        FileName := ENVIRON('TMP') + '\' + AccSchedReport."Template File Name";
+        IF EXISTS(FileName) THEN ERASE(FileName);
+        AccSchedReport."Report Template".EXPORT(FileName, FALSE);
+        "Template Sheet Name" := AccSchedReport."Template Sheet Name";
+      END
+      ELSE  }
+      BEGIN
+        FileName := ENVIRON('TMP') + '\' + "Template File Name";
+        IF EXISTS(FileName) THEN ERASE(FileName);
+        "Report Template".EXPORT(FileName, FALSE);
+      END;
+
+      ExcelBuf.OpenBook(FileName, "Template Sheet Name");
+      //ExcelBuf.CreateSheetNoFormat("Template Sheet Name");
+      ExcelBuf.GiveUserControl;
+      CLEAR(ExcelBuf);
+      ExportInProgress := FALSE;
+    END;
+
+    PROCEDURE InitAccSchedule@1000000009(cReportName@1000000000 : Code[10];cColumnsName@1000000001 : Code[10]);
+    BEGIN
+      AccSchedName := cReportName;
+      AccSchedColumns := cColumnsName;
+    END;
+
+    PROCEDURE ValidateAccShedTemplate@1000000011() : Boolean;
+    BEGIN
+      {
+      IF (AccSchedName <> '') AND
+         (AccSchedColumns <> '') THEN
+        IF AccSchedReport.GET(AccSchedName, AccSchedColumns) THEN
+        BEGIN
+          AccSchedReport.CALCFIELDS("Report Template");
+          EXIT(AccSchedReport."Report Template".HASVALUE);
+        END;
+
+      EXIT(FALSE);
+      }
+    END;
+
+    PROCEDURE GetFileName@1101495000() FileName : Text[250];
+    VAR
+      i@1101495000 : Integer;
+      TmpFileName@1101495001 : Text[250];
+      EnvironVar@1101495002 : Text[100];
+      IsEnvVar@1101495003 : Boolean;
+    BEGIN
+      //Nc MRE02 > EB
+      FileName := "Template File Name";
+      IF STRPOS(FileName, '%') > 0 THEN BEGIN
+      //Требуется замена переменных окружения их значениями
+
+        FOR i := 1 TO STRLEN(FileName) DO BEGIN
+
+          IF FileName[i] = '%' THEN
+            IF IsEnvVar THEN BEGIN
+              TmpFileName += ENVIRON(EnvironVar);
+              IsEnvVar := FALSE;
+            END ELSE
+              IsEnvVar := TRUE
+          ELSE
+            IF IsEnvVar THEN
+              EnvironVar += FORMAT(FileName[i])
+            ELSE
+              TmpFileName += FORMAT(FileName[i]);
+
+        END;
+
+        FileName := TmpFileName;
+      END;
+
+      EXIT(FileName);
+      //Nc MRE02 < EB
+    END;
+
+    BEGIN
+    {
+      192
+      -------
+      <summary>
+         Таблица для хранения шаблонов отчетов в Excel
+         192.ExcelReport.IBS-OS 08.08.05
+
+      </summary>
+      NC MRE02 EB добавлена функция GetFileName
+      TDRAAPCOC-133 commented and uncommented function AssistSheet>
+      -----
+      NC NOS-26
+    }
+    END.
+  }
+}
+

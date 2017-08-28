@@ -1,0 +1,753 @@
+OBJECT Codeunit 17303 Tax Calc. Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TaxCalcSection@1000 : Record 17307;
+      Text1000@1001 : TextConst 'ENU=STANDARD;RUS=СТАНДАРТ';
+      Text1006@1004 : TextConst 'ENU=\\Continue?;RUS=\\Продолжить?';
+      Text1007@1005 : TextConst 'ENU=Existing data will be deleted.;RUS=Существующие данные будут удалены.';
+      Text1008@1006 : TextConst 'ENU=Illegal begin date period.;RUS=Недопустимое значение начала периода.';
+      Text1009@1007 : TextConst 'ENU=There are no data in %2 for period ending at %1. Do you want to proceed anyway?;RUS=В %2 не существует данных за период, оканчивающийся %1. Продолжить несмотря на это?';
+      Text1011@1009 : TextConst 'ENU=Illegal end date period.;RUS=Недопустимое значение окончания периода.';
+      Text1012@1010 : TextConst 'ENU=End date must be set.;RUS=Не задана дата окончания.';
+      Text1013@1011 : TextConst 'ENU=Begin date must be set.;RUS=Необходимо задать дату начала.';
+      Text1014@1012 : TextConst 'ENU=Section code must be defined.;RUS=Необходимо определить код раздела.';
+      Text1015@1013 : TextConst 'ENU=must be %1 or %2;RUS=должно быть %1 или %2';
+      Text000@1210003 : TextConst 'ENU=1,5,,Dimension 1 Value Code;RUS=1,5,,Код значения измерения 1';
+      Text001@1210002 : TextConst 'ENU=1,5,,Dimension 2 Value Code;RUS=1,5,,Код значения измерения 2';
+      Text002@1210001 : TextConst 'ENU=1,5,,Dimension 3 Value Code;RUS=1,5,,Код значения измерения 3';
+      Text003@1210000 : TextConst 'ENU=1,5,,Dimension 4 Value Code;RUS=1,5,,Код значения измерения 4';
+      Text005@1014 : TextConst 'ENU=january,february,march,april,may,june,july,august,september,october,november,december;RUS=январь,февраль,март,апрель,май,июнь,июль,август,сентябрь,октябрь,ноябрь,декабрь';
+      Text006@1015 : TextConst 'ENU=first quarter,second quarter,third quarter,fourth quarter;RUS=первый квартал,второй квартал,третий квартал,четвертый квартал';
+
+    PROCEDURE FindDate@1(SearchString@1000 : Text[10];VAR Calendar@1001 : Record 2000000007;PeriodType@1002 : ',,Month,Quarter,Year';AmountType@1003 : 'Current Period,Tax Period') Found : Boolean;
+    BEGIN
+      Calendar.SETRANGE("Period Type",PeriodType);
+      Calendar."Period Type" := PeriodType;
+      IF Calendar."Period End" = 0D THEN
+        Calendar."Period End" := WORKDATE;
+      CASE PeriodType OF
+        PeriodType::Year:
+          Calendar."Period Start" := CALCDATE('<-CY>',NORMALDATE(Calendar."Period End"));
+        PeriodType::Quarter:
+          Calendar."Period Start" := CALCDATE('<-CQ>',NORMALDATE(Calendar."Period End"));
+        ELSE
+          Calendar."Period Start" := CALCDATE('<-CM>',NORMALDATE(Calendar."Period End"));
+      END;
+      IF SearchString IN ['','=><'] THEN
+        SearchString := '=<>';
+      Found := Calendar.FIND(SearchString);
+      IF Found THEN BEGIN
+        Calendar."Period Start" := NORMALDATE(Calendar."Period Start");
+        Calendar."Period End" := NORMALDATE(Calendar."Period End");
+      END;
+      IF AmountType = AmountType::"Tax Period" THEN
+        Calendar."Period Start" := CALCDATE('<-CY>',Calendar."Period Start");
+      EXIT(Found);
+    END;
+
+    PROCEDURE SetPeriodAmountType@2(VAR Calendar@1000 : Record 2000000007;VAR DateFilterText@1001 : Text;VAR PeriodType@1002 : ',,Month,Quarter,Year';VAR AmountType@1003 : 'Current Period,Tax Period');
+    BEGIN
+      DateFilterText := Calendar.GETFILTER("Period End");
+      PeriodType := PeriodType::Month;
+      AmountType := AmountType::"Tax Period";
+      CASE TRUE OF
+        (DateFilterText = ''):
+          BEGIN
+            DateFilterText := '*';
+            AmountType := AmountType::"Current Period";
+          END;
+        (COPYSTR(DateFilterText,1,2) = '..'),
+        (STRPOS(DateFilterText,'..') = STRLEN(DateFilterText) - 1):
+          DateFilterText := '*';
+        CALCDATE('<CM>',Calendar.GETRANGEMIN("Period End")) = Calendar.GETRANGEMAX("Period End"):
+          AmountType := AmountType::"Current Period";
+      END;
+    END;
+
+    PROCEDURE GetDimCaptionClass@3(TaxCalcSectionCode@1000 : Code[10];DimensionNo@1001 : Integer) : Text[250];
+    BEGIN
+      IF NOT TaxCalcSection.GET(TaxCalcSectionCode) THEN
+        CLEAR(TaxCalcSection);
+      CASE DimensionNo OF
+        1:
+          BEGIN
+            IF TaxCalcSection."Dimension 1 Code" <> '' THEN
+              EXIT('1,5,' + TaxCalcSection."Dimension 1 Code");
+
+            EXIT(Text000);
+          END;
+        2:
+          BEGIN
+            IF TaxCalcSection."Dimension 2 Code" <> '' THEN
+              EXIT('1,5,' + TaxCalcSection."Dimension 2 Code");
+
+            EXIT(Text001);
+          END;
+        3:
+          BEGIN
+            IF TaxCalcSection."Dimension 3 Code" <> '' THEN
+              EXIT('1,5,' + TaxCalcSection."Dimension 3 Code");
+
+            EXIT(Text002);
+          END;
+        4:
+          BEGIN
+            IF TaxCalcSection."Dimension 4 Code" <> '' THEN
+              EXIT('1,5,' + TaxCalcSection."Dimension 4 Code");
+
+            EXIT(Text003);
+          END;
+      END;
+    END;
+
+    PROCEDURE SectionSelection@5(PageTemplate@1000 : ' ';VAR TaxCalcSectionCode@1001 : Code[10]) SectionSelected : Boolean;
+    VAR
+      TaxCalcSection@1002 : Record 17307;
+    BEGIN
+      SectionSelected := TRUE;
+
+      TaxCalcSection.RESET;
+      TaxCalcSection.SETRANGE(Type,PageTemplate);
+
+      CASE TaxCalcSection.COUNT OF
+        0:
+          BEGIN
+            TaxCalcSection.INIT;
+            TaxCalcSection.Type := PageTemplate;
+            TaxCalcSection.Code := Text1000;
+            TaxCalcSection.VALIDATE(Type);
+            TaxCalcSection.INSERT;
+            COMMIT;
+          END;
+        1:
+          TaxCalcSection.FINDFIRST;
+        ELSE
+          SectionSelected := PAGE.RUNMODAL(0,TaxCalcSection) = ACTION::LookupOK;
+      END;
+      IF SectionSelected THEN
+        TaxCalcSectionCode := TaxCalcSection.Code;
+    END;
+
+    PROCEDURE OpenReg@1210000(CurrentSectionCode@1000 : Code[10];VAR TaxCalcHeader@1001 : Record 17308);
+    BEGIN
+      TaxCalcHeader.FILTERGROUP := 2;
+      TaxCalcHeader.SETRANGE("Section Code",CurrentSectionCode);
+      TaxCalcHeader.FILTERGROUP := 0;
+    END;
+
+    PROCEDURE ValidateAbsenceGLEntriesDate@6(DateBegin@1000 : Date;DateEnd@1001 : Date;TaxCalcSectionCode@1002 : Code[10]);
+    VAR
+      TaxCalcHeader@1004 : Record 17308;
+      TaxCalcAccumulat@1005 : Record 17314;
+      DeleteConfirmed@1210000 : Boolean;
+    BEGIN
+      ValidateDateBeginDateEnd(DateBegin,DateEnd,TaxCalcSectionCode);
+
+      TaxCalcAccumulat.RESET;
+      TaxCalcAccumulat.SETCURRENTKEY(
+        "Section Code","Register No.","Template Line No.","Starting Date","Ending Date");
+      TaxCalcAccumulat.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcAccumulat.SETFILTER("Starting Date",'%1..',DateBegin);
+
+      TaxCalcHeader.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. G/L Entry");
+      IF TaxCalcHeader.FIND('-') THEN BEGIN
+        REPEAT
+          TaxCalcAccumulat.SETRANGE("Register No.",TaxCalcHeader."No.");
+          IF NOT TaxCalcAccumulat.ISEMPTY THEN
+            IF NOT DeleteConfirmed THEN BEGIN
+              IF NOT CONFIRM(Text1007 + Text1006) THEN
+                ERROR('');
+
+              DeleteConfirmed := TRUE;
+            END;
+          TaxCalcAccumulat.DELETEALL;
+        UNTIL TaxCalcHeader.NEXT = 0;
+      END;
+
+      IF DateBegin = TaxCalcSection."Starting Date" THEN
+        TaxCalcSection."No G/L Entries Date" := 0D
+      ELSE
+        IF FindPrevPeriodGLRegisterData(DateBegin,TaxCalcSectionCode) THEN BEGIN
+          IF DateEnd <= TaxCalcSection."No G/L Entries Date" THEN
+            TaxCalcSection."No G/L Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009) THEN
+            ERROR('');
+          IF (TaxCalcSection."No G/L Entries Date" = 0D) OR
+             ((DateBegin - 1) < TaxCalcSection."No G/L Entries Date")
+          THEN
+            TaxCalcSection."No G/L Entries Date" := DateBegin - 1;
+        END;
+
+      TaxCalcSection.VALIDATE("Last G/L Entries Date",DateEnd);
+      TaxCalcSection.MODIFY;
+    END;
+
+    PROCEDURE FindPrevPeriodGLRegisterData@1210001(FromDate@1210005 : Date;SectionCode@1210003 : Code[10]) : Boolean;
+    VAR
+      TaxCalcHeader@1210001 : Record 17308;
+      TaxCalcAccum@1210000 : Record 17314;
+    BEGIN
+      TaxCalcAccum.RESET;
+      TaxCalcAccum.SETCURRENTKEY(
+        "Section Code","Register No.","Template Line No.","Starting Date","Ending Date");
+      TaxCalcAccum.SETRANGE("Section Code",SectionCode);
+      TaxCalcAccum.SETRANGE("Ending Date",FromDate - 1);
+
+      TaxCalcHeader.SETRANGE("Section Code",SectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. G/L Entry");
+      IF TaxCalcHeader.FINDSET THEN BEGIN
+        REPEAT
+          TaxCalcAccum.SETRANGE("Register No.",TaxCalcHeader."No.");
+          IF TaxCalcAccum.ISEMPTY THEN
+            EXIT(FALSE);
+        UNTIL TaxCalcHeader.NEXT = 0;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ValidateAbsenceItemEntriesDate@7(DateBegin@1000 : Date;DateEnd@1001 : Date;TaxCalcSectionCode@1002 : Code[10]);
+    VAR
+      TaxCalcLine@1003 : Record 17317;
+      TaxCalcHeader@1004 : Record 17308;
+      TaxCalcAccumulat@1005 : Record 17314;
+    BEGIN
+      ValidateDateBeginDateEnd(DateBegin,DateEnd,TaxCalcSectionCode);
+
+      TaxCalcLine.RESET;
+      TaxCalcLine.SETCURRENTKEY("Section Code","Starting Date");
+      TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcLine.SETFILTER("Starting Date",'%1..',DateBegin);
+      IF TaxCalcLine.FINDFIRST THEN BEGIN
+        IF NOT CONFIRM(Text1007 + Text1006,FALSE) THEN
+          ERROR('');
+        TaxCalcLine.DELETEALL;
+      END;
+
+      TaxCalcHeader.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. Item Entry");
+      IF TaxCalcHeader.FIND('-') THEN BEGIN
+        TaxCalcAccumulat.RESET;
+        TaxCalcAccumulat.SETCURRENTKEY(
+          "Section Code","Register No.","Template Line No.","Starting Date","Ending Date");
+        TaxCalcAccumulat.SETRANGE("Section Code",TaxCalcSectionCode);
+        TaxCalcAccumulat.SETFILTER("Starting Date",'%1..',DateBegin);
+        REPEAT
+          TaxCalcAccumulat.SETRANGE("Register No.",TaxCalcHeader."No.");
+          TaxCalcAccumulat.DELETEALL;
+        UNTIL TaxCalcHeader.NEXT = 0;
+      END;
+
+      TaxCalcLine.RESET;
+      TaxCalcLine.SETCURRENTKEY("Section Code","Ending Date");
+      TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcLine.SETFILTER("Ending Date",'%1..',DateBegin);
+      IF TaxCalcLine.FINDFIRST THEN
+        ERROR(Text1008);
+
+      IF DateBegin = TaxCalcSection."Starting Date" THEN
+        TaxCalcSection."No Item Entries Date" := 0D
+      ELSE BEGIN
+        TaxCalcLine.RESET;
+        TaxCalcLine.SETCURRENTKEY("Section Code","Ending Date");
+        TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+        TaxCalcLine.SETFILTER("Ending Date",'%1',DateBegin - 1);
+        IF TaxCalcLine.FINDFIRST THEN BEGIN
+          IF DateEnd <= TaxCalcSection."No Item Entries Date" THEN
+            TaxCalcSection."No Item Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,DateBegin - 1,TaxCalcLine.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxCalcSection."No Item Entries Date" = 0D) OR
+             ((DateBegin - 1) < TaxCalcSection."No Item Entries Date")
+          THEN
+            TaxCalcSection."No Item Entries Date" := DateBegin - 1;
+        END;
+      END;
+
+      TaxCalcSection.VALIDATE("Last Item Entries Date",DateEnd);
+      TaxCalcSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateAbsenceFAEntriesDate@8(DateBegin@1000 : Date;DateEnd@1001 : Date;TaxCalcSectionCode@1002 : Code[10]);
+    VAR
+      TaxCalcLine@1003 : Record 17318;
+      TaxCalcHeader@1004 : Record 17308;
+      TaxCalcAccumulat@1005 : Record 17314;
+    BEGIN
+      ValidateDateBeginDateEnd(DateBegin,DateEnd,TaxCalcSectionCode);
+
+      TaxCalcLine.RESET;
+      TaxCalcLine.SETCURRENTKEY("Section Code","Starting Date");
+      TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcLine.SETFILTER("Starting Date",'%1..',DateBegin);
+      IF TaxCalcLine.FINDFIRST THEN BEGIN
+        IF NOT CONFIRM(Text1007 + Text1006,FALSE) THEN
+          ERROR('');
+        TaxCalcLine.DELETEALL;
+      END;
+
+      TaxCalcHeader.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. FA Entry");
+      IF TaxCalcHeader.FIND('-') THEN BEGIN
+        TaxCalcAccumulat.RESET;
+        TaxCalcAccumulat.SETCURRENTKEY(
+          "Section Code","Register No.","Template Line No.","Starting Date","Ending Date");
+        TaxCalcAccumulat.SETRANGE("Section Code",TaxCalcSectionCode);
+        TaxCalcAccumulat.SETFILTER("Starting Date",'%1..',DateBegin);
+        REPEAT
+          TaxCalcAccumulat.SETRANGE("Register No.",TaxCalcHeader."No.");
+          TaxCalcAccumulat.DELETEALL;
+        UNTIL TaxCalcHeader.NEXT = 0;
+      END;
+
+      TaxCalcLine.RESET;
+      TaxCalcLine.SETCURRENTKEY("Section Code","Ending Date");
+      TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+      TaxCalcLine.SETFILTER("Ending Date",'%1..',DateBegin);
+      IF TaxCalcLine.FINDFIRST THEN
+        ERROR(Text1008);
+
+      IF DateBegin = TaxCalcSection."Starting Date" THEN
+        TaxCalcSection."No FA Entries Date" := 0D
+      ELSE BEGIN
+        TaxCalcLine.RESET;
+        TaxCalcLine.SETCURRENTKEY("Section Code","Ending Date");
+        TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+        TaxCalcLine.SETFILTER("Ending Date",'%1',DateBegin - 1);
+        IF TaxCalcLine.FINDFIRST THEN BEGIN
+          IF DateEnd <= TaxCalcSection."No FA Entries Date" THEN
+            TaxCalcSection."No FA Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,DateBegin - 1,TaxCalcLine.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxCalcSection."No FA Entries Date" = 0D) OR
+             ((DateBegin - 1) < TaxCalcSection."No FA Entries Date")
+          THEN
+            TaxCalcSection."No FA Entries Date" := DateBegin - 1;
+        END;
+      END;
+
+      TaxCalcSection.VALIDATE("Last FA Entries Date",DateEnd);
+      TaxCalcSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateDateBeginDateEnd@9(DateBegin@1000 : Date;DateEnd@1001 : Date;TaxCalcSectionCode@1002 : Code[10]);
+    BEGIN
+      IF TaxCalcSectionCode = '' THEN
+        ERROR(Text1014);
+      IF DateBegin = 0D THEN
+        ERROR(Text1013);
+      IF DateEnd = 0D THEN
+        ERROR(Text1012);
+
+      TaxCalcSection.GET(TaxCalcSectionCode);
+
+      IF DateBegin < TaxCalcSection."Starting Date" THEN
+        ERROR(Text1008);
+
+      IF (TaxCalcSection."Ending Date" <> 0D) AND (TaxCalcSection."Ending Date" < DateEnd) THEN
+        ERROR(Text1011);
+    END;
+
+    PROCEDURE GetNextAvailableBeginDate@10(TaxCalcSectionCode@1000 : Code[10];TableID@1001 : Integer;Minimum@1002 : Boolean) DateBegin : Date;
+    VAR
+      DateMax@1003 : Date;
+    BEGIN
+      TaxCalcSection.GET(TaxCalcSectionCode);
+      DateMax := TaxCalcSection.LastDateEntries;
+      DateBegin := TaxCalcSection."Starting Date";
+      CASE TableID OF
+        DATABASE::"Tax Calc. Accumulation":
+          IF DateMax <> 0D THEN
+            IF (TaxCalcSection."Ending Date" = 0D) OR
+               (DateMax < TaxCalcSection."Ending Date")
+            THEN
+              DateBegin := DateMax + 1;
+        DATABASE::"Tax Calc. G/L Entry":
+          IF (TaxCalcSection."Last G/L Entries Date" = 0D) OR
+             (Minimum AND (TaxCalcSection."No G/L Entries Date" <> 0D))
+          THEN
+            DateBegin := TaxCalcSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              DateBegin := DateMax + 1
+            ELSE
+              IF (TaxCalcSection."Ending Date" = 0D) OR
+                 (TaxCalcSection."Last G/L Entries Date" < TaxCalcSection."Ending Date")
+              THEN
+                DateBegin := TaxCalcSection."Last G/L Entries Date" + 1;
+        DATABASE::"Tax Calc. Item Entry":
+          IF (TaxCalcSection."Last Item Entries Date" = 0D) OR
+             (Minimum AND (TaxCalcSection."No Item Entries Date" <> 0D))
+          THEN
+            DateBegin := TaxCalcSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              DateBegin := DateMax + 1
+            ELSE
+              IF (TaxCalcSection."Ending Date" = 0D) OR
+                 (TaxCalcSection."Last Item Entries Date" < TaxCalcSection."Ending Date")
+              THEN
+                DateBegin := TaxCalcSection."Last Item Entries Date" + 1;
+        DATABASE::"Tax Calc. FA Entry":
+          IF (TaxCalcSection."Last FA Entries Date" = 0D) OR
+             (Minimum AND (TaxCalcSection."No FA Entries Date" <> 0D))
+          THEN
+            DateBegin := TaxCalcSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              DateBegin := DateMax + 1
+            ELSE
+              IF (TaxCalcSection."Ending Date" = 0D) OR
+                 (TaxCalcSection."Last FA Entries Date" < TaxCalcSection."Ending Date")
+              THEN
+                DateBegin := TaxCalcSection."Last FA Entries Date" + 1;
+      END;
+    END;
+
+    PROCEDURE CreatePeriodsNames@11(CalendarPeriod@1000 : Record 2000000007) PeriodsNames : Text[250];
+    BEGIN
+      CASE CalendarPeriod."Period Type" OF
+        CalendarPeriod."Period Type"::Month:
+          PeriodsNames := Text005;
+        CalendarPeriod."Period Type"::Quarter:
+          PeriodsNames := Text006;
+      END;
+    END;
+
+    PROCEDURE ParseCaptionPeriodAndName@12(VAR TextPeriodYear@1000 : Text[30];VAR CalendarPeriod@1001 : Record 2000000007) : Boolean;
+    VAR
+      LengthPeriodName@1002 : Integer;
+      PeriodSeqNo@1003 : Integer;
+      YearNo@1004 : Integer;
+      NumbPeriods@1005 : Integer;
+      PeriodsNames@1006 : Text[250];
+    BEGIN
+      PeriodsNames := CreatePeriodsNames(CalendarPeriod);
+      TextPeriodYear := DELCHR(TextPeriodYear,'<>',' ');
+      NumbPeriods := STRLEN(PeriodsNames) - STRLEN(DELCHR(PeriodsNames,'=',',')) + 1;
+      IF PeriodsNames = '' THEN
+        PeriodSeqNo := NumbPeriods
+      ELSE
+        PeriodSeqNo := 0;
+      LengthPeriodName := 0;
+      WHILE (PeriodSeqNo < NumbPeriods) AND (LengthPeriodName = 0) DO BEGIN
+        PeriodSeqNo := PeriodSeqNo + 1;
+        IF STRPOS(TextPeriodYear,SELECTSTR(PeriodSeqNo,PeriodsNames)) = 1 THEN
+          LengthPeriodName := STRLEN(SELECTSTR(PeriodSeqNo,PeriodsNames)) + 1;
+      END;
+      IF LengthPeriodName = 0 THEN BEGIN
+        LengthPeriodName := 1;
+        PeriodSeqNo := NumbPeriods;
+      END;
+      IF LengthPeriodName > STRLEN(TextPeriodYear) THEN
+        IF CalendarPeriod."Period End" = 0D THEN
+          YearNo := DATE2DMY(WORKDATE,3)
+        ELSE
+          YearNo := DATE2DMY(CalendarPeriod."Period End",3)
+      ELSE
+        IF NOT EVALUATE(YearNo,COPYSTR(TextPeriodYear,LengthPeriodName,5)) THEN
+          EXIT(FALSE);
+
+      IF YearNo < 50 THEN
+        YearNo := 2000 + YearNo
+      ELSE
+        IF YearNo < 100 THEN
+          YearNo := 1900 + YearNo;
+
+      CASE CalendarPeriod."Period Type" OF
+        CalendarPeriod."Period Type"::Month:
+          BEGIN
+            CalendarPeriod."Period Start" := DMY2DATE(1,PeriodSeqNo,YearNo);
+            CalendarPeriod."Period Start" := CALCDATE('<CM+1D-1M>',CalendarPeriod."Period Start");
+          END;
+        CalendarPeriod."Period Type"::Quarter:
+          BEGIN
+            CalendarPeriod."Period Start" := DMY2DATE(1,PeriodSeqNo * 3,YearNo);
+            CalendarPeriod."Period Start" := CALCDATE('<CQ+1D-1Q>',CalendarPeriod."Period Start");
+          END;
+        ELSE BEGIN
+          CalendarPeriod."Period Start" := DMY2DATE(1,1,YearNo);
+          CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Year;
+          PeriodsNames := '';
+        END
+      END;
+      CalendarPeriod.GET(CalendarPeriod."Period Type",CalendarPeriod."Period Start");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+      IF PeriodsNames <> ''THEN
+        TextPeriodYear := SELECTSTR(PeriodSeqNo,PeriodsNames) +
+          FORMAT(CalendarPeriod."Period End",0,' <Year4>')
+      ELSE
+        TextPeriodYear := FORMAT(CalendarPeriod."Period End",0,'<Year4>');
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetCaptionPeriodAndYear@13(VAR FiscalPeriod@1000 : Text[30];VAR CalendarPeriod@1001 : Record 2000000007) : Boolean;
+    VAR
+      PeriodSeqNo@1002 : Integer;
+      PeriodsNames@1003 : Text[250];
+    BEGIN
+      IF FiscalPeriod <> '' THEN
+        CASE CalendarPeriod."Period Type" OF
+          CalendarPeriod."Period Type"::Month,
+          CalendarPeriod."Period Type"::Quarter:
+            IF NOT ParseCaptionPeriodAndName(FiscalPeriod,CalendarPeriod) THEN
+              FiscalPeriod := '';
+          ELSE
+            FiscalPeriod := '';
+        END;
+      IF FiscalPeriod = '' THEN BEGIN
+        PeriodsNames := CreatePeriodsNames(CalendarPeriod);
+        PeriodSeqNo := CalendarPeriod."Period No.";
+        IF PeriodSeqNo > (STRLEN(PeriodsNames) - STRLEN(DELCHR(PeriodsNames,'=',',')) + 1) THEN
+          FiscalPeriod := FORMAT(CalendarPeriod."Period End",0,'<Year4>')
+        ELSE
+          FiscalPeriod := SELECTSTR(PeriodSeqNo,PeriodsNames) +
+            FORMAT(CalendarPeriod."Period End",0,' <Year4>');
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SelectPeriod@14(VAR Text@1000 : Text[250];VAR CalendarPeriod@1001 : Record 2000000007) : Boolean;
+    VAR
+      SelectDate@1002 : Page 12445;
+    BEGIN
+      CLEAR(SelectDate);
+      SelectDate.SETRECORD(CalendarPeriod);
+      IF SelectDate.RUNMODAL = ACTION::LookupOK THEN
+        SelectDate.GETRECORD(CalendarPeriod);
+      Text := '';
+      SetCaptionPeriodAndYear(Text,CalendarPeriod);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE PeriodSetup@15(VAR CalendarPeriod@1000 : Record 2000000007);
+    BEGIN
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+    END;
+
+    PROCEDURE InitTaxPeriod@16(VAR CalendarPeriod@1000 : Record 2000000007;Perodical@1001 : 'Month,Quarter,Year';BeginTaxPeriod@1002 : Date);
+    BEGIN
+      CASE Perodical OF
+        Perodical::Month:
+          BEGIN
+            CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Month;
+            CalendarPeriod."Period Start" := CALCDATE('<-CM>',BeginTaxPeriod);
+          END;
+        Perodical::Year:
+          BEGIN
+            CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Year;
+            CalendarPeriod."Period Start" := CALCDATE('<-CY>',BeginTaxPeriod);
+          END;
+        ELSE BEGIN
+          CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Quarter;
+          CalendarPeriod."Period Start" := CALCDATE('<-CQ>',BeginTaxPeriod);
+        END;
+      END;
+      CalendarPeriod.GET(CalendarPeriod."Period Type",CalendarPeriod."Period Start");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+    END;
+
+    LOCAL PROCEDURE CreateTaxCalc@17(TaxCalcSectionCode@1000 : Code[10]);
+    VAR
+      TaxCalcSection@1001 : Record 17307;
+      CalendarPeriod@1002 : Record 2000000007;
+      CreateTaxCalcPage@1003 : Page 17328;
+      StatusText@1005 : Text[80];
+      UseGLEntry@1008 : Boolean;
+      UseFAEntry@1007 : Boolean;
+      UseItemEntry@1006 : Boolean;
+      UseTemplate@1004 : Boolean;
+    BEGIN
+      IF TaxCalcSectionCode = '' THEN
+        IF NOT SectionSelection(0,TaxCalcSectionCode) THEN
+          EXIT;
+
+      TaxCalcSection.GET(TaxCalcSectionCode);
+      IF NOT (TaxCalcSection.Status IN [TaxCalcSection.Status::Open,TaxCalcSection.Status::Statement]) THEN BEGIN
+        TaxCalcSection.Status := TaxCalcSection.Status::Open;
+        StatusText := FORMAT(TaxCalcSection.Status);
+        TaxCalcSection.Status := TaxCalcSection.Status::Statement;
+        TaxCalcSection.FIELDERROR(Status,
+          STRSUBSTNO(Text1015,StatusText,TaxCalcSection.Status));
+      END;
+
+      TaxCalcSection.FILTERGROUP(2);
+      IF TaxCalcSectionCode <> '' THEN
+        TaxCalcSection.SETRANGE(Code,TaxCalcSectionCode);
+      TaxCalcSection.SETRANGE(Status,TaxCalcSection.Status::Open,TaxCalcSection.Status::Statement);
+      TaxCalcSection.FILTERGROUP(0);
+
+      CLEAR(CreateTaxCalcPage);
+      CreateTaxCalcPage.SETTABLEVIEW(TaxCalcSection);
+      IF CreateTaxCalcPage.RUNMODAL <> ACTION::OK THEN
+        EXIT;
+
+      CreateTaxCalcPage.GETRECORD(TaxCalcSection);
+      CreateTaxCalcPage.ReturnChoices(UseGLEntry,UseFAEntry,UseItemEntry,UseTemplate,CalendarPeriod);
+
+      CreateTaxCalcForPeriod(TaxCalcSectionCode,UseGLEntry,UseFAEntry,UseItemEntry,UseTemplate,CalendarPeriod);
+    END;
+
+    PROCEDURE CreateTaxCalcForPeriod@18(TaxCalcSectionCode@1000 : Code[10];UseGLEntry@1009 : Boolean;UseFAEntry@1001 : Boolean;UseItemEntry@1010 : Boolean;UseTemplate@1019 : Boolean;VAR CalendarPeriod@1002 : Record 2000000007);
+    VAR
+      TaxCalcSection@1003 : Record 17307;
+      TaxCalcHeader@1004 : Record 17308;
+      TaxCalcLine@1005 : Record 17310;
+      TaxCalcAccumulat@1006 : Record 17314;
+      TaxCalcTermName@1007 : Record 17311;
+      EntryNoAmountBuffer@1008 : TEMPORARY Record 386;
+      CreateTaxCalcEntries@1011 : Codeunit 17305;
+      CreateTaxCalcItemEntries@1012 : Codeunit 17306;
+      CreateTaxCalcFAEntries@1013 : Codeunit 17307;
+      GeneralTermMgt@1014 : Codeunit 17200;
+      TemplateRecordRef@1210001 : RecordRef;
+      LinkAccumulateRecordRef@1210000 : RecordRef;
+      DateBegin@1015 : Date;
+      DateEnd@1016 : Date;
+      Choices@1017 : ',G/L Entry,Template,Item Entry,FA Entry';
+      CycleLevel@1018 : Integer;
+    BEGIN
+      WITH TaxCalcSection DO BEGIN
+        GET(TaxCalcSectionCode);
+        IF NOT (Status IN [Status::Open,Status::Statement]) THEN
+          FIELDERROR(Status);
+      END;
+
+      TaxCalcLine.GenerateProfile;
+      TaxCalcTermName.GenerateProfile;
+      COMMIT;
+
+      GeneralTermMgt.CheckTaxRegTerm(TRUE,TaxCalcSectionCode,
+        DATABASE::"Tax Calc. Term",DATABASE::"Tax Calc. Term Formula");
+
+      GeneralTermMgt.CheckTaxRegLink(TRUE,TaxCalcSectionCode,
+        DATABASE::"Tax Calc. Line");
+
+      WITH CalendarPeriod DO BEGIN
+        "Period Start" := NORMALDATE("Period Start");
+        "Period End" := NORMALDATE("Period End");
+        CreateTaxCalcEntries.BuildTaxCalcCorresp(
+          CALCDATE('<-CM>',"Period Start"),CALCDATE('<CM>',"Period End"),TaxCalcSectionCode);
+
+        RESET;
+        SETRANGE("Period Type","Period Type"::Month);
+        SETRANGE("Period Start","Period Start","Period End");
+        IF FINDSET THEN
+          REPEAT
+            DateBegin := NORMALDATE("Period Start");
+            DateEnd := NORMALDATE("Period End");
+
+            IF UseGLEntry THEN
+              CreateTaxCalcEntries.Code(DateBegin,DateEnd,TaxCalcSectionCode);
+
+            IF UseItemEntry THEN
+              CreateTaxCalcItemEntries.Code(DateBegin,DateEnd,TaxCalcSectionCode);
+
+            IF UseFAEntry THEN
+              CreateTaxCalcFAEntries.Code(DateBegin,DateEnd,TaxCalcSectionCode);
+
+            IF UseTemplate THEN BEGIN
+              TaxCalcHeader.RESET;
+              TaxCalcHeader.SETRANGE("Section Code",TaxCalcSectionCode);
+              TaxCalcHeader.SETRANGE("Storing Method",TaxCalcHeader."Storing Method"::Calculation);
+              LinkAccumulateRecordRef.CLOSE;
+              LinkAccumulateRecordRef.OPEN(DATABASE::"Tax Calc. Accumulation");
+              TaxCalcAccumulat.SETCURRENTKEY("Section Code","Register No.","Template Line No.");
+              TaxCalcAccumulat.SETRANGE("Section Code",TaxCalcSectionCode);
+              TaxCalcAccumulat.SETRANGE("Ending Date",DateEnd);
+              LinkAccumulateRecordRef.SETVIEW(TaxCalcAccumulat.GETVIEW(FALSE));
+              IF TaxCalcHeader.FINDSET THEN
+                REPEAT
+                  TaxCalcAccumulat.SETRANGE("Register No.",TaxCalcHeader."No.");
+                  TaxCalcAccumulat.DELETEALL;
+                UNTIL TaxCalcHeader.NEXT(1) = 0;
+              TaxCalcHeader.SETRANGE("Storing Method");
+              TaxCalcLine.SETRANGE("Section Code",TaxCalcSectionCode);
+              CycleLevel := 1;
+              WHILE CycleLevel <> 0 DO BEGIN
+                TaxCalcHeader.SETRANGE(Level,CycleLevel);
+                IF NOT TaxCalcHeader.FINDSET THEN
+                  CycleLevel := 0
+                ELSE BEGIN
+                  REPEAT
+                    IF TaxCalcHeader."Storing Method" = TaxCalcHeader."Storing Method"::Calculation THEN BEGIN
+                      TaxCalcLine.SETRANGE(Code,TaxCalcHeader."No.");
+                      IF TaxCalcLine.FINDFIRST THEN BEGIN
+                        TaxCalcLine.SETRANGE("Date Filter",DateBegin,DateEnd);
+                        TemplateRecordRef.GETTABLE(TaxCalcLine);
+                        TemplateRecordRef.SETVIEW(TaxCalcLine.GETVIEW(FALSE));
+                        GeneralTermMgt.AccumulateTaxRegTemplate(
+                          TemplateRecordRef,EntryNoAmountBuffer,LinkAccumulateRecordRef);
+                        CreateAccumulate(TaxCalcLine,EntryNoAmountBuffer);
+                        EntryNoAmountBuffer.DELETEALL;
+                      END;
+                    END;
+                  UNTIL TaxCalcHeader.NEXT(1) = 0;
+                  CycleLevel += 1;
+                END;
+              END;
+              CreateTaxCalcEntries.CalcFieldsTaxCalcEntry(DateBegin,DateEnd,TaxCalcSectionCode);
+            END;
+          UNTIL NEXT(1) = 0;
+      END;
+    END;
+
+    PROCEDURE CreateAccumulate@20(VAR TaxCalcLine@1000 : Record 17310;VAR EntryNoAmountBuffer@1001 : Record 386);
+    VAR
+      TaxCalcLine0@1002 : Record 17310;
+      TaxCalcAccumulation@1003 : Record 17314;
+      TaxCalcAccumulation2@1004 : Record 17314;
+      GeneralTermMgt@1005 : Codeunit 17200;
+    BEGIN
+      IF EntryNoAmountBuffer.FINDSET THEN BEGIN
+        TaxCalcAccumulation.INIT;
+        TaxCalcAccumulation."Starting Date" := TaxCalcLine.GETRANGEMIN("Date Filter");
+        TaxCalcAccumulation."Ending Date" := TaxCalcLine.GETRANGEMAX("Date Filter");
+        TaxCalcAccumulation."Section Code" := TaxCalcLine."Section Code";
+        TaxCalcAccumulation."Register No." := TaxCalcLine.Code;
+        REPEAT
+          TaxCalcLine0.GET(
+            TaxCalcAccumulation."Section Code",TaxCalcAccumulation."Register No.",EntryNoAmountBuffer."Entry No.");
+          TaxCalcAccumulation."Template Line Code" := TaxCalcLine0."Line Code";
+          TaxCalcAccumulation.Indentation := TaxCalcLine0.Indentation;
+          TaxCalcAccumulation.Bold := TaxCalcLine0.Bold;
+          TaxCalcAccumulation.Description := TaxCalcLine0.Description;
+          TaxCalcAccumulation."Template Line No." := TaxCalcLine0."Line No.";
+          TaxCalcAccumulation."Amount Date Filter" :=
+            GeneralTermMgt.CalcIntervalDate(
+              TaxCalcAccumulation."Starting Date",TaxCalcAccumulation."Ending Date",TaxCalcLine0.Period);
+          TaxCalcAccumulation.Amount := EntryNoAmountBuffer.Amount;
+          TaxCalcAccumulation2.RESET;
+          IF NOT TaxCalcAccumulation2.FINDLAST THEN
+            TaxCalcAccumulation2."Entry No." := 0;
+          TaxCalcAccumulation."Entry No." := TaxCalcAccumulation2."Entry No." + 1;
+          TaxCalcAccumulation.INSERT;
+        UNTIL EntryNoAmountBuffer.NEXT(1) = 0;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

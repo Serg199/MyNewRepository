@@ -1,0 +1,362 @@
+OBJECT Codeunit 17440 Timesheet Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TimesheetStatus@1210002 : Record 17440;
+      PayrollPeriod@1210003 : Record 17426;
+      Employee@1210007 : Record 5200;
+      HRSetup@1210004 : Record 5218;
+      TimesheetMgt@1210000 : Codeunit 17440;
+      CalendarMgt@1210001 : Codeunit 17430;
+      Text001@1210008 : TextConst 'ENU=Absence order %1 has been already posted at %2 for %3.;RUS=Приказ на отсутствие %1 уже учтен в %2 для %3.';
+      PostedOrderCancellation@1210005 : Boolean;
+
+    PROCEDURE TimesheetSelection@1(VAR CurrentPeriodCode@1210000 : Code[10]) Selected : Boolean;
+    VAR
+      PayrollPeriod@1002 : Record 17426;
+    BEGIN
+      Selected := TRUE;
+      PayrollPeriod.RESET;
+      CASE PayrollPeriod.COUNT OF
+        0:
+          ERROR('');
+        1:
+          PayrollPeriod.FINDFIRST;
+        ELSE
+          Selected := PAGE.RUNMODAL(0,PayrollPeriod) = ACTION::LookupOK;
+      END;
+      CurrentPeriodCode := PayrollPeriod.Code;
+    END;
+
+    PROCEDURE LookupName@6(CurrentEmployeeNo@1210001 : Code[20];VAR CurrentPeriodCode@1000 : Code[10];VAR TimesheetLine@1210000 : Record 17441);
+    VAR
+      PayrollPeriod@1002 : Record 17426;
+    BEGIN
+      COMMIT;
+      PayrollPeriod.Code := CurrentPeriodCode;
+      IF PAGE.RUNMODAL(0,PayrollPeriod) = ACTION::LookupOK THEN BEGIN
+        CurrentPeriodCode := PayrollPeriod.Code;
+        SetName(CurrentEmployeeNo,PayrollPeriod,TimesheetLine);
+      END;
+    END;
+
+    PROCEDURE SetName@5(CurrentEmployeeNo@1210000 : Code[20];PayrollPeriod@1210001 : Record 17426;VAR TimesheetLine@1001 : Record 17441);
+    BEGIN
+      TimesheetLine.FILTERGROUP := 2;
+      TimesheetLine.SETRANGE("Employee No.",CurrentEmployeeNo);
+      TimesheetLine.SETRANGE(Date,PayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+      TimesheetLine.FILTERGROUP := 0;
+    END;
+
+    PROCEDURE CreateTimesheet@1210001(Employee@1210002 : Record 5200;PayrollPeriod@1210004 : Record 17426);
+    VAR
+      TimesheetLine@1210001 : Record 17441;
+      TimesheetStatus@1210007 : Record 17440;
+      PayrollStatus@1210009 : Record 17457;
+      EmplJobEntry@1210008 : Record 17363;
+      CalendarLine@1210006 : Record 17430;
+      Period@1210003 : Record 2000000007;
+      CurrentDate@1210000 : Date;
+      DayStatus@1210005 : ' ,Weekend,Holiday';
+    BEGIN
+      IF Employee."Employment Date" <= PayrollPeriod."Ending Date" THEN BEGIN
+        IF NOT TimesheetStatus.GET(PayrollPeriod.Code,Employee."No.") THEN BEGIN
+          TimesheetStatus.INIT;
+          TimesheetStatus."Period Code" := PayrollPeriod.Code;
+          TimesheetStatus."Employee No." := Employee."No.";
+          TimesheetStatus.INSERT;
+        END;
+        IF NOT PayrollStatus.GET(PayrollPeriod.Code,Employee."No.") THEN BEGIN
+          PayrollStatus.INIT;
+          PayrollStatus."Period Code" := PayrollPeriod.Code;
+          PayrollStatus."Employee No." := Employee."No.";
+          PayrollStatus.INSERT;
+        END;
+      END;
+
+      CurrentDate := PayrollPeriod."Starting Date";
+      WHILE CurrentDate <= PayrollPeriod."Ending Date" DO BEGIN
+        IF Employee.GetJobEntry(Employee."No.",CurrentDate,EmplJobEntry) THEN BEGIN
+          TimesheetLine.INIT;
+          TimesheetLine."Calendar Code" := EmplJobEntry."Calendar Code";
+          TimesheetLine.Date := CurrentDate;
+          CalendarLine.GET(TimesheetLine."Calendar Code",TimesheetLine.Date);
+          CalendarLine.TESTFIELD(Status,CalendarLine.Status::Released);
+          TimesheetLine."Employee No." := Employee."No.";
+          TimesheetLine.VALIDATE(Nonworking,
+            CalendarMgt.CheckDateStatus(
+              TimesheetLine."Calendar Code",CurrentDate,TimesheetLine.Description));
+          TimesheetLine.VALIDATE("Planned Hours",
+            CalendarMgt.GetDateInfo(
+              TimesheetLine."Calendar Code",CurrentDate,TimesheetLine."Time Activity Code",DayStatus));
+          TimesheetLine.VALIDATE("Planned Night Hours",
+            CalendarMgt.GetNightInfo(
+              TimesheetLine."Calendar Code",CurrentDate));
+          Period.GET(Period."Period Type"::Date,CurrentDate);
+          TimesheetLine.Day := Period."Period Name";
+          IF NOT TimesheetLine.INSERT(TRUE) THEN
+            TimesheetLine.MODIFY(TRUE);
+          InsertTimesheetDetails(
+            Employee."No.",TimesheetLine.Date,TimesheetLine."Time Activity Code",
+            TimesheetLine."Planned Hours",TimesheetLine."Planned Night Hours",'',0,'',0D);
+        END;
+        CurrentDate := CALCDATE('<1D>',CurrentDate);
+      END;
+    END;
+
+    PROCEDURE UpdateTimesheet@1210008(Employee@1210000 : Record 5200;StartDate@1210001 : Date;EndDate@1210002 : Date;CalendarCode@1210003 : Code[10];CheckReleased@1210008 : Boolean);
+    VAR
+      TimesheetLine@1210010 : Record 17441;
+      CalendarLine@1210007 : Record 17430;
+      Period@1210006 : Record 2000000007;
+      CurrentDate@1210005 : Date;
+      DayStatus@1210004 : ' ,Weekend,Holiday';
+    BEGIN
+      CurrentDate := StartDate;
+      WHILE CurrentDate <= EndDate DO BEGIN
+        TimesheetLine.GET(Employee."No.",CurrentDate);
+        TimesheetLine.VALIDATE("Calendar Code",CalendarCode);
+        CalendarLine.GET(TimesheetLine."Calendar Code",TimesheetLine.Date);
+        IF CheckReleased THEN
+          CalendarLine.TESTFIELD(Status,CalendarLine.Status::Released);
+        TimesheetLine.VALIDATE(Nonworking,
+          CalendarMgt.CheckDateStatus(
+            TimesheetLine."Calendar Code",CurrentDate,TimesheetLine.Description));
+        TimesheetLine.VALIDATE("Planned Hours",
+          CalendarMgt.GetDateInfo(
+            TimesheetLine."Calendar Code",CurrentDate,TimesheetLine."Time Activity Code",DayStatus));
+        Period.GET(Period."Period Type"::Date,CurrentDate);
+        TimesheetLine.Day := Period."Period Name";
+        TimesheetLine.MODIFY(TRUE);
+        InsertTimesheetDetails(
+          Employee."No.",TimesheetLine.Date,TimesheetLine."Time Activity Code",
+          TimesheetLine."Planned Hours",TimesheetLine."Planned Night Hours",'',0,'',0D);
+        CurrentDate := CALCDATE('<1D>',CurrentDate);
+      END;
+    END;
+
+    PROCEDURE CheckTimesheetStatus@1210007(EmployeeNo@1210000 : Code[20];CalendarCode@1210002 : Code[10];Date@1210001 : Date);
+    VAR
+      CalendarLine@1210003 : Record 17430;
+    BEGIN
+      TimesheetStatus.GET(
+        PayrollPeriod.PeriodByDate(Date),EmployeeNo);
+      TimesheetStatus.TESTFIELD(Status,TimesheetStatus.Status::Open);
+      CalendarLine.GET(CalendarCode,Date);
+      CalendarLine.TESTFIELD(Status,CalendarLine.Status::Released);
+    END;
+
+    PROCEDURE InsertTimesheetDetails@1210002(EmployeeNo@1210003 : Code[20];Date@1210004 : Date;ActivityCode@1210005 : Code[10];PlannedHours@1210007 : Decimal;NightHours@1210009 : Decimal;Description@1210008 : Text[50];DocType@1210006 : Option;DocNo@1210011 : Code[20];DocDate@1210012 : Date);
+    VAR
+      TimesheetDetail@1210000 : Record 17442;
+      EmplJobEntry@1210002 : Record 17363;
+      PreviousTimeActivityCode@1210001 : Code[10];
+    BEGIN
+      TimesheetDetail.RESET;
+      TimesheetDetail.SETRANGE("Employee No.",EmployeeNo);
+      TimesheetDetail.SETRANGE(Date,Date);
+      IF TimesheetDetail.FINDSET THEN
+        REPEAT
+          IF PostedOrderCancellation THEN
+            PreviousTimeActivityCode := TimesheetDetail."Previous Time Activity Code"
+          ELSE BEGIN
+            PreviousTimeActivityCode := TimesheetDetail."Time Activity Code";
+            IF TimesheetDetail."Document No." <> '' THEN
+              ERROR(Text001,TimesheetDetail."Document No.",EmployeeNo,Date);
+          END;
+        UNTIL TimesheetDetail.NEXT = 0;
+      TimesheetDetail.DELETEALL;
+
+      // Insert planned hours
+      TimesheetDetail.INIT;
+      TimesheetDetail.VALIDATE("Employee No.",EmployeeNo);
+      TimesheetDetail.Date := Date;
+      IF PostedOrderCancellation AND (PreviousTimeActivityCode <> '') THEN
+        ActivityCode := PreviousTimeActivityCode;
+      TimesheetDetail.VALIDATE("Time Activity Code",ActivityCode);
+      IF Employee.GetJobEntry(EmployeeNo,Date,EmplJobEntry) THEN BEGIN
+        TimesheetDetail."Calendar Code" := EmplJobEntry."Calendar Code";
+        TimesheetDetail."Org. Unit Code" := EmplJobEntry."Org. Unit Code";
+      END ELSE BEGIN
+        TimesheetDetail."Calendar Code" := Employee."Calendar Code";
+        TimesheetDetail."Org. Unit Code" := Employee."Org. Unit Code";
+      END;
+      TimesheetDetail."Actual Hours" := PlannedHours;
+      IF Description <> '' THEN
+        TimesheetDetail.Description := Description;
+      TimesheetDetail."User ID" := USERID;
+      IF (DocNo <> '') AND (DocDate <> 0D) THEN BEGIN
+        TimesheetDetail."Document Type" := DocType;
+        TimesheetDetail."Document No." := DocNo;
+        TimesheetDetail."Document Date" := DocDate;
+      END;
+      IF NOT PostedOrderCancellation THEN
+        TimesheetDetail."Previous Time Activity Code" := PreviousTimeActivityCode;
+      TimesheetDetail.INSERT;
+
+      // insert night hours if any
+      IF NightHours <> 0 THEN BEGIN
+        HRSetup.GET;
+        HRSetup.TESTFIELD("Default Night Hours Code");
+        TimesheetDetail."Time Activity Code" := HRSetup."Default Night Hours Code";
+        TimesheetDetail."Actual Hours" := NightHours;
+        TimesheetDetail."Previous Time Activity Code" := '';
+        TimesheetDetail.INSERT;
+      END;
+    END;
+
+    PROCEDURE GetTimesheetInfo@1210003(EmployeeNo@1210000 : Code[20];TimeActivityGroupCode@1210007 : Code[20];StartDate@1210002 : Date;EndDate@1210001 : Date;What@1210004 : 'Planned Days,Planned Hours,Actual Calendar Days,Actual Hours,Actual Work Days,Planned Night Hours') : Decimal;
+    VAR
+      Employee@1210005 : Record 5200;
+      TimeActivityFilter@1210006 : Record 17445;
+      TimesheetDetail@1210003 : Record 17442;
+      TimesheetLine@1210010 : Record 17441;
+      CurrDate@1210008 : Date;
+      ActualDays@1210009 : Decimal;
+    BEGIN
+      Employee.GET(EmployeeNo);
+      CASE What OF
+        What::"Planned Days":
+          EXIT(CalendarMgt.GetPeriodInfo(Employee."Calendar Code",StartDate,EndDate,2));
+        What::"Planned Hours":
+          EXIT(CalendarMgt.GetPeriodInfo(Employee."Calendar Code",StartDate,EndDate,3));
+        What::"Actual Calendar Days",
+        What::"Actual Work Days":
+          BEGIN
+            ActualDays := 0;
+            TimesheetDetail.RESET;
+            TimesheetDetail.SETRANGE("Employee No.",EmployeeNo);
+            IF TimeActivityGroupCode <> '' THEN BEGIN
+              GetTimeGroupFilter(TimeActivityGroupCode,StartDate,TimeActivityFilter);
+              IF (TimeActivityFilter."Activity Code Filter" = '') AND
+                 (TimeActivityFilter."Timesheet Code Filter" = '')
+              THEN
+                EXIT(0);
+              TimesheetDetail.SETFILTER("Time Activity Code",TimeActivityFilter."Activity Code Filter");
+              TimesheetDetail.SETFILTER("Timesheet Code",TimeActivityFilter."Timesheet Code Filter");
+            END;
+            CurrDate := StartDate;
+            WHILE CurrDate <= EndDate DO BEGIN
+              TimesheetDetail.SETRANGE(Date,CurrDate);
+              IF TimesheetDetail.FINDFIRST THEN
+                CASE What OF
+                  What::"Actual Calendar Days":
+                    ActualDays := ActualDays + 1;
+                  What::"Actual Work Days":
+                    BEGIN
+                      TimesheetLine.GET(TimesheetDetail."Employee No.",TimesheetDetail.Date);
+                      IF NOT TimesheetLine.Nonworking THEN
+                        ActualDays := ActualDays + 1;
+                    END;
+                END;
+              CurrDate := CALCDATE('<1D>',CurrDate);
+            END;
+            EXIT(ActualDays);
+          END;
+        What::"Actual Hours":
+          BEGIN
+            Employee.RESET;
+            Employee.SETRANGE("Employee No. Filter",EmployeeNo);
+            Employee.SETRANGE("Date Filter",StartDate,EndDate);
+            IF TimeActivityGroupCode <> '' THEN BEGIN
+              GetTimeGroupFilter(TimeActivityGroupCode,StartDate,TimeActivityFilter);
+              IF (TimeActivityFilter."Activity Code Filter" = '') AND
+                 (TimeActivityFilter."Timesheet Code Filter" = '')
+              THEN
+                EXIT(0);
+              Employee.SETFILTER("Time Activity Filter",TimeActivityFilter."Activity Code Filter");
+              Employee.SETFILTER("Timesheet Code Filter",TimeActivityFilter."Timesheet Code Filter");
+            END;
+            Employee.CALCFIELDS("Actual Hours");
+            EXIT(Employee."Actual Hours");
+          END;
+        What::"Planned Night Hours":
+          EXIT(CalendarMgt.GetPeriodInfo(Employee."Calendar Code",StartDate,EndDate,6));
+      END;
+    END;
+
+    PROCEDURE GetTimeSheetData@81(VAR PayrollDocLine@1210000 : Record 17415;UOM@1210002 : 'Day,Hour';TimeActivityGroup@1210003 : Code[20]) : Decimal;
+    BEGIN
+      PayrollPeriod.GET(PayrollDocLine."Period Code");
+      CASE UOM OF
+        UOM::Day:
+          BEGIN
+            PayrollDocLine."Payment Days" :=
+              TimesheetMgt.GetTimesheetInfo(
+                PayrollDocLine."Employee No.",TimeActivityGroup,
+                PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",2);
+            PayrollDocLine."Payment Hours" := 0;
+            EXIT(PayrollDocLine."Payment Days");
+          END;
+        UOM::Hour:
+          BEGIN
+            HRSetup.GET;
+            IF TimeActivityGroup = HRSetup."Night Work Group Code" THEN
+              PayrollDocLine."Payment Hours" :=
+                TimesheetMgt.GetTimesheetInfo(
+                  PayrollDocLine."Employee No.",TimeActivityGroup,
+                  PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",6)
+            ELSE
+              PayrollDocLine."Payment Hours" :=
+                TimesheetMgt.GetTimesheetInfo(
+                  PayrollDocLine."Employee No.",TimeActivityGroup,
+                  PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",3);
+            PayrollDocLine."Payment Days" := 0;
+            EXIT(PayrollDocLine."Payment Hours");
+          END;
+      END;
+    END;
+
+    PROCEDURE GetTimeGroupFilter@1210006(GroupCode@1210000 : Code[20];StartDate@1210002 : Date;VAR TimeActivityFilter@1210001 : Record 17445);
+    BEGIN
+      TimeActivityFilter.RESET;
+      TimeActivityFilter.SETRANGE(Code,GroupCode);
+      TimeActivityFilter.SETFILTER("Starting Date",'..%1',StartDate);
+      IF NOT TimeActivityFilter.FINDLAST THEN
+        CLEAR(TimeActivityFilter);
+    END;
+
+    PROCEDURE CreateFromLine@1210005(EmployeeNo@1210000 : Code[20];TimeActivityCode@1210003 : Code[10];StartDate@1210004 : Date;EndDate@1210005 : Date;DocumentType@1210006 : Option;DocumentNo@1210007 : Code[20];DocumentDate@1210008 : Date);
+    VAR
+      TimesheetLine@1210001 : Record 17441;
+      CurrDate@1210002 : Date;
+    BEGIN
+      CurrDate := StartDate;
+      WHILE CurrDate <= EndDate DO BEGIN
+        TimesheetLine.RESET;
+        TimesheetLine.SETRANGE("Employee No.",EmployeeNo);
+        TimesheetLine.SETRANGE(Date,CurrDate);
+        TimesheetLine.FINDFIRST;
+
+        InsertTimesheetDetails(
+          EmployeeNo,CurrDate,
+          TimeActivityCode,TimesheetLine."Planned Hours",TimesheetLine."Planned Night Hours",
+          '',DocumentType,DocumentNo,DocumentDate);
+
+        CurrDate := CALCDATE('<1D>',CurrDate);
+      END;
+    END;
+
+    PROCEDURE IsPostedOrderCancellation@1210015(PostedOrderCancellation2@1210000 : Boolean);
+    BEGIN
+      PostedOrderCancellation := PostedOrderCancellation2;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

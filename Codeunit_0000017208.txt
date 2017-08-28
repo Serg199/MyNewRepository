@@ -1,0 +1,393 @@
+OBJECT Codeunit 17208 Create Tax Register PR Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17214;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      TaxDimMgt@1001 : Codeunit 17202;
+      Window@1210000 : Dialog;
+
+    PROCEDURE CreateRegister@1(SectionCode@1210004 : Code[10];StartDate@1000 : Date;EndDate@1001 : Date);
+    VAR
+      TaxRegPREntry@1005 : Record 17214;
+      PayrollLedgEntry@1210000 : Record 17418;
+      Employee@1210003 : Record 5200;
+      TaxRegMgt@1007 : Codeunit 17201;
+      Total@1210001 : Integer;
+      Processed@1210002 : Integer;
+    BEGIN
+      TaxRegMgt.ValidateAbsencePREntriesDate(StartDate,EndDate,SectionCode);
+
+      IF NOT TaxRegPREntry.FINDLAST THEN
+        TaxRegPREntry."Entry No." := 0;
+
+      Window.OPEN(Text21000900);
+      Window.UPDATE(1,StartDate);
+      Window.UPDATE(2,EndDate);
+
+      WITH PayrollLedgEntry DO BEGIN
+        Window.UPDATE(4,TABLECAPTION);
+        RESET;
+        SETCURRENTKEY("Posting Date");
+        SETRANGE("Posting Date",StartDate,EndDate);
+        Total := COUNT;
+        Processed := 0;
+
+        IF FIND('-') THEN
+          REPEAT
+            Processed += 1;
+            IF (Processed MOD 50) = 1 THEN
+              Window.UPDATE(3,ROUND((Processed / Total) * 10000,1));
+
+            IF NOT Employee.GET("Employee No.") THEN
+              Employee.INIT;
+            TaxRegPREntry.INIT;
+            TaxRegPREntry."Section Code" := SectionCode;
+            TaxRegPREntry."Starting Date" := StartDate;
+            TaxRegPREntry."Ending Date" := EndDate;
+            TaxRegPREntry."Posting Date" := "Posting Date";
+            TaxRegPREntry."Ledger Entry No." := "Entry No.";
+            TaxRegPREntry."Employee No." := "Employee No.";
+            TaxRegPREntry."Currency Code" := '';
+            TaxRegPREntry.Amount := "Payroll Amount";
+            TaxRegPREntry."Amount (FCY)" := "Amount (ACY)";
+            TaxRegPREntry."Document Type" := "Document Type";
+            TaxRegPREntry."Document No." := "Document No.";
+            TaxRegPREntry.Description := Description;
+            TaxRegPREntry."Employee Payroll Account No." := "Employee Payroll Account No.";
+            TaxRegPREntry."Org. Unit Code" := "Org. Unit Code";
+            TaxRegPREntry."Payroll Element Type" := "Element Type";
+            TaxRegPREntry."Payroll Element Code" := "Element Code";
+            TaxRegPREntry."Fund Type" := "Fund Type";
+            TaxRegPREntry."Payroll Directory Code" := "Directory Code";
+            TaxRegPREntry."Payroll Element Group" := "Element Group";
+            TaxRegPREntry."Payroll Source" := "Source Pay";
+            IF TaxRegPREntry.FIELDACTIVE("Employee Statistics Group Code") THEN
+              TaxRegPREntry."Employee Statistics Group Code" := Employee."Statistics Group Code";
+            IF TaxRegPREntry.FIELDACTIVE("Employee Category Code") THEN
+              TaxRegPREntry."Employee Category Code" := Employee."Category Code";
+            IF TaxRegPREntry.FIELDACTIVE("Payroll Posting Group") THEN
+              TaxRegPREntry."Payroll Posting Group" := "Posting Group";
+            CASE TRUE OF
+              "Element Type" IN ["Element Type"::Wage,"Element Type"::Bonus]:
+                TaxRegPREntry."Payroll Directory Type" := TaxRegPREntry."Payroll Directory Type"::Income;
+              "Element Type" IN ["Element Type"::"Tax Deduction","Element Type"::Deduction]:
+                TaxRegPREntry."Payroll Directory Type" := TaxRegPREntry."Payroll Directory Type"::"Tax Deduction";
+              "Element Type" IN ["Element Type"::Funds]:
+                TaxRegPREntry."Payroll Directory Type" := TaxRegPREntry."Payroll Directory Type"::Tax;
+            END;
+            TaxDimMgt.SetLedgEntryDim(SectionCode,"Dimension Set ID");
+            IF ValidateWhereUsedRegisterIDs(TaxRegPREntry) THEN BEGIN
+              TaxRegPREntry."Entry No." += 1;
+              TaxRegPREntry.INSERT;
+            END;
+          UNTIL NEXT(1) = 0;
+      END;
+
+      CreateTaxRegAccumulation(StartDate,EndDate,SectionCode);
+    END;
+
+    LOCAL PROCEDURE CreateTaxRegAccumulation@2(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1003 : Record 17200;
+      TaxRegTemplate@1004 : Record 17202;
+      TaxRegAccumulation@1005 : Record 17208;
+      TaxRegPREntry@1006 : Record 17214;
+      TaxRegLineSetup@1007 : Record 17201;
+      TempTaxRegTemplate@1008 : TEMPORARY Record 17202;
+      TempGLCorrEntry@1009 : TEMPORARY Record 12401;
+      TaxRegAccumulation2@1010 : Record 17208;
+      TaxRegTermMgt@1011 : Codeunit 17200;
+      AddValue@1012 : Decimal;
+      GLCorrFound@1015 : Boolean;
+    BEGIN
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register PR Entry");
+      IF NOT TaxReg.FIND('-') THEN
+        EXIT;
+
+      TempGLCorrEntry.SETCURRENTKEY("Debit Account No.","Credit Account No.");
+      TempGLCorrEntry.INSERT;
+
+      TaxRegAccumulation.RESET;
+      IF NOT TaxRegAccumulation.FINDLAST THEN
+        TaxRegAccumulation."Entry No." := 0;
+
+      TaxRegAccumulation.RESET;
+      TaxRegAccumulation.INIT;
+      TaxRegAccumulation."Section Code" := SectionCode;
+      TaxRegAccumulation."Starting Date" := StartDate;
+      TaxRegAccumulation."Ending Date" := EndDate;
+
+      TaxRegLineSetup.RESET;
+      TaxRegLineSetup.SETRANGE("Section Code",SectionCode);
+
+      CLEAR(TaxDimMgt);
+
+      TaxReg.FIND('-');
+      REPEAT
+        TaxRegLineSetup.SETRANGE("Tax Register No.",TaxReg."No.");
+        IF TaxRegLineSetup.FIND('-') THEN BEGIN
+          TempTaxRegTemplate.DELETEALL;
+          TaxRegTemplate.SETRANGE("Section Code",SectionCode);
+          TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+          IF TaxRegTemplate.FIND('-') THEN
+            REPEAT
+              TempTaxRegTemplate := TaxRegTemplate;
+              TempTaxRegTemplate.Value := 0;
+              TempTaxRegTemplate.INSERT;
+            UNTIL TaxRegTemplate.NEXT = 0;
+
+          TaxRegPREntry.RESET;
+          TaxRegPREntry.SETCURRENTKEY("Section Code","Ending Date");
+          TaxRegPREntry.SETRANGE("Section Code",SectionCode);
+          TaxRegPREntry.SETRANGE("Ending Date",EndDate);
+          TaxRegPREntry.SETFILTER("Where Used Register IDs",'*~' + TaxReg."Register ID" + '~*');
+          IF TaxRegPREntry.FIND('-') THEN
+            REPEAT
+              TaxDimMgt.SetTaxEntryDim(SectionCode,
+                TaxRegPREntry."Dimension 1 Value Code",TaxRegPREntry."Dimension 2 Value Code",
+                TaxRegPREntry."Dimension 3 Value Code",TaxRegPREntry."Dimension 4 Value Code");
+              TempGLCorrEntry."Debit Account No." := TaxRegPREntry."Employee Payroll Account No.";
+              TempGLCorrEntry.MODIFY;
+              TaxRegLineSetup.FIND('-');
+              REPEAT
+                GLCorrFound := TaxRegLineSetup."Account No." = '';
+                IF NOT GLCorrFound THEN BEGIN
+                  TempGLCorrEntry.SETFILTER("Debit Account No.",TaxRegLineSetup."Account No.");
+                  GLCorrFound := TempGLCorrEntry.FIND;
+                END;
+                IF GLCorrFound THEN BEGIN
+                  TempTaxRegTemplate.SETRANGE("Link Tax Register No.",TaxRegLineSetup."Tax Register No.");
+                  TempTaxRegTemplate.SETFILTER("Term Line Code",'%1|%2','',TaxRegLineSetup."Line Code");
+                  IF TempTaxRegTemplate.FIND('-') THEN
+                    REPEAT
+                      GLCorrFound := TempTaxRegTemplate."Term Line Code" = '';
+                      IF NOT GLCorrFound THEN
+                        GLCorrFound := ValidateSetupFilters(TaxRegPREntry,TaxRegLineSetup,TempTaxRegTemplate)
+                      ELSE
+                        GLCorrFound := ValidateTemplateFilters(TaxRegPREntry,TempTaxRegTemplate);
+                      IF GLCorrFound AND
+                         TaxDimMgt.ValidateTemplateDimFilters(TempTaxRegTemplate)
+                      THEN BEGIN
+                        CASE TempTaxRegTemplate."Sum Field No." OF
+                          TaxRegPREntry.FIELDNO(Amount):
+                            AddValue := TaxRegPREntry.Amount;
+                          ELSE
+                            AddValue := 0;
+                        END;
+                        IF AddValue <> 0 THEN BEGIN
+                          TempTaxRegTemplate.Value += AddValue;
+                          TempTaxRegTemplate.MODIFY;
+                        END;
+                      END;
+                    UNTIL TempTaxRegTemplate.NEXT(1) = 0;
+                END;
+              UNTIL TaxRegLineSetup.NEXT(1) = 0;
+            UNTIL TaxRegPREntry.NEXT(1) = 0;
+
+          TempTaxRegTemplate.RESET;
+          IF TempTaxRegTemplate.FIND('-') THEN
+            REPEAT
+              TaxRegAccumulation."Report Line Code" := TempTaxRegTemplate."Report Line Code";
+              TaxRegAccumulation."Template Line Code" := TempTaxRegTemplate."Line Code";
+              TaxRegAccumulation."Section Code" := TempTaxRegTemplate."Section Code";
+              TaxRegAccumulation."Tax Register No." := TempTaxRegTemplate.Code;
+              TaxRegAccumulation.Indentation := TempTaxRegTemplate.Indentation;
+              TaxRegAccumulation.Bold := TempTaxRegTemplate.Bold;
+              TaxRegAccumulation.Description := TempTaxRegTemplate.Description;
+              TaxRegAccumulation.Amount := TempTaxRegTemplate.Value;
+              TaxRegAccumulation."Amount Period" := TempTaxRegTemplate.Value;
+              TaxRegAccumulation."Template Line No." := TempTaxRegTemplate."Line No.";
+              TaxRegAccumulation."Amount Date Filter" :=
+                TaxRegTermMgt.CalcIntervalDate(
+                  TaxRegAccumulation."Starting Date",
+                  TaxRegAccumulation."Ending Date",
+                  TempTaxRegTemplate.Period);
+              TaxRegAccumulation.Amount := TaxRegAccumulation."Amount Period";
+              TaxRegAccumulation."Entry No." += 1;
+              TaxRegAccumulation.INSERT;
+              IF TempTaxRegTemplate.Period <> '' THEN BEGIN
+                TaxRegAccumulation2 := TaxRegAccumulation;
+                TaxRegAccumulation2.RESET;
+                TaxRegAccumulation2.SETCURRENTKEY(
+                  "Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+                TaxRegAccumulation2.SETRANGE("Section Code",TaxRegAccumulation."Section Code");
+                TaxRegAccumulation2.SETRANGE("Tax Register No.",TaxRegAccumulation."Tax Register No.");
+                TaxRegAccumulation2.SETRANGE("Template Line No.",TaxRegAccumulation."Template Line No.");
+                TaxRegAccumulation2.SETFILTER("Starting Date",TaxRegAccumulation."Amount Date Filter");
+                TaxRegAccumulation2.SETFILTER("Ending Date",TaxRegAccumulation."Amount Date Filter");
+                TaxRegAccumulation2.CALCSUMS("Amount Period");
+                TaxRegAccumulation.Amount := TaxRegAccumulation2."Amount Period";
+                TaxRegAccumulation.MODIFY;
+              END;
+            UNTIL TempTaxRegTemplate.NEXT = 0;
+        END;
+      UNTIL TaxReg.NEXT(1) = 0;
+      TempTaxRegTemplate.DELETEALL;
+    END;
+
+    LOCAL PROCEDURE ValidateTemplateFilters@3(TaxRegPREntry@1000 : Record 17214;TempTaxRegTemplate@1001 : Record 17202) : Boolean;
+    VAR
+      CheckBuffer@1002 : TEMPORARY Record 223;
+    BEGIN
+      WITH CheckBuffer DO BEGIN
+        IF TempTaxRegTemplate."Org. Unit Code" <> '' THEN BEGIN
+          "Order No." := TaxRegPREntry."Org. Unit Code";
+          INSERT;
+          SETFILTER("Order No.",TempTaxRegTemplate."Org. Unit Code");
+          IF NOT FIND THEN
+            EXIT(FALSE);
+          DELETE;
+        END;
+
+        IF TempTaxRegTemplate."Element Type Totaling" <> '' THEN BEGIN
+          RESET;
+          "Order Line No." := TaxRegPREntry."Payroll Element Type";
+          SETFILTER("Order Line No.",TempTaxRegTemplate."Element Type Totaling");
+          INSERT;
+          IF NOT FIND THEN
+            EXIT(FALSE);
+          DELETE;
+        END;
+
+        IF TempTaxRegTemplate."Payroll Source Totaling" <> '' THEN BEGIN
+          RESET;
+          "Order Line No." := TaxRegPREntry."Payroll Source";
+          SETFILTER("Order Line No.",TempTaxRegTemplate."Payroll Source Totaling");
+          INSERT;
+          IF NOT FIND THEN
+            EXIT(FALSE);
+          DELETE;
+        END;
+      END;
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE ValidateWhereUsedRegisterIDs@4(VAR TaxRegPREntry@1000 : Record 17214) : Boolean;
+    VAR
+      TaxReg@1001 : Record 17200;
+      TaxRegLineSetup@1002 : Record 17201;
+      TempTaxRegTemplate@1003 : Record 17202;
+    BEGIN
+      TempTaxRegTemplate.INIT;
+      WITH TaxRegPREntry DO BEGIN
+        TaxReg.SETRANGE("Section Code","Section Code");
+        TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register PR Entry");
+        IF TaxReg.FIND('-') THEN
+          REPEAT
+            TaxRegLineSetup.SETRANGE("Section Code","Section Code");
+            TaxRegLineSetup.SETRANGE("Tax Register No.",TaxReg."No.");
+            IF TaxRegLineSetup.FIND('-') THEN
+              REPEAT
+                IF TaxDimMgt.ValidateSetupDimFilters(TaxRegLineSetup) THEN
+                  IF ValidateSetupFilters(TaxRegPREntry,TaxRegLineSetup,TempTaxRegTemplate) THEN BEGIN
+                    IF "Where Used Register IDs" = '' THEN
+                      "Where Used Register IDs" := '~';
+                    IF STRPOS("Where Used Register IDs",'~' + TaxReg."Register ID" + '~') = 0 THEN
+                      "Where Used Register IDs" :=
+                        STRSUBSTNO('%1%2~',"Where Used Register IDs",TaxReg."Register ID");
+                  END;
+              UNTIL TaxRegLineSetup.NEXT(1) = 0;
+          UNTIL TaxReg.NEXT(1) = 0;
+        EXIT("Where Used Register IDs" <> '');
+      END;
+    END;
+
+    LOCAL PROCEDURE ValidateSetupFilters@5(TaxRegPREntry@1000 : Record 17214;TaxRegLineSetup@1001 : Record 17201;TempTaxRegTemplate@1002 : Record 17202) InsertEntry : Boolean;
+    VAR
+      CheckBuffer@1003 : TEMPORARY Record 223;
+      LookupMgt@1004 : Codeunit 17209;
+      Totaling@1005 : Text[250];
+    BEGIN
+      InsertEntry := TRUE;
+      WITH TaxRegPREntry DO BEGIN
+        IF TaxRegLineSetup."Account No." <> '' THEN BEGIN
+          CheckBuffer."Order No." := "Employee Payroll Account No.";
+          CheckBuffer.SETFILTER("Order No.",TaxRegLineSetup."Account No.");
+          CheckBuffer.INSERT;
+          InsertEntry := CheckBuffer.FIND;
+          CheckBuffer.DELETE;
+        END;
+
+        IF FIELDACTIVE("Employee Statistics Group Code") AND
+           TaxRegLineSetup.FIELDACTIVE("Employee Statistics Group Code")
+        THEN
+          IF InsertEntry AND (TaxRegLineSetup."Employee Statistics Group Code" <> '') THEN BEGIN
+            CheckBuffer."Order No." := "Employee Statistics Group Code";
+            CheckBuffer.SETFILTER("Order No.",TaxRegLineSetup."Employee Statistics Group Code");
+            CheckBuffer.INSERT;
+            InsertEntry := CheckBuffer.FIND;
+            CheckBuffer.DELETE;
+          END;
+
+        IF FIELDACTIVE("Employee Category Code") AND
+           TaxRegLineSetup.FIELDACTIVE("Employee Category Code")
+        THEN
+          IF InsertEntry AND (TaxRegLineSetup."Employee Category Code" <> '') THEN BEGIN
+            CheckBuffer."Order No." := "Employee Category Code";
+            CheckBuffer.SETFILTER("Order No.",TaxRegLineSetup."Employee Category Code");
+            CheckBuffer.INSERT;
+            InsertEntry := CheckBuffer.FIND;
+            CheckBuffer.DELETE;
+          END;
+
+        IF FIELDACTIVE("Payroll Posting Group") AND
+           TaxRegLineSetup.FIELDACTIVE("Payroll Posting Group")
+        THEN
+          IF InsertEntry AND (TaxRegLineSetup."Payroll Posting Group" <> '') THEN BEGIN
+            CheckBuffer."Order No." := "Payroll Posting Group";
+            CheckBuffer.SETFILTER("Order No.",TaxRegLineSetup."Payroll Posting Group");
+            CheckBuffer.INSERT;
+            InsertEntry := CheckBuffer.FIND;
+            CheckBuffer.DELETE;
+          END;
+
+        IF InsertEntry THEN
+          LookupMgt.MergeOptionLists(
+            DATABASE::"Tax Register Line Setup",TaxRegLineSetup.FIELDNO("Element Type Filter"),
+            TaxRegLineSetup."Element Type Totaling",TempTaxRegTemplate."Element Type Totaling",Totaling);
+
+        IF InsertEntry AND (Totaling <> '') THEN BEGIN
+          CheckBuffer.RESET;
+          CheckBuffer."Order Line No." := "Payroll Element Type";
+          CheckBuffer.SETFILTER("Order Line No.",Totaling);
+          CheckBuffer.INSERT;
+          InsertEntry := CheckBuffer.FIND;
+          CheckBuffer.DELETE;
+        END;
+
+        IF InsertEntry THEN
+          LookupMgt.MergeOptionLists(
+            DATABASE::"Tax Register Line Setup",TaxRegLineSetup.FIELDNO("Payroll Source"),
+            TaxRegLineSetup."Payroll Source Totaling",TempTaxRegTemplate."Payroll Source Totaling",Totaling);
+
+        IF InsertEntry AND (Totaling <> '') THEN BEGIN
+          CheckBuffer.RESET;
+          CheckBuffer."Order Line No." := "Payroll Source";
+          CheckBuffer.SETFILTER("Order Line No.",Totaling);
+          CheckBuffer.INSERT;
+          InsertEntry := CheckBuffer.FIND;
+          CheckBuffer.DELETE;
+        END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

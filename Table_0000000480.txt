@@ -1,0 +1,477 @@
+OBJECT Table 480 Dimension Set Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24.05.17;
+    Time=14:54:58;
+    Modified=Yes;
+    Version List=NAVW17.10,NOS-26;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 480=ri,
+                TableData 481=rim;
+    OnInsert=BEGIN
+               IF DimVal.GET("Dimension Code","Dimension Value Code") THEN
+                 "Dimension Value ID" := DimVal."Dimension Value ID"
+               ELSE
+                 "Dimension Value ID" := 0;
+
+               HandleTransaction(0); // NC NOS-26 SPA
+             END;
+
+    OnModify=BEGIN
+               IF DimVal.GET("Dimension Code","Dimension Value Code") THEN
+                 "Dimension Value ID" := DimVal."Dimension Value ID"
+               ELSE
+                 "Dimension Value ID" := 0;
+
+               HandleTransaction(1); // NC NOS-26 SPA
+             END;
+
+    OnDelete=BEGIN
+               HandleTransaction(2); // NC NOS-26 SPA
+             END;
+
+    CaptionML=[ENU=Dimension Set Entry;
+               RUS=Запись набора измерений];
+    LookupPageID=Page479;
+    DrillDownPageID=Page479;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Dimension Set ID    ;Integer       ;CaptionML=[ENU=Dimension Set ID;
+                                                              RUS=Код набора измерений] }
+    { 2   ;   ;Dimension Code      ;Code20        ;TableRelation=Dimension;
+                                                   OnValidate=BEGIN
+                                                                IF NOT DimMgt.CheckDim("Dimension Code") THEN
+                                                                  ERROR(DimMgt.GetDimErr);
+                                                                IF "Dimension Code" <> xRec."Dimension Code" THEN BEGIN
+                                                                  "Dimension Value Code" := '';
+                                                                  "Dimension Value ID" := 0;
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Dimension Code;
+                                                              RUS=Код измерения];
+                                                   NotBlank=Yes }
+    { 3   ;   ;Dimension Value Code;Code20        ;TableRelation="Dimension Value".Code WHERE (Dimension Code=FIELD(Dimension Code));
+                                                   OnValidate=BEGIN
+                                                                IF NOT DimMgt.CheckDimValue("Dimension Code","Dimension Value Code") THEN
+                                                                  ERROR(DimMgt.GetDimErr);
+
+                                                                DimVal.GET("Dimension Code","Dimension Value Code");
+                                                                "Dimension Value ID" := DimVal."Dimension Value ID";
+                                                              END;
+
+                                                   CaptionML=[ENU=Dimension Value Code;
+                                                              RUS=Код значения изм.];
+                                                   NotBlank=Yes }
+    { 4   ;   ;Dimension Value ID  ;Integer       ;CaptionML=[ENU=Dimension Value ID;
+                                                              RUS=ИД значения измерения] }
+    { 5   ;   ;Dimension Name      ;Text30        ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup(Dimension.Name WHERE (Code=FIELD(Dimension Code)));
+                                                   CaptionML=[ENU=Dimension Name;
+                                                              RUS=Название измерения];
+                                                   Editable=No }
+    { 6   ;   ;Dimension Value Name;Text50        ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Dimension Value".Name WHERE (Dimension Code=FIELD(Dimension Code),
+                                                                                                    Code=FIELD(Dimension Value Code)));
+                                                   CaptionML=[ENU=Dimension Value Name;
+                                                              RUS=Имя значения измерения];
+                                                   Editable=No }
+  }
+  KEYS
+  {
+    {    ;Dimension Set ID,Dimension Code         ;Clustered=Yes }
+    {    ;Dimension Value ID                       }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      DimVal@1000 : Record 349;
+      DimMgt@1001 : Codeunit 408;
+      CompanyToUse@1101495000 : Text[30];
+      GlobalRecRef@1101495001 : RecordRef;
+      VarTypeErr@1101495002 : TextConst 'ENU=Invalid Variant type. The type must be RECORD or RECORDREF.;RUS=Недопустимый тип Variant. Требуется тип RECORD или RECORDREF.';
+
+    PROCEDURE GetDimensionSetID@3(VAR DimSetEntry@1000 : Record 480) : Integer;
+    VAR
+      DimSetEntry2@1001 : Record 480;
+      DimSetTreeNode@1002 : Record 481;
+      Found@1003 : Boolean;
+    BEGIN
+      //NC NOS-26 > SPA
+      IF CompanyToUse <> '' THEN BEGIN
+        DimSetEntry2.CHANGECOMPANY(CompanyToUse);
+        DimSetTreeNode.CHANGECOMPANY(CompanyToUse);
+      END;
+      //NC NIGR2017 < SPA
+      DimSetEntry2.COPY(DimSetEntry);
+      IF DimSetEntry."Dimension Set ID" > 0 THEN
+        DimSetEntry.SETRANGE("Dimension Set ID",DimSetEntry."Dimension Set ID");
+
+      DimSetEntry.SETCURRENTKEY("Dimension Value ID");
+      DimSetEntry.SETFILTER("Dimension Code",'<>%1','');
+      DimSetEntry.SETFILTER("Dimension Value Code",'<>%1','');
+
+      IF NOT DimSetEntry.FINDSET THEN
+        EXIT(0);
+
+      Found := TRUE;
+      DimSetTreeNode."Dimension Set ID" := 0;
+      REPEAT
+        DimSetEntry.TESTFIELD("Dimension Value ID");
+        IF Found THEN
+          IF NOT DimSetTreeNode.GET(DimSetTreeNode."Dimension Set ID",DimSetEntry."Dimension Value ID") THEN BEGIN
+            Found := FALSE;
+            DimSetTreeNode.LOCKTABLE;
+          END;
+        IF NOT Found THEN BEGIN
+          DimSetTreeNode."Parent Dimension Set ID" := DimSetTreeNode."Dimension Set ID";
+          DimSetTreeNode."Dimension Value ID" := DimSetEntry."Dimension Value ID";
+          DimSetTreeNode."Dimension Set ID" := 0;
+          DimSetTreeNode."In Use" := FALSE;
+          IF NOT DimSetTreeNode.INSERT(TRUE) THEN
+            DimSetTreeNode.GET(DimSetTreeNode."Parent Dimension Set ID",DimSetTreeNode."Dimension Value ID");
+        END;
+      UNTIL DimSetEntry.NEXT = 0;
+      IF NOT DimSetTreeNode."In Use" THEN BEGIN
+        IF Found THEN BEGIN
+          DimSetTreeNode.LOCKTABLE;
+          DimSetTreeNode.GET(DimSetTreeNode."Parent Dimension Set ID",DimSetTreeNode."Dimension Value ID");
+        END;
+        DimSetTreeNode."In Use" := TRUE;
+        DimSetTreeNode.MODIFY;
+        InsertDimSetEntries(DimSetEntry,DimSetTreeNode."Dimension Set ID");
+      END;
+
+      DimSetEntry.COPY(DimSetEntry2);
+
+      EXIT(DimSetTreeNode."Dimension Set ID");
+    END;
+
+    LOCAL PROCEDURE InsertDimSetEntries@13(VAR DimSetEntry@1000 : Record 480;NewID@1001 : Integer);
+    VAR
+      DimSetEntry2@1002 : Record 480;
+    BEGIN
+      //NC NOS-26 > SPA
+      IF CompanyToUse <> '' THEN
+        DimSetEntry2.CHANGECOMPANY(CompanyToUse);
+      //NC NOS-26 < SPA
+      DimSetEntry2.LOCKTABLE;
+      IF DimSetEntry.FINDSET THEN
+        REPEAT
+          DimSetEntry2 := DimSetEntry;
+          DimSetEntry2."Dimension Set ID" := NewID;
+          DimSetEntry2.INSERT;
+        UNTIL DimSetEntry.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE "NCF >"@1101495001();
+    BEGIN
+    END;
+
+    PROCEDURE SetNewCompanyToUse@1101495000(NewCompanyToUse@1101495000 : Text[30]);
+    BEGIN
+      //NC NOS-26 SPA
+      CompanyToUse := NewCompanyToUse;
+    END;
+
+    PROCEDURE SetObject@1101495002(Object@1101495000 : Variant);
+    BEGIN
+      //NC NOS-26 SPA
+      // Используется для работы триггеров OnInsert, OnModify, OnDelete.
+      // GlobalRecRef хранится только в текущей версии переменной.
+      // При копировании записей в другую переменную передавать RecRef, используя функцию GetObject.
+      IF VariantIsEmtry(Object) THEN
+        EXIT;
+
+      IF NOT (Object.ISRECORD XOR Object.ISRECORDREF) THEN
+        ERROR(VarTypeErr);
+
+      IF Object.ISRECORD THEN
+        GlobalRecRef.GETTABLE(Object)
+      ELSE
+        GlobalRecRef := Object;
+    END;
+
+    PROCEDURE GetObject@1101495003(VAR RecRef@1101495000 : RecordRef);
+    BEGIN
+      //NC NOS-26 SPA
+      RecRef := GlobalRecRef;
+    END;
+
+    LOCAL PROCEDURE VariantIsEmtry@1101495006(VAR Object@1101495000 : Variant) : Boolean;
+    BEGIN
+      //NC NOS-26 SPA
+      // если Object ничто не представляет, значит он неинициализирован
+      EXIT(NOT(
+        Object.ISRECORD OR
+        Object.ISFILE OR
+        Object.ISACTION OR
+        Object.ISCODEUNIT OR
+        Object.ISAUTOMATION OR
+        Object.ISBOOLEAN OR
+        Object.ISOPTION OR
+        Object.ISINTEGER OR
+        Object.ISDECIMAL OR
+        Object.ISCHAR OR
+        Object.ISTEXT OR
+        Object.ISCODE OR
+        Object.ISDATE OR
+        Object.ISTIME OR
+        Object.ISBINARY OR
+        Object.ISDATEFORMULA OR
+        Object.ISTRANSACTIONTYPE OR
+        Object.ISINSTREAM OR
+        Object.ISOUTSTREAM OR
+        Object.ISDOTNET OR
+        Object.ISWIDECHAR OR
+        Object.ISEXECUTIONMODE OR
+        Object.ISDATETIME OR
+        Object.ISGUID OR
+        Object.ISRECORDID OR
+        Object.ISDURATION OR
+        Object.ISBIGINTEGER OR
+        Object.ISRECORDREF OR
+        Object.ISFIELDREF OR
+        Object.ISFILTERPAGEBUILDER OR
+        Object.ISCLIENTTYPE OR
+        Object.ISOBJECTTYPE OR
+        Object.ISTEXTENCODING OR
+        Object.ISREPORTFORMAT OR
+        Object.ISDEFAULTLAYOUT OR
+        Object.ISTABLECONNECTIONTYPE OR
+        Object.ISSECURITYFILTERING OR
+        Object.ISTEXTCONSTANT OR
+        Object.ISBYTE OR
+        Object.ISNOTIFICATION OR
+        Object.ISTESTPERMISSIONS));
+    END;
+
+    LOCAL PROCEDURE HandleTransaction@1101495004(TransType@1101495000 : 'Insert,Modify,Delete');
+    BEGIN
+      // только для временной таблицы
+      IF NOT (ISTEMPORARY AND (GlobalRecRef.NUMBER <> 0)) THEN
+        EXIT;
+
+      CASE TRUE OF
+        // обработка транзакции для журнала
+        IsJnlTable(GlobalRecRef.NUMBER):
+          ProcessingFromGenJnlLine(TransType);
+
+        // обработка транзакции для документа
+        IsDocTable(GlobalRecRef.NUMBER):
+          ProcessingFromDocument(TransType);
+
+        // если не журнал и не документ - ничего не делать
+        ELSE
+          EXIT;
+      END;
+    END;
+
+    LOCAL PROCEDURE ProcessingFromGenJnlLine@1101495005(TransType@1101495000 : 'Insert,Modify,Delete');
+    VAR
+      GenJournalLine@1101495001 : Record 81;
+      ConsSetup@1101495003 : Record 50000;
+      GLSetup@1101495005 : Record 98;
+      GenJournalBatch@1101495002 : Record 232;
+    BEGIN
+      //NC NOS-26 SPA
+      IF TransType = TransType::Delete THEN
+        EXIT;
+
+      IF GlobalRecRef.NUMBER = DATABASE::"Gen. Journal Line" THEN BEGIN
+        GlobalRecRef.SETTABLE(GenJournalLine);
+        IF GenJournalLine.FIND THEN;
+      END ELSE
+        CLEAR(GenJournalLine); // GenJournalLine."Posting Date" = 0D
+
+      // проверки
+      IF NOT DimMgt.fn_CheckDimValue("Dimension Code","Dimension Value Code",GenJournalLine."Posting Date") THEN
+        ERROR(DimMgt.GetDimErr);
+      DimMgt.CheckAccountDim(GenJournalLine, Rec);
+
+      // получение связанных измерений
+      IF GlobalRecRef.NUMBER = DATABASE::"Gen. Journal Line" THEN BEGIN
+        DimMgt.fn_GetLinkDim("Dimension Code","Dimension Value Code");
+        IF DimMgt.fn_UpdateJnlLineLinkDim(Rec,GenJournalLine."Journal Template Name",GenJournalLine."Journal Batch Name") THEN;
+      END;
+
+      ConsSetup.GET;
+      IF GenJournalBatch.GET(GenJournalLine."Journal Template Name",GenJournalLine."Journal Batch Name") AND
+         (GenJournalBatch."Batch Type" = GenJournalBatch."Batch Type"::Manual) AND
+         ("Dimension Code" = ConsSetup."Counterparty Dim Code")
+      THEN
+        FillLinkedDimensions("Dimension Code","Dimension Value Code");
+    END;
+
+    LOCAL PROCEDURE ProcessingFromDocument@1101495009(TransType@1101495000 : 'Insert,Modify,Delete');
+    BEGIN
+      //NC NOS-26 SPA
+      IF TransType = TransType::Delete THEN
+        EXIT;
+
+      // проверка
+      IF NOT DimMgt.fn_CheckDimValue("Dimension Code","Dimension Value Code",GetPostingDate) THEN
+        ERROR(DimMgt.GetDimErr);
+
+      FillLinkedDimensions("Dimension Code","Dimension Value Code");
+    END;
+
+    LOCAL PROCEDURE FillLinkedDimensions@1101495013(DimCode@1101495001 : Code[20];DimValue@1101495002 : Code[20]);
+    VAR
+      LinkedDimensionValue@1101495000 : Record 50016;
+      DimensionValue@1101495003 : Record 349;
+      BuffTemp@1101495004 : TEMPORARY Record 480;
+    BEGIN
+      //NC NOS-26 SPA : доработка PIF001.1 DP
+      BuffTemp := Rec;
+      LinkedDimensionValue.SETRANGE("Dimension Code", DimCode);
+      LinkedDimensionValue.SETRANGE("Dimension Value", DimValue);
+      LinkedDimensionValue.SETFILTER(Blocked, '%1', FALSE);
+      LinkedDimensionValue.SETFILTER("Value Selection", '%1', FALSE);
+      IF LinkedDimensionValue.FINDSET THEN
+        REPEAT
+          // Workaround: Необходимо удалить запись если она существует
+          // Иначе при попытке изменить ее появится ошибка "Another user has modified the record"
+          IF GET("Dimension Set ID", LinkedDimensionValue."Linked Dimension Code") THEN
+            DELETE;
+
+          INIT;
+          "Dimension Code" := LinkedDimensionValue."Linked Dimension Code";
+          IF LinkedDimensionValue."Linked Dimension Value" <> '' THEN
+            "Dimension Value Code" := LinkedDimensionValue."Linked Dimension Value";
+          IF DimensionValue.GET(LinkedDimensionValue."Linked Dimension Code", LinkedDimensionValue."Linked Dimension Value") THEN;
+          "Dimension Value ID" := DimensionValue."Dimension Value ID";
+          INSERT;
+        UNTIL LinkedDimensionValue.NEXT = 0;
+      Rec := BuffTemp;
+    END;
+
+    LOCAL PROCEDURE IsJnlTable@1101495007(TableID@1101495000 : Integer) : Boolean;
+    BEGIN
+      //NC NOS-26 SPA
+      EXIT(TableID IN
+        [DATABASE::"Gen. Journal Line",
+         DATABASE::"Item Journal Line",
+         DATABASE::"Res. Journal Line",
+         DATABASE::"Job Journal Line",
+         DATABASE::"Gen. Jnl. Allocation",
+         DATABASE::"Requisition Line",
+         DATABASE::"Standard General Journal Line",
+         DATABASE::"Standard Item Journal Line",
+         DATABASE::"FA Journal Line",
+         DATABASE::"Insurance Journal Line",
+         DATABASE::"Gen. Journal Line Archive",
+         DATABASE::"VAT Allocation Line",
+         DATABASE::"Default VAT Allocation Line",
+         DATABASE::"Tax Diff. Journal Line",
+         DATABASE::"Employee Journal Line",
+         DATABASE::"FI Journal Line"]);
+    END;
+
+    LOCAL PROCEDURE IsDocTable@1101495008(TableID@1101495000 : Integer) : Boolean;
+    BEGIN
+      //NC NOS-26 SPA
+      EXIT(TableID IN
+        [DATABASE::"Sales Header",
+         DATABASE::"Sales Line",
+         DATABASE::"Purchase Header",
+         DATABASE::"Purchase Line",
+         DATABASE::"Transfer Header",
+         DATABASE::"Transfer Line",
+         DATABASE::"Service Header",
+         DATABASE::"Service Line",
+         DATABASE::"Item Document Header",
+         DATABASE::"Item Document Line",
+         DATABASE::"FA Document Header",
+         DATABASE::"FA Document Line"]);
+    END;
+
+    LOCAL PROCEDURE GetPostingDate@1101495020() PostingDate : Date;
+    VAR
+      Object@1101495006 : Record 2000000001;
+      DocumentNo@1101495003 : Code[20];
+      DocumentType@1101495004 : Integer;
+      Found@1101495005 : ARRAY [2] OF Boolean;
+      RecRef@1101495000 : RecordRef;
+      FldRef@1101495001 : FieldRef;
+      i@1101495002 : Integer;
+      PostDateFldNo@1101495007 : Integer;
+    BEGIN
+      //NC NOS-26 SPA
+      RecRef := GlobalRecRef;
+
+      // Поиск номера и типа документа
+      i := 1;
+      REPEAT
+        FldRef := RecRef.FIELDINDEX(i);
+        IF (FldRef.NAME = 'No.') AND
+           (STRPOS(FORMAT(RecRef.NAME), 'Header') > 0)
+        THEN BEGIN
+          DocumentNo := FldRef.VALUE;
+          Found[1] := TRUE;
+        END;
+        IF (FldRef.NAME = 'Document No.') AND
+           (STRPOS(FORMAT(RecRef.NAME), 'Line') > 0)
+        THEN BEGIN
+          DocumentNo := FldRef.VALUE;
+          Found[1] := TRUE;
+        END;
+        IF FldRef.NAME = 'Document Type' THEN BEGIN
+          DocumentType := FldRef.VALUE;
+          Found[2] := TRUE;
+        END;
+        i := i + 1;
+      UNTIL (Found[1] AND Found[2]) OR (i > RecRef.FIELDCOUNT);
+
+      IF DocumentNo = '' THEN
+        EXIT(0D);
+
+      // Открыть заголовок документа, если работаем со строками
+      IF STRPOS(FORMAT(RecRef.NAME), 'Line') > 0 THEN BEGIN
+        Object.SETCURRENTKEY(Type, Name);
+        Object.SETRANGE(Type, Object.Type::Table);
+        Object.SETRANGE(Name,COPYSTR(FORMAT(RecRef.NAME), 1, STRPOS(FORMAT(RecRef.NAME),'Line') - 1) + 'Header');
+        IF Object.FINDFIRST THEN BEGIN
+          RecRef.CLOSE;
+          RecRef.OPEN(Object.ID);
+        END ELSE
+          EXIT(0D);
+      END;
+
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef := RecRef.FIELDINDEX(i);
+        IF FldRef.NAME = 'No.' THEN
+          FldRef.SETRANGE(DocumentNo);
+        IF FldRef.NAME = 'Document Type' THEN
+          FldRef.SETRANGE(DocumentType);
+
+        IF FldRef.NAME = 'Posting Date' THEN
+          PostDateFldNo := FldRef.NUMBER;
+      END;
+
+      IF RecRef.FINDFIRST AND RecRef.FIELDEXIST(PostDateFldNo) THEN BEGIN
+        FldRef := RecRef.FIELDINDEX(PostDateFldNo);
+        IF (FORMAT(FldRef.TYPE) = 'Date') AND (FldRef.NAME = 'Posting Date') THEN
+          PostingDate := FldRef.VALUE;
+      END;
+      RecRef.CLOSE;
+      EXIT(PostingDate);
+    END;
+
+    BEGIN
+    {
+      NC NOS-26 SPA Создание измерений в другой компании
+                      Использование триггеров таблицы : перед выполнением функций INSERT(TRUE),MODIFY(TRUE),DELETE(TRUE) передать запись/ссылку на запись
+                        в таблицу через функцию SetObject
+    }
+    END.
+  }
+}
+

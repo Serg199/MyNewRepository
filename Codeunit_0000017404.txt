@@ -1,0 +1,2243 @@
+OBJECT Codeunit 17404 Payroll Document - Calculate
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    TableNo=17415;
+    OnRun=VAR
+            RecRef@1210009 : RecordRef;
+            FldRef@1210008 : FieldRef;
+            Calculated@1210007 : Boolean;
+            Execute@1210006 : Boolean;
+            ConditionIsTrue@1210005 : ' ,FALSE,TRUE';
+            BlockType@1210004 : ' ,THEN,ELSE';
+            GotoFlag@1210002 : Boolean;
+            IFQty@1210001 : Integer;
+            ENDIFQty@1210000 : Integer;
+          BEGIN
+            TESTFIELD("Element Code");
+            TESTFIELD("Period Code");
+
+            HumanResourcesSetup.GET;
+
+            // initialize journal line amount
+            "Payroll Amount" := 0;
+            "Taxable Amount" := 0;
+            "Corr. Amount" := 0;
+            "Corr. Amount 2" := 0;
+            "Planned Days" := 0;
+            "Planned Hours" := 0;
+            "Actual Days" := 0;
+            "Actual Hours" := 0;
+            "AE Daily Earnings" := 0;
+
+            CurrCode := '';
+            PositCode := '';
+            DepartCode := '';
+            SavedValue := 0;
+            HaveEmplLedgEntry := FALSE;
+            StopCalc := FALSE;
+            Exception := FALSE;
+
+            CLEAR(StartDate);
+            CLEAR(EndDate);
+
+            IF NOT Calculate THEN   // NOTE:  this should never happen, but...
+              EXIT;
+
+            PayrollElement.GET("Element Code");
+            IF "Employee Ledger Entry No." <> 0 THEN BEGIN
+              EmplLedgEntry.GET("Employee Ledger Entry No.");
+              HaveEmplLedgEntry := TRUE;
+            END;
+
+            InitPayrollPeriod("Period Code","Wage Period From");
+
+            PayrollCalculation.RESET;
+            PayrollCalculation.SETRANGE("Element Code","Element Code");
+            PayrollCalculation.SETRANGE("Period Code",FirstPayrollPeriod.Code,"Period Code");
+            IF PayrollCalculation.FINDLAST THEN BEGIN
+              RemoveCalculations(Rec);
+              PrepareCalculations(Rec,PayrollCalculation);
+
+              // calculation start
+              PayrollDocLineCalc.RESET;
+              PayrollDocLineCalc.SETRANGE("Document No.","Document No.");
+              PayrollDocLineCalc.SETRANGE("Document Line No.","Line No.");
+
+              // check qty of IF and ENDIF
+              PayrollDocLineCalc.SETRANGE(
+                "Statement 1",PayrollDocLineCalc."Statement 1"::"IF");
+              IFQty := PayrollDocLineCalc.COUNT;
+              PayrollDocLineCalc.SETRANGE(
+                "Statement 1",PayrollDocLineCalc."Statement 1"::ENDIF);
+              ENDIFQty := PayrollDocLineCalc.COUNT;
+              IF IFQty <> ENDIFQty THEN
+                ERROR(Text063);
+
+              PayrollDocLineCalc.SETRANGE("Statement 1");
+              PayrollDocLineCalc.FIND('-');
+
+              // Find statement type
+              Calculated := FALSE;
+              WHILE NOT Calculated DO
+                // Calculate step first
+                IF PayrollCalcFunction.GET(PayrollDocLineCalc."Function Code") THEN BEGIN
+                  CalculateFunction(Rec,PayrollCalcFunction."Function No.",
+                    PayrollDocLineCalc."Result Value",PayrollDocLineCalc."Result Flag");
+
+                  IF PayrollDocLineCalc.Variable <> '' THEN BEGIN
+                    IF PayrollDocLineVar.GET(
+                         "Document No.","Line No.",PayrollDocLineCalc.Variable)
+                    THEN BEGIN
+                      PayrollDocLineVar.Value := PayrollDocLineCalc.Rounding(PayrollDocLineCalc."Result Value");
+                      PayrollDocLineVar.Calculated := TRUE;
+                      PayrollDocLineVar.Error := FALSE;
+                      PayrollDocLineVar.MODIFY;
+                    END ELSE BEGIN
+                      PayrollDocLineVar.INIT;
+                      PayrollDocLineVar."Document No." := "Document No.";
+                      PayrollDocLineVar."Document Line No." := "Line No.";
+                      PayrollDocLineVar."Line No." := PayrollDocLineCalc."Line No.";
+                      PayrollDocLineVar.Variable := PayrollDocLineCalc.Variable;
+                      PayrollDocLineVar.Value := PayrollDocLineCalc.Rounding(PayrollDocLineCalc."Result Value");
+                      PayrollDocLineVar.Calculated := TRUE;
+                      PayrollDocLineVar.Error := FALSE;
+                      PayrollDocLineVar.INSERT;
+                    END;
+                    ExprMgt.CheckStops(PayrollDocLineVar);
+                  END;
+
+                  IF PayrollDocLineCalc."Result Field No." <> 0 THEN BEGIN
+                    RecRef.OPEN(DATABASE::"Payroll Document Line");
+                    RecRef.GETTABLE(Rec);
+                    FldRef := RecRef.FIELD(PayrollDocLineCalc."Result Field No.");
+                    FldRef.VALUE(
+                      PayrollDocLineCalc.Rounding(
+                        PayrollDocLineCalc."Result Value"));
+                    RecRef.SETTABLE(Rec);
+                    RecRef.MODIFY;
+                    RecRef.CLOSE;
+                    FIND;
+                  END;
+
+                  PayrollDocLineCalc."No. of Runs" += 1;
+                  PayrollDocLineCalc.MODIFY;
+                  IF PayrollDocLineCalc.NEXT = 0 THEN
+                    Calculated := TRUE;
+                END ELSE BEGIN
+                  // Execute statement if
+                  // 1. No block
+                  // 2. If Block = THEN and Cond = TRUE
+                  // 3. If Block = ELSE and Cond = FALSE
+
+                  // Set Block
+                  CASE PayrollDocLineCalc."Statement 1" OF
+                    PayrollDocLineCalc."Statement 1"::"IF":
+                      BlockType := BlockType::" ";
+                    PayrollDocLineCalc."Statement 1"::"THEN":
+                      BlockType := BlockType::"THEN";
+                    PayrollDocLineCalc."Statement 1"::"ELSE":
+                      BlockType := BlockType::"ELSE";
+                    PayrollDocLineCalc."Statement 1"::ENDIF:
+                      BlockType := BlockType::" ";
+                  END;
+                  PayrollDocLineCalc."Logical Result" := 0;
+                  PayrollDocLineCalc."Result Value" := 0;
+
+                  Execute := FALSE;
+                  IF (BlockType = BlockType::" ") OR
+                     ((BlockType = BlockType::"THEN") AND
+                      (ConditionIsTrue = ConditionIsTrue::"TRUE")) OR
+                     ((BlockType = BlockType::"ELSE") AND
+                      (ConditionIsTrue = ConditionIsTrue::"FALSE"))
+                  THEN
+                    Execute := TRUE;
+                  IF Execute THEN BEGIN
+                    // parse Statement 1
+                    CASE PayrollDocLineCalc."Statement 1" OF
+                      PayrollDocLineCalc."Statement 1"::" ":
+                        BEGIN
+                          CASE PayrollDocLineCalc."Statement 2" OF
+                            PayrollDocLineCalc."Statement 2"::" ":
+                              ExprMgt.EvaluateExpr(
+                                Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                                PayrollDocLineCalc.Expression,0,0,
+                                PayrollDocLineCalc."Result Value",
+                                PayrollDocLineCalc."Logical Result");
+                            PayrollDocLineCalc."Statement 2"::MIN,
+                            PayrollDocLineCalc."Statement 2"::MAX,
+                            PayrollDocLineCalc."Statement 2"::ABS,
+                            PayrollDocLineCalc."Statement 2"::ROUND:
+                              ExprMgt.EvaluateExpr(
+                                Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                                PayrollDocLineCalc.Expression,0,0,
+                                PayrollDocLineCalc."Result Value",
+                                PayrollDocLineCalc."Logical Result");
+                            PayrollDocLineCalc."Statement 2"::GOTO:
+                              BEGIN
+                                GotoLabel(PayrollDocLineCalc);
+                                GotoFlag := TRUE;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::STOP:
+                              Calculated := TRUE;
+                          END;
+                          PayrollDocLineCalc."No. of Runs" += 1;
+                        END;
+                      PayrollDocLineCalc."Statement 1"::"IF": // IF
+                        BEGIN
+                          PayrollDocLineCalc.TESTFIELD("Statement 2",0);
+                          ExprMgt.EvaluateExpr(
+                            Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                            PayrollDocLineCalc.Expression,0,0,
+                            PayrollDocLineCalc."Result Value",
+                            PayrollDocLineCalc."Logical Result");
+                          ConditionIsTrue := PayrollDocLineCalc."Logical Result";
+                          PayrollDocLineCalc."No. of Runs" += 1;
+                        END;
+                      PayrollDocLineCalc."Statement 1"::"THEN": // THEN
+                        IF ConditionIsTrue = ConditionIsTrue::"TRUE" THEN BEGIN
+                          BlockType := BlockType::"THEN";
+                          CASE PayrollDocLineCalc."Statement 2" OF
+                            PayrollDocLineCalc."Statement 2"::" ":
+                              IF PayrollDocLineCalc.Expression <> '' THEN BEGIN
+                                ExprMgt.EvaluateExpr(
+                                  Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                                  PayrollDocLineCalc.Expression,0,0,
+                                  PayrollDocLineCalc."Result Value",
+                                  PayrollDocLineCalc."Logical Result");
+                                PayrollDocLineCalc."No. of Runs" += 1;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::MIN,
+                            PayrollDocLineCalc."Statement 2"::MAX,
+                            PayrollDocLineCalc."Statement 2"::ABS,
+                            PayrollDocLineCalc."Statement 2"::ROUND:
+                              BEGIN
+                                ExprMgt.EvaluateExpr(
+                                  Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                                  PayrollDocLineCalc.Expression,0,0,
+                                  PayrollDocLineCalc."Result Value",
+                                  PayrollDocLineCalc."Logical Result");
+                                PayrollDocLineCalc."No. of Runs" += 1;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::GOTO:
+                              BEGIN
+                                GotoLabel(PayrollDocLineCalc);
+                                GotoFlag := TRUE;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::STOP:
+                              Calculated := TRUE;
+                          END;
+                        END;
+                      PayrollDocLineCalc."Statement 1"::"ELSE": // ELSE
+                        IF ConditionIsTrue = ConditionIsTrue::"FALSE" THEN BEGIN
+                          BlockType := BlockType::"ELSE";
+                          CASE PayrollDocLineCalc."Statement 2" OF
+                            PayrollDocLineCalc."Statement 2"::" ":
+                              IF PayrollDocLineCalc.Expression <> '' THEN BEGIN
+                                ExprMgt.EvaluateExpr(
+                                  Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                                  PayrollDocLineCalc.Expression,0,0,
+                                  PayrollDocLineCalc."Result Value",
+                                  PayrollDocLineCalc."Logical Result");
+                                PayrollDocLineCalc."No. of Runs" += 1;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::MIN,
+                            PayrollDocLineCalc."Statement 2"::MAX,
+                            PayrollDocLineCalc."Statement 2"::ABS,
+                            PayrollDocLineCalc."Statement 2"::ROUND:
+                              BEGIN
+                                ExprMgt.EvaluateExpr(
+                                  Rec,PayrollDocLineCalc,PayrollDocLineVar,
+                                  PayrollDocLineCalc.Expression,0,0,
+                                  PayrollDocLineCalc."Result Value",
+                                  PayrollDocLineCalc."Logical Result");
+                                PayrollDocLineCalc."No. of Runs" += 1;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::GOTO:
+                              BEGIN
+                                GotoLabel(PayrollDocLineCalc);
+                                GotoFlag := TRUE;
+                              END;
+                            PayrollDocLineCalc."Statement 2"::STOP:
+                              Calculated := TRUE;
+                          END;
+                        END;
+                      PayrollDocLineCalc."Statement 1"::ENDIF: // ENDIF
+                        BEGIN
+                          ConditionIsTrue := 0;
+                          BlockType := 0;
+                          PayrollDocLineCalc."No. of Runs" += 1;
+                        END;
+                    END;
+                    PayrollDocLineCalc.MODIFY;
+
+                    // Save result of expression calculation
+                    IF PayrollDocLineCalc.Variable <> '' THEN BEGIN
+                      IF PayrollDocLineVar.GET(
+                           "Document No.","Line No.",PayrollDocLineCalc.Variable)
+                      THEN BEGIN
+                        PayrollDocLineVar.Value := PayrollDocLineCalc.Rounding(PayrollDocLineCalc."Result Value");
+                        PayrollDocLineVar.Calculated := TRUE;
+                        PayrollDocLineVar.Error := FALSE;
+                        PayrollDocLineVar.MODIFY;
+                      END ELSE BEGIN
+                        PayrollDocLineVar.INIT;
+                        PayrollDocLineVar."Document No." := "Document No.";
+                        PayrollDocLineVar."Document Line No." := "Line No.";
+                        PayrollDocLineVar."Element Code" := "Element Code";
+                        PayrollDocLineVar."Line No." := "Line No.";
+                        PayrollDocLineVar.Variable := PayrollDocLineCalc.Variable;
+                        PayrollDocLineVar.Value := PayrollDocLineCalc.Rounding(PayrollDocLineCalc."Result Value");
+                        PayrollDocLineVar.Calculated := TRUE;
+                        PayrollDocLineVar.Error := FALSE;
+                        PayrollDocLineVar.INSERT;
+                      END;
+                      ExprMgt.CheckStops(PayrollDocLineVar);
+                    END;
+
+                    IF PayrollDocLineCalc."Result Field No." <> 0 THEN BEGIN
+                      RecRef.OPEN(DATABASE::"Payroll Document Line");
+                      RecRef.GETTABLE(Rec);
+                      FldRef := RecRef.FIELD(PayrollDocLineCalc."Result Field No.");
+                      FldRef.VALUE(
+                        PayrollDocLineCalc.Rounding(
+                          PayrollDocLineCalc."Result Value"));
+                      RecRef.SETTABLE(Rec);
+                      RecRef.MODIFY;
+                      RecRef.CLOSE;
+                      FIND;
+                    END;
+                  END;
+
+                  IF GotoFlag THEN
+                    GotoFlag := FALSE
+                  ELSE
+                    IF PayrollDocLineCalc.NEXT = 0 THEN
+                      Calculated := TRUE;
+                END;
+
+              IF NOT Calculated THEN BEGIN // If no method, the default is just set to Employee Ledger Entry
+                PayrollDocLineCalc."Result Value" :=
+                  PayrollDocLineCalc.Rounding(GetEmplLedgEntryAmt(Rec,0));
+                "Payroll Amount" := PayrollDocLineCalc."Result Value";
+                PayrollDocLineCalc.MODIFY;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HumanResourcesSetup@1210063 : Record 5218;
+      PayrollCalcFunction@1210003 : Record 17408;
+      PayrollElement@1210005 : Record 17400;
+      PayrollElement2@1210006 : Record 17400;
+      PayrollCalculation@1210008 : Record 17406;
+      PayrollCalcLine@1210022 : Record 17407;
+      PayrollDocLineCalc@1210009 : Record 17459;
+      PayrollPeriod@1210012 : Record 17426;
+      PrevPayrollPeriod@1210042 : Record 17426;
+      WagePayrollPeriod@1210062 : Record 17426;
+      FirstPayrollPeriod@1210016 : Record 17426;
+      FirstYearPayrollPeriod@1210021 : Record 17426;
+      Employee@1210018 : Record 5200;
+      Employee2@1210061 : Record 5200;
+      EmplLedgEntry@1210011 : Record 17413;
+      RangeHeader@1210007 : Record 17410;
+      PayrollElementVar@1210000 : Record 17421;
+      PayrollDocLineVar@1210046 : Record 17437;
+      PayrollElementExpr@1210037 : Record 17422;
+      PayrollDocLineExpr@1210025 : Record 17438;
+      SickLeaveSetup@1210038 : Record 17390;
+      CalendarMgt@1210001 : Codeunit 17430;
+      TimesheetMgt@1210002 : Codeunit 17440;
+      ExprMgt@1210020 : Codeunit 17414;
+      AEMgt@1210010 : Codeunit 17480;
+      HaveEmplLedgEntry@1210026 : Boolean;
+      StopCalc@1210027 : Boolean;
+      Exception@1210028 : Boolean;
+      SavedValue@1210033 : Decimal;
+      CurrCode@1210043 : Code[10];
+      PositCode@1210044 : Text[30];
+      DepartCode@1210045 : Text[30];
+      StartDate@1210084 : ARRAY [5] OF Date;
+      EndDate@1210085 : ARRAY [5] OF Date;
+      Text001@1210004 : TextConst 'ENU=Call for function %1 in method %2 does not exist.;RUS=ÇÎßÆ¢ ‰„≠™Ê®® %1 ¢ ¨•‚Æ§• %2 ≠• ·„È•·‚¢„•‚.';
+      Text002@1210188 : TextConst 'ENU=You cannot use both "%1" and "%2" in the same %6 range. See Amounts in Range named %3 in %4 %5.;RUS=ç•¢Æß¨Æ¶≠Æ ®·ØÆ´ÏßÆ¢†‚Ï "%1" ® "%2" ¢ Æ§≠Æ¨ §®†Ø†ßÆ≠• %6. ë¨. ë„¨¨Î ¢ §®†Ø†ßÆ≠•, ≠†ß¢†≠≠Î• %3 ¢ %4 %5.';
+      ShouldNotBeErr@1210193 : TextConst 'ENU=Element Code %1: field %2 should not be %3.;RUS=äÆ§ Ì´•¨•≠‚† %1: ØÆ´• %2 ≠• §Æ´¶≠Æ °Î‚Ï %3.';
+      Bracket@1210102 : 'Limit,MaxWithholding,Percent,Quantity,TaxPercent,MinAmount,MaxAmount';
+      UOM@1210105 : 'Day,Hour,CalDay';
+      Text060@1210015 : TextConst 'ENU=Label %1 not found.;RUS=å•‚™† %1 ≠• ≠†©§•≠†.';
+      Text063@1210068 : TextConst 'ENU=Quantity of IF and ENDIF statements does not match.;RUS=äÆ´®Á•·‚¢Æ ÆØ•‡†‚Æ‡Æ¢ IF ® ENDIF ≠• ·Æ¢Ø†§†•‚.';
+
+    PROCEDURE CalculateFunction@1210004(VAR PayrollDocLine@1210001 : Record 17415;FunctionNo@1210000 : Integer;VAR ResultValue@1210002 : Decimal;VAR ResultFlag@1210003 : Option);
+    VAR
+      StartDate@1210004 : Date;
+      EndDate@1210005 : Date;
+    BEGIN
+      WITH PayrollDocLine DO
+        CASE FunctionNo OF
+          23:   // GET LEDGER ENTRY AMOUNT - NOT USED
+            ResultValue := GetEmplLedgEntryAmt(PayrollDocLine,0);
+          24:   // GET LEDGER ENTRY QTY  - NOT USED
+            ResultValue := GetEmplLedgEntryAmt(PayrollDocLine,1);
+          220:       // ADD BASE AMOUNT
+            ResultValue := BaseAmount(PayrollDocLine,PayrollDocLineCalc."Base Amount Code");
+          247:       // ADD BASE BALANCE
+            ResultValue := BaseBalance(PayrollDocLine,PayrollDocLineCalc."Base Amount Code");
+          249:       // AMOUNT IS DEDUCTION
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := Deduction(PayrollDocLine,0);
+          252:       // GET RANGE MIN AMOUNT
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := Brackets("Employee No.",Bracket::MinAmount);
+          253:       // GET RANGE MAX AMOUNT
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := Brackets("Employee No.",Bracket::MaxAmount);
+          255:       // GET RANGE COEFFICIENT
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := Brackets("Employee No.",Bracket::Quantity);
+          261:       // BALANCE TO DATE
+            ResultValue := BalanceToDate(PayrollDocLine);
+          262,
+          2013:       // EARNINGS YTD
+            ResultValue := YTDEarnings(PayrollDocLine);
+          263:       // INCOME TAX AMOUNT YTD
+            ResultValue := YTDTaxableIncomeTax(PayrollDocLine);
+          270:       // GET MROT
+            ResultValue := GetFSILimit("Period Code",0);
+          271:       // GET FSI MAX SALARY
+            ResultValue := GetFSILimit("Period Code",1);
+          // Russian specific
+          2002:    // èêàåÖç. ëíÄÇéä çÄãéÉÄ
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := -Withholding(PayrollDocLine,"Corr. Amount");
+          2003: // TAXABLE AMOUNT YTD
+            ResultValue := YTDTaxableAmount(PayrollDocLine);
+          2005:    // PAYROLL AMOUNT YTD
+            ResultValue := YTDPayrollAmount(PayrollDocLine);
+          2024:   // ëìååÄ ëäàÑäà Ñãü ÑéïéÑÄ
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := -EarningsCredit(PayrollDocLine,"Corr. Amount",-YTDPayrollAmount(PayrollDocLine));
+          2025: // ÇõóÖíõ çÄ ÜàãúÖ
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := PropertyDeduction(PayrollDocLine,"Corr. Amount");
+          2030:   // ÇõóÖí ãúÉéíÄ ëìååÄ ë çÄóÄãÄ ÉéÑÄ èé íÖäìôàâ åÖëüñ
+            IF GetRangeHeader(PayrollDocLine) THEN
+              ResultValue := DeductionAmount(PayrollDocLine,"Corr. Amount");
+          2035:    // ëìååÄ éÅãÄÉ. çÄãéÉéå ë çÄóÄãÄ ÉéÑÄ (‚Æ´Ï™Æ §´Ô çÑîã)
+            ResultValue := YTDTypeTaxable(PayrollDocLine);
+          2036:    // íÖäìôÄü ëìååÄ çÄãéÉÄ  (‚Æ´Ï™Æ §´Ô çÑîã)
+            ResultValue := YTDTypeAmount(PayrollDocLine);
+          2040:   // çÄãéÉééÅãÄÉÄÖåõâ ÑéïéÑ èé ëèêÄÇäÖ 2-çÑîã
+            ResultValue := GetIncomeTaxAmounts(PayrollDocLine,0);
+          2041:   // ëìååÄ çÄóàëãÖççéÉé çÄãéÉÄ èé ëèêÄÇäÖ 2-çÑîã
+            ResultValue := GetIncomeTaxAmounts(PayrollDocLine,1);
+          2042:   // ëìååÄ ìèãÄóÖççéÉé çÄãéÉÄ èé ëèêÄÇäÖ 2-çÑîã
+            ResultValue := GetIncomeTaxAmounts(PayrollDocLine,2);
+          2043:   // ëìååÄ èéãìóÖççéÉé ÇõóÖíÄ èé ëèêÄÇäÖ 2-çÑîã
+            ResultValue := GetIncomeTaxAmounts(PayrollDocLine,3);
+          2070:    // çÄóÄãúçéÉé ëÄãúÑé = äéçÖóçéÉé ëÄãúÑé èêéòãéÉé åÖëüñÄ
+            ResultValue := GetStartingBalance(PayrollDocLine);
+          2100: // äéãàóÖëíÇé óÄëéÇ èé íÄÅÖãû Ñãü îàãúíêÄ ÇêÖåÖççõï ÄäíàÇçéëíÖâ
+            ResultValue :=
+              TimesheetMgt.GetTimeSheetData(PayrollDocLine,1,PayrollDocLineCalc."Time Activity Group");
+          2101: // äéãàóÖëíÇé ÑçÖâ èé íÄÅÖãû Ñãü îàãúíêÄ ÇêÖåÖççõï ÄäíàÇçéëíÖâ
+            ResultValue :=
+              TimesheetMgt.GetTimeSheetData(PayrollDocLine,0,PayrollDocLineCalc."Time Activity Group");
+          2102: // äéãàóÖëíÇé äÄãÖçÑÄêçõï ÑçÖâ èé äÄãÖçÑÄêû Ç èÖêàéÑÖ
+            ResultValue :=
+              CalendarMgt.GetPeriodInfo(
+                "Calendar Code",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",1);
+          2103: // äéãàóÖëíÇé êÄÅéóàï ÑçÖâ èé äÄãÖçÑÄêû Ç ÉéÑì
+            ResultValue :=
+              CalendarMgt.GetPeriodInfo(
+                "Calendar Code",FirstYearPayrollPeriod."Starting Date",
+                CALCDATE('<CY>',FirstYearPayrollPeriod."Starting Date"),2);
+          2104: // äéãàóÖëíÇé êÄÅéóàï ÑçÖâ èé äÄãÖçÑÄêû Ç èÖêàéÑÖ
+            ResultValue :=
+              CalendarMgt.GetPeriodInfo(
+                "Calendar Code",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",2);
+          2105: // äéãàóÖëíÇé êÄÅéóàï óÄëéÇ èé äÄãÖçÑÄêû Ç èÖêàéÑÖ
+            ResultValue :=
+              CalendarMgt.GetPeriodInfo(
+                "Calendar Code",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",3);
+          2106: // äéãàóÖëíÇé êÄÅéóàï óÄëéÇ èé äÄãÖçÑÄêû Ç ÉéÑì
+            ResultValue :=
+              CalendarMgt.GetPeriodInfo(
+                "Calendar Code",FirstYearPayrollPeriod."Starting Date",
+                CALCDATE('<CY>',FirstYearPayrollPeriod."Starting Date"),3);
+          2107: // äéãàóÖëíÇé äÄãÖçÑÄêçõï ÑçÖâ èé äÄãÖçÑÄêû Ç èÖêàéÑÖ à ÑÖâëíÇàà
+            BEGIN
+              IF "Action Starting Date" <= PayrollPeriod."Starting Date" THEN
+                StartDate := PayrollPeriod."Starting Date"
+              ELSE
+                StartDate := "Action Starting Date";
+              IF "Action Ending Date" >= PayrollPeriod."Ending Date" THEN
+                EndDate := PayrollPeriod."Ending Date"
+              ELSE
+                EndDate := "Action Ending Date";
+              ResultValue :=
+                CalendarMgt.GetPeriodInfo(
+                  "Calendar Code",StartDate,EndDate,1);
+            END;
+          2108: // äéãàóÖëíÇé êÄÅéóàï ÑçÖâ èé äÄãÖçÑÄêû Ç èÖêàéÑÖ à ÑÖâëíÇàà
+            BEGIN
+              IF "Action Starting Date" <= PayrollPeriod."Starting Date" THEN
+                StartDate := PayrollPeriod."Starting Date"
+              ELSE
+                StartDate := "Action Starting Date";
+              IF "Action Ending Date" >= PayrollPeriod."Ending Date" THEN
+                EndDate := PayrollPeriod."Ending Date"
+              ELSE
+                EndDate := "Action Ending Date";
+              ResultValue :=
+                CalendarMgt.GetPeriodInfo(
+                  "Calendar Code",StartDate,EndDate,3);
+            END;
+          2110: // áÄèéãçÖçàÖ íÄÅãàñõ ëêÖÑçÖÉé áÄêÄÅéíäÄ
+            ResultValue := AEMgt.FillDocLineAEData(PayrollDocLine,PayrollDocLineCalc."AE Setup Code");
+          2111: // èéãìóàíú ãàåàí ÑçÖÇçéÉé ëá
+            ResultValue := SickLeaveSetup.GetMaxDailyPayment(PayrollDocLine);
+          2112: // èéãìóàíú åÄäë. êÄáåÖê éèãÄíõ èé ëá
+            ResultValue := SickLeaveSetup.GetMinWageAmount(PayrollDocLine);
+          2113: // ëìå=éäãÄÑ èêÖÑ.åÖëüñÄ
+            ResultValue := GetSalaryPrevPeriod(PayrollDocLine);
+          2114: // äéãàóÖëíÇé äÄãÖçÑÄêçõï ÑçÖâ èé äÄãÖçÑÄêû Ç èÖêàéÑÖ çÄóàëãÖçàü
+            ResultValue :=
+              CalendarMgt.GetPeriodInfo(
+                "Calendar Code",WagePayrollPeriod."Starting Date",WagePayrollPeriod."Ending Date",1);
+          2220:    // ëìååÄ = ëìååÖ ÅÄáéÇéÉé éäãÄÑÄ ëéíêìÑçàäÄ áÄ èÖêàéÑ
+            ResultValue := GetBaseSalary("Employee No.",PayrollPeriod);
+          2221:    // ëìååÄ = ëìååÖ çÄÑÅÄÇéä áÄÇàëüôàï é ÅÄáéÇéÉé éäãÄÑÄ
+            ResultValue := GetExtraSalary("Employee No.",PayrollPeriod);
+          2230:  // åÖëüóçõâ éäãÄÑ èêéèéêñ. éíêÄÅéíÄççõå óÄëÄå
+            ResultValue := GetSalaryPay(PayrollDocLine,UOM::Hour,PayrollDocLineCalc."Time Activity Group");
+          2232:  // ÄÇÄçë çÄ ÑÄíì èêéèéêñ. éíêÄÅéíÄççõå óÄëÄå
+            ResultValue := GetAdvancePay(PayrollDocLine,UOM::Hour,PayrollDocLineCalc."Time Activity Group");
+          2239: // ëíÄÇäÄ èêéèéêñ. äÄãÖçÑÄêû
+            ResultValue := SalaryProRataCalendar(PayrollDocLine);
+          2240:  // åÖëüóçõâ éäãÄÑ èêéèéêñ. éíêÄÅéíÄççõå Ñçüå
+            ResultValue := GetSalaryPay(PayrollDocLine,UOM::Day,PayrollDocLineCalc."Time Activity Group");
+          2241:  // åÖëüóçõâ ÑéèãÄíÄ èé éäãÄÑì à óÄëÄå èé ÇêÖåÖççéâ ÉêìèèÖ
+            ResultValue := GetExtraPay(PayrollDocLine,PayrollDocLineCalc."Time Activity Group");
+          2242:  // ÄÇÄçë çÄ ÑÄíì èêéèéêñ. éíêÄÅéíÄççõå Ñçüå
+            ResultValue := GetAdvancePay(PayrollDocLine,UOM::Day,PayrollDocLineCalc."Time Activity Group");
+          2300: // êÄëóÖí ëíÄÜÄ
+            ResultValue := ServiceYears(PayrollDocLine);
+          2301: // èêéÇÖêäÄ íàèÄ íêìÑéÇéÉé ÑéÉéÇéêÄ: Éèï = 1
+            ResultValue := LaborContractType(PayrollDocLine);
+          ELSE
+            IF PayrollCalcFunction."Function No." <> 0 THEN
+              ERROR(Text001,PayrollCalcFunction."Function No.",PayrollCalcFunction.Code);
+        END;
+    END;
+
+    LOCAL PROCEDURE Annualize@13(Amount@1210001 : Decimal) : Decimal;
+    BEGIN
+      EXIT(Amount * 12);
+    END;
+
+    LOCAL PROCEDURE BalanceToDate@37(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    BEGIN
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Element Type Filter",PayrollDocLine."Element Type");
+        SETRANGE("Element Code Filter",PayrollDocLine."Element Code");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PayrollDocLine."Period Code");
+        CALCFIELDS("Payroll Amount");
+        EXIT("Payroll Amount");
+      END;
+    END;
+
+    LOCAL PROCEDURE BaseAmount@2(VAR PayrollDocLine@1210000 : Record 17415;BaseAmountCode@1210001 : Code[10]) : Decimal;
+    VAR
+      PayrollDocLine3@1210002 : Record 17415;
+      PayrollBaseAmount@1210003 : Record 17409;
+      Base@1210005 : Decimal;
+    BEGIN
+      Base := 0;
+
+      WITH PayrollDocLine3 DO BEGIN
+        RESET;
+        SETRANGE("Document No.",PayrollDocLine."Document No.");
+
+        PayrollBaseAmount.RESET;
+        PayrollBaseAmount.SETRANGE("Element Code",PayrollDocLine."Element Code");
+        IF PayrollBaseAmount.FINDSET THEN
+          REPEAT
+            // Skip blank entries and entries we don't care about
+            IF ((PayrollBaseAmount."Element Code Filter" <> '') OR
+                (PayrollBaseAmount."Element Type Filter" <> '') OR
+                (PayrollBaseAmount."Element Group Filter" <> '') OR
+                (PayrollBaseAmount."Posting Type Filter" <> '')) AND
+               ((BaseAmountCode = '') OR
+                (BaseAmountCode = PayrollBaseAmount.Code))
+            THEN BEGIN
+              // Set up the filters according to what is in the BaseAmount record
+              IF PayrollBaseAmount."Element Code Filter" = '' THEN
+                SETRANGE("Element Code")
+              ELSE
+                SETFILTER("Element Code",PayrollBaseAmount."Element Code Filter");
+              IF PayrollBaseAmount."Element Type Filter" = '' THEN
+                SETRANGE("Element Type")
+              ELSE
+                SETFILTER("Element Type",PayrollBaseAmount."Element Type Filter");
+              IF PayrollBaseAmount."Element Group Filter" = '' THEN
+                SETRANGE("Element Group")
+              ELSE
+                SETFILTER("Element Group",PayrollBaseAmount."Element Group Filter");
+              IF PayrollBaseAmount."Posting Type Filter" = '' THEN
+                SETRANGE("Posting Type")
+              ELSE
+                SETFILTER("Posting Type",PayrollBaseAmount."Posting Type Filter");
+              CASE PayrollBaseAmount."Income Tax Base Filter" OF
+                0:
+                  SETRANGE("Income Tax Base");
+                1:
+                  SETRANGE("Income Tax Base",TRUE);
+                2:
+                  SETRANGE("Income Tax Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."PF Base Filter" OF
+                0:
+                  SETRANGE("Pension Fund Base");
+                1:
+                  SETRANGE("Pension Fund Base",TRUE);
+                2:
+                  SETRANGE("Pension Fund Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Base Filter" OF
+                0:
+                  SETRANGE("FSI Base");
+                1:
+                  SETRANGE("FSI Base",TRUE);
+                2:
+                  SETRANGE("FSI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Federal FMI Base Filter" OF
+                0:
+                  SETRANGE("Federal FMI Base");
+                1:
+                  SETRANGE("Federal FMI Base",TRUE);
+                2:
+                  SETRANGE("Federal FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Territorial FMI Base Filter" OF
+                0:
+                  SETRANGE("Territorial FMI Base");
+                1:
+                  SETRANGE("Territorial FMI Base",TRUE);
+                2:
+                  SETRANGE("Territorial FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Injury Base Filter" OF
+                0:
+                  SETRANGE("FSI Injury Base");
+                1:
+                  SETRANGE("FSI Injury Base",TRUE);
+                2:
+                  SETRANGE("FSI Injury Base",FALSE);
+              END;
+              // Run through the Payroll Journal
+              IF FINDSET THEN
+                REPEAT
+                  Base := Base + "Payroll Amount";
+                UNTIL NEXT = 0;
+            END;
+          UNTIL PayrollBaseAmount.NEXT = 0;
+      END;
+
+      EXIT(Base);
+    END;
+
+    LOCAL PROCEDURE BaseBalance@30(VAR PayrollDocLine@1210000 : Record 17415;BaseAmountCode@1210001 : Code[10]) : Decimal;
+    VAR
+      PayrollLedgEntry@1210002 : Record 17418;
+      PayrollBaseAmount@1210003 : Record 17409;
+      Base@1210006 : Decimal;
+    BEGIN
+      Base := 0;
+
+      WITH PayrollLedgEntry DO BEGIN
+        RESET;
+        SETCURRENTKEY("Employee No.");
+        SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+
+        PayrollBaseAmount.RESET;
+        PayrollBaseAmount.SETRANGE("Element Code",PayrollDocLine."Element Code");
+        IF PayrollBaseAmount.FINDSET THEN
+          REPEAT
+            // Skip blank entries and entries we don't care about
+            IF ((PayrollBaseAmount."Element Code Filter" <> '') OR
+                (PayrollBaseAmount."Element Type Filter" <> '') OR
+                (PayrollBaseAmount."Element Group Filter" <> '') OR
+                (PayrollBaseAmount."Posting Type Filter" <> '')) AND
+               ((BaseAmountCode = '') OR
+                (BaseAmountCode = PayrollBaseAmount.Code))
+            THEN BEGIN
+              // Set up the filters according to what is in the BaseAmount record
+              IF PayrollBaseAmount."Element Code Filter" = '' THEN
+                SETRANGE("Element Code")
+              ELSE
+                SETFILTER("Element Code",PayrollBaseAmount."Element Code Filter");
+              IF PayrollBaseAmount."Element Type Filter" = '' THEN
+                SETRANGE("Element Type")
+              ELSE
+                SETFILTER("Element Type",PayrollBaseAmount."Element Type Filter");
+              IF PayrollBaseAmount."Element Group Filter" = '' THEN
+                SETRANGE("Element Group")
+              ELSE
+                SETFILTER("Element Group",PayrollBaseAmount."Element Group Filter");
+              IF PayrollBaseAmount."Posting Type Filter" = '' THEN
+                SETRANGE("Posting Type")
+              ELSE
+                SETFILTER("Posting Type",PayrollBaseAmount."Posting Type Filter");
+              CASE PayrollBaseAmount."Income Tax Base Filter" OF
+                0:
+                  SETRANGE("Income Tax Base");
+                1:
+                  SETRANGE("Income Tax Base",TRUE);
+                2:
+                  SETRANGE("Income Tax Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."PF Base Filter" OF
+                0:
+                  SETRANGE("Pension Fund Base");
+                1:
+                  SETRANGE("Pension Fund Base",TRUE);
+                2:
+                  SETRANGE("Pension Fund Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Base Filter" OF
+                0:
+                  SETRANGE("FSI Base");
+                1:
+                  SETRANGE("FSI Base",TRUE);
+                2:
+                  SETRANGE("FSI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Federal FMI Base Filter" OF
+                0:
+                  SETRANGE("Federal FMI Base");
+                1:
+                  SETRANGE("Federal FMI Base",TRUE);
+                2:
+                  SETRANGE("Federal FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Territorial FMI Base Filter" OF
+                0:
+                  SETRANGE("Territorial FMI Base");
+                1:
+                  SETRANGE("Territorial FMI Base",TRUE);
+                2:
+                  SETRANGE("Territorial FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Injury Base Filter" OF
+                0:
+                  SETRANGE("FSI Injury Base");
+                1:
+                  SETRANGE("FSI Injury Base",TRUE);
+                2:
+                  SETRANGE("FSI Injury Base",FALSE);
+              END;
+              // Run through the Payroll Journal
+              IF FINDSET THEN
+                REPEAT
+                  Base := Base + "Payroll Amount";
+                UNTIL NEXT = 0;
+            END;
+          UNTIL PayrollBaseAmount.NEXT = 0;
+      END;
+
+      EXIT(Base);
+    END;
+
+    LOCAL PROCEDURE Brackets@7(EmployeeNo@1210002 : Code[20];Bracket@1210001 : 'Limit,MaxWithholding,Percent,Quantity,TaxPercent,MinAmount,MaxAmount') : Decimal;
+    VAR
+      RangeLine@1210000 : Record 17411;
+    BEGIN
+      WITH RangeLine DO BEGIN
+        SETRANGE("Range Code",RangeHeader.Code);
+        SETRANGE("Element Code",RangeHeader."Element Code");
+        SETRANGE("Period Code",RangeHeader."Period Code");
+
+        IF Employee.GET(EmployeeNo) THEN BEGIN
+          Employee.TESTFIELD(Gender);
+          Employee.TESTFIELD("Birth Date");
+          IF RangeHeader."Allow Employee Gender" THEN
+            SETRANGE("Employee Gender",Employee.Gender);
+          IF RangeHeader."Allow Employee Age" THEN
+            SETRANGE("From Birthday and Younger",0D,Employee."Birth Date");
+        END;
+
+        IF FINDFIRST THEN
+          CASE Bracket OF
+            Bracket::Limit:
+              BEGIN
+                TESTFIELD(Limit);
+                EXIT(Limit);
+              END;
+            Bracket::MaxWithholding:
+              EXIT("Max Deduction");
+            Bracket::Percent:
+              BEGIN
+                TESTFIELD(Percent);
+                EXIT(Percent);
+              END;
+            Bracket::Quantity:
+              EXIT(Quantity);
+            Bracket::TaxPercent:
+              BEGIN
+                TESTFIELD("Tax %");
+                EXIT("Tax %");
+              END;
+            Bracket::MinAmount:
+              EXIT("Min Amount");
+            Bracket::MaxAmount:
+              EXIT("Max Amount");
+          END;
+
+        EXIT(0);
+      END;
+    END;
+
+    LOCAL PROCEDURE Deduction@20(VAR PayrollDocLine@1210000 : Record 17415;PreDeductionAmount@1210001 : Decimal) : Decimal;
+    VAR
+      RangeLine@1210002 : Record 17411;
+      RemainingAllowances@1210003 : Integer;
+      ReturnValue@1210004 : Decimal;
+      LineDeductionAmount@1210005 : Decimal;
+      UsesAmountOver@1210006 : Boolean;
+      AmountOverLineFound@1210007 : Boolean;
+    BEGIN
+      GetEmplLedgEntryAmt(PayrollDocLine,0);
+      WITH RangeLine DO BEGIN
+        SETCURRENTKEY("Element Code","Range Code","Period Code","Over Amount");
+        SETRANGE("Element Code",RangeHeader."Element Code");
+        SETRANGE("Range Code",RangeHeader.Code);
+        SETRANGE("Period Code",RangeHeader."Period Code");
+
+        Employee.RESET;
+        IF Employee.GET(PayrollDocLine."Employee No.") THEN BEGIN
+          Employee.TESTFIELD(Gender);
+          Employee.TESTFIELD("Birth Date");
+        END;
+
+        IF RangeHeader."Allow Employee Gender" = TRUE THEN
+          SETRANGE("Employee Gender",Employee.Gender);
+
+        IF RangeHeader."Allow Employee Age" = TRUE THEN
+          SETRANGE("From Birthday and Younger",0D,Employee."Birth Date");
+
+        IF FIND('+') THEN BEGIN
+          RemainingAllowances := EmplLedgEntry.Quantity;
+          ReturnValue := 0;
+          UsesAmountOver := ("Over Amount" <> 0);
+          AmountOverLineFound := FALSE;
+          REPEAT
+            IF UsesAmountOver THEN
+              AmountOverLineFound := (Annualize(PreDeductionAmount) > "Over Amount");
+            IF NOT UsesAmountOver OR AmountOverLineFound THEN BEGIN
+              LineDeductionAmount := Amount;
+              IF Percent <> 0 THEN BEGIN
+                LineDeductionAmount := LineDeductionAmount +
+                  (Annualize(PreDeductionAmount) * Percent / 100.0);
+                IF "From Allowance" <> 0 THEN
+                  ERROR(Text002,FIELDNAME(Percent),FIELDNAME("From Allowance"),
+                    "Range Code",PayrollElement.TABLENAME,"Element Code",
+                    FORMAT(RangeHeader."Range Type"));
+              END;
+
+              IF "On Allowance" THEN
+                IF "From Allowance" = 0 THEN
+                  LineDeductionAmount := LineDeductionAmount * EmplLedgEntry.Quantity
+                ELSE
+                  IF RemainingAllowances >= "From Allowance" THEN BEGIN
+                    LineDeductionAmount := LineDeductionAmount * (RemainingAllowances - ("From Allowance" - 1));
+                    RemainingAllowances := "From Allowance" - 1;
+                  END;
+
+              IF LineDeductionAmount < "Min Amount" THEN
+                LineDeductionAmount := "Min Amount";
+
+              IF ("Max Amount" <> 0) AND (LineDeductionAmount > "Max Amount") THEN
+                LineDeductionAmount := "Max Amount";
+
+              ReturnValue := ReturnValue + ProrateAnnually(PayrollDocLine,LineDeductionAmount);
+            END;
+          UNTIL AmountOverLineFound OR (NEXT(-1) = 0);
+          EXIT(ReturnValue);
+        END;
+        EXIT(0);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetEmplLedgEntryAmt@11(VAR PayrollDocLine@1210000 : Record 17415;AmountType@1210002 : 'Amount,Quantity') : Decimal;
+    BEGIN
+      WITH EmplLedgEntry DO BEGIN
+        IF PayrollDocLine."Employee Ledger Entry No." <> 0 THEN
+          GET(PayrollDocLine."Employee Ledger Entry No.")
+        ELSE BEGIN
+          RESET;
+          SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+          SETRANGE("Element Code",PayrollDocLine."Element Code");
+          IF PayrollElement."Include into Calculation by" =
+             PayrollElement."Include into Calculation by"::"Action Period"
+          THEN
+            SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+          IF NOT FINDLAST THEN
+            EXIT(0);
+        END;
+
+        CASE PayrollElement."Include into Calculation by" OF
+          PayrollElement."Include into Calculation by"::"Action Period":
+            IF (("Action Ending Date" = 0D) OR
+                ("Action Ending Date" > PayrollPeriod."Starting Date"))
+            THEN
+              CASE AmountType OF
+                AmountType::Amount:
+                  EXIT(Amount);
+                AmountType::Quantity:
+                  EXIT(Quantity);
+              END;
+          PayrollElement."Include into Calculation by"::"Period Code":
+            CASE AmountType OF
+              AmountType::Amount:
+                EXIT(Amount);
+              AmountType::Quantity:
+                EXIT(Quantity);
+            END;
+        END;
+        EXIT(0);
+      END;
+    END;
+
+    PROCEDURE GetBaseSalary@1210002(EmployeeNo@1210000 : Code[20];PayrollPeriod@1210001 : Record 17426) : Decimal;
+    VAR
+      PeriodWorkDays@1210004 : Decimal;
+      PeriodSalary@1210005 : Decimal;
+      WorkDays@1210006 : Decimal;
+      StartDate@1210002 : Date;
+      EndDate@1210003 : Date;
+      ElementFilter@1210007 : Text[1024];
+    BEGIN
+      // Base salary for period
+      HumanResourcesSetup.GET;
+      HumanResourcesSetup.TESTFIELD("Element Code Salary Days");
+      ElementFilter := HumanResourcesSetup."Element Code Salary Days";
+      IF HumanResourcesSetup."Element Code Salary Hours" <> '' THEN
+        ElementFilter += '|' + HumanResourcesSetup."Element Code Salary Hours";
+      IF HumanResourcesSetup."Element Code Salary Amount" <> '' THEN
+        ElementFilter += '|' + HumanResourcesSetup."Element Code Salary Amount";
+
+      PeriodWorkDays := 0;
+      PeriodSalary := 0;
+
+      EmplLedgEntry.RESET;
+      EmplLedgEntry.SETRANGE("Employee No.",EmployeeNo);
+      EmplLedgEntry.SETFILTER("Element Code",ElementFilter);
+      EmplLedgEntry.SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+      EmplLedgEntry.SETFILTER("Action Ending Date",'%1|%2..',0D,PayrollPeriod."Starting Date");
+      IF EmplLedgEntry.FINDSET THEN BEGIN
+        REPEAT
+          IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+            StartDate := EmplLedgEntry."Action Starting Date"
+          ELSE
+            StartDate := PayrollPeriod."Starting Date";
+          IF (EmplLedgEntry."Action Ending Date" = 0D) OR
+             (EmplLedgEntry."Action Ending Date" >= PayrollPeriod."Ending Date")
+          THEN
+            EndDate := PayrollPeriod."Ending Date"
+          ELSE
+            EndDate := EmplLedgEntry."Action Ending Date";
+          WorkDays :=
+            CalendarMgt.GetPeriodInfo(EmplLedgEntry."Calendar Code",StartDate,EndDate,2);
+          PeriodWorkDays := PeriodWorkDays + WorkDays;
+        UNTIL EmplLedgEntry.NEXT = 0;
+        IF PeriodWorkDays = 0 THEN
+          EXIT(0);
+
+        IF EmplLedgEntry.FINDSET THEN
+          REPEAT
+            IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+              StartDate := EmplLedgEntry."Action Starting Date"
+            ELSE
+              StartDate := PayrollPeriod."Starting Date";
+            IF (EmplLedgEntry."Action Ending Date" = 0D) OR
+               (EmplLedgEntry."Action Ending Date" >= PayrollPeriod."Ending Date")
+            THEN
+              EndDate := PayrollPeriod."Ending Date"
+            ELSE
+              EndDate := EmplLedgEntry."Action Ending Date";
+            WorkDays :=
+              CalendarMgt.GetPeriodInfo(EmplLedgEntry."Calendar Code",StartDate,EndDate,2);
+            PeriodSalary := PeriodSalary + EmplLedgEntry.Amount * WorkDays / PeriodWorkDays;
+          UNTIL EmplLedgEntry.NEXT = 0;
+
+        EXIT(PeriodSalary);
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE GetExtraSalary@1210008(EmployeeNo@1210000 : Code[20];PayrollPeriod@1210001 : Record 17426) : Decimal;
+    VAR
+      PeriodWorkDays@1210004 : Decimal;
+      PeriodSalary@1210005 : Decimal;
+      WorkDays@1210006 : Decimal;
+      StartDate@1210002 : Date;
+      EndDate@1210003 : Date;
+      ElementFilter@1210007 : Text[1024];
+      ElementFilter2@1210008 : Text[1024];
+      FirstElement@1210009 : Boolean;
+    BEGIN
+      // Base salary for period
+      HumanResourcesSetup.GET;
+      HumanResourcesSetup.TESTFIELD("Element Code Salary Days");
+      ElementFilter := HumanResourcesSetup."Element Code Salary Days";
+      IF HumanResourcesSetup."Element Code Salary Hours" <> '' THEN
+        ElementFilter += '|' + HumanResourcesSetup."Element Code Salary Hours";
+      IF HumanResourcesSetup."Element Code Salary Amount" <> '' THEN
+        ElementFilter += '|' + HumanResourcesSetup."Element Code Salary Amount";
+
+      ElementFilter2 := '';
+      FirstElement := TRUE;
+      PayrollElement2.RESET;
+      PayrollElement2.SETFILTER("Depends on Salary Element",ElementFilter);
+      IF PayrollElement2.FINDSET THEN
+        REPEAT
+          IF FirstElement THEN BEGIN
+            ElementFilter2 := PayrollElement2.Code;
+            FirstElement := FALSE;
+          END ELSE
+            ElementFilter2 += '|' + PayrollElement2.Code;
+        UNTIL PayrollElement2.NEXT = 0;
+
+      PeriodWorkDays := 0;
+      PeriodSalary := 0;
+
+      EmplLedgEntry.RESET;
+      EmplLedgEntry.SETRANGE("Employee No.",EmployeeNo);
+      EmplLedgEntry.SETFILTER("Element Code",ElementFilter2);
+      EmplLedgEntry.SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+      EmplLedgEntry.SETFILTER("Action Ending Date",'%1|%2..',0D,PayrollPeriod."Starting Date");
+      IF EmplLedgEntry.FINDSET THEN BEGIN
+        REPEAT
+          IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+            StartDate := EmplLedgEntry."Action Starting Date"
+          ELSE
+            StartDate := PayrollPeriod."Starting Date";
+          IF (EmplLedgEntry."Action Ending Date" = 0D) OR
+             (EmplLedgEntry."Action Ending Date" >= PayrollPeriod."Ending Date")
+          THEN
+            EndDate := PayrollPeriod."Ending Date"
+          ELSE
+            EndDate := EmplLedgEntry."Action Ending Date";
+          WorkDays :=
+            CalendarMgt.GetPeriodInfo(EmplLedgEntry."Calendar Code",StartDate,EndDate,2);
+          PeriodWorkDays := PeriodWorkDays + WorkDays;
+        UNTIL EmplLedgEntry.NEXT = 0;
+        IF PeriodWorkDays = 0 THEN
+          EXIT(0);
+
+        EmplLedgEntry.FINDFIRST;
+        REPEAT
+          IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+            StartDate := EmplLedgEntry."Action Starting Date"
+          ELSE
+            StartDate := PayrollPeriod."Starting Date";
+          IF (EmplLedgEntry."Action Ending Date" = 0D) OR
+             (EmplLedgEntry."Action Ending Date" >= PayrollPeriod."Ending Date")
+          THEN
+            EndDate := PayrollPeriod."Ending Date"
+          ELSE
+            EndDate := EmplLedgEntry."Action Ending Date";
+          WorkDays :=
+            CalendarMgt.GetPeriodInfo(EmplLedgEntry."Calendar Code",StartDate,EndDate,2);
+          PeriodWorkDays := PeriodWorkDays + WorkDays;
+          PeriodSalary := PeriodSalary + EmplLedgEntry.Amount * WorkDays / PeriodWorkDays;
+        UNTIL EmplLedgEntry.NEXT = 0;
+
+        EXIT(PeriodSalary);
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE GetAdvancePay@1210000(VAR PayrollDocLine@1210011 : Record 17415;TimeType@1210010 : 'Day,Hour';TimeActivityGroup@1210009 : Code[20]) : Decimal;
+    VAR
+      PeriodWorkTime@1210004 : Decimal;
+      PeriodSalary@1210005 : Decimal;
+      WorkTime@1210006 : Decimal;
+      StartDate@1210002 : Date;
+      EndDate@1210003 : Date;
+      ElementFilter@1210007 : Text[1024];
+    BEGIN
+      // Base salary for period
+      HumanResourcesSetup.GET;
+      CASE TimeType OF
+        TimeType::Day:
+          BEGIN
+            HumanResourcesSetup.TESTFIELD("Element Code Salary Days");
+            ElementFilter := HumanResourcesSetup."Element Code Salary Days";
+          END;
+        TimeType::Hour:
+          BEGIN
+            HumanResourcesSetup.TESTFIELD("Element Code Salary Hours");
+            ElementFilter := HumanResourcesSetup."Element Code Salary Hours";
+          END;
+      END;
+      IF HumanResourcesSetup."Element Code Salary Amount" <> '' THEN
+        ElementFilter += '|' + HumanResourcesSetup."Element Code Salary Amount";
+
+      PeriodWorkTime := 0;
+      PeriodSalary := 0;
+      EmplLedgEntry.RESET;
+      EmplLedgEntry.SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+      EmplLedgEntry.SETFILTER("Element Code",ElementFilter);
+      EmplLedgEntry.SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+      EmplLedgEntry.SETFILTER("Action Ending Date",'%1|%2..',0D,PayrollPeriod."Starting Date");
+      IF EmplLedgEntry.FINDSET THEN BEGIN
+        REPEAT
+          IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+            StartDate := EmplLedgEntry."Action Starting Date"
+          ELSE
+            StartDate := PayrollPeriod."Starting Date";
+          IF (EmplLedgEntry."Action Ending Date" = 0D) OR
+             (EmplLedgEntry."Action Ending Date" >= PayrollPeriod."Ending Date")
+          THEN
+            EndDate := PayrollPeriod."Ending Date"
+          ELSE
+            EndDate := EmplLedgEntry."Action Ending Date";
+          CASE TimeType OF
+            TimeType::Day:
+              WorkTime :=
+                CalendarMgt.GetPeriodInfo(EmplLedgEntry."Calendar Code",StartDate,EndDate,2);
+            TimeType::Hour:
+              WorkTime :=
+                CalendarMgt.GetPeriodInfo(EmplLedgEntry."Calendar Code",StartDate,EndDate,3);
+          END;
+          PeriodWorkTime := PeriodWorkTime + WorkTime;
+        UNTIL EmplLedgEntry.NEXT = 0;
+        IF PeriodWorkTime = 0 THEN
+          EXIT(0);
+        PayrollPeriod.TESTFIELD("Advance Date");
+        IF EmplLedgEntry.FINDSET THEN
+          REPEAT
+            IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+              StartDate := EmplLedgEntry."Action Starting Date"
+            ELSE
+              StartDate := PayrollPeriod."Starting Date";
+            IF (EmplLedgEntry."Action Ending Date" = 0D) OR
+               (EmplLedgEntry."Action Ending Date" >= PayrollPeriod."Advance Date")
+            THEN
+              EndDate := PayrollPeriod."Advance Date"
+            ELSE
+              EndDate := EmplLedgEntry."Action Ending Date";
+            CASE TimeType OF
+              TimeType::Day:
+                WorkTime :=
+                  TimesheetMgt.GetTimesheetInfo(
+                    PayrollDocLine."Employee No.",HumanResourcesSetup."Work Time Group Code",StartDate,EndDate,4);
+              TimeType::Hour:
+                WorkTime :=
+                  TimesheetMgt.GetTimesheetInfo(
+                    PayrollDocLine."Employee No.",HumanResourcesSetup."Work Time Group Code",StartDate,EndDate,3);
+            END;
+            PeriodSalary := PeriodSalary + EmplLedgEntry.Amount * WorkTime / PeriodWorkTime;
+          UNTIL EmplLedgEntry.NEXT = 0;
+        EXIT(PeriodSalary);
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE GetSalaryPay@1210009(VAR PayrollDocLine@1210000 : Record 17415;TimeType@1210009 : Option;TimeActivityGroup@1210001 : Code[20]) : Decimal;
+    VAR
+      PlannedTime@1210006 : Decimal;
+      ActualTime@1210003 : Decimal;
+    BEGIN
+      // Calculate salary for single Employee Ledger Entry
+      PlannedTime := 0;
+      ActualTime := 0;
+
+      PayrollElement.GET(PayrollDocLine."Element Code");
+      PayrollDocLine.TESTFIELD("Action Starting Date");
+      PayrollDocLine.TESTFIELD("Action Ending Date");
+      PayrollDocLine.TESTFIELD("Employee Ledger Entry No.");
+      EmplLedgEntry.GET(PayrollDocLine."Employee Ledger Entry No.");
+      EmplLedgEntry.TESTFIELD(Amount);
+
+      PlannedTime :=
+        TimesheetMgt.GetTimesheetInfo(
+          PayrollDocLine."Employee No.",TimeActivityGroup,
+          PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",
+          TimeType);
+
+      IF PlannedTime = 0 THEN
+        ERROR(ShouldNotBeErr,
+          PayrollDocLine."Element Code",PayrollDocLine.FIELDCAPTION("Planned Hours"),PlannedTime);
+
+      ActualTime :=
+        TimesheetMgt.GetTimesheetInfo(
+          PayrollDocLine."Employee No.",TimeActivityGroup,
+          PayrollDocLine."Action Starting Date",PayrollDocLine."Action Ending Date",
+          TimeType + 2);
+
+      CASE TimeType OF
+        0:
+          BEGIN
+            PayrollDocLine."Planned Days" := PlannedTime;
+            PayrollDocLine."Actual Days" := ActualTime;
+          END;
+        1:
+          BEGIN
+            PayrollDocLine."Planned Hours" := PlannedTime;
+            PayrollDocLine."Actual Hours" := ActualTime;
+          END;
+      END;
+
+      EXIT(EmplLedgEntry.Amount * ActualTime / PlannedTime);
+    END;
+
+    PROCEDURE GetExtraPay@1210007(VAR PayrollDocLine@1210002 : Record 17415;TimeActivityGroup@1210000 : Code[20]) : Decimal;
+    VAR
+      Salary@1210007 : Decimal;
+      ActualHours@1210003 : Decimal;
+      StartDate@1210005 : Date;
+      EndDate@1210006 : Date;
+    BEGIN
+      // Calculate extrapay by hours depending on salary
+      Salary := 0;
+
+      HumanResourcesSetup.GET;
+      HumanResourcesSetup.TESTFIELD("Element Code Salary Days");
+
+      PayrollElement.GET(PayrollDocLine."Element Code");
+      // PayrollElement.TESTFIELD("Depends on Salary");
+
+      PayrollDocLine."Actual Hours" := 0;
+      PayrollDocLine."Planned Hours" :=
+        TimesheetMgt.GetTimesheetInfo(
+          PayrollDocLine."Employee No.",HumanResourcesSetup."Work Time Group Code",
+          PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",1);
+
+      EmplLedgEntry.RESET;
+      EmplLedgEntry.SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+      EmplLedgEntry.SETRANGE("Element Code",HumanResourcesSetup."Element Code Salary Days");
+      EmplLedgEntry.SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+      EmplLedgEntry.SETFILTER("Action Ending Date",'%1|%2..',0D,PayrollPeriod."Starting Date");
+      IF EmplLedgEntry.FINDSET THEN
+        REPEAT
+          IF EmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date" THEN
+            StartDate := EmplLedgEntry."Action Starting Date"
+          ELSE
+            StartDate := PayrollPeriod."Starting Date";
+          IF (EmplLedgEntry."Action Ending Date" > PayrollPeriod."Ending Date") OR
+             (EmplLedgEntry."Action Ending Date" = 0D)
+          THEN
+            EndDate := PayrollPeriod."Ending Date"
+          ELSE
+            EndDate := EmplLedgEntry."Action Ending Date";
+
+          ActualHours :=
+            TimesheetMgt.GetTimesheetInfo(
+              PayrollDocLine."Employee No.",TimeActivityGroup,
+              StartDate,EndDate,3);
+
+          Salary += EmplLedgEntry.Amount * ActualHours / PayrollDocLine."Planned Hours";
+          PayrollDocLine."Actual Hours" += ActualHours;
+        UNTIL EmplLedgEntry.NEXT = 0;
+
+      EXIT(Salary);
+    END;
+
+    PROCEDURE GetRangeHeader@15(VAR PayrollDocLine@1210000 : Record 17415) : Boolean;
+    VAR
+      EmployeeLedgEntry@1210001 : Record 17413;
+    BEGIN
+      WITH RangeHeader DO BEGIN
+        RESET;
+        SETCURRENTKEY("Element Code","Range Type","Period Code");
+        SETRANGE("Element Code",PayrollDocLine."Element Code");
+        SETRANGE("Range Type",PayrollDocLineCalc."Range Type");
+        CASE PayrollElement."Include into Calculation by" OF
+          PayrollElement."Include into Calculation by"::"Action Period":
+            BEGIN
+              IF EmployeeLedgEntry.GET(PayrollDocLine."Employee Ledger Entry No.") THEN BEGIN
+                EmployeeLedgEntry.TESTFIELD("Action Starting Date");
+                SETRANGE("Period Code",FirstPayrollPeriod.Code,EmployeeLedgEntry."Period Code");
+              END ELSE
+                SETRANGE("Period Code",FirstPayrollPeriod.Code,PayrollDocLine."Period Code");
+            END;
+          PayrollElement."Include into Calculation by"::"Period Code":
+            SETRANGE("Period Code",FirstPayrollPeriod.Code,PayrollDocLine."Period Code");
+        END;
+        IF NOT FINDLAST THEN BEGIN
+          CLEAR(RangeHeader);
+          EXIT(FALSE);
+        END;
+        EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE GetFSILimit@1210010(PeriodCode@1210000 : Code[10];LimitType@1210001 : 'MROT,FSI') : Decimal;
+    VAR
+      PayrollLimit@1210002 : Record 17397;
+    BEGIN
+      PayrollLimit.RESET;
+      PayrollLimit.SETRANGE(Type,LimitType);
+      PayrollLimit.SETFILTER("Payroll Period",'..%1',PeriodCode);
+      IF PayrollLimit.FINDLAST THEN
+        EXIT(PayrollLimit.Amount);
+
+      EXIT(0);
+    END;
+
+    LOCAL PROCEDURE ProrateAnnually@19(VAR PayrollDocLine@1210000 : Record 17415;Amount@1210001 : Decimal) : Decimal;
+    BEGIN
+      EXIT(Amount / 12);
+    END;
+
+    PROCEDURE Withholding@45(VAR PayrollDocLine@1210000 : Record 17415;TaxableGross@1210001 : Decimal) : Decimal;
+    VAR
+      RangeLine@1210002 : Record 17411;
+      ReturnValue@1210003 : Decimal;
+      HumanSetup@1210004 : Record 5218;
+      FundTax@1210005 : Boolean;
+      Sign@1210006 : Integer;
+    BEGIN
+      HumanSetup.GET;
+      RangeHeader.RESET;
+      RangeHeader.SETRANGE("Element Code",PayrollDocLine."Element Code");
+      RangeHeader.SETRANGE("Period Code",FirstPayrollPeriod.Code,PayrollDocLine."Period Code");
+      IF RangeHeader.FINDLAST THEN;
+
+      IF TaxableGross >= 0 THEN
+        Sign := 1
+      ELSE
+        Sign := -1;
+
+      FundTax := (PayrollDocLine."Element Type" = PayrollDocLine."Element Type"::Funds);
+      WITH RangeLine DO BEGIN
+        RESET;
+        IF NOT FundTax THEN
+          SETCURRENTKEY("Element Code","Range Code","Period Code","Over Amount");
+        SETRANGE("Element Code",RangeHeader."Element Code");
+        SETRANGE("Range Code",RangeHeader.Code);
+        SETRANGE("Period Code",RangeHeader."Period Code");
+
+        IF Employee.GET(PayrollDocLine."Employee No.") THEN BEGIN
+          Employee.TESTFIELD(Gender);
+          Employee.TESTFIELD("Birth Date");
+          IF RangeHeader."Allow Employee Gender" THEN
+            SETRANGE("Employee Gender",Employee.Gender);
+          IF RangeHeader."Allow Employee Age" THEN
+            SETRANGE("From Birthday and Younger",0D,Employee."Birth Date");
+        END;
+
+        SETFILTER("Over Amount",'<%1',ABS(TaxableGross));
+
+        IF NOT FINDLAST THEN BEGIN
+          SETRANGE("Over Amount");
+          IF NOT FINDFIRST THEN
+            EXIT(0);
+        END;
+
+        ReturnValue := "Tax Amount" +
+          ((TaxableGross - Sign * "Over Amount") * "Tax %" / 100.0);
+
+        IF (ReturnValue < 0) AND NOT IsCorrDocument(PayrollDocLine."Document No.") THEN
+          ReturnValue := 0
+        ELSE
+          IF ("Max Deduction" > 0) AND (ABS(ReturnValue) > "Max Deduction") THEN
+            ReturnValue := Sign * "Max Deduction";
+      END;
+
+      IF RangeLine."Directory Code" <> '' THEN
+        PayrollDocLine."Directory Code" := RangeLine."Directory Code";
+
+      EXIT(ReturnValue);
+    END;
+
+    PROCEDURE EarningsCredit@59(VAR PayrollDocLine@1210000 : Record 17415;YTDTaxableAmount@1210001 : Decimal;AmountYTD@1210002 : Decimal) : Decimal;
+    VAR
+      RangeLine@1210003 : Record 17411;
+      ReturnValue@1210004 : Decimal;
+      CompAmount@1210005 : Decimal;
+    BEGIN
+      RangeHeader.SETRANGE("Element Code",PayrollDocLine."Element Code");
+      RangeHeader.SETRANGE("Period Code",FirstPayrollPeriod.Code,PayrollDocLine."Period Code");
+      IF RangeHeader.FINDLAST THEN;
+
+      WITH RangeLine DO BEGIN
+        SETCURRENTKEY(
+          "Element Code","Range Code","Period Code","Over Amount");
+        SETRANGE("Element Code",RangeHeader."Element Code");
+        SETRANGE("Range Code",RangeHeader.Code);
+        SETRANGE("Period Code",RangeHeader."Period Code");
+        FINDFIRST;
+        TESTFIELD(Amount);
+        ReturnValue := 0;
+        CompAmount := YTDTaxableAmount + AmountYTD;
+        IF CompAmount < Amount - AmountYTD THEN
+          ReturnValue := CompAmount
+        ELSE
+          ReturnValue := Amount - AmountYTD;
+        EXIT(ReturnValue);
+      END;
+    END;
+
+    PROCEDURE PropertyDeduction@134(VAR PayrollDocLine@1210000 : Record 17415;AmountMaxBenefitMonth@1210001 : Decimal) : Decimal;
+    VAR
+      EmployeeLedgerEntry2@1210002 : Record 17413;
+      ReturnValue@1210003 : Decimal;
+      AmountBenefitBuild@1210005 : Decimal;
+    BEGIN
+      ReturnValue := 0;
+      AmountBenefitBuild := 0;
+
+      // éèêÖÑÖãÖçàÖ ÅõãÄ ãà ãúÉéíÄ çÄ ÜàãúÖ áÄ 3 ÉéÑÄ Ñé êÄëóÖíÄ
+      WITH EmployeeLedgerEntry2 DO BEGIN
+        RESET;
+        SETCURRENTKEY("Employee No.");
+        SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+        SETRANGE("Element Code",PayrollDocLine."Element Code");
+        // ·•©Á†· ØÆ ß†™Æ≠Æ§†‚•´Ï·‚¢„, ´Ï£Æ‚† §†•‚·Ô ≠† £Æ§, ØÆ‚Æ¨ ¨Æ¶•‚ °Î‚Ï Ø‡Æ§´•≠† (Æ‚§•´Ï≠Î¨ §Æ™„¨•≠‚Æ¨)
+        SETRANGE("Action Starting Date",FirstYearPayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+        SETFILTER(Amount,'>%1',0);
+        IF NOT FINDLAST THEN
+          EXIT(0);
+      END;
+
+      // éèêÖÑÖãÖçàÖ ÑéçÄãéÉéÇõï ÇõóÖíéÇ ë åéåÖçíÄ ãúÉéíõ Ñé êÄëóÖíÄ áÄêèãÄíõ
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Directory Code Filter",PayrollDocLine."Directory Code");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PayrollPeriod.Code);
+        CALCFIELDS("Payroll Amount");
+        AmountBenefitBuild := -"Payroll Amount";
+      END;
+
+      // Öëãà ãúÉéíÄ àáêÄëïéÑéÇÄçÄ, íé ÇõïéÑ = 0
+      IF AmountBenefitBuild < EmplLedgEntry.Amount THEN BEGIN
+        IF (EmplLedgEntry.Amount - AmountBenefitBuild) < AmountMaxBenefitMonth THEN
+          ReturnValue := EmplLedgEntry.Amount - AmountBenefitBuild
+        ELSE
+          ReturnValue := AmountMaxBenefitMonth;
+        ReturnValue := -ReturnValue;
+        EXIT(ReturnValue);
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE YTDEarnings@51(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    BEGIN
+      // Find Year-To-Date Gross Earnings
+      HumanResourcesSetup.GET;
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PayrollDocLine."Period Code");
+        SETFILTER("Element Code Filter",'%1|%2',HumanResourcesSetup."Income Tax 13%",HumanResourcesSetup."Income Tax 30%");
+        CALCFIELDS("Taxable Amount");
+        EXIT("Taxable Amount");
+      END;
+    END;
+
+    PROCEDURE YTDTaxableAmount@50(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    BEGIN
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Element Type Filter",PayrollDocLine."Element Type");
+        SETRANGE("Posting Type Filter",PayrollDocLine."Posting Type");
+        SETRANGE("Element Code Filter",PayrollDocLine."Element Code");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PrevPayrollPeriod.Code);
+        CALCFIELDS("Taxable Amount");
+        EXIT("Taxable Amount");
+      END;
+    END;
+
+    PROCEDURE YTDPayrollAmount@63(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    BEGIN
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Element Type Filter",PayrollDocLine."Element Type");
+        SETRANGE("Posting Type Filter",PayrollDocLine."Posting Type");
+        SETRANGE("Element Code Filter",PayrollDocLine."Element Code");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PrevPayrollPeriod.Code);
+        CALCFIELDS("Payroll Amount");
+        EXIT("Payroll Amount");
+      END;
+    END;
+
+    PROCEDURE YTDTypeAmount@1210301(VAR PayrollDocLine@1210300 : Record 17415) : Decimal;
+    BEGIN
+      HumanResourcesSetup.GET;
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Element Type Filter",PayrollDocLine."Element Type");
+        SETRANGE("Posting Type Filter",PayrollDocLine."Posting Type");
+        SETFILTER("Element Code Filter",'<>%1&<>%2',HumanResourcesSetup."Income Tax 35%",HumanResourcesSetup."Income Tax 9%");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PayrollDocLine."Period Code");
+        CALCFIELDS("Payroll Amount");
+        EXIT("Payroll Amount");
+      END;
+    END;
+
+    PROCEDURE YTDTaxableIncomeTax@62(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    BEGIN
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Element Type Filter",PayrollDocLine."Element Type");
+        SETRANGE("Posting Type Filter",PayrollDocLine."Posting Type");
+        SETRANGE("Element Code Filter",PayrollDocLine."Element Code");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PayrollDocLine."Period Code");
+        CALCFIELDS("Taxable Amount");
+        EXIT("Taxable Amount");
+      END;
+    END;
+
+    PROCEDURE YTDTypeTaxable@1210300(VAR PayrollDocLine@1210300 : Record 17415) : Decimal;
+    BEGIN
+      HumanResourcesSetup.GET;
+      WITH Employee2 DO BEGIN
+        RESET;
+        SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        SETRANGE("Element Type Filter",PayrollDocLine."Element Type");
+        SETRANGE("Posting Type Filter",PayrollDocLine."Posting Type");
+        SETFILTER("Element Code Filter",'<>%1&<>%2',HumanResourcesSetup."Income Tax 35%",HumanResourcesSetup."Income Tax 9%");
+        SETRANGE("Payroll Period Filter",FirstYearPayrollPeriod.Code,PayrollDocLine."Period Code");
+        CALCFIELDS("Taxable Amount");
+        EXIT("Taxable Amount");
+      END;
+    END;
+
+    PROCEDURE GetIncomeTaxAmounts@1210005(VAR PayrollDocLine@1210000 : Record 17415;AmountType@1210003 : 'Taxable Amount,Income Tax Accrued,Income Tax Paid,Tax Deduction') : Decimal;
+    VAR
+      PersonIncomeHeader@1210007 : Record 17392;
+      PersonIncomeEntry@1210008 : Record 17398;
+      Year@1210002 : Integer;
+      AmtToReturn@1210006 : Decimal;
+    BEGIN
+      Employee2.GET(PayrollDocLine."Employee No.");
+      Year := DATE2DMY(PayrollPeriod."Ending Date",3);
+      AmtToReturn := 0;
+      PersonIncomeHeader.RESET;
+      PersonIncomeHeader.SETCURRENTKEY("Person No.");
+      PersonIncomeHeader.SETRANGE("Person No.",Employee2."Person No.");
+      PersonIncomeHeader.SETRANGE(Year,Year);
+      PersonIncomeHeader.SETRANGE(Calculation,FALSE);
+      IF PersonIncomeHeader.FINDSET THEN
+        REPEAT
+          CASE AmountType OF
+            AmountType::"Taxable Amount":
+              BEGIN
+                PersonIncomeHeader.CALCFIELDS("Total Taxable Income");
+                AmtToReturn += PersonIncomeHeader."Total Taxable Income";
+              END;
+            AmountType::"Income Tax Accrued":
+              BEGIN
+                PersonIncomeHeader.CALCFIELDS("Total Accrued Tax");
+                AmtToReturn += PersonIncomeHeader."Total Accrued Tax";
+              END;
+            AmountType::"Income Tax Paid":
+              BEGIN
+                PersonIncomeHeader.CALCFIELDS("Total Paid to Person");
+                AmtToReturn += PersonIncomeHeader."Total Paid to Person";
+              END;
+            AmountType::"Tax Deduction":
+              BEGIN
+                PersonIncomeEntry.RESET;
+                PersonIncomeEntry.SETRANGE("Person Income No.",PersonIncomeHeader."No.");
+                PersonIncomeEntry.SETRANGE("Person No.",PersonIncomeHeader."Person No.");
+                PersonIncomeEntry.SETRANGE("Period Code",FirstPayrollPeriod.Code,PayrollDocLine."Period Code");
+                PersonIncomeEntry.SETRANGE("Entry Type",PersonIncomeEntry."Entry Type"::"Tax Deduction");
+                PersonIncomeEntry.SETRANGE("Tax Deduction Code",PayrollDocLine."Directory Code");
+                IF PersonIncomeEntry.FINDSET THEN
+                  REPEAT
+                    AmtToReturn += PersonIncomeEntry."Tax Deduction Amount";
+                  UNTIL PersonIncomeEntry.NEXT = 0;
+              END;
+          END;
+        UNTIL PersonIncomeHeader.NEXT = 0;
+      EXIT(AmtToReturn);
+    END;
+
+    PROCEDURE GetStartingBalance@74(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    VAR
+      Vendor@1210002 : Record 23;
+      Person@1210001 : Record 17350;
+    BEGIN
+      Employee2.GET(PayrollDocLine."Employee No.");
+      Employee2.TESTFIELD("Person No.");
+      Person.GET(Employee2."Person No.");
+      Person.TESTFIELD("Vendor No.");
+      Vendor.GET(Person."Vendor No.");
+      PayrollPeriod.GET(PayrollDocLine."Period Code");
+      Vendor.SETFILTER("Date Filter",'..%1',PayrollPeriod."Starting Date" - 1);
+      Vendor.CALCFIELDS("Balance (LCY)");
+      EXIT(Vendor."Balance (LCY)");
+    END;
+
+    PROCEDURE GetSalaryPrevPeriod@94(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    VAR
+      PrevPayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      PrevPayrollPeriod.GET(PayrollPeriod.Code);
+      IF PrevPayrollPeriod.NEXT(-1) <> 0 THEN BEGIN
+        Employee2.RESET;
+        Employee2.SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+        Employee2.SETRANGE("Payroll Period Filter",PrevPayrollPeriod.Code);
+        Employee2.SETFILTER("Element Code Filter",'%1|%2|%3',
+          HumanResourcesSetup."Element Code Salary Days",
+          HumanResourcesSetup."Element Code Salary Hours",
+          HumanResourcesSetup."Element Code Salary Amount");
+        Employee2.CALCFIELDS("Payroll Amount");
+        EXIT(Employee2."Payroll Amount");
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE ServiceYears@137(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    VAR
+      ReturnValue@1210001 : Decimal;
+      QuantityYears@1210002 : Integer;
+      QuantityMonths@1210003 : Integer;
+      QuantityDays@1210004 : Integer;
+    BEGIN
+      ReturnValue := 0;
+
+      QuantityYears := 0;
+      QuantityMonths := 0;
+      QuantityDays := 0;
+
+      IF Employee.GET(PayrollDocLine."Employee No.") THEN
+        IF Employee."Employment Date" <> 0D THEN BEGIN
+          QuantityYears := DATE2DMY(WORKDATE,3) - DATE2DMY(Employee."Employment Date",3);
+          QuantityMonths := DATE2DMY(WORKDATE,2) - DATE2DMY(Employee."Employment Date",2);
+          IF QuantityMonths < 0 THEN BEGIN
+            QuantityMonths := QuantityMonths + 12;
+            QuantityYears := QuantityYears - 1;
+          END;
+          QuantityDays := DATE2DMY(WORKDATE,1) - DATE2DMY(Employee."Employment Date",1);
+          IF QuantityDays < 0 THEN BEGIN
+            QuantityDays := QuantityDays + 30;
+            QuantityMonths := QuantityMonths - 1;
+            IF QuantityMonths < 0 THEN BEGIN
+              QuantityMonths := QuantityMonths + 12;
+              QuantityYears := QuantityYears - 1;
+            END;
+          END;
+
+          IF QuantityYears < 5 THEN
+            ReturnValue := 0
+          ELSE
+            ReturnValue := QuantityYears;
+        END;
+
+      EXIT(ReturnValue);
+    END;
+
+    PROCEDURE LaborContractType@1210003(PayrollDocLine@1210000 : Record 17415) : Decimal;
+    VAR
+      LaborContract@1210001 : Record 17360;
+    BEGIN
+      Employee2.GET(PayrollDocLine."Employee No.");
+      LaborContract.GET(Employee2."Contract No.");
+      IF LaborContract."Contract Type" = LaborContract."Contract Type"::"Civil Contract" THEN
+        EXIT(1);
+
+      EXIT(0);
+    END;
+
+    PROCEDURE SalaryProRataCalendar@132(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    VAR
+      ReturnValue@1210001 : Decimal;
+      TempEmplLedgEntry@1210002 : TEMPORARY Record 17413;
+      HoursWork@1210006 : Decimal;
+      CalendarCode@1210007 : Code[10];
+      CalendarHours@1210003 : Decimal;
+    BEGIN
+      ReturnValue := 0;
+      HoursWork := 0;
+      CalendarCode := '';
+      TempEmplLedgEntry.RESET;
+      TempEmplLedgEntry.DELETEALL;
+
+      IF PayrollElement.GET(PayrollDocLine."Element Code") THEN BEGIN
+        EmplLedgEntry.RESET;
+        EmplLedgEntry.SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+        EmplLedgEntry.SETRANGE("Element Code",PayrollElement.Code);
+        EmplLedgEntry.SETRANGE("Action Starting Date",0D,PayrollPeriod."Ending Date");
+        IF NOT EmplLedgEntry.FIND('+') THEN
+          EXIT(0);
+        EmplLedgEntry.FIND('-');
+        REPEAT
+          IF (EmplLedgEntry."Action Ending Date" < EmplLedgEntry."Action Starting Date") AND
+             (EmplLedgEntry."Action Ending Date" <> 0D)
+          THEN
+            EmplLedgEntry.TESTFIELD("Action Ending Date",EmplLedgEntry."Action Ending Date");
+          TempEmplLedgEntry := EmplLedgEntry;
+          TempEmplLedgEntry.INSERT;
+          IF TempEmplLedgEntry.NEXT(-1) <> 0 THEN BEGIN
+            IF (TempEmplLedgEntry."Action Ending Date" >= EmplLedgEntry."Action Starting Date") OR
+               (TempEmplLedgEntry."Action Ending Date" = 0D)
+            THEN BEGIN
+              TempEmplLedgEntry."Action Ending Date" := CALCDATE('<-1D>',EmplLedgEntry."Action Starting Date");
+              TempEmplLedgEntry.MODIFY;
+            END;
+            TempEmplLedgEntry.NEXT(+1);
+          END;
+        UNTIL EmplLedgEntry.NEXT = 0;
+
+        HoursWork :=
+          CalendarMgt.GetPeriodInfo(
+            PayrollDocLine."Calendar Code",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",3);
+        IF HoursWork = 0 THEN
+          ERROR(ShouldNotBeErr,
+            PayrollDocLine."Element Code",PayrollDocLine.FIELDCAPTION("Actual Hours"),HoursWork);
+
+        TempEmplLedgEntry.FIND('-');
+        REPEAT
+          IF (TempEmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date") AND
+             (TempEmplLedgEntry."Action Ending Date" >= PayrollPeriod."Starting Date") AND
+             (TempEmplLedgEntry."Action Ending Date" <= PayrollPeriod."Ending Date")
+          THEN BEGIN
+            CalendarHours :=
+              CalendarMgt.GetPeriodInfo(
+                PayrollDocLine."Calendar Code",TempEmplLedgEntry."Action Starting Date",TempEmplLedgEntry."Action Ending Date",3);
+            ReturnValue := ReturnValue + (TempEmplLedgEntry.Amount / HoursWork) * CalendarHours;
+          END ELSE
+            IF (TempEmplLedgEntry."Action Starting Date" < PayrollPeriod."Starting Date") AND
+               (TempEmplLedgEntry."Action Ending Date" >= PayrollPeriod."Starting Date") AND
+               (TempEmplLedgEntry."Action Ending Date" <= PayrollPeriod."Ending Date")
+            THEN BEGIN
+              CalendarHours :=
+                CalendarMgt.GetPeriodInfo(
+                  PayrollDocLine."Calendar Code",PayrollPeriod."Starting Date",TempEmplLedgEntry."Action Ending Date",3);
+              ReturnValue := ReturnValue + (TempEmplLedgEntry.Amount / HoursWork) * CalendarHours;
+            END ELSE
+              IF (TempEmplLedgEntry."Action Starting Date" >= PayrollPeriod."Starting Date") AND
+                 ((TempEmplLedgEntry."Action Ending Date" = 0D) OR
+                  (TempEmplLedgEntry."Action Ending Date" > PayrollPeriod."Ending Date"))
+              THEN BEGIN
+                CalendarHours :=
+                  CalendarMgt.GetPeriodInfo(
+                    PayrollDocLine."Calendar Code",TempEmplLedgEntry."Action Starting Date",PayrollPeriod."Ending Date",3);
+                ReturnValue := ReturnValue + (TempEmplLedgEntry.Amount / HoursWork) * CalendarHours;
+              END ELSE
+                IF (TempEmplLedgEntry."Action Starting Date" < PayrollPeriod."Starting Date") AND
+                   ((TempEmplLedgEntry."Action Ending Date" = 0D) OR
+                    (TempEmplLedgEntry."Action Ending Date" > PayrollPeriod."Ending Date"))
+                THEN BEGIN
+                  CalendarHours :=
+                    CalendarMgt.GetPeriodInfo(
+                      PayrollDocLine."Calendar Code",
+                      PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",3);
+                  ReturnValue := ReturnValue + (TempEmplLedgEntry.Amount / HoursWork) * CalendarHours;
+                END;
+        UNTIL TempEmplLedgEntry.NEXT = 0;
+        EXIT(ReturnValue);
+      END;
+      EXIT(0);
+    END;
+
+    PROCEDURE DeductionAmount@1210026(VAR PayrollDocLine@1210001 : Record 17415;TaxableIncome@1210000 : Decimal) : Decimal;
+    VAR
+      RangeLine@1210004 : Record 17411;
+      Employee@1210003 : Record 5200;
+      DeductionAmount@1210002 : Decimal;
+    BEGIN
+      GetRangeHeader(PayrollDocLine);
+      WITH RangeLine DO BEGIN
+        RESET;
+        SETCURRENTKEY("Element Code","Range Code","Period Code","Over Amount");
+        SETRANGE("Element Code",PayrollDocLine."Element Code");
+        SETRANGE("Range Code",RangeHeader.Code);
+        SETRANGE("Period Code",RangeHeader."Period Code");
+        SETFILTER("Over Amount",'<%1',TaxableIncome);
+        IF NOT FINDLAST THEN BEGIN
+          SETRANGE("Over Amount");
+          FINDFIRST;
+        END;
+
+        DeductionAmount := Amount * PayrollDocLine.Quantity;
+
+        Employee.GET(PayrollDocLine."Employee No.");
+        IF (Employee."Termination Date" <> 0D) AND
+           (Employee."Termination Date" < PayrollPeriod."Ending Date")
+        THEN
+          DeductionAmount := 0;
+
+        IF "On Allowance" THEN
+          // Deductions due YTD
+          DeductionAmount := DeductionAmount + DeductionQuantityYTD(PayrollDocLine);
+
+        IF DeductionAmount < "Min Amount" THEN
+          DeductionAmount := "Min Amount";
+
+        IF ("Max Amount" <> 0) AND (DeductionAmount > "Max Amount") THEN
+          DeductionAmount := "Max Amount";
+
+        PayrollDocLine."Directory Code" := "Directory Code";
+      END;
+      EXIT(DeductionAmount);
+    END;
+
+    PROCEDURE DeductionQuantityYTD@1210029(VAR PayrollDocLine@1210000 : Record 17415) : Decimal;
+    VAR
+      TmpPayrollDocLine@1210002 : TEMPORARY Record 17415;
+      StartDate@1210009 : Date;
+      EndDate@1210008 : Date;
+      CurrDate@1210007 : Date;
+      DeductionEndDate@1210005 : Date;
+      DeductionAmount@1210004 : Decimal;
+      IncomeTaxBase@1210001 : Decimal;
+    BEGIN
+      // Deductions due YTD
+      IF PayrollDocLine."Directory Code" = '' THEN
+        EXIT(0);
+
+      WITH EmplLedgEntry DO BEGIN
+        DeductionEndDate := CALCDATE('<-1D>',PayrollPeriod."Starting Date");
+        Employee.GET(PayrollDocLine."Employee No.");
+        IF (Employee."Termination Date" <> 0D) AND
+           (Employee."Termination Date" < PayrollPeriod."Starting Date")
+        THEN
+          DeductionEndDate := CALCDATE('<CM>',Employee."Termination Date");
+
+        RESET;
+        SETRANGE("Employee No.",PayrollDocLine."Employee No.");
+        SETRANGE("Element Code",PayrollDocLine."Element Code");
+        SETRANGE("Action Starting Date",0D,DeductionEndDate);
+        IF FINDSET THEN
+          REPEAT
+            IF ("Action Ending Date" = 0D) OR ("Action Ending Date" >= DeductionEndDate) THEN BEGIN
+              StartDate := CALCDATE('<-CY>',PayrollPeriod."Starting Date");
+              IF StartDate < "Action Starting Date" THEN
+                StartDate := CALCDATE('<-CM>',"Action Starting Date");
+              EndDate := DeductionEndDate;
+              IF StartDate > EndDate THEN
+                EXIT(0);
+              Employee2.RESET;
+              Employee2.SETRANGE("Employee No. Filter",PayrollDocLine."Employee No.");
+              Employee2.SETFILTER("Element Type Filter",'%1|%2',
+                Employee2."Element Type Filter"::Wage,
+                Employee2."Element Type Filter"::Bonus);
+              Employee2.SETRANGE("Base Type Filter",Employee2."Base Type Filter"::"Income Tax");
+              CurrDate := CALCDATE('<1M-1D>',StartDate);
+              REPEAT
+                Employee2.SETRANGE("Date Filter",StartDate,CurrDate);
+                Employee2.CALCFIELDS("Payroll Amount");
+                IncomeTaxBase := Employee2."Payroll Amount";
+                TmpPayrollDocLine.COPY(PayrollDocLine);
+                IF IncomeTaxBase <> 0 THEN
+                  DeductionAmount := DeductionAmount + GetDeductionQty(TmpPayrollDocLine,IncomeTaxBase);
+                CurrDate := CALCDATE('<1D+1M-1D>',CurrDate);
+              UNTIL CurrDate > DeductionEndDate;
+            END;
+          UNTIL NEXT = 0;
+      END;
+      EXIT(DeductionAmount);
+    END;
+
+    PROCEDURE GetDeductionQty@1210027(VAR PayrollDocLine@1210001 : Record 17415;BaseAmount@1210000 : Decimal) : Decimal;
+    VAR
+      RangeLine@1210002 : Record 17411;
+      DeductionAmount@1210003 : Decimal;
+    BEGIN
+      // Current deduction due - 11.05.10
+      WITH RangeLine DO BEGIN
+        SETCURRENTKEY("Element Code","Range Code","Period Code","Over Amount");
+        SETRANGE("Element Code",PayrollDocLine."Element Code");
+        SETRANGE("Range Code",RangeHeader.Code);
+        SETRANGE("Period Code",RangeHeader."Period Code");
+        SETFILTER("Over Amount",'<%1',BaseAmount);
+        IF NOT FINDLAST THEN BEGIN
+          SETRANGE("Over Amount");
+          FINDFIRST;
+        END;
+
+        DeductionAmount := Amount * PayrollDocLine.Quantity;
+
+        IF "On Allowance" THEN
+          IF DeductionAmount < "Min Amount" THEN
+            DeductionAmount := "Min Amount";
+
+        IF ("Max Amount" <> 0) AND (DeductionAmount > "Max Amount") THEN
+          DeductionAmount := "Max Amount";
+
+        PayrollDocLine."Directory Code" := "Directory Code";
+      END;
+      EXIT(DeductionAmount);
+    END;
+
+    PROCEDURE GotoLabel@1210014(VAR PayrollDocLineCalc@1210000 : Record 17459);
+    VAR
+      PayrollDocLineCalc2@1210001 : Record 17459;
+    BEGIN
+      PayrollDocLineCalc2.RESET;
+      PayrollDocLineCalc2.SETRANGE("Element Code",PayrollDocLineCalc."Element Code");
+      PayrollDocLineCalc2.SETRANGE("Period Code",PayrollDocLineCalc."Period Code");
+      PayrollDocLineCalc2.SETRANGE(Label,PayrollDocLineCalc.Expression);
+      IF PayrollDocLineCalc2.FINDFIRST THEN
+        PayrollDocLineCalc.GET(
+          PayrollDocLineCalc2."Document No.",PayrollDocLineCalc2."Document Line No.",
+          PayrollDocLineCalc2."Line No.")
+      ELSE
+        ERROR(Text060,PayrollDocLineCalc.Expression);
+    END;
+
+    PROCEDURE CalcElementByPostedEntries@1210001(ElementCode@1210000 : Code[20];EmployeeNo@1210004 : Code[20];StartDate@1210005 : Date;EndDate@1210007 : Date;BaseAmountCode@1210001 : Code[10]) : Decimal;
+    VAR
+      PayrollLedgEntry@1210002 : Record 17418;
+      PayrollBaseAmount@1210003 : Record 17409;
+      StartPeriod@1210009 : Record 17426;
+      EndPeriod@1210008 : Record 17426;
+      Base@1210006 : Decimal;
+    BEGIN
+      Base := 0;
+
+      StartPeriod.RESET;
+      StartPeriod.SETRANGE("Starting Date",0D,StartDate);
+      StartPeriod.FINDLAST;
+
+      EndPeriod.RESET;
+      EndPeriod.SETFILTER("Ending Date",'%1..',EndDate);
+      EndPeriod.FINDFIRST;
+
+      WITH PayrollLedgEntry DO BEGIN
+        RESET;
+        SETCURRENTKEY("Employee No.");
+        SETRANGE("Employee No.",EmployeeNo);
+        SETRANGE("Period Code",StartPeriod.Code,EndPeriod.Code);
+
+        PayrollBaseAmount.RESET;
+        PayrollBaseAmount.SETRANGE("Element Code",ElementCode);
+        IF PayrollBaseAmount.FINDSET THEN
+          REPEAT
+            // Skip blank entries and entries we don't care about
+            IF ((PayrollBaseAmount."Element Code Filter" <> '') OR
+                (PayrollBaseAmount."Element Type Filter" <> '') OR
+                (PayrollBaseAmount."Element Group Filter" <> '') OR
+                (PayrollBaseAmount."Posting Type Filter" <> '')) AND
+               ((BaseAmountCode = '') OR
+                (BaseAmountCode = PayrollBaseAmount.Code))
+            THEN BEGIN
+              // Set up the filters according to what is in the BaseAmount record
+              IF PayrollBaseAmount."Element Code Filter" = '' THEN
+                SETRANGE("Element Code")
+              ELSE
+                SETFILTER("Element Code",PayrollBaseAmount."Element Code Filter");
+
+              IF PayrollBaseAmount."Element Type Filter" = '' THEN
+                SETRANGE("Element Type")
+              ELSE
+                SETFILTER("Element Type",PayrollBaseAmount."Element Type Filter");
+
+              IF PayrollBaseAmount."Element Group Filter" = '' THEN
+                SETRANGE("Element Group")
+              ELSE
+                SETFILTER("Element Group",PayrollBaseAmount."Element Group Filter");
+
+              IF PayrollBaseAmount."Posting Type Filter" = '' THEN
+                SETRANGE("Posting Type")
+              ELSE
+                SETFILTER("Posting Type",PayrollBaseAmount."Posting Type Filter");
+
+              CASE PayrollBaseAmount."Income Tax Base Filter" OF
+                0:
+                  SETRANGE("Income Tax Base");
+                1:
+                  SETRANGE("Income Tax Base",TRUE);
+                2:
+                  SETRANGE("Income Tax Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."PF Base Filter" OF
+                0:
+                  SETRANGE("Pension Fund Base");
+                1:
+                  SETRANGE("Pension Fund Base",TRUE);
+                2:
+                  SETRANGE("Pension Fund Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Base Filter" OF
+                0:
+                  SETRANGE("FSI Base");
+                1:
+                  SETRANGE("FSI Base",TRUE);
+                2:
+                  SETRANGE("FSI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Federal FMI Base Filter" OF
+                0:
+                  SETRANGE("Federal FMI Base");
+                1:
+                  SETRANGE("Federal FMI Base",TRUE);
+                2:
+                  SETRANGE("Federal FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Territorial FMI Base Filter" OF
+                0:
+                  SETRANGE("Territorial FMI Base");
+                1:
+                  SETRANGE("Territorial FMI Base",TRUE);
+                2:
+                  SETRANGE("Territorial FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Injury Base Filter" OF
+                0:
+                  SETRANGE("FSI Injury Base");
+                1:
+                  SETRANGE("FSI Injury Base",TRUE);
+                2:
+                  SETRANGE("FSI Injury Base",FALSE);
+              END;
+              // Run through the entries
+              IF FINDSET THEN
+                REPEAT
+                  Base := Base + "Payroll Amount";
+                UNTIL NEXT = 0;
+            END;
+          UNTIL PayrollBaseAmount.NEXT = 0;
+      END;
+
+      EXIT(Base);
+    END;
+
+    PROCEDURE CalcElementByPayrollDocs@1210006(ElementCode@1210007 : Code[20];EmployeeNo@1210006 : Code[20];StartDate@1210004 : Date;EndDate@1210000 : Date;BaseAmountCode@1210001 : Code[10]) : Decimal;
+    VAR
+      PayrollDocLine3@1210002 : Record 17415;
+      PayrollBaseAmount@1210003 : Record 17409;
+      StartPeriod@1210009 : Record 17426;
+      EndPeriod@1210010 : Record 17426;
+      Base@1210005 : Decimal;
+    BEGIN
+      Base := 0;
+
+      StartPeriod.RESET;
+      StartPeriod.SETRANGE("Starting Date",0D,StartDate);
+      StartPeriod.FINDLAST;
+
+      EndPeriod.RESET;
+      EndPeriod.SETFILTER("Ending Date",'%1..',EndDate);
+      EndPeriod.FINDFIRST;
+
+      WITH PayrollDocLine3 DO BEGIN
+        RESET;
+        SETRANGE("Employee No.",EmployeeNo);
+        SETRANGE("Period Code",StartPeriod.Code,EndPeriod.Code);
+
+        PayrollBaseAmount.RESET;
+        PayrollBaseAmount.SETRANGE("Element Code",ElementCode);
+        IF PayrollBaseAmount.FINDSET THEN
+          REPEAT
+            // Skip blank entries and entries we don't care about
+            IF ((PayrollBaseAmount."Element Code Filter" <> '') OR
+                (PayrollBaseAmount."Element Type Filter" <> '') OR
+                (PayrollBaseAmount."Element Group Filter" <> '') OR
+                (PayrollBaseAmount."Posting Type Filter" <> '')) AND
+               ((BaseAmountCode = '') OR
+                (BaseAmountCode = PayrollBaseAmount.Code))
+            THEN BEGIN
+              // Set up the filters according to what is in the BaseAmount record
+              IF PayrollBaseAmount."Element Code Filter" = '' THEN
+                SETRANGE("Element Code")
+              ELSE
+                SETFILTER("Element Code",PayrollBaseAmount."Element Code Filter");
+              IF PayrollBaseAmount."Element Type Filter" = '' THEN
+                SETRANGE("Element Type")
+              ELSE
+                SETFILTER("Element Type",PayrollBaseAmount."Element Type Filter");
+              IF PayrollBaseAmount."Element Group Filter" = '' THEN
+                SETRANGE("Element Group")
+              ELSE
+                SETFILTER("Element Group",PayrollBaseAmount."Element Group Filter");
+              IF PayrollBaseAmount."Posting Type Filter" = '' THEN
+                SETRANGE("Posting Type")
+              ELSE
+                SETFILTER("Posting Type",PayrollBaseAmount."Posting Type Filter");
+              CASE PayrollBaseAmount."Income Tax Base Filter" OF
+                0:
+                  SETRANGE("Income Tax Base");
+                1:
+                  SETRANGE("Income Tax Base",TRUE);
+                2:
+                  SETRANGE("Income Tax Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."PF Base Filter" OF
+                0:
+                  SETRANGE("Pension Fund Base");
+                1:
+                  SETRANGE("Pension Fund Base",TRUE);
+                2:
+                  SETRANGE("Pension Fund Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Base Filter" OF
+                0:
+                  SETRANGE("FSI Base");
+                1:
+                  SETRANGE("FSI Base",TRUE);
+                2:
+                  SETRANGE("FSI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Federal FMI Base Filter" OF
+                0:
+                  SETRANGE("Federal FMI Base");
+                1:
+                  SETRANGE("Federal FMI Base",TRUE);
+                2:
+                  SETRANGE("Federal FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."Territorial FMI Base Filter" OF
+                0:
+                  SETRANGE("Territorial FMI Base");
+                1:
+                  SETRANGE("Territorial FMI Base",TRUE);
+                2:
+                  SETRANGE("Territorial FMI Base",FALSE);
+              END;
+              CASE PayrollBaseAmount."FSI Injury Base Filter" OF
+                0:
+                  SETRANGE("FSI Injury Base");
+                1:
+                  SETRANGE("FSI Injury Base",TRUE);
+                2:
+                  SETRANGE("FSI Injury Base",FALSE);
+              END;
+              // Run through the Payroll Journal
+              IF FINDSET THEN
+                REPEAT
+                  Base := Base + "Payroll Amount";
+                UNTIL NEXT = 0;
+            END;
+          UNTIL PayrollBaseAmount.NEXT = 0;
+      END;
+
+      EXIT(Base);
+    END;
+
+    PROCEDURE InitPayrollPeriod@1210017(PeriodCode@1210000 : Code[10];WagePeriodCode@1210001 : Code[10]);
+    BEGIN
+      FirstPayrollPeriod.RESET;
+      FirstPayrollPeriod.FINDFIRST;
+
+      PayrollPeriod.GET(PeriodCode);
+      PayrollPeriod.TESTFIELD("Starting Date");
+      PayrollPeriod.TESTFIELD("Ending Date");
+
+      PrevPayrollPeriod.GET(PeriodCode);
+      PrevPayrollPeriod.NEXT(-1);
+
+      FirstYearPayrollPeriod.RESET;
+      FirstYearPayrollPeriod.SETFILTER("Starting Date",'%1..',
+        CALCDATE('<-CY>',PayrollPeriod."Starting Date"));
+      FirstYearPayrollPeriod.FINDFIRST;
+
+      WagePayrollPeriod.GET(WagePeriodCode);
+      WagePayrollPeriod.TESTFIELD("Starting Date");
+      WagePayrollPeriod.TESTFIELD("Ending Date");
+    END;
+
+    LOCAL PROCEDURE IsCorrDocument@1210011(DocumentNo@1210000 : Code[20]) : Boolean;
+    VAR
+      PayrollDocument@1210001 : Record 17414;
+    BEGIN
+      IF PayrollDocument.GET(DocumentNo) THEN
+        EXIT(PayrollDocument.Correction);
+    END;
+
+    PROCEDURE RoundAmountToPay@1210012(AmountToPay@1210000 : Decimal) : Decimal;
+    BEGIN
+      HumanResourcesSetup.GET;
+      IF HumanResourcesSetup."Amt. to Pay Rounding Precision" <> 0 THEN
+        AmountToPay :=
+          ROUND(
+            AmountToPay,
+            HumanResourcesSetup."Amt. to Pay Rounding Precision",
+            HumanResourcesSetup.AmtToPayRoundingDirection);
+
+      EXIT(AmountToPay);
+    END;
+
+    LOCAL PROCEDURE RemoveCalculations@1210021(PayrollDocumentLine@1210000 : Record 17415);
+    BEGIN
+      WITH PayrollDocumentLine DO BEGIN
+        PayrollDocLineCalc.RESET;
+        PayrollDocLineCalc.SETRANGE("Document No.","Document No.");
+        PayrollDocLineCalc.SETRANGE("Document Line No.","Line No.");
+        IF NOT PayrollDocLineCalc.ISEMPTY THEN
+          PayrollDocLineCalc.DELETEALL;
+
+        PayrollDocLineExpr.RESET;
+        PayrollDocLineExpr.SETRANGE("Document No.","Document No.");
+        PayrollDocLineExpr.SETRANGE("Document Line No.","Line No.");
+        IF NOT PayrollDocLineExpr.ISEMPTY THEN
+          PayrollDocLineExpr.DELETEALL;
+
+        PayrollDocLineVar.RESET;
+        PayrollDocLineVar.SETRANGE("Document No.","Document No.");
+        PayrollDocLineVar.SETRANGE("Document Line No.","Line No.");
+        IF NOT PayrollDocLineVar.ISEMPTY THEN
+          PayrollDocLineVar.DELETEALL;
+      END;
+    END;
+
+    LOCAL PROCEDURE PrepareCalculations@1210022(PayrollDocLine@1210001 : Record 17415;PayrollCalculation@1210000 : Record 17406);
+    BEGIN
+      PayrollCalcLine.RESET;
+      PayrollCalcLine.SETRANGE("Element Code",PayrollCalculation."Element Code");
+      PayrollCalcLine.SETRANGE("Period Code",PayrollCalculation."Period Code");
+      IF PayrollCalcLine.FINDSET THEN
+        REPEAT
+          PayrollDocLineCalc.INIT;
+          PayrollDocLineCalc.TRANSFERFIELDS(PayrollCalcLine);
+          PayrollDocLineCalc."Document No." := PayrollDocLine."Document No.";
+          PayrollDocLineCalc."Document Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineCalc."Period Code" := PayrollDocLine."Period Code";
+          PayrollDocLineCalc.INSERT;
+        UNTIL PayrollCalcLine.NEXT = 0;
+
+      PayrollElementVar.RESET;
+      PayrollElementVar.SETRANGE("Element Code",PayrollCalculation."Element Code");
+      PayrollElementVar.SETRANGE("Period Code",PayrollCalculation."Period Code");
+      IF PayrollElementVar.FINDSET THEN
+        REPEAT
+          PayrollDocLineVar.INIT;
+          PayrollDocLineVar."Element Code" := PayrollElementVar."Element Code";
+          PayrollDocLineVar.Variable := PayrollElementVar.Variable;
+          PayrollDocLineVar."Document No." := PayrollDocLine."Document No.";
+          PayrollDocLineVar."Document Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineVar.INSERT;
+        UNTIL PayrollElementVar.NEXT = 0;
+
+      PayrollElementExpr.RESET;
+      PayrollElementExpr.SETRANGE("Element Code",PayrollCalculation."Element Code");
+      PayrollElementExpr.SETRANGE("Period Code",PayrollCalculation."Period Code");
+      IF PayrollElementExpr.FINDSET THEN
+        REPEAT
+          PayrollDocLineExpr.INIT;
+          PayrollDocLineExpr.TRANSFERFIELDS(PayrollElementExpr);
+          PayrollDocLineExpr."Document No." := PayrollDocLine."Document No.";
+          PayrollDocLineExpr."Document Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineExpr.INSERT;
+        UNTIL PayrollElementExpr.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

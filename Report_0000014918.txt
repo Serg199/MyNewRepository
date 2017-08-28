@@ -1,0 +1,833 @@
+OBJECT Report 14918 Items Receipt Act TORG-1
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Items Receipt Act TORG-1;
+               RUS=Акт о приемке товаров ТОРГ-1];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   InitReportTemplate;
+
+                   GLSetup.GET;
+                   CompanyInformation.GET;
+                 END;
+
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     ExcelReportBuilderMgr.ExportDataToClientFile(FileName)
+                   ELSE
+                     ExcelReportBuilderMgr.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 4458;    ;DataItem;                    ;
+               DataItemTable=Table38;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=FILTER(Order|Invoice|Credit Memo));
+               OnPreDataItem=BEGIN
+                               IF GETFILTERS = '' THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillHeaderBuffer(
+                                    DATABASE::"Purchase Header",
+                                    "Document Type",
+                                    "No.",
+                                    "Document Date",
+                                    "Posting Date",
+                                    "Buy-from Vendor No.",
+                                    "Pay-to Vendor No.",
+                                    "Location Code",
+                                    "Vendor VAT Invoice No.",
+                                    "Vendor VAT Invoice Date",
+                                    "Agreement No.",
+                                    "External Agreement No.");
+
+                                  CalcAmounts("Purchase Header");
+                                  IF ShowActualQty THEN
+                                    CalcReceivePurchLines("Purchase Header");
+                                END;
+                                 }
+
+    { 6547;1   ;DataItem;                    ;
+               DataItemTable=Table39;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  ItemLedgerEntry@1210007 : Record 32;
+                                  Item@1210002 : Record 27;
+                                  Qty@1210011 : Decimal;
+                                  Price@1210010 : Decimal;
+                                  FactQuantity@1210000 : Decimal;
+                                  FullAmount@1210001 : Decimal;
+                                  ReceiveAmount@1210006 : Decimal;
+                                  AmountInclVat@1210003 : Decimal;
+                                  PlannedQtyPerUnitOfMeasure@1210004 : Decimal;
+                                  FactQtyPerUnitOfMeasure@1210005 : Decimal;
+                                  TempVar@1210008 : Decimal;
+                                BEGIN
+                                  IF Type = Type::Item THEN BEGIN
+                                    TESTFIELD("Location Code");
+
+                                    Qty := Quantity;
+                                    Price := "Direct Unit Cost";
+                                    FactQuantity := "Qty. to Receive";
+                                    PlannedQtyPerUnitOfMeasure := "Qty. per Unit of Measure";
+                                    FactQtyPerUnitOfMeasure := "Qty. per Unit of Measure";
+
+                                    IF PurchLineWithLCYAmt.GET("Document Type","Document No.","Line No.") THEN
+                                      FillAmounts(PurchLineWithLCYAmt,Price,FullAmount,AmountInclVat);
+
+                                    IF (ShowActualQty AND NOT Surplus) AND PurchLineWithLCYAmtToReceive.GET("Document Type","Document No.","Line No.") THEN
+                                      FillAmounts(PurchLineWithLCYAmtToReceive,Price,ReceiveAmount,AmountInclVat);
+
+                                    IF PlannedQtyPerUnitOfMeasure <> 0 THEN
+                                      Price := Price / PlannedQtyPerUnitOfMeasure;
+
+                                    IF "Document Type" = "Document Type"::"Credit Memo" THEN
+                                      IF "Appl.-to Item Entry" <> 0 THEN BEGIN
+                                        ItemLedgerEntry.GET("Appl.-to Item Entry");
+                                        ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)","Sales Amount (Actual)");
+
+                                        PlannedQtyPerUnitOfMeasure := ItemLedgerEntry."Qty. per Unit of Measure";
+                                        IF ItemLedgerEntry."Qty. per Unit of Measure" <> 0 THEN
+                                          Qty := ItemLedgerEntry.Quantity / PlannedQtyPerUnitOfMeasure
+                                        ELSE
+                                          Qty := ItemLedgerEntry.Quantity;
+
+                                        FactQuantity := Qty - Quantity;
+
+                                        IF PurchLineWithLCYAmtToReceive.GET("Document Type","Document No.","Line No.") THEN
+                                          FillAmounts(PurchLineWithLCYAmtToReceive,Price,FullAmount,AmountInclVat);
+
+                                        IF PurchLineWithLCYAmt.GET("Document Type","Document No.","Line No.") THEN
+                                          FillAmounts(PurchLineWithLCYAmt,Price,ReceiveAmount,TempVar);
+
+                                        ReceiveAmount := FullAmount - ReceiveAmount;
+                                        AmountInclVat := AmountInclVat - TempVar;
+
+                                        Price := FullAmount / ItemLedgerEntry.Quantity;
+                                      END ELSE BEGIN
+                                        Qty := 0;
+                                        Price := 0;
+                                        FullAmount := 0;
+                                        AmountInclVat := 0;
+                                        ReceiveAmount := 0;
+                                        PlannedQtyPerUnitOfMeasure := 0;
+                                        FactQuantity := 0;
+                                      END;
+
+                                    IF Item.GET("No.") THEN;
+
+                                    FillLineBuffer(
+                                      LineCounter,
+                                      "No.",
+                                      Description,
+                                      Item."Base Unit of Measure",
+                                      PlannedQtyPerUnitOfMeasure,
+                                      FactQtyPerUnitOfMeasure,
+                                      Qty,
+                                      Price,
+                                      FullAmount,
+                                      ReceiveAmount,
+                                      "Net Weight",
+                                      "Gross Weight",
+                                      FactQuantity,
+                                      AmountInclVat,
+                                      "VAT %",
+                                      Surplus,
+                                      FALSE);
+
+                                    LineCounter := LineCounter + 1;
+                                  END;
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+    { 4608;    ;DataItem;                    ;
+               DataItemTable=Table12450;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=CONST(Receipt));
+               OnPreDataItem=BEGIN
+                               IF GETFILTERS = '' THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillHeaderBuffer(
+                                    DATABASE::"Item Document Header",
+                                    "Document Type",
+                                    "No.",
+                                    "Document Date",
+                                    "Posting Date",
+                                    '',
+                                    '',
+                                    "Location Code",
+                                    '',
+                                    0D,
+                                    '',
+                                    '');
+                                END;
+                                 }
+
+    { 9336;1   ;DataItem;                    ;
+               DataItemTable=Table12453;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  Item@1210000 : Record 27;
+                                  Price@1210002 : Decimal;
+                                BEGIN
+                                  TESTFIELD("Location Code");
+
+                                  Price := "Unit Cost";
+                                  IF "Qty. per Unit of Measure" <> 0 THEN
+                                    Price := Price / "Qty. per Unit of Measure";
+
+                                  IF Item.GET("Item No.") THEN;
+
+                                  FillLineBuffer(
+                                    LineCounter,
+                                    "Item No.",
+                                    Description,
+                                    Item."Base Unit of Measure",
+                                    "Qty. per Unit of Measure",
+                                    "Qty. per Unit of Measure",
+                                    Quantity,
+                                    Price,
+                                    Quantity * "Unit Cost",
+                                    Quantity * "Unit Cost",
+                                    "Net Weight",
+                                    "Gross Weight",
+                                    Quantity,
+                                    Quantity * "Unit Cost",
+                                    0,
+                                    FALSE,
+                                    TRUE);
+
+                                  LineCounter := LineCounter + 1;
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+    { 1266;    ;DataItem;                    ;
+               DataItemTable=Table12451;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               IF GETFILTERS = '' THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillHeaderBuffer(
+                                    DATABASE::"Item Document Header",
+                                    0,
+                                    "No.",
+                                    "Document Date",
+                                    "Posting Date",
+                                    '',
+                                    '',
+                                    "Location Code",
+                                    '',
+                                    0D,
+                                    '',
+                                    '');
+                                END;
+                                 }
+
+    { 2461;1   ;DataItem;                    ;
+               DataItemTable=Table12452;
+               DataItemTableView=SORTING(Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  Item@1210000 : Record 27;
+                                  Price@1210002 : Decimal;
+                                BEGIN
+                                  TESTFIELD("Location Code");
+
+                                  Price := "Unit Cost";
+
+                                  IF "Qty. per Unit of Measure" <> 0 THEN
+                                    Price := Price / "Qty. per Unit of Measure";
+
+                                  IF Item.GET("Item No.") THEN;
+
+                                  FillLineBuffer(
+                                    LineCounter,
+                                    "Item No.",
+                                    Description,
+                                    Item."Base Unit of Measure",
+                                    "Qty. per Unit of Measure",
+                                    "Qty. per Unit of Measure",
+                                    Quantity,
+                                    Price,
+                                    Quantity * "Unit Cost",
+                                    Quantity * "Unit Cost",
+                                    "Net Weight",
+                                    "Gross Weight",
+                                    Quantity,
+                                    Quantity * "Unit Cost",
+                                    0,
+                                    FALSE,
+                                    TRUE);
+
+                                  LineCounter := LineCounter + 1;
+                                END;
+
+               DataItemLink=Document No.=FIELD(No.) }
+
+    { 2278;    ;DataItem;HeaderLoop          ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnAfterGetRecord=VAR
+                                  Location@1210003 : Record 14;
+                                  Vendor@1210004 : Record 23;
+                                  Employee@1210005 : Record 5200;
+                                  DocumentSignature@1210006 : Record 12420;
+                                  LocalisationManagement@1210008 : Codeunit 12400;
+                                  FormatAddr@1210010 : Codeunit 365;
+                                  CustAddr@1210009 : ARRAY [8] OF Text[50];
+                                  EmployeePosition@1210002 : Text[50];
+                                  EmployeeName@1210001 : Text[100];
+                                  EmployeeDocument@1210000 : Text[250];
+                                BEGIN
+                                  ExcelReportBuilderMgr.SetSheet('Sheet1');
+                                  ExcelReportBuilderMgr.AddSection('PAGE1');
+                                  ExcelReportBuilderMgr.AddDataToSection('DocumentNumber',HeaderBuffer."No.");
+
+                                  IF CompanyInformation."Director No." <> '' THEN
+                                    IF Employee.GET(CompanyInformation."Director No.") THEN BEGIN
+                                      ExcelReportBuilderMgr.AddDataToSection('DirectorPosition',Employee.GetJobTitleName);
+                                      ExcelReportBuilderMgr.AddDataToSection('DirectorName',CompanyInformation."Director Name");
+                                    END;
+
+                                  FormatAddr.FormatAddr(
+                                    CustAddr,CompanyInformation.Name,CompanyInformation."Name 2",CompanyInformation."Phone No.",
+                                    CompanyInformation.Address,CompanyInformation."Address 2",
+                                    CompanyInformation.City,CompanyInformation."Post Code",
+                                    CompanyInformation.County,CompanyInformation."Country/Region Code");
+
+                                  ExcelReportBuilderMgr.AddDataToSection('CompanyName',
+                                    CustAddr[1] + ' ' + CustAddr[2] + ' ' + CustAddr[3] + ' ' + CustAddr[4] + ' ' +
+                                    CustAddr[5] + ' ' + CustAddr[6] + ' ' + CustAddr[7] + ' ' + CustAddr[8]);
+
+                                  ExcelReportBuilderMgr.AddDataToSection('DocumentDate',FORMAT(HeaderBuffer."Document Date"));
+
+                                  IF Location.GET(HeaderBuffer."Location Code") THEN
+                                    ExcelReportBuilderMgr.AddDataToSection('DepartmentName',Location.Name);
+
+                                  ExcelReportBuilderMgr.AddDataToSection('OKPO',CompanyInformation."OKPO Code");
+
+                                  IF HeaderBuffer."Buy-from Vendor No." <> '' THEN
+                                    IF Vendor.GET(HeaderBuffer."Buy-from Vendor No.") THEN BEGIN
+                                      FormatAddr.FormatAddr(CustAddr,Vendor.Name,Vendor."Name 2",Vendor."Phone No.",
+                                        Vendor.Address,Vendor."Address 2",Vendor.City,Vendor."Post Code",
+                                        Vendor.County,Vendor."Country/Region Code");
+
+                                      ExcelReportBuilderMgr.AddDataToSection('InvoiceAccountName',
+                                        CustAddr[1] + ' ' + CustAddr[2] + ' ' + CustAddr[3] + ' ' + CustAddr[4] + ' ' +
+                                        CustAddr[5] + ' ' + CustAddr[6] + ' ' + CustAddr[7] + ' ' + CustAddr[8]);
+                                    END;
+
+                                  IF HeaderBuffer."Pay-to Vendor No." <> '' THEN
+                                    IF Vendor.GET(HeaderBuffer."Pay-to Vendor No.") THEN BEGIN
+                                      FormatAddr.FormatAddr(CustAddr,Vendor.Name,Vendor."Name 2",Vendor."Phone No.",
+                                        Vendor.Address,Vendor."Address 2",Vendor.City,Vendor."Post Code",
+                                        Vendor.County,Vendor."Country/Region Code");
+
+                                      ExcelReportBuilderMgr.AddDataToSection('VendAccountName',
+                                        CustAddr[1] + ' ' + CustAddr[2] + ' ' + CustAddr[3] + ' ' + CustAddr[4] + ' ' +
+                                        CustAddr[5] + ' ' + CustAddr[6] + ' ' + CustAddr[7] + ' ' + CustAddr[8]);
+                                    END;
+                                  ExcelReportBuilderMgr.AddDataToSection('ReportNo',ReportNo);
+                                  IF ReportDate <> 0D THEN BEGIN
+                                    ExcelReportBuilderMgr.AddDataToSection('DocmentDateDay',FORMAT(ReportDate,0,'<Day,2>'));
+                                    ExcelReportBuilderMgr.AddDataToSection('DocumentDateMonth',FORMAT(ReportDate,0,'<Month,2>'));
+                                    ExcelReportBuilderMgr.AddDataToSection('DocumentDateYear',FORMAT(ReportDate,0,'<Year>'));
+                                  END;
+                                  ExcelReportBuilderMgr.AddDataToSection('ReportOperationType',ReportOperationType);
+
+                                  ExcelReportBuilderMgr.AddDataToSection('FactureNumber',HeaderBuffer."Vendor VAT Invoice No.");
+                                  ExcelReportBuilderMgr.AddDataToSection('FactureDate',LocalisationManagement.Date2Text(HeaderBuffer."Vendor VAT Invoice Date"));
+
+                                  IF VendAgrmt.GET(HeaderBuffer."Buy-from Vendor No.",HeaderBuffer."Agreement No.") THEN BEGIN
+                                    ExcelReportBuilderMgr.AddDataToSection('ContractNumber',FORMAT(HeaderBuffer."External Agreement No."));
+                                    ExcelReportBuilderMgr.AddDataToSection('ContractDate',
+                                      LocalisationManagement.Date2Text(VendAgrmt."Agreement Date"));
+                                  END;
+
+                                  ExcelReportBuilderMgr.SetSheet('Sheet3');
+                                  ExcelReportBuilderMgr.AddSection('PAGE3');
+
+                                  IF GetDocSignParameters(HeaderBuffer."No. of Documents",HeaderBuffer."Document Type",HeaderBuffer."No.",
+                                       DocumentSignature."Employee Type"::Chairman,EmployeePosition,EmployeeName,EmployeeDocument)
+                                  THEN BEGIN
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionHeadTitle',EmployeePosition);
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionHeadName',EmployeeName);
+                                  END;
+
+                                  IF GetDocSignParameters(HeaderBuffer."No. of Documents",HeaderBuffer."Document Type",HeaderBuffer."No.",
+                                       DocumentSignature."Employee Type"::Member1,EmployeePosition,EmployeeName,EmployeeDocument)
+                                  THEN BEGIN
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionMember1Title',EmployeePosition);
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionMember1Name',EmployeeName);
+                                  END;
+
+                                  IF GetDocSignParameters(HeaderBuffer."No. of Documents",HeaderBuffer."Document Type",HeaderBuffer."No.",
+                                       DocumentSignature."Employee Type"::Member2,EmployeePosition,EmployeeName,EmployeeDocument)
+                                  THEN BEGIN
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionMember2Title',EmployeePosition);
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionMember2Name',EmployeeName);
+                                  END;
+
+                                  IF GetDocSignParameters(HeaderBuffer."No. of Documents",HeaderBuffer."Document Type",HeaderBuffer."No.",
+                                       DocumentSignature."Employee Type"::Member3,EmployeePosition,EmployeeName,EmployeeDocument)
+                                  THEN BEGIN
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionMember3Title',EmployeePosition);
+                                    ExcelReportBuilderMgr.AddDataToSection('CommissionMember3Name',EmployeeName);
+                                  END;
+
+                                  ExcelReportBuilderMgr.AddDataToSection('AccountantName',CompanyInformation."Accountant Name");
+
+                                  IF DocumentSignature.GET(
+                                       HeaderBuffer."No. of Documents",HeaderBuffer."Document Type",
+                                       HeaderBuffer."No.",DocumentSignature."Employee Type"::StoredBy)
+                                  THEN
+                                    ExcelReportBuilderMgr.AddDataToSection('Stockkeeper',DocumentSignature."Employee Name")
+                                  ELSE
+                                    IF Location.GET(HeaderBuffer."Location Code") AND Employee.GET(Location."Responsible Employee No.") THEN
+                                      ExcelReportBuilderMgr.AddDataToSection('Stockkeeper',Employee.FullName);
+                                END;
+                                 }
+
+    { 2132;    ;DataItem;LineLoop            ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               SETRANGE(Number,1,LineBuffer.COUNT);
+
+                               ExcelReportBuilderMgr.SetSheet('Sheet2');
+                               ExcelReportBuilderMgr.AddSection('PAGEHEADER');
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  QuantityDifference@1210001 : Decimal;
+                                  VatAmount@1210002 : Decimal;
+                                  QuantityDifferenceBase@1210003 : Decimal;
+                                  DiffAmount@1210004 : Decimal;
+                                  NetDiff@1210005 : Decimal;
+                                  GrossDiff@1210006 : Decimal;
+                                BEGIN
+                                  IF Number = 1 THEN
+                                    LineBuffer.FINDSET
+                                  ELSE
+                                    LineBuffer.NEXT;
+
+                                  IF NOT ExcelReportBuilderMgr.TryAddSection('BODY') THEN BEGIN
+                                    ExcelReportBuilderMgr.AddPagebreak;
+                                    ExcelReportBuilderMgr.AddSection('PAGEHEADER');
+                                    ExcelReportBuilderMgr.AddSection('BODY');
+                                  END;
+
+                                  VatAmount := LineBuffer."Amount Including VAT" - LineBuffer.Amount;
+
+                                  IF ShowActualQty THEN BEGIN
+                                    IF LineBuffer.Surplus OR LineBuffer."Special Order" THEN BEGIN
+                                      FillFactInvoice(LineBuffer."Outstanding Quantity",LineBuffer.Quantity,
+                                        LineBuffer.Quantity * LineBuffer."Gross Weight",
+                                        LineBuffer.Quantity * LineBuffer."Net Weight",LineBuffer.Amount);
+
+                                      LineBuffer."Qty. to Receive" := LineBuffer.Quantity;
+                                      QuantityDifferenceBase := ROUND(LineBuffer.Quantity * LineBuffer."Outstanding Quantity",1,'>');
+                                      DiffAmount := LineBuffer.Amount;
+                                      NetDiff := LineBuffer."Net Weight" * LineBuffer.Quantity;
+                                      GrossDiff := LineBuffer."Gross Weight" * LineBuffer.Quantity;
+
+                                      LineBuffer."Outstanding Quantity" := 0;
+                                      QuantityDifference := ROUND(LineBuffer.Quantity,1,'>')
+                                    END ELSE BEGIN
+                                      FillPlannedInvoice(LineBuffer."Outstanding Quantity",LineBuffer.Quantity,
+                                        LineBuffer.Quantity * LineBuffer."Gross Weight",
+                                        LineBuffer.Quantity * LineBuffer."Net Weight",LineBuffer.Amount);
+                                      FillFactInvoice(LineBuffer."Unit Volume",LineBuffer."Qty. to Receive",
+                                        LineBuffer."Qty. to Receive" * LineBuffer."Gross Weight",
+                                        LineBuffer."Qty. to Receive" * LineBuffer."Net Weight",LineBuffer."Outstanding Amount");
+
+                                      NetDiff := LineBuffer."Qty. to Receive" * LineBuffer."Net Weight" - LineBuffer."Net Weight" * LineBuffer.Quantity;
+                                      GrossDiff := LineBuffer."Qty. to Receive" * LineBuffer."Gross Weight" - LineBuffer."Gross Weight" * LineBuffer.Quantity;
+
+                                      VatAmount := LineBuffer."Amount Including VAT" - LineBuffer."Outstanding Amount";
+                                      QuantityDifference := ROUND(LineBuffer."Qty. to Receive",1,'>') - ROUND(LineBuffer.Quantity,1,'>');
+                                      QuantityDifferenceBase := ROUND(LineBuffer."Qty. to Receive" * LineBuffer."Unit Volume",1,'>') -
+                                        ROUND(LineBuffer.Quantity * LineBuffer."Outstanding Quantity",1,'>');
+                                      DiffAmount := LineBuffer."Outstanding Amount" - LineBuffer.Amount;
+                                    END;
+
+                                    IF QuantityDifferenceBase <> 0 THEN
+                                      FillPlannedFactDifference(
+                                        LineBuffer."Unit Volume" - LineBuffer."Outstanding Quantity",
+                                        QuantityDifference,
+                                        QuantityDifferenceBase,
+                                        GrossDiff,
+                                        NetDiff,
+                                        DiffAmount);
+                                  END ELSE
+                                    FillPlannedInvoice(LineBuffer."Outstanding Quantity",LineBuffer.Quantity,LineBuffer.Quantity * LineBuffer."Gross Weight",
+                                      LineBuffer.Quantity * LineBuffer."Net Weight",LineBuffer.Amount);
+
+                                  FillGeneralInformationFields(Number,LineBuffer."No.",LineBuffer.Description,
+                                    LineBuffer."Unit of Measure Code",LineBuffer."Unit of Measure",
+                                    LineBuffer."Direct Unit Cost",LineBuffer."Amount Including VAT",LineBuffer."VAT %",VatAmount);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExcelReportBuilderMgr.AddSection('REPORTFOOTER');
+                                FillSumFields;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Show Actual Quantity;
+                             RUS=Отразить фактическое количество];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowActualQty }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Order No;
+                             RUS=Номер заказа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportNo }
+
+      { 1210005;2;Field     ;
+                  CaptionML=[ENU=Order Date;
+                             RUS=Дата приказа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportDate }
+
+      { 1210007;2;Field     ;
+                  CaptionML=[ENU=Operation Type;
+                             RUS=Тип операции];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportOperationType }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1210024 : Record 98;
+      CompanyInformation@1210010 : Record 79;
+      HeaderBuffer@1210001 : TEMPORARY Record 38;
+      LineBuffer@1210002 : TEMPORARY Record 39;
+      PurchSetup@1210000 : Record 312;
+      PurchLineWithLCYAmt@1210013 : TEMPORARY Record 39;
+      PurchLineWithLCYAmtToReceive@1210011 : TEMPORARY Record 39;
+      VendAgrmt@1210025 : Record 14901;
+      ExcelReportBuilderMgr@1210009 : Codeunit 14930;
+      StdRepMgt@1210035 : Codeunit 12401;
+      LineCounter@1210003 : Integer;
+      ReportNo@1210004 : Text;
+      ReportDate@1210005 : Date;
+      ReportOperationType@1210008 : Text;
+      TotalAmount@1210014 : Decimal;
+      TotalAmountInclVAT@1210015 : Decimal;
+      TotalAmountLCY@1210016 : Decimal;
+      TotalAmountInclVATLCY@1210017 : Decimal;
+      TotalAmountInclVATLCYCalc@1210036 : Decimal;
+      TotalUnitsFact@1210012 : Decimal;
+      TotalUnitOfMeasureFact@1210018 : Decimal;
+      TotalUnitsPlan@1210019 : Decimal;
+      TotalUnitOfMeasurePlan@1210020 : Decimal;
+      TotalUnitsDiff@1210021 : Decimal;
+      TotalUnitOfMeasureDiff@1210022 : Decimal;
+      TotalDocGrossWeight@1210007 : Decimal;
+      TotalDocNetWeight@1210026 : Decimal;
+      TotalDocLineAmount@1210027 : Decimal;
+      TotalFactGrossWeight@1210030 : Decimal;
+      TotalFactNetWeight@1210029 : Decimal;
+      TotalFactLineAmount@1210028 : Decimal;
+      TotalDeviationGrossWeight@1210031 : Decimal;
+      TotalDeviationNetWeight@1210032 : Decimal;
+      TotalDeviationLineAmount@1210033 : Decimal;
+      TotalVATAmountLCY@1210034 : Decimal;
+      ShowActualQty@1210006 : Boolean;
+      FileName@1210023 : Text;
+
+    PROCEDURE FillHeaderBuffer@1210011(TableID@1210005 : Integer;DocumentType@1210006 : Integer;DocumentNo@1210000 : Code[20];DocumentDate@1210001 : Date;PostingDate@1210002 : Date;BuyFromVendorNo@1210003 : Code[20];PayToVendorNo@1210004 : Code[20];LocationCode@1210007 : Code[10];VendorVatInvoiceNo@1210008 : Code[20];VendorVatInvoiceDate@1210009 : Date;AgreementNo@1210010 : Code[20];ExtAgreementNo@1210011 : Text[30]);
+    BEGIN
+      HeaderBuffer."Document Type" := DocumentType;
+      HeaderBuffer."No." := DocumentNo;
+      HeaderBuffer."Buy-from Vendor No." := BuyFromVendorNo;
+      HeaderBuffer."Pay-to Vendor No." := PayToVendorNo;
+      HeaderBuffer."No. of Documents" := TableID;
+      HeaderBuffer."Document Date" := DocumentDate;
+      HeaderBuffer."Posting Date" := PostingDate;
+      HeaderBuffer."Location Code" := LocationCode;
+      HeaderBuffer."Vendor VAT Invoice No." := VendorVatInvoiceNo;
+      HeaderBuffer."Vendor VAT Invoice Date" := VendorVatInvoiceDate;
+      HeaderBuffer."Agreement No." := AgreementNo;
+      HeaderBuffer."External Agreement No." := ExtAgreementNo;
+      HeaderBuffer.INSERT;
+    END;
+
+    PROCEDURE FillLineBuffer@1210002(LineNo@1210005 : Integer;ItemNo@1210000 : Code[20];ItemName@1210001 : Text[250];UnitOfMeasureCode@1210007 : Code[10];PlannedQtyPerUnitOfMeasure@1210016 : Decimal;FactQtyPerUnitOfMeasure@1210017 : Decimal;Qty@1210002 : Decimal;Price@1210003 : Decimal;Amount@1210004 : Decimal;ReceiveAmount@1210015 : Decimal;NetWeight@1210006 : Decimal;GrossWeight@1210008 : Decimal;QtyToReceive@1210012 : Decimal;AmountIncludingVAT@1210013 : Decimal;VATPercent@1210009 : Decimal;Surplus@1210010 : Boolean;DocumentType@1210011 : Boolean);
+    VAR
+      UnitOfMeasure@1210014 : Record 204;
+    BEGIN
+      LineBuffer."Line No." := LineNo;
+      LineBuffer."No." := ItemNo;
+      LineBuffer.Description := ItemName;
+      LineBuffer."Unit of Measure Code" := UnitOfMeasureCode;
+      IF UnitOfMeasure.GET(UnitOfMeasureCode) THEN
+        LineBuffer."Unit of Measure" := UnitOfMeasure.Description;
+      LineBuffer."Outstanding Quantity" := PlannedQtyPerUnitOfMeasure;
+      LineBuffer."Unit Volume" := FactQtyPerUnitOfMeasure;
+      LineBuffer.Quantity := Qty;
+      LineBuffer."Direct Unit Cost" := Price;
+      LineBuffer.Amount := Amount;
+      LineBuffer."Outstanding Amount" := ReceiveAmount;
+      LineBuffer."Gross Weight" := GrossWeight;
+      LineBuffer."Net Weight" := NetWeight;
+      LineBuffer."Qty. to Receive" := QtyToReceive;
+      LineBuffer."Amount Including VAT" := AmountIncludingVAT;
+      LineBuffer."VAT %" := VATPercent;
+      LineBuffer.Surplus := Surplus;
+      LineBuffer."Special Order" := DocumentType;
+      LineBuffer.INSERT;
+    END;
+
+    PROCEDURE FillGeneralInformationFields@1210004(LineNo@1210012 : Integer;ItemNo@1210000 : Code[20];ItemName@1210001 : Text[250];UnitOfMeasureCode@1210007 : Code[10];UnitOfMeasureName@1210008 : Text[30];Price@1210003 : Decimal;AmountIncludingVAT@1210002 : Decimal;VATPercent@1210004 : Decimal;VATCost@1210009 : Decimal);
+    VAR
+      UnitOfMeasure@1210010 : Record 204;
+    BEGIN
+      ExcelReportBuilderMgr.AddDataToSection('ItemName',FORMAT(LineNo) + ' ' + ItemName);
+      ExcelReportBuilderMgr.AddDataToSection('ItemId',ItemNo);
+
+      IF UnitOfMeasure.GET(UnitOfMeasureCode) THEN
+        ExcelReportBuilderMgr.AddDataToSection('OKEI',UnitOfMeasure."OKEI Code");
+
+      IF UnitOfMeasureName <> '' THEN
+        ExcelReportBuilderMgr.AddDataToSection('Unit',UnitOfMeasureName);
+      IF Price <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('Price',FORMAT(ROUND(Price),0,1));
+
+      IF AmountIncludingVAT <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('LineAmountWithTax',StdRepMgt.FormatReportValue(ROUND(AmountIncludingVAT),2));
+      IF VATPercent <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('VATValue',FORMAT(VATPercent,0,1));
+      IF VATCost <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('VATAmount',StdRepMgt.FormatReportValue(ROUND(VATCost),2));
+      TotalVATAmountLCY += VATCost;
+      TotalAmountInclVATLCYCalc += ROUND(AmountIncludingVAT);
+    END;
+
+    PROCEDURE FillPlannedInvoice@1210000(QtyperUnitofMeasure@1210000 : Decimal;Quantity@1210001 : Decimal;GrossWeight@1210002 : Decimal;NetWeight@1210003 : Decimal;UnitsPrice@1210004 : Decimal);
+    BEGIN
+      ExcelReportBuilderMgr.AddDataToSection('DocQtyPerUOM',FORMAT(QtyperUnitofMeasure,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('DocQty',FORMAT(ROUND(Quantity,1,'>')) + '/' +
+        FORMAT(ROUND(Quantity * QtyperUnitofMeasure,1,'>')));
+      IF GrossWeight <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('DocGrossWeight',FORMAT(GrossWeight,0,1));
+      IF NetWeight <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('DocNetWeight',FORMAT(NetWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('DocLineAmount',StdRepMgt.FormatReportValue(ROUND(UnitsPrice),2));
+
+      TotalUnitOfMeasurePlan += ROUND(Quantity,1,'>');
+      TotalUnitsPlan += ROUND(Quantity * QtyperUnitofMeasure,1);
+      TotalDocGrossWeight += GrossWeight;
+      TotalDocNetWeight += NetWeight;
+      TotalDocLineAmount += ROUND(UnitsPrice);
+    END;
+
+    PROCEDURE FillFactInvoice@1210003(QtyperUnitofMeasure@1210004 : Decimal;Quantity@1210003 : Decimal;GrossWeight@1210002 : Decimal;NetWeight@1210001 : Decimal;UnitsPrice@1210000 : Decimal);
+    BEGIN
+      ExcelReportBuilderMgr.AddDataToSection('FactQtyPerUOM',FORMAT(QtyperUnitofMeasure,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('FactQty',FORMAT(ROUND(Quantity,1,'>')) + '/' +
+        FORMAT(ROUND(Quantity * QtyperUnitofMeasure,1,'>')));
+      IF GrossWeight <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('FactGrossWeight',FORMAT(GrossWeight,0,1));
+      IF NetWeight <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('FactNetWeight',FORMAT(NetWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('FactLineAmount',StdRepMgt.FormatReportValue(ROUND(UnitsPrice),2));
+
+      TotalUnitOfMeasureFact += ROUND(Quantity,1,'>');
+      TotalUnitsFact += ROUND(Quantity * QtyperUnitofMeasure,1);
+      TotalFactGrossWeight += GrossWeight;
+      TotalFactNetWeight += NetWeight;
+      TotalFactLineAmount += UnitsPrice;
+    END;
+
+    PROCEDURE FillPlannedFactDifference@1210026(QtyperUnitofMeasure@1210004 : Decimal;Quantity@1210003 : Decimal;QuantityBase@1210008 : Decimal;GrossWeight@1210002 : Decimal;NetWeight@1210001 : Decimal;UnitsPrice@1210000 : Decimal);
+    BEGIN
+      ExcelReportBuilderMgr.AddDataToSection('DeviationQtyPerUOM',FORMAT(QtyperUnitofMeasure));
+      ExcelReportBuilderMgr.AddDataToSection('DeviationQty',FORMAT(Quantity) + '/' + FORMAT(QuantityBase));
+      IF GrossWeight <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('DeviationGrossWeight',FORMAT(GrossWeight,0,1));
+      IF NetWeight <> 0 THEN
+        ExcelReportBuilderMgr.AddDataToSection('DeviationNetWeight',FORMAT(NetWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('DeviationAmount',StdRepMgt.FormatReportValue(UnitsPrice,2));
+
+      TotalUnitOfMeasureDiff += Quantity;
+      TotalUnitsDiff += QuantityBase;
+      TotalDeviationGrossWeight += GrossWeight;
+      TotalDeviationNetWeight += NetWeight;
+      TotalDeviationLineAmount += UnitsPrice;
+    END;
+
+    PROCEDURE FillSumFields@1210082();
+    BEGIN
+      ExcelReportBuilderMgr.AddDataToSection('totalNetQty',FORMAT(TotalUnitOfMeasurePlan) + '/' + FORMAT(TotalUnitsPlan));
+      ExcelReportBuilderMgr.AddDataToSection('totalNetGrossweight',FORMAT(TotalDocGrossWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('totalNetWeight',FORMAT(TotalDocNetWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('totalNetAmount',StdRepMgt.FormatReportValue(TotalDocLineAmount,2));
+      ExcelReportBuilderMgr.AddDataToSection('totalQty',FORMAT(TotalUnitOfMeasureFact) + '/' + FORMAT(TotalUnitsFact));
+      ExcelReportBuilderMgr.AddDataToSection('totalGrossweight',FORMAT(TotalFactGrossWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('totalLineNetweight',FORMAT(TotalFactNetWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('totalAmount',StdRepMgt.FormatReportValue(ROUND(TotalFactLineAmount),2));
+      ExcelReportBuilderMgr.AddDataToSection('totalAmountWithTax',StdRepMgt.FormatReportValue(TotalAmountInclVATLCYCalc,2));
+      ExcelReportBuilderMgr.AddDataToSection('totalVATAmount',StdRepMgt.FormatReportValue(ROUND(TotalVATAmountLCY),2));
+      ExcelReportBuilderMgr.AddDataToSection('totalDeviationQty',FORMAT(TotalUnitOfMeasureDiff) + '/' + FORMAT(TotalUnitsDiff));
+      ExcelReportBuilderMgr.AddDataToSection('totalDeviationGrossweight',FORMAT(TotalDeviationGrossWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('totalDeviationNetweight',FORMAT(TotalDeviationNetWeight,0,1));
+      ExcelReportBuilderMgr.AddDataToSection('totalDeviationAmount',StdRepMgt.FormatReportValue(TotalDeviationLineAmount,2));
+    END;
+
+    PROCEDURE CalcAmounts@1210001(PurchHeader@1210003 : Record 38);
+    VAR
+      PurchLine@1210000 : Record 39;
+      PurchasePosting@1210002 : Codeunit 90;
+    BEGIN
+      PurchasePosting.SumPurchLines2Ex(PurchHeader,PurchLineWithLCYAmt,PurchLine,0,
+        TotalAmount,TotalAmountInclVAT,TotalAmountLCY,TotalAmountInclVATLCY);
+    END;
+
+    PROCEDURE GetDocSignParameters@1210007(TableID@1210005 : Integer;DocumentType@1210006 : Integer;DocumentNo@1210004 : Code[20];EmployeeType@1210002 : Integer;VAR EmployeeJobTitle@1210001 : Text[50];VAR EmployeeName@1210000 : Text[100];VAR EmployeeDocument@1210003 : Text[250]) : Boolean;
+    VAR
+      Employee@1210007 : Record 5200;
+      Person@1210010 : Record 17350;
+      DocumentSignature@1210008 : Record 12420;
+      PersonalDoc@1210009 : Record 17352;
+    BEGIN
+      IF DocumentSignature.GET(TableID,DocumentType,DocumentNo,EmployeeType) THEN BEGIN
+        IF Employee.GET(DocumentSignature."Employee No.") THEN BEGIN
+          Employee.TESTFIELD("Person No.");
+          Person.GET(Employee."Person No.");
+          Person.GetIdentityDoc(ReportDate,PersonalDoc);
+          EmployeeDocument := COPYSTR(
+              FORMAT(PersonalDoc."Document Type") + ' ' +
+              PersonalDoc."Document Series" + ' ' +
+              PersonalDoc."Document No." + ' ' +
+              PersonalDoc."Issue Authority" + ' ' +
+              FORMAT(PersonalDoc."Issue Date"),
+              1,MAXSTRLEN(EmployeeDocument));
+        END;
+
+        EmployeeJobTitle := DocumentSignature."Employee Job Title";
+        EmployeeName := DocumentSignature."Employee Name";
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CalcReceivePurchLines@1210005(PurchHeader@1210001 : Record 38);
+    VAR
+      TempPurchLine@1210003 : TEMPORARY Record 39;
+      PurchLine@1210004 : Record 39;
+      ItemLedgerEntry@1210000 : Record 32;
+      PurchasePosting@1210002 : Codeunit 90;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETFILTER(Type,'>0');
+        PurchLine.SETFILTER(Quantity,'<>0');
+        IF PurchLine.FIND('-') THEN
+          REPEAT
+            TempPurchLine := PurchLine;
+
+            IF PurchLine."Document Type" = PurchLine."Document Type"::"Credit Memo" THEN
+              IF PurchLine."Appl.-to Item Entry" <> 0 THEN BEGIN
+                ItemLedgerEntry.GET(PurchLine."Appl.-to Item Entry");
+                ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)","Sales Amount (Actual)");
+                IF ItemLedgerEntry."Qty. per Unit of Measure" <> 0 THEN
+                  TempPurchLine.Quantity := ItemLedgerEntry.Quantity / ItemLedgerEntry."Qty. per Unit of Measure"
+                ELSE
+                  TempPurchLine.Quantity := ItemLedgerEntry.Quantity;
+              END ELSE
+                TempPurchLine.Quantity := 0
+            ELSE
+              TempPurchLine.Quantity := TempPurchLine."Qty. to Receive";
+            TempPurchLine.INSERT;
+
+          UNTIL PurchLine.NEXT = 0;
+        PurchasePosting.SumPurchLines2Ex(PurchHeader,PurchLineWithLCYAmtToReceive,TempPurchLine,0,
+          TotalAmount,TotalAmountInclVAT,TotalAmountLCY,TotalAmountInclVATLCY);
+      END;
+    END;
+
+    PROCEDURE FillAmounts@1210096(PurchLine@1210003 : Record 39;VAR Price@1210000 : Decimal;VAR Amount@1210001 : Decimal;VAR AmountInclVat@1210002 : Decimal);
+    BEGIN
+      IF PurchLine.Quantity <> 0 THEN
+        Price := PurchLine.Amount / PurchLine.Quantity;
+
+      Amount := PurchLine.Amount;
+      AmountInclVat := PurchLine."Amount Including VAT";
+    END;
+
+    LOCAL PROCEDURE InitReportTemplate@1210006();
+    BEGIN
+      PurchSetup.GET;
+      PurchSetup.TESTFIELD("TORG-1 Template Code");
+      ExcelReportBuilderMgr.InitTemplate(PurchSetup."TORG-1 Template Code");
+      ExcelReportBuilderMgr.SetSheet('Sheet1');
+    END;
+
+    PROCEDURE InitializeRequest@1210008(NewShowActualQty@1210000 : Boolean;NewReportNo@1210001 : Text;NewReportDate@1210002 : Date;NewReportOperationType@1210003 : Text);
+    BEGIN
+      ShowActualQty := NewShowActualQty;
+      ReportNo := NewReportNo;
+      ReportDate := NewReportDate;
+      ReportOperationType := NewReportOperationType;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210009(NewFileName@1210000 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

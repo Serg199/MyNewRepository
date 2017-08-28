@@ -1,0 +1,840 @@
+OBJECT Table 12453 Item Document Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22.05.17;
+    Time=12:04:46;
+    Modified=Yes;
+    Version List=NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    OnInsert=BEGIN
+               TestStatusOpen;
+               ReserveItemDocLine.VerifyQuantity(Rec,xRec);
+               LOCKTABLE;
+               ItemDocHeader."No." := '';
+             END;
+
+    OnModify=BEGIN
+               ReserveItemDocLine.VerifyChange(Rec,xRec);
+             END;
+
+    OnDelete=BEGIN
+               TestStatusOpen;
+
+               CALCFIELDS("Reserved Qty. Inbnd. (Base)","Reserved Qty. Outbnd. (Base)");
+               TESTFIELD("Reserved Qty. Inbnd. (Base)",0);
+               TESTFIELD("Reserved Qty. Outbnd. (Base)",0);
+
+               ReserveItemDocLine.DeleteLine(Rec);
+             END;
+
+    OnRename=BEGIN
+               ERROR(Text001,TABLECAPTION);
+             END;
+
+    CaptionML=[ENU=Item Document Line;
+               RUS=Строка товарного документа];
+    LookupPageID=Page12467;
+    DrillDownPageID=Page12467;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Document Type       ;Option        ;CaptionML=[ENU=Document Type;
+                                                              RUS=Тип документа];
+                                                   OptionCaptionML=[ENU=Receipt,Shipment;
+                                                                    RUS=Приемка,Отгрузка];
+                                                   OptionString=Receipt,Shipment }
+    { 2   ;   ;Line No.            ;Integer       ;CaptionML=[ENU=Line No.;
+                                                              RUS=Номер строки] }
+    { 3   ;   ;Item No.            ;Code20        ;TableRelation=Item;
+                                                   OnValidate=BEGIN
+                                                                IF CurrFieldNo <> 0 THEN
+                                                                  TestStatusOpen;
+
+                                                                CheckItemAvailable(FIELDNO("Item No."));
+
+                                                                ReserveItemDocLine.VerifyChange(Rec,xRec);
+                                                                CALCFIELDS("Reserved Qty. Inbnd. (Base)");
+                                                                TESTFIELD("Reserved Qty. Inbnd. (Base)",0);
+
+                                                                GetItemDocHeader;
+                                                                "Posting Date" := ItemDocHeader."Posting Date";
+                                                                "Document Date" := ItemDocHeader."Document Date";
+                                                                "Location Code" := ItemDocHeader."Location Code";
+                                                                "Gen. Bus. Posting Group" := ItemDocHeader."Gen. Bus. Posting Group";
+
+                                                                GetItem;
+                                                                Item.TESTFIELD(Blocked,FALSE);
+                                                                VALIDATE(Description,Item.Description);
+                                                                VALIDATE("Gen. Prod. Posting Group",Item."Gen. Prod. Posting Group");
+                                                                VALIDATE("Inventory Posting Group",Item."Inventory Posting Group");
+                                                                VALIDATE("Unit Volume",Item."Unit Volume");
+                                                                VALIDATE("Units per Parcel",Item."Units per Parcel");
+                                                                "Item Category Code" := Item."Item Category Code";
+                                                                "Product Group Code" := Item."Product Group Code";
+                                                                "Indirect Cost %" := Item."Indirect Cost %";
+                                                                RetrieveCosts;
+                                                                "Unit Cost" := UnitCost;
+
+                                                                CASE "Document Type" OF
+                                                                  "Document Type"::Receipt:
+                                                                    PurchPriceCalcMgt.FindItemDocLinePrice(Rec,FIELDNO("Item No."));
+                                                                  "Document Type"::Shipment:
+                                                                    "Unit Amount" := UnitCost;
+                                                                END;
+
+                                                                CASE "Document Type" OF
+                                                                  "Document Type"::Receipt:
+                                                                    "Unit of Measure Code" := Item."Purch. Unit of Measure";
+                                                                  "Document Type"::Shipment:
+                                                                    "Unit of Measure Code" := Item."Sales Unit of Measure";
+                                                                  ELSE
+                                                                    "Unit of Measure Code" := Item."Base Unit of Measure";
+                                                                END;
+
+                                                                VALIDATE("Unit of Measure Code");
+                                                                IF "Variant Code" <> '' THEN
+                                                                  VALIDATE("Variant Code");
+
+                                                                IF "Item No." <> xRec."Item No." THEN BEGIN
+                                                                  "Variant Code" := '';
+                                                                  "Bin Code" := '';
+                                                                  IF ("Location Code" <> '') AND ("Item No." <> '') THEN BEGIN
+                                                                    GetLocation("Location Code");
+                                                                    IF Location."Bin Mandatory" AND NOT Location."Directed Put-away and Pick" THEN
+                                                                      WMSManagement.GetDefaultBin("Item No.","Variant Code","Location Code","Bin Code")
+                                                                  END;
+                                                                END;
+
+                                                                IF "Bin Code" <> '' THEN
+                                                                  VALIDATE("Bin Code");
+
+                                                                CreateDim(
+                                                                  DATABASE::Item,"Item No.",
+                                                                  DATABASE::"Salesperson/Purchaser","Salespers./Purch. Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=Item No.;
+                                                              RUS=Код товара] }
+    { 4   ;   ;Posting Date        ;Date          ;CaptionML=[ENU=Posting Date;
+                                                              RUS=Дата учета] }
+    { 5   ;   ;Document Date       ;Date          ;OnValidate=BEGIN
+                                                                CheckDateConflict.ItemDocLineCheck(Rec,CurrFieldNo <> 0); // Inbound
+                                                              END;
+
+                                                   CaptionML=[ENU=Document Date;
+                                                              RUS=Дата документа] }
+    { 7   ;   ;Document No.        ;Code20        ;CaptionML=[ENU=Document No.;
+                                                              RUS=Номер документа] }
+    { 8   ;   ;Description         ;Text50        ;CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 9   ;   ;Location Code       ;Code10        ;TableRelation=Location;
+                                                   OnValidate=BEGIN
+                                                                GetUnitAmount(FIELDNO("Location Code"));
+                                                                "Unit Cost" := UnitCost;
+                                                                VALIDATE("Unit Amount");
+                                                                CheckItemAvailable(FIELDNO("Location Code"));
+
+                                                                IF "Location Code" <> xRec."Location Code" THEN BEGIN
+                                                                  "Bin Code" := '';
+                                                                  IF ("Location Code" <> '') AND ("Item No." <> '') THEN BEGIN
+                                                                    GetLocation("Location Code");
+                                                                    IF Location."Bin Mandatory" AND NOT Location."Directed Put-away and Pick" THEN
+                                                                      WMSManagement.GetDefaultBin("Item No.","Variant Code","Location Code","Bin Code");
+                                                                  END;
+                                                                END;
+
+                                                                ReserveItemDocLine.VerifyChange(Rec,xRec);
+                                                              END;
+
+                                                   CaptionML=[ENU=Location Code;
+                                                              RUS=Код склада] }
+    { 10  ;   ;Inventory Posting Group;Code10     ;TableRelation="Inventory Posting Group";
+                                                   CaptionML=[ENU=Inventory Posting Group;
+                                                              RUS=Учетная группа товаров];
+                                                   Editable=No }
+    { 13  ;   ;Quantity            ;Decimal       ;OnValidate=BEGIN
+                                                                IF CurrFieldNo <> 0 THEN
+                                                                  TestStatusOpen;
+                                                                IF Quantity <> 0 THEN
+                                                                  TESTFIELD("Item No.");
+                                                                "Quantity (Base)" := CalcBaseQty(Quantity);
+
+                                                                UpdateAmount;
+
+                                                                CheckItemAvailable(FIELDNO(Quantity));
+                                                                ReserveItemDocLine.VerifyQuantity(Rec,xRec);
+                                                              END;
+
+                                                   CaptionML=[ENU=Quantity;
+                                                              RUS=Кол-во];
+                                                   DecimalPlaces=0:5 }
+    { 16  ;   ;Unit Amount         ;Decimal       ;OnValidate=BEGIN
+                                                                UpdateAmount;
+                                                                IF ("Item No." <> '') AND ("Document Type" = "Document Type"::Receipt) THEN BEGIN
+                                                                  ReadGLSetup;
+                                                                  "Unit Cost" :=
+                                                                    ROUND(
+                                                                      "Unit Amount" * (1 + "Indirect Cost %" / 100),GLSetup."Unit-Amount Rounding Precision");
+                                                                  VALIDATE("Unit Cost");
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Unit Amount;
+                                                              RUS=Цена единицы];
+                                                   AutoFormatType=2 }
+    { 17  ;   ;Unit Cost           ;Decimal       ;OnValidate=BEGIN
+                                                                TESTFIELD("Item No.");
+                                                                RetrieveCosts;
+                                                                IF ("Document Type" = "Document Type"::Receipt) AND (Item."Costing Method" = Item."Costing Method"::Standard) THEN
+                                                                  IF CurrFieldNo <> FIELDNO("Unit Cost") THEN
+                                                                    "Unit Cost" := ROUND(UnitCost * "Qty. per Unit of Measure",GLSetup."Unit-Amount Rounding Precision")
+                                                                  ELSE
+                                                                    ERROR(Text002,
+                                                                      FIELDCAPTION("Unit Cost"),Item."Costing Method");
+                                                              END;
+
+                                                   CaptionML=[ENU=Unit Cost;
+                                                              RUS=Себестоимость единицы];
+                                                   AutoFormatType=2 }
+    { 18  ;   ;Amount              ;Decimal       ;OnValidate=BEGIN
+                                                                TESTFIELD(Quantity);
+                                                                "Unit Amount" := Amount / Quantity;
+                                                                VALIDATE("Unit Amount");
+                                                                ReadGLSetup;
+                                                                "Unit Amount" := ROUND("Unit Amount",GLSetup."Unit-Amount Rounding Precision");
+                                                              END;
+
+                                                   CaptionML=[ENU=Amount;
+                                                              RUS=Сумма];
+                                                   AutoFormatType=1 }
+    { 23  ;   ;Salespers./Purch. Code;Code10      ;TableRelation=Salesperson/Purchaser;
+                                                   OnValidate=BEGIN
+                                                                CreateDim(
+                                                                  DATABASE::"Salesperson/Purchaser","Salespers./Purch. Code",
+                                                                  DATABASE::Item,"Item No.");
+                                                              END;
+
+                                                   CaptionML=[ENU=Salespers./Purch. Code;
+                                                              RUS=Код менеджера] }
+    { 26  ;   ;Source Code         ;Code10        ;TableRelation="Source Code";
+                                                   CaptionML=[ENU=Source Code;
+                                                              RUS=Код источника];
+                                                   Editable=No }
+    { 29  ;   ;Applies-to Entry    ;Integer       ;OnValidate=VAR
+                                                                ItemLedgEntry@1000 : Record 32;
+                                                                ItemTrackingLinesForm@1210000 : Page 6510;
+                                                              BEGIN
+                                                                IF "Applies-to Entry" <> 0 THEN BEGIN
+                                                                  ItemLedgEntry.GET("Applies-to Entry");
+
+                                                                  TESTFIELD(Quantity);
+                                                                  ItemLedgEntry.TESTFIELD(Open,TRUE);
+
+                                                                  "Location Code" := ItemLedgEntry."Location Code";
+                                                                  "Variant Code" := ItemLedgEntry."Variant Code";
+                                                                  "Unit Cost" := CalcUnitCost(ItemLedgEntry."Entry No.");
+                                                                  "Unit Amount" := "Unit Cost";
+                                                                  UpdateAmount;
+
+                                                                  IF (ItemLedgEntry."Lot No." <> '') OR (ItemLedgEntry."Serial No." <> '') THEN
+                                                                    ERROR(Text031,ItemTrackingLinesForm.CAPTION,FIELDCAPTION("Applies-from Entry"));
+                                                                END ELSE BEGIN
+                                                                  RetrieveCosts;
+                                                                  "Unit Cost" := UnitCost;
+                                                                END;
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              SelectItemEntry(FIELDNO("Applies-to Entry"));
+                                                            END;
+
+                                                   CaptionML=[ENU=Applies-to Entry;
+                                                              RUS=Примен. к операции] }
+    { 32  ;   ;Item Shpt. Entry No.;Integer       ;CaptionML=[ENU=Item Shpt. Entry No.;
+                                                              RUS=Товар - ном. опер. возв. поставки];
+                                                   Editable=No }
+    { 34  ;   ;Shortcut Dimension 1 Code;Code20   ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(1));
+                                                   OnValidate=BEGIN
+                                                                ValidateShortcutDimCode(1,"Shortcut Dimension 1 Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=Shortcut Dimension 1 Code;
+                                                              RUS=Код ярлыка измерения 1];
+                                                   CaptionClass='1,2,1' }
+    { 35  ;   ;Shortcut Dimension 2 Code;Code20   ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(2));
+                                                   OnValidate=BEGIN
+                                                                ValidateShortcutDimCode(2,"Shortcut Dimension 2 Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=Shortcut Dimension 2 Code;
+                                                              RUS=Код ярлыка измерения 2];
+                                                   CaptionClass='1,2,2' }
+    { 37  ;   ;Indirect Cost %     ;Decimal       ;OnValidate=BEGIN
+                                                                TESTFIELD("Item No.");
+                                                                TESTFIELD("Item Charge No.",'');
+
+                                                                GetItem;
+                                                                IF Item."Costing Method" = Item."Costing Method"::Standard THEN
+                                                                  ERROR(
+                                                                    Text002,
+                                                                    FIELDCAPTION("Indirect Cost %"),Item."Costing Method");
+
+                                                                "Unit Cost" :=
+                                                                  ROUND(
+                                                                    "Unit Amount" * (1 + "Indirect Cost %" / 100),GLSetup."Unit-Amount Rounding Precision");
+                                                              END;
+
+                                                   CaptionML=[ENU=Indirect Cost %;
+                                                              RUS=Косвенные затраты (%)];
+                                                   DecimalPlaces=0:5;
+                                                   MinValue=0 }
+    { 38  ;   ;Gross Weight        ;Decimal       ;CaptionML=[ENU=Gross Weight;
+                                                              RUS=Вес брутто];
+                                                   DecimalPlaces=0:5 }
+    { 39  ;   ;Net Weight          ;Decimal       ;CaptionML=[ENU=Net Weight;
+                                                              RUS=Вес нетто];
+                                                   DecimalPlaces=0:5 }
+    { 40  ;   ;Units per Parcel    ;Decimal       ;CaptionML=[ENU=Units per Parcel;
+                                                              RUS=Кол-во единиц в упаковке];
+                                                   DecimalPlaces=0:5 }
+    { 41  ;   ;Unit Volume         ;Decimal       ;CaptionML=[ENU=Unit Volume;
+                                                              RUS=Объем единицы];
+                                                   DecimalPlaces=0:5 }
+    { 42  ;   ;Reason Code         ;Code10        ;TableRelation="Reason Code";
+                                                   CaptionML=[ENU=Reason Code;
+                                                              RUS=Код причины] }
+    { 55  ;   ;Last Item Ledger Entry No.;Integer ;TableRelation="Item Ledger Entry";
+                                                   TestTableRelation=No;
+                                                   CaptionML=[ENU=Last Item Ledger Entry No.;
+                                                              RUS=Номер последней товарной операции];
+                                                   Editable=No }
+    { 57  ;   ;Gen. Bus. Posting Group;Code10     ;TableRelation="Gen. Business Posting Group";
+                                                   CaptionML=[ENU=Gen. Bus. Posting Group;
+                                                              RUS=Общая бизнес-группа] }
+    { 58  ;   ;Gen. Prod. Posting Group;Code10    ;TableRelation="Gen. Product Posting Group";
+                                                   CaptionML=[ENU=Gen. Prod. Posting Group;
+                                                              RUS=Общая товарная группа] }
+    { 65  ;   ;Posting No. Series  ;Code10        ;TableRelation="No. Series";
+                                                   CaptionML=[ENU=Posting No. Series;
+                                                              RUS=Учетная серия номеров] }
+    { 72  ;   ;Unit Cost (ACY)     ;Decimal       ;CaptionML=[ENU=Unit Cost (ACY);
+                                                              RUS=Себестоимость единицы (ДОВ)];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 480 ;   ;Dimension Set ID    ;Integer       ;TableRelation="Dimension Set Entry";
+                                                   OnLookup=BEGIN
+                                                              ShowDimensions;
+                                                            END;
+
+                                                   CaptionML=[ENU=Dimension Set ID;
+                                                              RUS=Код набора измерений];
+                                                   Editable=No }
+    { 5402;   ;Variant Code        ;Code10        ;TableRelation="Item Variant".Code WHERE (Item No.=FIELD(Item No.));
+                                                   OnValidate=BEGIN
+                                                                IF "Variant Code" <> xRec."Variant Code" THEN BEGIN
+                                                                  "Bin Code" := '';
+                                                                  IF ("Location Code" <> '') AND ("Item No." <> '') THEN BEGIN
+                                                                    GetLocation("Location Code");
+                                                                    IF Location."Bin Mandatory" AND NOT Location."Directed Put-away and Pick" THEN
+                                                                      WMSManagement.GetDefaultBin("Item No.","Variant Code","Location Code","Bin Code")
+                                                                  END;
+                                                                END;
+                                                                GetUnitAmount(FIELDNO("Variant Code"));
+                                                                "Unit Cost" := UnitCost;
+                                                                VALIDATE("Unit Amount");
+                                                                ReserveItemDocLine.VerifyChange(Rec,xRec);
+
+                                                                IF "Variant Code" = '' THEN
+                                                                  EXIT;
+
+                                                                ItemVariant.GET("Item No.","Variant Code");
+                                                                Description := ItemVariant.Description;
+                                                              END;
+
+                                                   CaptionML=[ENU=Variant Code;
+                                                              RUS=Код варианта] }
+    { 5403;   ;Bin Code            ;Code20        ;OnValidate=BEGIN
+                                                                IF ("Bin Code" <> xRec."Bin Code") AND ("Bin Code" <> '') THEN BEGIN
+                                                                  IF (("Document Type" = "Document Type"::Shipment) AND (Quantity >= 0)) OR
+                                                                     (("Document Type" = "Document Type"::Receipt) AND (Quantity < 0))
+                                                                  THEN
+                                                                    WMSManagement.FindBinContent("Location Code","Bin Code","Item No.","Variant Code",'')
+                                                                  ELSE
+                                                                    WMSManagement.FindBin("Location Code","Bin Code",'');
+
+                                                                  TESTFIELD("Location Code");
+                                                                  IF "Bin Code" <> '' THEN BEGIN
+                                                                    GetLocation("Location Code");
+                                                                    Location.TESTFIELD("Bin Mandatory");
+                                                                    Location.TESTFIELD("Directed Put-away and Pick",FALSE);
+                                                                    GetBin("Location Code","Bin Code");
+                                                                    TESTFIELD("Location Code",Bin."Location Code");
+                                                                  END;
+                                                                END;
+
+                                                                ReserveItemDocLine.VerifyChange(Rec,xRec);
+                                                              END;
+
+                                                   OnLookup=VAR
+                                                              BinCode@1210000 : Code[20];
+                                                            BEGIN
+                                                              IF (("Document Type" = "Document Type"::Shipment) AND (Quantity >= 0)) OR
+                                                                 (("Document Type" = "Document Type"::Receipt) AND (Quantity < 0))
+                                                              THEN
+                                                                BinCode := WMSManagement.BinContentLookUp("Location Code","Item No.","Variant Code",'',"Bin Code")
+                                                              ELSE
+                                                                BinCode := WMSManagement.BinLookUp("Location Code","Item No.","Variant Code",'');
+
+                                                              IF BinCode <> '' THEN
+                                                                VALIDATE("Bin Code",BinCode);
+                                                            END;
+
+                                                   CaptionML=[ENU=Bin Code;
+                                                              RUS=Код ячейки] }
+    { 5404;   ;Qty. per Unit of Measure;Decimal   ;InitValue=1;
+                                                   CaptionML=[ENU=Qty. per Unit of Measure;
+                                                              RUS=Кол-во в единице измерения];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 5407;   ;Unit of Measure Code;Code10        ;TableRelation="Item Unit of Measure".Code WHERE (Item No.=FIELD(Item No.));
+                                                   OnValidate=BEGIN
+                                                                GetItem;
+                                                                "Qty. per Unit of Measure" := UOMMgt.GetQtyPerUnitOfMeasure(Item,"Unit of Measure Code");
+
+                                                                GetUnitAmount(FIELDNO("Unit of Measure Code"));
+
+                                                                ReadGLSetup;
+                                                                "Unit Cost" := ROUND(UnitCost * "Qty. per Unit of Measure",GLSetup."Unit-Amount Rounding Precision");
+
+                                                                VALIDATE("Unit Amount");
+                                                                VALIDATE(Quantity);
+                                                                "Net Weight" := Item."Net Weight" * "Qty. per Unit of Measure";
+                                                                "Gross Weight" := Item."Gross Weight" * "Qty. per Unit of Measure";
+                                                              END;
+
+                                                   CaptionML=[ENU=Unit of Measure Code;
+                                                              RUS=Код единицы измерения] }
+    { 5413;   ;Quantity (Base)     ;Decimal       ;OnValidate=BEGIN
+                                                                TESTFIELD("Qty. per Unit of Measure",1);
+                                                                VALIDATE(Quantity,"Quantity (Base)");
+                                                              END;
+
+                                                   CaptionML=[ENU=Quantity (Base);
+                                                              RUS=Количество (баз.)];
+                                                   DecimalPlaces=0:5 }
+    { 5470;   ;Reserved Quantity Inbnd.;Decimal   ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Reservation Entry".Quantity WHERE (Source ID=FIELD(Document No.),
+                                                                                                       Source Ref. No.=FIELD(Line No.),
+                                                                                                       Source Type=CONST(12453),
+                                                                                                       Source Subtype=FILTER(0|3),
+                                                                                                       Reservation Status=CONST(Reservation)));
+                                                   CaptionML=[ENU=Reserved Quantity Inbnd.;
+                                                              RUS=Зарезерв. входящее кол-во];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 5471;   ;Reserved Quantity Outbnd.;Decimal  ;FieldClass=FlowField;
+                                                   CalcFormula=-Sum("Reservation Entry".Quantity WHERE (Source ID=FIELD(Document No.),
+                                                                                                        Source Ref. No.=FIELD(Line No.),
+                                                                                                        Source Type=CONST(12453),
+                                                                                                        Source Subtype=FILTER(1|2),
+                                                                                                        Reservation Status=CONST(Reservation)));
+                                                   CaptionML=[ENU=Reserved Quantity Outbnd.;
+                                                              RUS=Зарезерв. исходящее кол-во];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 5472;   ;Reserved Qty. Inbnd. (Base);Decimal;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Reservation Entry"."Quantity (Base)" WHERE (Source ID=FIELD(Document No.),
+                                                                                                                Source Ref. No.=FIELD(Line No.),
+                                                                                                                Source Type=CONST(12453),
+                                                                                                                Source Subtype=FILTER(0|3),
+                                                                                                                Reservation Status=CONST(Reservation)));
+                                                   CaptionML=[ENU=Reserved Qty. Inbnd. (Base);
+                                                              RUS=Зарезерв. входящее кол-во (баз.)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 5473;   ;Reserved Qty. Outbnd. (Base);Decimal;
+                                                   FieldClass=FlowField;
+                                                   CalcFormula=-Sum("Reservation Entry"."Quantity (Base)" WHERE (Source ID=FIELD(Document No.),
+                                                                                                                 Source Ref. No.=FIELD(Line No.),
+                                                                                                                 Source Type=CONST(12453),
+                                                                                                                 Source Subtype=FILTER(1|2),
+                                                                                                                 Reservation Status=CONST(Reservation)));
+                                                   CaptionML=[ENU=Reserved Qty. Outbnd. (Base);
+                                                              RUS=Зарезерв. исходящее кол-во (баз.)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 5600;   ;FA Writeoff No.     ;Code20        ;TableRelation="FA Document Header".No. WHERE (Document Type=CONST(Writeoff));
+                                                   CaptionML=[ENU=FA Writeoff No.;
+                                                              RUS=Номер акта списания ОС] }
+    { 5601;   ;FA Writeoff Line No.;Integer       ;TableRelation="FA Document Line"."Line No." WHERE (Document Type=CONST(Writeoff),
+                                                                                                      Document No.=FIELD(FA Writeoff No.));
+                                                   CaptionML=[ENU=FA Writeoff Line No.;
+                                                              RUS=ОС - номер строки списания] }
+    { 5704;   ;Item Category Code  ;Code20        ;TableRelation="Item Category";
+                                                   CaptionML=[ENU=Item Category Code;
+                                                              RUS=Код товарной категории] }
+    { 5706;   ;Purchasing Code     ;Code10        ;TableRelation=Purchasing;
+                                                   CaptionML=[ENU=Purchasing Code;
+                                                              RUS=Код закупки] }
+    { 5707;   ;Product Group Code  ;Code10        ;TableRelation="Product Group".Code WHERE (Item Category Code=FIELD(Item Category Code));
+                                                   CaptionML=[ENU=Product Group Code;
+                                                              RUS=Код товарной группы] }
+    { 5801;   ;Item Charge No.     ;Code20        ;TableRelation="Item Charge";
+                                                   CaptionML=[ENU=Item Charge No.;
+                                                              RUS=Код товарной издержки] }
+    { 5807;   ;Applies-from Entry  ;Integer       ;OnValidate=VAR
+                                                                ItemLedgEntry@1000 : Record 32;
+                                                                ItemTrackingLinesForm@1210001 : Page 6510;
+                                                              BEGIN
+                                                                IF "Applies-from Entry" <> 0 THEN BEGIN
+                                                                  TESTFIELD(Quantity);
+                                                                  ItemLedgEntry.GET("Applies-from Entry");
+                                                                  "Location Code" := ItemLedgEntry."Location Code";
+                                                                  "Variant Code" := ItemLedgEntry."Variant Code";
+                                                                  "Unit Cost" := CalcUnitCost(ItemLedgEntry."Entry No.");
+                                                                  "Unit Amount" := "Unit Cost";
+                                                                  UpdateAmount;
+
+                                                                  IF (ItemLedgEntry."Lot No." <> '') OR (ItemLedgEntry."Serial No." <> '') OR
+                                                                     (ItemLedgEntry."CD No." <> '')
+                                                                  THEN
+                                                                    ERROR(Text031,ItemTrackingLinesForm.CAPTION,FIELDCAPTION("Applies-from Entry"));
+                                                                END;
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              SelectItemEntry(FIELDNO("Applies-from Entry"));
+                                                            END;
+
+                                                   CaptionML=[ENU=Applies-from Entry;
+                                                              RUS=Примен. из операции];
+                                                   MinValue=0 }
+    { 5811;   ;Applied Amount      ;Decimal       ;CaptionML=[ENU=Applied Amount;
+                                                              RUS=Примененная сумма];
+                                                   Editable=No;
+                                                   AutoFormatType=1 }
+    { 5812;   ;Update Standard Cost;Boolean       ;OnValidate=BEGIN
+                                                                GetItem;
+                                                                Item.TESTFIELD("Costing Method",Item."Costing Method"::Standard);
+                                                              END;
+
+                                                   CaptionML=[ENU=Update Standard Cost;
+                                                              RUS=Обновить стандартную себестоимость] }
+    { 5813;   ;Amount (ACY)        ;Decimal       ;CaptionML=[ENU=Amount (ACY);
+                                                              RUS=Сумма (ДОВ)];
+                                                   AutoFormatType=1 }
+    { 5819;   ;Applies-to Value Entry;Integer     ;CaptionML=[ENU=Applies-to Value Entry;
+                                                              RUS=Примен. к операции стоимости] }
+    { 12450;  ;FA No.              ;Code20        ;TableRelation="Fixed Asset";
+                                                   CaptionML=[ENU=FA No.;
+                                                              RUS=Номер ОС] }
+    { 12451;  ;FA Entry No.        ;Integer       ;TableRelation="FA Ledger Entry" WHERE (Entry No.=FIELD(FA Entry No.));
+                                                   CaptionML=[ENU=FA Entry No.;
+                                                              RUS=Номер операции ОС] }
+    { 12452;  ;Depreciation Book Code;Code10      ;TableRelation="FA Depreciation Book"."Depreciation Book Code" WHERE (FA No.=FIELD(FA No.));
+                                                   CaptionML=[ENU=Depreciation Book Code;
+                                                              RUS=Код книги амортизации] }
+  }
+  KEYS
+  {
+    {    ;Document Type,Document No.,Line No.     ;MaintainSIFTIndex=No;
+                                                   Clustered=Yes }
+    {    ;Location Code                            }
+    {    ;Item No.,Variant Code                    }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text001@1001 : TextConst 'ENU=%1 must be reduced.;RUS=%1 необходимо уменьшить.';
+      Text002@1002 : TextConst 'ENU=You cannot change %1 when Costing Method is %2.;RUS=Нельзя изменить %1, если Метод учета себестоимости - %2.';
+      ItemDocHeader@1007 : Record 12450;
+      Item@1010 : Record 27;
+      ItemVariant@1012 : Record 5401;
+      GLSetup@1014 : Record 98;
+      SKU@1015 : Record 5700;
+      Location@1048 : Record 14;
+      Bin@1030 : Record 7354;
+      ItemCheckAvail@1021 : Codeunit 311;
+      ReserveItemDocLine@1022 : Codeunit 12452;
+      UOMMgt@1024 : Codeunit 5402;
+      DimMgt@1027 : Codeunit 408;
+      PurchPriceCalcMgt@1020 : Codeunit 7010;
+      WMSManagement@1026 : Codeunit 7302;
+      CheckDateConflict@1470002 : Codeunit 99000815;
+      Reservation@1210005 : Page 498;
+      GLSetupRead@1029 : Boolean;
+      UnitCost@1031 : Decimal;
+      StatusCheckSuspended@1470001 : Boolean;
+      Text031@1210002 : TextConst 'ENU=You must use page %1 to enter %2, if item tracking is used.;RUS=Если используется трассировка товаров, для ввода %2 необходимо использовать страницу %1.';
+      Text12402@1210003 : TextConst 'ENU=Quantity %1 in line %2 cannot be reserved automatically.;RUS=Не удается автоматически зарезервировать количество %1 в строке %2.';
+
+    PROCEDURE EmptyLine@5() : Boolean;
+    BEGIN
+      EXIT(
+        (Quantity = 0) AND
+        ("Item No." = ''));
+    END;
+
+    LOCAL PROCEDURE CalcBaseQty@14(Qty@1000 : Decimal) : Decimal;
+    BEGIN
+      TESTFIELD("Qty. per Unit of Measure");
+      EXIT(ROUND(Qty * "Qty. per Unit of Measure",0.00001));
+    END;
+
+    PROCEDURE UpdateAmount@23();
+    BEGIN
+      Amount := ROUND(Quantity * "Unit Amount");
+    END;
+
+    LOCAL PROCEDURE SelectItemEntry@3(CurrentFieldNo@1000 : Integer);
+    VAR
+      ItemLedgEntry@1001 : Record 32;
+      ItemDocLine2@1002 : Record 12453;
+    BEGIN
+      ItemLedgEntry.SETCURRENTKEY("Item No.",Open,"Variant Code",Positive,"Location Code");
+      ItemLedgEntry.SETRANGE("Item No.","Item No.");
+      ItemLedgEntry.SETRANGE(Correction,FALSE);
+      IF "Location Code" <> '' THEN
+        ItemLedgEntry.SETRANGE("Location Code","Location Code");
+
+      IF CurrentFieldNo = FIELDNO("Applies-to Entry") THEN BEGIN
+        ItemLedgEntry.SETRANGE(Positive,TRUE);
+        ItemLedgEntry.SETRANGE(Open,TRUE);
+      END ELSE
+        ItemLedgEntry.SETRANGE(Positive,FALSE);
+
+      IF PAGE.RUNMODAL(PAGE::"Item Ledger Entries",ItemLedgEntry) = ACTION::LookupOK THEN BEGIN
+        ItemDocLine2 := Rec;
+        IF CurrentFieldNo = FIELDNO("Applies-to Entry") THEN
+          ItemDocLine2.VALIDATE("Applies-to Entry",ItemLedgEntry."Entry No.")
+        ELSE
+          ItemDocLine2.VALIDATE("Applies-from Entry",ItemLedgEntry."Entry No.");
+        CheckItemAvailable(CurrentFieldNo);
+        Rec := ItemDocLine2;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckItemAvailable@1(CalledByFieldNo@1000 : Integer);
+    BEGIN
+      IF (CurrFieldNo = 0) OR (CurrFieldNo <> CalledByFieldNo) THEN // Prevent two checks on quantity
+        EXIT;
+
+      IF (CurrFieldNo <> 0) AND ("Item No." <> '') AND (Quantity <> 0) THEN
+        ItemCheckAvail.ItemDocCheckLine(Rec);
+    END;
+
+    PROCEDURE GetItemDocHeader@1470000();
+    BEGIN
+      TESTFIELD("Document No.");
+      IF ("Document Type" <> ItemDocHeader."Document Type") OR ("Document No." <> ItemDocHeader."No.") THEN
+        ItemDocHeader.GET("Document Type","Document No.");
+    END;
+
+    LOCAL PROCEDURE GetItem@2();
+    BEGIN
+      IF Item."No." <> "Item No." THEN
+        Item.GET("Item No.");
+    END;
+
+    PROCEDURE GetUnitAmount@6(CalledByFieldNo@1000 : Integer);
+    BEGIN
+      RetrieveCosts;
+
+      CASE "Document Type" OF
+        "Document Type"::Receipt:
+          PurchPriceCalcMgt.FindItemDocLinePrice(Rec,CalledByFieldNo);
+        "Document Type"::Shipment:
+          "Unit Amount" := UnitCost * "Qty. per Unit of Measure";
+      END;
+    END;
+
+    LOCAL PROCEDURE TestStatusOpen@33();
+    BEGIN
+      IF StatusCheckSuspended THEN
+        EXIT;
+
+      GetItemDocHeader;
+      ItemDocHeader.TESTFIELD(Status,ItemDocHeader.Status::Open);
+    END;
+
+    PROCEDURE ShowReservation@12();
+    BEGIN
+      TESTFIELD("Item No.");
+      CLEAR(Reservation);
+      Reservation.SetItemDocLine(Rec);
+      Reservation.RUNMODAL;
+    END;
+
+    PROCEDURE OpenItemTrackingLines@6500();
+    BEGIN
+      ReserveItemDocLine.CallItemTracking(Rec);
+    END;
+
+    PROCEDURE CreateDim@26(Type1@1000 : Integer;No1@1001 : Code[20];Type2@1002 : Integer;No2@1003 : Code[20]);
+    VAR
+      SourceCodeSetup@1006 : Record 242;
+      TableID@1007 : ARRAY [10] OF Integer;
+      No@1008 : ARRAY [10] OF Code[20];
+    BEGIN
+      SourceCodeSetup.GET;
+      TableID[1] := Type1;
+      No[1] := No1;
+      TableID[2] := Type2;
+      No[2] := No2;
+      "Shortcut Dimension 1 Code" := '';
+      "Shortcut Dimension 2 Code" := '';
+      GetItemDocHeader;
+      "Dimension Set ID" :=
+        DimMgt.GetDefaultDimID(
+          TableID,No,"Source Code","Shortcut Dimension 1 Code","Shortcut Dimension 2 Code",
+          ItemDocHeader."Dimension Set ID",DATABASE::"Item Document Header");
+      DimMgt.UpdateGlobalDimFromDimSetID("Dimension Set ID","Shortcut Dimension 1 Code","Shortcut Dimension 2 Code");
+    END;
+
+    PROCEDURE ShowDimensions@1210000();
+    BEGIN
+      DimMgt.SetObjectFrom(Rec); // NC NOS-26 SPA
+      "Dimension Set ID" :=
+        DimMgt.EditDimensionSet("Dimension Set ID",STRSUBSTNO('%1 %2 %3',"Document Type","Document No.","Line No."));
+      DimMgt.UpdateGlobalDimFromDimSetID("Dimension Set ID","Shortcut Dimension 1 Code","Shortcut Dimension 2 Code");
+    END;
+
+    PROCEDURE ValidateShortcutDimCode@29(FieldNumber@1000 : Integer;VAR ShortcutDimCode@1001 : Code[20]);
+    BEGIN
+      DimMgt.ValidateShortcutDimValues(FieldNumber,ShortcutDimCode,"Dimension Set ID");
+    END;
+
+    PROCEDURE LookupShortcutDimCode@28(FieldNumber@1000 : Integer;VAR ShortcutDimCode@1001 : Code[20]);
+    BEGIN
+      DimMgt.LookupDimValueCode(FieldNumber,ShortcutDimCode);
+      ValidateShortcutDimCode(FieldNumber,ShortcutDimCode);
+    END;
+
+    PROCEDURE ShowShortcutDimCode@27(VAR ShortcutDimCode@1000 : ARRAY [20] OF Code[20]);
+    BEGIN
+      DimMgt.GetShortcutDimensions("Dimension Set ID",ShortcutDimCode);
+    END;
+
+    LOCAL PROCEDURE ReadGLSetup@5801();
+    BEGIN
+      IF NOT GLSetupRead THEN BEGIN
+        GLSetup.GET;
+        GLSetupRead := TRUE;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetSKU@5802() : Boolean;
+    BEGIN
+      IF (SKU."Location Code" = "Location Code") AND
+         (SKU."Item No." = "Item No.") AND
+         (SKU."Variant Code" = "Variant Code")
+      THEN
+        EXIT(TRUE);
+
+      IF SKU.GET("Location Code","Item No.","Variant Code") THEN
+        EXIT(TRUE);
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE RetrieveCosts@5803();
+    BEGIN
+      ReadGLSetup;
+      GetItem;
+      IF GetSKU THEN
+        UnitCost := SKU."Unit Cost"
+      ELSE
+        UnitCost := Item."Unit Cost";
+
+      IF Item."Costing Method" <> Item."Costing Method"::Standard THEN
+        UnitCost := ROUND(UnitCost,GLSetup."Unit-Amount Rounding Precision");
+    END;
+
+    LOCAL PROCEDURE CalcUnitCost@5804(ItemLedgEntryNo@1000 : Integer) : Decimal;
+    VAR
+      ValueEntry@1001 : Record 5802;
+    BEGIN
+      ValueEntry.RESET;
+      ValueEntry.SETCURRENTKEY("Item Ledger Entry No.");
+      ValueEntry.SETRANGE("Item Ledger Entry No.",ItemLedgEntryNo);
+      ValueEntry.CALCSUMS("Invoiced Quantity","Cost Amount (Actual)");
+      IF ValueEntry."Invoiced Quantity" <> 0 THEN
+        EXIT(ValueEntry."Cost Amount (Actual)" / ValueEntry."Invoiced Quantity" * "Qty. per Unit of Measure");
+
+      EXIT(0);
+    END;
+
+    PROCEDURE RowID1@44() : Text[250];
+    VAR
+      ItemTrackingMgt@1000 : Codeunit 6500;
+    BEGIN
+      EXIT(ItemTrackingMgt.ComposeRowID(DATABASE::"Item Document Line","Document Type",
+          "Document No.",'',0,"Line No."));
+    END;
+
+    LOCAL PROCEDURE GetLocation@7300(LocationCode@1000 : Code[10]);
+    BEGIN
+      IF LocationCode = '' THEN
+        CLEAR(Location)
+      ELSE
+        IF Location.Code <> LocationCode THEN
+          Location.GET(LocationCode);
+    END;
+
+    LOCAL PROCEDURE GetBin@36(LocationCode@1000 : Code[10];BinCode@1001 : Code[20]);
+    BEGIN
+      IF BinCode = '' THEN
+        CLEAR(Bin)
+      ELSE
+        IF Bin.Code <> BinCode THEN
+          Bin.GET(LocationCode,BinCode);
+    END;
+
+    PROCEDURE SuspendStatusCheck@1470001(Suspend@1000 : Boolean);
+    BEGIN
+      StatusCheckSuspended := Suspend;
+    END;
+
+    PROCEDURE Signed@20(Value@1000 : Decimal) : Decimal;
+    BEGIN
+      CASE "Document Type" OF
+        "Document Type"::Receipt:
+          EXIT(Value);
+        "Document Type"::Shipment:
+          EXIT(-Value);
+      END;
+    END;
+
+    PROCEDURE ReserveFromInventory@1210003(VAR ItemDocLine@1210000 : Record 12453);
+    VAR
+      ReservMgt@1210001 : Codeunit 99000845;
+      AutoReserv@1210002 : Boolean;
+    BEGIN
+      IF ItemDocLine.FINDSET THEN
+        REPEAT
+          ReservMgt.SetItemDocLine(ItemDocLine);
+          ItemDocLine.TESTFIELD("Posting Date");
+          ItemDocLine.CALCFIELDS("Reserved Qty. Outbnd. (Base)");
+          ReservMgt.AutoReserveToShip(
+            AutoReserv,'',ItemDocLine."Posting Date",
+            ItemDocLine.Quantity - ItemDocLine."Reserved Quantity Outbnd.",
+            ItemDocLine."Quantity (Base)" - ItemDocLine."Reserved Qty. Outbnd. (Base)");
+          IF NOT AutoReserv THEN
+            ERROR(Text12402,ItemDocLine."Quantity (Base)",ItemDocLine."Line No.");
+        UNTIL ItemDocLine.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      NC NOS-26 SPA
+    }
+    END.
+  }
+}
+

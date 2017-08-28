@@ -1,0 +1,384 @@
+OBJECT Report 17373 Staffing List T-3
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Staffing List T-3;
+               RUS=Штатное расписание Т-3];
+    ProcessingOnly=Yes;
+    OnPreReport=VAR
+                  ExcelTemplate@1210000 : Record 14919;
+                BEGIN
+                  HumResSetup.GET;
+                  HumResSetup.TESTFIELD("T-3 Template Code");
+
+                  FileName := ExcelTemplate.OpenTemplate(HumResSetup."T-3 Template Code");
+
+                  CompanyInfo.GET;
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT TestMode THEN
+                     ExcelMgt.GiveUserControl
+                   ELSE
+                     ExcelMgt.QuitXlApp;
+                 END;
+
+  }
+  DATASET
+  {
+    { 6071;    ;DataItem;StaffingListOrder   ;
+               DataItemTable=Table17375;
+               DataItemTableView=SORTING(Document No.);
+               OnPreDataItem=VAR
+                               Employee@1210000 : Record 5200;
+                             BEGIN
+                               ExcelMgt.OpenBook(FileName);
+                               ExcelMgt.OpenSheet('Sheet1');
+                               RowNo := 16;
+
+                               ExcelMgt.FillCell('A5',CompanyInfo.Name + ' ' + CompanyInfo."Name 2");
+                               ExcelMgt.FillCell('EV5',CompanyInfo."OKPO Code");
+
+                               IF Employee.GET(CompanyInfo."HR Manager No.") THEN BEGIN
+                                 ExcelMgt.FillCell('AJ19',Employee.GetJobTitleName);
+                                 ExcelMgt.FillCell('DE19',Employee.GetNameInitials);
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  ExcelMgt.FillCell('AJ11',FORMAT("Staff List Date"));
+                                  ExcelMgt.FillCell('BQ9',"Order No.");
+                                  ExcelMgt.FillCell('CI9',FORMAT("Order Date"));
+
+                                  ExcelMgt.FillCell('EE10',LocMgt.Date2Text("Document Date"));
+                                  ExcelMgt.FillCell('FF10',"Order No.");
+                                  ExcelMgt.FillCell('DX11',FORMAT("Staff Positions"));
+                                END;
+
+               ReqFilterFields=Document No.;
+               CalcFields=Staff Positions }
+
+    { 1898;1   ;DataItem;StaffingListLine    ;
+               DataItemTable=Table17376;
+               DataItemTableView=SORTING(Document No.,Org. Unit Code,Job Title Code)
+                                 WHERE(Type=CONST(Unit));
+               OnPreDataItem=BEGIN
+                               SETRANGE("Date Filter",0D,StaffingListOrder."Staff List Date");
+                               OrgUnitCode := '';
+
+                               TotalApprovedPositions := 0;
+                               TotalMonthlySalary := 0;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  Positions@1210003 : Decimal;
+                                  BaseSalary@1210002 : Decimal;
+                                  BonusSalary@1210001 : Decimal;
+                                  MonthlySalary@1210000 : Decimal;
+                                  Bonus1@1000000002 : Decimal;
+                                  Bonus2@1000000001 : Decimal;
+                                  Bonus3@1000000000 : Decimal;
+                                BEGIN
+                                  ExcelMgt.CopyRow(RowNo);
+
+                                  IF OrgUnitCode <> "Org. Unit Code" THEN BEGIN
+                                    IF OrgUnitCode <> '' THEN
+                                      DrawFooter;
+
+                                    DrawHeader;
+
+                                    OrgUnitCode := "Org. Unit Code";
+                                  END;
+
+                                  ExcelMgt.FillCell('AE' + FORMAT(RowNo),"Job Title Name");
+                                  OrgUnitName := "Org. Unit Name";
+
+                                  CASE ShowStaff OF
+                                    ShowStaff::"Staff Only":
+                                      BEGIN
+                                        Positions := "Staff Positions";
+                                        BaseSalary := "Staff Base Salary";
+                                        BonusSalary := "Staff Additional Salary";
+                                        MonthlySalary := "Staff Monthly Salary";
+                                        OrgUnitApprovedPositions += "Staff Positions";
+                                        OrgUnitMonthlySalary += "Staff Monthly Salary";
+
+                                        Position.SETRANGE("Out-of-Staff",FALSE);
+                                      END;
+                                    ShowStaff::"Out-of-Staff Only":
+                                      BEGIN
+                                        Positions := "Out-of-Staff Positions";
+                                        BaseSalary := "Out-of-Staff Base Salary";
+                                        BonusSalary := "Out-of-Staff Additional Salary";
+                                        MonthlySalary := "Out-of-Staff Monthly Salary";
+                                        OrgUnitMonthlySalary += "Out-of-Staff Monthly Salary";
+                                        OrgUnitApprovedPositions += "Out-of-Staff Positions";
+
+                                        Position.SETRANGE("Out-of-Staff",TRUE);
+                                      END;
+                                    ShowStaff::All:
+                                      BEGIN
+                                        Positions := "Staff Positions" + "Out-of-Staff Positions";
+                                        BaseSalary := "Staff Base Salary" + "Out-of-Staff Base Salary";
+                                        BonusSalary := "Staff Additional Salary" + "Out-of-Staff Additional Salary";
+                                        MonthlySalary := "Staff Monthly Salary" + "Out-of-Staff Monthly Salary";
+                                        OrgUnitMonthlySalary += "Staff Monthly Salary" + "Out-of-Staff Monthly Salary";
+                                        OrgUnitApprovedPositions += "Staff Positions" + "Out-of-Staff Positions";
+
+                                        Position.SETRANGE("Out-of-Staff");
+                                      END;
+                                  END;
+
+                                  IF GetFullDetailAdditionalSalary("Org. Unit Code","Job Title Code",Bonus1,Bonus2,Bonus3) THEN
+                                    FillSalaryFields(RowNo,Positions,BaseSalary,Bonus1,Bonus2,Bonus3,MonthlySalary)
+                                  ELSE
+                                    FillSalaryFields(RowNo,Positions,BaseSalary,BonusSalary,0,0,MonthlySalary);
+
+                                  IF IsStaffArrangement THEN
+                                    ExcelMgt.BoldRow(RowNo);
+
+                                  RowNo += 1;
+                                END;
+
+               OnPostDataItem=VAR
+                                HRManager@1210000 : Record 5200;
+                                Accountant@1210001 : Record 5200;
+                              BEGIN
+                                IF OrgUnitCode <> '' THEN
+                                  DrawFooter;
+
+                                ExcelMgt.FillCell('BI' + FORMAT(RowNo + 1),FORMAT(TotalApprovedPositions));
+                                ExcelMgt.FillCell('DT' + FORMAT(RowNo + 1),FORMAT(TotalMonthlySalary));
+
+                                IF HRManager.GET(StaffingListOrder."HR Manager No.") THEN BEGIN
+                                  ExcelMgt.FillCell('AJ' + FORMAT(RowNo + 3),FORMAT(HRManager.GetJobTitleName));
+                                  ExcelMgt.FillCell('DE' + FORMAT(RowNo + 3),FORMAT(HRManager.GetNameInitials));
+                                END;
+
+                                IF Accountant.GET(StaffingListOrder."Chief Accountant No.") THEN
+                                  ExcelMgt.FillCell('BJ' + FORMAT(RowNo + 6),FORMAT(Accountant.GetNameInitials));
+                              END;
+
+               DataItemLink=Document No.=FIELD(Document No.) }
+
+    { 5953;2   ;DataItem;                    ;
+               DataItemTable=Table17370;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               CASE ShowStaff OF
+                                 ShowStaff::"Staff Only":
+                                   SETRANGE("Out-of-Staff",FALSE);
+                                 ShowStaff::"Out-of-Staff Only":
+                                   SETRANGE("Out-of-Staff",TRUE);
+                               END;
+
+                               SETFILTER("Starting Date",'<=%1',StaffingListOrder."Staff List Date");
+                               SETFILTER("Ending Date",'>%1|%2',StaffingListOrder."Staff List Date",0D);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  Employee@1210000 : Record 5200;
+                                  EmplJobEntry@1210001 : Record 17363;
+                                  Value1@1000000002 : Decimal;
+                                  Value2@1000000001 : Decimal;
+                                  Value3@1000000000 : Decimal;
+                                BEGIN
+                                  IF NOT IsStaffArrangement THEN
+                                    CurrReport.SKIP;
+
+                                  ExcelMgt.CopyRow(RowNo);
+
+                                  IF Employee.GET(EmplJobEntry.GetEmployeeNo("No.",StaffingListOrder."Staff List Date")) THEN
+                                    ExcelMgt.FillCell('AE' + FORMAT(RowNo),'  ' + Employee.GetFullNameOnDate(StaffingListOrder."Document Date"))
+                                  ELSE
+                                    ExcelMgt.FillCell('AE' + FORMAT(RowNo),'  ' + Text14708);
+
+                                  IF Rate <> 0 THEN
+                                    IF GetDetailAdditionalSalary("No.",Value1,Value2,Value3) THEN BEGIN
+                                      FillSalaryFields(RowNo,Rate,"Base Salary Amount" / Rate,
+                                        Value1,Value2,Value3,
+                                        "Monthly Salary Amount");
+                                    END ELSE
+                                      FillSalaryFields(RowNo,Rate,"Base Salary Amount" / Rate,
+                                        "Additional Salary Amount" / Rate,0,0,
+                                        "Monthly Salary Amount");
+
+                                  RowNo += 1;
+                                END;
+
+               DataItemLink=Org. Unit Code=FIELD(Org. Unit Code),
+                            Job Title Code=FIELD(Job Title Code) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Show Staff;
+                             RUS=Показать штатных сотрудников];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowStaff }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Staff Arrangement;
+                             RUS=Штатная расстановка];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=IsStaffArrangement }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210000 : Record 79;
+      HumResSetup@1210003 : Record 5218;
+      ExcelMgt@1210008 : Codeunit 12416;
+      LocMgt@1210007 : Codeunit 12400;
+      FileName@1210004 : Text[1024];
+      RowNo@1210012 : Integer;
+      OrgUnitCode@1210013 : Code[10];
+      OrgUnitName@1210009 : Text[50];
+      OrgUnitApprovedPositions@1210001 : Decimal;
+      TotalApprovedPositions@1210002 : Decimal;
+      OrgUnitMonthlySalary@1210014 : Decimal;
+      TotalMonthlySalary@1210015 : Decimal;
+      Text14707@1210005 : TextConst 'ENU=Total for %1;RUS=Всего для %1';
+      ShowStaff@1210010 : 'Staff Only,Out-of-Staff Only,All';
+      IsStaffArrangement@1210011 : Boolean;
+      Text14708@1210016 : TextConst 'ENU=Open Position;RUS=Открытая позиция';
+      TestMode@1210006 : Boolean;
+
+    PROCEDURE DrawFooter@1210015();
+    BEGIN
+      TotalApprovedPositions += OrgUnitApprovedPositions;
+      TotalMonthlySalary += OrgUnitMonthlySalary;
+
+      ExcelMgt.CopyRow(RowNo);
+      ExcelMgt.FillCell('AE' + FORMAT(RowNo),STRSUBSTNO(Text14707,OrgUnitName));
+      ExcelMgt.FillCell('BI' + FORMAT(RowNo),FORMAT(OrgUnitApprovedPositions));
+      ExcelMgt.FillCell('DT' + FORMAT(RowNo),FORMAT(OrgUnitMonthlySalary));
+      RowNo += 1;
+
+      OrgUnitApprovedPositions := 0;
+      OrgUnitMonthlySalary := 0;
+    END;
+
+    PROCEDURE DrawHeader@1210016();
+    BEGIN
+      ExcelMgt.CopyRow(RowNo);
+
+      ExcelMgt.FillCell('A' + FORMAT(RowNo),StaffingListLine."Org. Unit Name");
+      ExcelMgt.FillCell('U' + FORMAT(RowNo),StaffingListLine."Org. Unit Code");
+
+      ExcelMgt.BoldRow(RowNo);
+
+      RowNo += 1;
+    END;
+
+    PROCEDURE FillSalaryFields@1210004(RowNo@1210004 : Integer;Positions@1210003 : Decimal;BaseSalary@1210002 : Decimal;BonusSalary1@1210001 : Decimal;BonusSalary2@1000000000 : Decimal;BonusSalary3@1000000001 : Decimal;MonthlySalary@1210000 : Decimal);
+    BEGIN
+      ExcelMgt.FillCell('BI' + FORMAT(RowNo),FORMAT(Positions));
+      ExcelMgt.FillCell('BX' + FORMAT(RowNo),FORMAT(ROUND(BaseSalary,0.01)));
+      ExcelMgt.FillCell('CM' + FORMAT(RowNo),FORMAT(ROUND(BonusSalary1,0.01)));
+      ExcelMgt.FillCell('CX' + FORMAT(RowNo),FORMAT(ROUND(BonusSalary2,0.01)));
+      ExcelMgt.FillCell('DI' + FORMAT(RowNo),FORMAT(ROUND(BonusSalary3,0.01)));
+      ExcelMgt.FillCell('DT' + FORMAT(RowNo),FORMAT(ROUND(MonthlySalary,0.01)));
+    END;
+
+    PROCEDURE GetDetailAdditionalSalary@1000000000(PositionNo@1000000000 : Code[20];VAR Value1@1000000001 : Decimal;VAR Value2@1000000002 : Decimal;VAR Value3@1000000003 : Decimal) : Boolean;
+    VAR
+      ContractTermsSetup@1000000005 : Record 17365;
+      PayrollElement@1000000004 : Record 17400;
+    BEGIN
+      Value1 := 0;
+      Value2 := 0;
+      Value3 := 0;
+
+      ContractTermsSetup.SETRANGE("Table Type",ContractTermsSetup."Table Type"::Position);
+      ContractTermsSetup.SETRANGE("No.",PositionNo);
+      ContractTermsSetup.SETRANGE("Additional Salary",TRUE);
+      IF ContractTermsSetup.FINDSET THEN
+        REPEAT
+          IF PayrollElement.GET(ContractTermsSetup."Element Code") THEN
+            CASE PayrollElement."T-3 Report Column" OF
+              1:
+                Value1 += ContractTermsSetup.Amount;
+              2:
+                Value2 += ContractTermsSetup.Amount;
+              3:
+                Value3 += ContractTermsSetup.Amount;
+            END;
+        UNTIL ContractTermsSetup.NEXT = 0;
+
+      EXIT(DetailValueExists(Value1,Value2,Value3));
+    END;
+
+    PROCEDURE DetailValueExists@1000000002(Value1@1000000000 : Decimal;Value2@1000000001 : Decimal;Value3@1000000002 : Decimal) : Boolean;
+    BEGIN
+      EXIT((Value1 <> 0) OR (Value2 <> 0) OR (Value3 <> 0));
+    END;
+
+    PROCEDURE GetFullDetailAdditionalSalary@1000000009(OrgUnitCode@1000000000 : Code[10];JobTitleCode@1000000001 : Code[10];VAR Value1@1000000004 : Decimal;VAR Value2@1000000003 : Decimal;VAR Value3@1000000002 : Decimal) : Boolean;
+    VAR
+      Position@1000000005 : Record 17370;
+      PosValue1@1000000006 : Decimal;
+      PosValue2@1000000007 : Decimal;
+      PosValue3@1000000008 : Decimal;
+    BEGIN
+      Position.SETRANGE("Org. Unit Code",OrgUnitCode);
+      Position.SETRANGE("Job Title Code",JobTitleCode);
+
+      CASE ShowStaff OF
+        ShowStaff::"Staff Only":
+          Position.SETRANGE("Out-of-Staff",FALSE);
+        ShowStaff::"Out-of-Staff Only":
+          Position.SETRANGE("Out-of-Staff",TRUE);
+      END;
+
+      Position.SETFILTER("Starting Date",'<=%1',StaffingListOrder."Staff List Date");
+      Position.SETFILTER("Ending Date",'>%1|%2',StaffingListOrder."Staff List Date",0D);
+
+      IF Position.FINDSET THEN
+        REPEAT
+          GetDetailAdditionalSalary(Position."No.",PosValue1,PosValue2,PosValue3);
+          Value1 += PosValue1;
+          Value2 += PosValue2;
+          Value3 += PosValue3;
+        UNTIL Position.NEXT = 0;
+
+      EXIT(DetailValueExists(Value1,Value2,Value3));
+    END;
+
+    PROCEDURE SetTestMode@1210000(NewTestMode@1210000 : Boolean);
+    BEGIN
+      TestMode := NewTestMode;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

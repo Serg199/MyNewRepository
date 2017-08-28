@@ -1,0 +1,386 @@
+OBJECT Table 232 Gen. Journal Batch
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.04.17;
+    Time=13:56:26;
+    Modified=Yes;
+    Version List=NAVW110.00,NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    DataCaptionFields=Name,Description;
+    OnInsert=BEGIN
+               LOCKTABLE;
+               GenJnlTemplate.GET("Journal Template Name");
+               IF NOT GenJnlTemplate."Copy VAT Setup to Jnl. Lines" THEN
+                 "Copy VAT Setup to Jnl. Lines" := FALSE;
+               "Allow Payment Export" := GenJnlTemplate.Type = GenJnlTemplate.Type::Payments;
+             END;
+
+    OnDelete=BEGIN
+               ApprovalsMgmt.OnCancelGeneralJournalBatchApprovalRequest(Rec);
+
+               GenJnlAlloc.SETRANGE("Journal Template Name","Journal Template Name");
+               GenJnlAlloc.SETRANGE("Journal Batch Name",Name);
+               GenJnlAlloc.DELETEALL;
+               GenJnlLine.SETRANGE("Journal Template Name","Journal Template Name");
+               GenJnlLine.SETRANGE("Journal Batch Name",Name);
+               GenJnlLine.DELETEALL(TRUE);
+             END;
+
+    OnRename=BEGIN
+               ApprovalsMgmt.RenameApprovalEntries(xRec.RECORDID,RECORDID);
+             END;
+
+    CaptionML=[ENU=Gen. Journal Batch;
+               RUS=Раздел финансового журнала];
+    LookupPageID=Page251;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Journal Template Name;Code10       ;TableRelation="Gen. Journal Template";
+                                                   CaptionML=[ENU=Journal Template Name;
+                                                              RUS=Имя шаблона журнала];
+                                                   NotBlank=Yes }
+    { 2   ;   ;Name                ;Code10        ;CaptionML=[ENU=Name;
+                                                              RUS=Название];
+                                                   NotBlank=Yes }
+    { 3   ;   ;Description         ;Text50        ;CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 4   ;   ;Reason Code         ;Code10        ;TableRelation="Reason Code";
+                                                   OnValidate=BEGIN
+                                                                IF "Reason Code" <> xRec."Reason Code" THEN BEGIN
+                                                                  ModifyLines(FIELDNO("Reason Code"));
+                                                                  MODIFY;
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Reason Code;
+                                                              RUS=Код причины] }
+    { 5   ;   ;Bal. Account Type   ;Option        ;OnValidate=BEGIN
+                                                                CheckBallAccType; // NC MIO-11 AES
+                                                                "Bal. Account No." := '';
+                                                                IF "Bal. Account Type" <> "Bal. Account Type"::"G/L Account" THEN
+                                                                  "Bank Statement Import Format" := '';
+                                                              END;
+
+                                                   CaptionML=[ENU=Bal. Account Type;
+                                                              RUS=Тип баланс. счета];
+                                                   OptionCaptionML=[ENU=G/L Account,Customer,Vendor,Bank Account,Fixed Asset;
+                                                                    RUS=Счет ГК,Клиент,Поставщик,Банк. счет,ОС];
+                                                   OptionString=G/L Account,Customer,Vendor,Bank Account,Fixed Asset }
+    { 6   ;   ;Bal. Account No.    ;Code20        ;TableRelation=IF (Bal. Account Type=CONST(G/L Account)) "G/L Account"
+                                                                 ELSE IF (Bal. Account Type=CONST(Customer)) Customer
+                                                                 ELSE IF (Bal. Account Type=CONST(Vendor)) Vendor
+                                                                 ELSE IF (Bal. Account Type=CONST(Bank Account)) "Bank Account"
+                                                                 ELSE IF (Bal. Account Type=CONST(Fixed Asset)) "Fixed Asset";
+                                                   OnValidate=BEGIN
+                                                                IF "Bal. Account Type" = "Bal. Account Type"::"G/L Account" THEN
+                                                                  CheckGLAcc("Bal. Account No.");
+                                                              END;
+
+                                                   CaptionML=[ENU=Bal. Account No.;
+                                                              RUS=Номер баланс. счета] }
+    { 7   ;   ;No. Series          ;Code10        ;TableRelation="No. Series";
+                                                   OnValidate=BEGIN
+                                                                IF "No. Series" <> '' THEN BEGIN
+                                                                  GenJnlTemplate.GET("Journal Template Name");
+                                                                  IF GenJnlTemplate.Recurring THEN
+                                                                    ERROR(
+                                                                      Text000,
+                                                                      FIELDCAPTION("Posting No. Series"));
+                                                                  IF "No. Series" = "Posting No. Series" THEN
+                                                                    VALIDATE("Posting No. Series",'');
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=No. Series;
+                                                              RUS=Серия номеров] }
+    { 8   ;   ;Posting No. Series  ;Code10        ;TableRelation="No. Series";
+                                                   OnValidate=BEGIN
+                                                                IF ("Posting No. Series" = "No. Series") AND ("Posting No. Series" <> '') THEN
+                                                                  FIELDERROR("Posting No. Series",STRSUBSTNO(Text001,"Posting No. Series"));
+                                                                ModifyLines(FIELDNO("Posting No. Series"));
+                                                                MODIFY;
+                                                              END;
+
+                                                   CaptionML=[ENU=Posting No. Series;
+                                                              RUS=Учетная серия номеров] }
+    { 9   ;   ;Copy VAT Setup to Jnl. Lines;Boolean;
+                                                   InitValue=Yes;
+                                                   CaptionML=[ENU=Copy VAT Setup to Jnl. Lines;
+                                                              RUS=Копировать настройку НДС в строки журнала] }
+    { 10  ;   ;Allow VAT Difference;Boolean       ;OnValidate=BEGIN
+                                                                IF "Allow VAT Difference" THEN BEGIN
+                                                                  GenJnlTemplate.GET("Journal Template Name");
+                                                                  GenJnlTemplate.TESTFIELD("Allow VAT Difference",TRUE);
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Allow VAT Difference;
+                                                              RUS=Разрешить разницу НДС] }
+    { 11  ;   ;Allow Payment Export;Boolean       ;CaptionML=[ENU=Allow Payment Export;
+                                                              RUS=Разрешить экспорт платежей] }
+    { 12  ;   ;Bank Statement Import Format;Code20;TableRelation="Bank Export/Import Setup".Code WHERE (Direction=CONST(Import));
+                                                   OnValidate=BEGIN
+                                                                IF ("Bank Statement Import Format" <> '') AND ("Bal. Account Type" <> "Bal. Account Type"::"G/L Account") THEN
+                                                                  FIELDERROR("Bank Statement Import Format",BankStmtImpFormatBalAccErr);
+                                                              END;
+
+                                                   CaptionML=[ENU=Bank Statement Import Format;
+                                                              RUS=Формат импорта банковской выписки] }
+    { 21  ;   ;Template Type       ;Option        ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Gen. Journal Template".Type WHERE (Name=FIELD(Journal Template Name)));
+                                                   CaptionML=[ENU=Template Type;
+                                                              RUS=Тип шаблона];
+                                                   OptionCaptionML=[ENU=General,Sales,Purchases,Cash Receipts,Payments,Assets,Intercompany,Jobs,VAT Settlement,Bank Payments,Cash Order Payments,,,Future Expenses,VAT Reinstatement;
+                                                                    RUS=Общее,Продажи,Покупки,Приходные кассовые ордера,Платежи,Активы,МФ,Работы,Зачет НДС,Банковские платежи,Платежи по касс. ордерам,,,РБП,Восстановление НДС];
+                                                   OptionString=General,Sales,Purchases,Cash Receipts,Payments,Assets,Intercompany,Jobs,VAT Settlement,Bank Payments,Cash Order Payments,,,Future Expenses,VAT Reinstatement;
+                                                   Editable=No }
+    { 22  ;   ;Recurring           ;Boolean       ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Gen. Journal Template".Recurring WHERE (Name=FIELD(Journal Template Name)));
+                                                   CaptionML=[ENU=Recurring;
+                                                              RUS=Типовой];
+                                                   Editable=No }
+    { 23  ;   ;Suggest Balancing Amount;Boolean   ;CaptionML=[ENU=Suggest Balancing Amount;
+                                                              RUS=Предлагаемая балансирующая сумма] }
+    { 50001;  ;Reason Code Required;Boolean       ;CaptionML=[ENU=Reason Code Required;
+                                                              RUS=Код Причины Обязателен];
+                                                   Description=NC MP }
+    { 50002;  ;FX Batch            ;Boolean       ;CaptionML=[ENU=FX Batch;
+                                                              RUS=Ковертация Раздел];
+                                                   Description=NC DP }
+    { 50003;  ;Adv. Statement Batch;Boolean       ;CaptionML=[ENU=Adv. Statement Batch;
+                                                              RUS=Аванс. Отчет Раздел];
+                                                   Description=NC DP }
+    { 50004;  ;Reversing Amount Validate;Boolean  ;CaptionML=[ENU=Reversing Amount (LCY) Recalculate;
+                                                              RUS=Реверс Сумма (ВУЧ) Пересчет];
+                                                   Description=NC MNET07 DP }
+    { 50005;  ;Dimension Filter Code;Code20       ;TableRelation=Dimension;
+                                                   CaptionML=[ENU=Dimension Filter Code;
+                                                              RUS=Измерение Фильтр Код];
+                                                   Description=NC M1 }
+    { 50010;  ;Bank Payment Type   ;Option        ;OnValidate=BEGIN
+                                                                //NC NCS-1108 > DP
+                                                                TESTFIELD("Bal. Account Type","Bal. Account Type"::"Bank Account");
+                                                                //NC NCS-1108 < DP
+                                                              END;
+
+                                                   CaptionML=[ENU=Bank Payment Type;
+                                                              RUS=Источник Платеж. Документа];
+                                                   OptionCaptionML=[ENU=" ,Computer Check,Manual Check";
+                                                                    RUS=" ,Компьютерный,Ручной"];
+                                                   OptionString=[ ,Computer Check,Manual Check];
+                                                   Description=NC NCS-1108 DP }
+    { 50020;  ;Check Appl. ID Nos. ;Code10        ;TableRelation="No. Series";
+                                                   CaptionML=[ENU=Check Appl. ID Nos.;
+                                                              RUS=Чек Примен. ID Серия Номеров];
+                                                   Description=NC NCS-1108 DP }
+    { 50030;  ;Check Printed       ;Boolean       ;CaptionML=[ENU=Check Printed;
+                                                              RUS=Чек Напечатан];
+                                                   Description=NC NCS-1108.5 DP }
+    { 50103;  ;FI Portfolio        ;Code10        ;TableRelation="FI Portfolio".Code;
+                                                   CaptionML=[ENU=FI Portfolio;
+                                                              RUS=ФИ Портфель];
+                                                   Description=NC MTF02 AKU }
+    { 50104;  ;FI Posting Book     ;Code10        ;TableRelation="FI Posting Book".Code;
+                                                   CaptionML=[ENU=FI Posting Book;
+                                                              RUS=ФИ Код Книги Учета];
+                                                   Description=NC MTF02 AKU }
+    { 50122;  ;Batch Type          ;Option        ;CaptionML=[ENU=Batch Type;
+                                                              RUS=Тип Раздела];
+                                                   OptionCaptionML=[ENU=Manual,Automatic;
+                                                                    RUS=Ручной,Автоматический];
+                                                   OptionString=Manual,Automatic;
+                                                   Description=NC MDR03 MP }
+    { 50152;  ;Reversing As Red Storno;Boolean    ;CaptionML=[ENU=Reversing As Red Storno;
+                                                              RUS=Реверс как Красное Сторно];
+                                                   Description=NC MMTM05 AG }
+    { 50153;  ;Not Consolidate     ;Boolean       ;CaptionML=[ENU=Not Consolidate;
+                                                              RUS=Не Консолидировать];
+                                                   Description=NC MDP01 MP }
+    { 50154;  ;Qty. Entries        ;Integer       ;FieldClass=FlowField;
+                                                   CalcFormula=Count("Gen. Journal Line" WHERE (Journal Template Name=FIELD(Journal Template Name),
+                                                                                                Journal Batch Name=FIELD(Name),
+                                                                                                Posting Date=FIELD(Date Filter),
+                                                                                                Except Correspondence=FIELD(Except Correspondence Filter),
+                                                                                                FA Operation=FIELD(FA Operation Filter),
+                                                                                                Account No.=FIELD(Account No. Filter),
+                                                                                                External System ID=FIELD(External System ID Filter),
+                                                                                                Export Cons. Source Code=FIELD(Consolidation Source Filter),
+                                                                                                Export Register No.=FIELD(Consolidation Register Filter)));
+                                                   CaptionML=[ENU=Qty. Entries;
+                                                              RUS=Кол. Операций];
+                                                   Description=NC MDM08 PCH;
+                                                   Editable=No }
+    { 50155;  ;Date Filter         ;Date          ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Data Filter;
+                                                              RUS=Дата Фильтр];
+                                                   Description=NC MDM08 PCH }
+    { 50156;  ;Except Correspondence Filter;Boolean;
+                                                   FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Except Correspondence Filter;
+                                                              RUS=Исключающая Корреспонденция Фильтр];
+                                                   Description=NC MDM08 PCH }
+    { 55031;  ;FA Operation Filter ;Boolean       ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=FA Operation Filter;
+                                                              RUS=ОС Операция Фильтр];
+                                                   Description=NC MDM08 PCH }
+    { 55033;  ;Account No. Filter  ;Code20        ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Account No. Filter;
+                                                              RUS=Счет Но. Фильтр];
+                                                   Description=NC MDM08 PCH }
+    { 55034;  ;External System ID Filter;Code2    ;FieldClass=FlowFilter;
+                                                   TableRelation="External System";
+                                                   CaptionML=[ENU=External System ID Filter;
+                                                              RUS=Внешняя Система ID Фильтр];
+                                                   Description=NC MDM01 PCH }
+    { 55035;  ;Consolidation Source Filter;Code20 ;FieldClass=FlowFilter;
+                                                   TableRelation="Consolidation Source";
+                                                   CaptionML=[ENU=Consolidation Source Filter;
+                                                              RUS=Источник Консолидации Фильтр];
+                                                   Description=NC MDF01 RD }
+    { 55036;  ;Consolidation Register Filter;Integer;
+                                                   FieldClass=FlowFilter;
+                                                   TableRelation="Consolidation Register".No.;
+                                                   CaptionML=[ENU=Consolidation Register Filter;
+                                                              RUS=Регистр Консолидации Фильтр];
+                                                   Description=NC MDF01 RD }
+  }
+  KEYS
+  {
+    {    ;Journal Template Name,Name              ;Clustered=Yes }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Only the %1 field can be filled in on recurring journals.;RUS=Только поле %1 может быть заполнено в типовых журналах.';
+      Text001@1001 : TextConst 'ENU=must not be %1;RUS=не должно быть %1';
+      GenJnlTemplate@1002 : Record 80;
+      GenJnlLine@1003 : Record 81;
+      GenJnlAlloc@1004 : Record 221;
+      BankStmtImpFormatBalAccErr@1005 : TextConst '@@@="FIELDERROR ex: Bank Statement Import Format must be blank. When Bal. Account Type = Bank Account, then Bank Statement Import Format on the Bank Account card will be used in Gen. Journal Batch Journal Template Name=''GENERAL'',Name=''CASH''.";ENU="must be blank. When Bal. Account Type = Bank Account, then Bank Statement Import Format on the Bank Account card will be used";RUS="должно быть пустым. Когда тип балансового счета = банковский счет, будет использоваться формат импорта банковской выписки из карточки банковского счета."';
+      ApprovalsMgmt@1006 : Codeunit 1535;
+      Text50001@1101495000 : TextConst 'ENU=You cannot specify %1 %2 becaus in the Company %3 allowed G/L accounting only.;RUS=Вы не можете указать %1 %2, т.к. в фирме %3  разрешен только финансовый учет по плану счетов.';
+      GLSetup@1101495001 : Record 98;
+
+    PROCEDURE SetupNewBatch@1();
+    BEGIN
+      IF "Journal Template Name" <> '' THEN BEGIN
+        GenJnlTemplate.GET("Journal Template Name");
+        "Bal. Account Type" := GenJnlTemplate."Bal. Account Type";
+        "Bal. Account No." := GenJnlTemplate."Bal. Account No.";
+        "No. Series" := GenJnlTemplate."No. Series";
+        "Posting No. Series" := GenJnlTemplate."Posting No. Series";
+        "Reason Code" := GenJnlTemplate."Reason Code";
+        "Copy VAT Setup to Jnl. Lines" := GenJnlTemplate."Copy VAT Setup to Jnl. Lines";
+        "Allow VAT Difference" := GenJnlTemplate."Allow VAT Difference";
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckGLAcc@2(AccNo@1000 : Code[20]);
+    VAR
+      GLAcc@1001 : Record 15;
+    BEGIN
+      IF AccNo <> '' THEN BEGIN
+        GLAcc.GET(AccNo);
+        GLAcc.CheckGLAcc;
+      // NC MIO-11 > AES
+      //  GLAcc.TESTFIELD("Direct Posting",TRUE);
+        IF NOT GLSetup.IsGLAccountingOnly THEN
+          GLAcc.TESTFIELD("Direct Posting",TRUE);
+      // NC MIO-11 < AES
+      END;
+    END;
+
+    LOCAL PROCEDURE ModifyLines@3(i@1000 : Integer);
+    BEGIN
+      GenJnlLine.LOCKTABLE;
+      GenJnlLine.SETRANGE("Journal Template Name","Journal Template Name");
+      GenJnlLine.SETRANGE("Journal Batch Name",Name);
+      IF GenJnlLine.FIND('-') THEN
+        REPEAT
+          CASE i OF
+            FIELDNO("Reason Code"):
+              GenJnlLine.VALIDATE("Reason Code","Reason Code");
+            FIELDNO("Posting No. Series"):
+              GenJnlLine.VALIDATE("Posting No. Series","Posting No. Series");
+          END;
+          GenJnlLine.MODIFY(TRUE);
+        UNTIL GenJnlLine.NEXT = 0;
+    END;
+
+    PROCEDURE LinesExist@5() : Boolean;
+    VAR
+      GenJournalLine@1000 : Record 81;
+    BEGIN
+      GenJournalLine.SETRANGE("Journal Template Name","Journal Template Name");
+      GenJournalLine.SETRANGE("Journal Batch Name",Name);
+      EXIT(NOT GenJournalLine.ISEMPTY);
+    END;
+
+    PROCEDURE GetBalance@6() : Decimal;
+    VAR
+      GenJournalLine@1000 : Record 81;
+    BEGIN
+      GenJournalLine.SETRANGE("Journal Template Name","Journal Template Name");
+      GenJournalLine.SETRANGE("Journal Batch Name",Name);
+      GenJournalLine.CALCSUMS("Balance (LCY)");
+      EXIT(GenJournalLine."Balance (LCY)");
+    END;
+
+    PROCEDURE CheckBalance@11() Balance : Decimal;
+    BEGIN
+      Balance := GetBalance;
+
+      IF Balance = 0 THEN
+        OnGeneralJournalBatchBalanced
+      ELSE
+        OnGeneralJournalBatchNotBalanced;
+    END;
+
+    [Integration(TRUE)]
+    LOCAL PROCEDURE OnGeneralJournalBatchBalanced@15();
+    BEGIN
+    END;
+
+    [Integration(TRUE)]
+    LOCAL PROCEDURE OnGeneralJournalBatchNotBalanced@16();
+    BEGIN
+    END;
+
+    [Integration(TRUE)]
+    PROCEDURE OnCheckGenJournalLineExportRestrictions@7();
+    BEGIN
+    END;
+
+    [Integration(TRUE)]
+    PROCEDURE OnMoveGenJournalBatch@8(ToRecordID@1000 : RecordID);
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE "// NCF"@1101495001();
+    BEGIN
+    END;
+
+    PROCEDURE CheckBallAccType@1101495000();
+    BEGIN
+      // NC MIO-11 AES
+      IF NOT GLSetup.IsGLAccountingOnly THEN
+        EXIT;
+      IF "Bal. Account Type" IN ["Bal. Account Type"::Customer,
+                                 "Bal. Account Type"::Vendor,
+                                 "Bal. Account Type"::"Bank Account"]
+      THEN
+        ERROR(Text50001,COMPANYNAME,FIELDCAPTION("Bal. Account Type"),"Bal. Account Type",COMPANYNAME);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,3696 @@
+OBJECT Codeunit 50051 Trans. One From Buffer NAV
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14.10.16;
+    Time=13:38:36;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            TMPDimCheck@1101495000 : TEMPORARY Record 348;
+            TMPDimCheckNeedMapp@1101495001 : TEMPORARY Record 348;
+            GLEntryBuffer2@1101495002 : Record 50093;
+            GLEntryBuffer@1101495003 : Record 50093;
+            GLEntryBufferTemp@1101495013 : TEMPORARY Record 50093;
+            GLEntryTemp@1101495005 : TEMPORARY Record 17;
+            GLEntryBufferCorr@1101495014 : Record 50093;
+            GLEntryCorr@1101495015 : Record 17;
+            GenJournalLine@1101495004 : Record 81;
+            JournalLineDimension@1101495009 : Record 356;
+            SpecCorrSelectedDim@1101495006 : Record 369;
+            LedgerEntryDimCheck@1101495007 : Record 50094;
+            LedgerEntryDimTemp@1101495008 : TEMPORARY Record 355;
+            LedgerEntryDimTemp2@1101495024 : TEMPORARY Record 355;
+            InterCompany@1101495010 : Boolean;
+            TempMapping@1101495011 : TEMPORARY Record 50022;
+            OneMapping@1101495012 : Boolean;
+            GenJournalLineTemp@1101495016 : TEMPORARY Record 81;
+            JournalBatch@1101495017 : Code[20];
+            DimValue@1101495018 : Record 349;
+            l_RecRef@1000000001 : RecordRef;
+            l_cuChangLogMgt@1000000000 : Codeunit 423;
+            CurrentBufferEntryNo@1101495019 : Integer;
+            CurrencyCode@1101495020 : Code[20];
+            DefaultDim@1101495021 : Record 352;
+            GLEntryBufferCurr@1101495022 : Record 50093;
+            isReversed@1101495023 : Boolean;
+            Cust@1101495025 : Record 18;
+            Vend@1101495026 : Record 23;
+            Bank@1101495027 : Record 270;
+          BEGIN
+            RecID := "Record ID";
+            IF RecID.TABLENO = 0 THEN
+              ERROR(Text001);
+
+            RecRef.OPEN(RecID.TABLENO,FALSE,"Company No.");
+            RecRef.GET("Record ID");
+            RecRef.SETTABLE(GLEntryBuffer2);
+
+            GLEntryBuffer.RESET;
+            GLEntryBuffer.SETCURRENTKEY("Transaction No.","Document No.");
+            //NC S676 > PCH
+            GLEntryBuffer.SETRANGE("External System ID",GLEntryBuffer2."External System ID");
+            //NC S676 < PCH
+            GLEntryBuffer.SETRANGE("Id Legal Entity",GLEntryBuffer2."Id Legal Entity");
+            GLEntryBuffer.SETRANGE("Transaction No.",GLEntryBuffer2."Transaction No.");
+            GLEntryBuffer.SETRANGE("Document No.",GLEntryBuffer2."Document No.");
+            //NC S2006 > PCH
+            GLEntryBuffer.SETFILTER("Import Cons. Source Code",'%1','');
+            GLEntryBuffer.SETRANGE("Import Register No.",0);
+
+            // проверка если ВСЕ ноги с 0 в локальной валюте
+            //NC S2006.1 > PCH
+            ConsolidationSource.GET(Processor);
+            {
+            IF ConsolidationSource."Not Translate Zero LCY" THEN BEGIN
+            //NC S2006.1 < PCH
+            GLEntryBuffer.SETFILTER(Amount,'<>%1',0);
+            IF GLEntryBuffer.ISEMPTY THEN BEGIN
+              GLEntryBuffer.SETFILTER(Amount,'');
+              GLEntryBuffer.FIND('-');
+              REPEAT
+                GLEntryBuffer2.GET(GLEntryBuffer."External System ID",GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                GLEntryBuffer2."Not Translate" := TRUE;
+                GLEntryBuffer2."Import Cons. Source Code" := Processor;
+                GLEntryBuffer2."Import Register No." := "Cons. Register";
+                GLEntryBuffer2.MODIFY;
+              UNTIL GLEntryBuffer.NEXT = 0;
+
+              EXIT;
+            END;
+            GLEntryBuffer.SETFILTER(Amount,'');
+            //NC S2006.1 > PCH
+            END;
+            }
+            //NC S2006.1 < PCH
+            //NC S2006 < PCH
+            //NC MIO-10.7 > DP
+            {
+            GLEntryBuffer.FIND('-');
+            }
+            //NC MIO-10.7 < DP
+
+
+            GLSetup.GET;
+            //GLSetup.TESTFIELD("Additional Reporting Currency");
+            GLSetup.TESTFIELD("Allow Posting From");
+            GLSetup.TESTFIELD("Allow Posting To");
+            ConsolidationSetup.GET;
+            ConsolidationSetup.TESTFIELD("Remote Consolidation Source",FALSE);
+            ConsolidationSetup.TESTFIELD("Gen. Jnl. Template");
+            ConsolidationSetup.TESTFIELD("Counterparty Dim Code");
+            ConsolidationSetup.TESTFIELD("IC Dimension Code");
+            //NC S2006.1 > PCH
+            //ConsolidationSource.GET(Processor);
+            //NC S2006.1 < PCH
+            ConsolidationSource.TESTFIELD("Gen. Journal Batch");
+            ConsolidationSource.TESTFIELD("Removed Journal Batch");
+            ConsolidationSource.TESTFIELD("Reposted Journal Batch");
+            ConsolidationSetup.TESTFIELD("Exception G/L Account No.");
+            ConsolidationSetup.TESTFIELD("Fin. Instrument Dimension Code");
+            ConsolidationSetup.TESTFIELD("Exception Batch Name");
+            SourceCodeSetup.GET;
+            SourceCodeSetup.TESTFIELD(Transformation);
+
+            //NC MIO-10.7 > DP
+            Log.StartCounter(-31);
+            {
+            ConsolidationMgt.CheckUseOfMask(TempMapping,ConsolidationSource."Mapping Code",0,OneMapping);
+            }
+            GV.GetMapping(TempMapping,ConsolidationSource."Mapping Code",0,OneMapping);
+            //NC MIO-10.7 < DP
+
+
+
+            //NC Серии номеров для фин. журналов
+            {
+            ConsolidationSource.TESTFIELD("Source  No. Series");
+            IF NoSeriesRec.GET(ConsolidationSource."Source  No. Series") THEN BEGIN
+              NoSerManag.SetNoSeriesLineFilter(NoSeriesLine1,ConsolidationSource."Source  No. Series",0D);
+              CLEAR(NoSeriesLine1);
+              CLEAR(NoSerManag);
+            END;
+
+            ConsolidationSource.TESTFIELD("Reposted  No. Series");
+            IF NoSeriesRec.GET(ConsolidationSource."Reposted  No. Series") THEN BEGIN
+              NoSerManag.SetNoSeriesLineFilter(NoSeriesLine2,ConsolidationSource."Reposted  No. Series",0D);
+              CLEAR(NoSeriesLine2);
+              CLEAR(NoSerManag);
+            END;
+
+            ConsolidationSource.TESTFIELD("Removed  No. Series");
+            IF NoSeriesRec.GET(ConsolidationSource."Removed  No. Series") THEN BEGIN
+              NoSerManag.SetNoSeriesLineFilter(NoSeriesLine3,ConsolidationSource."Removed  No. Series",0D);
+              CLEAR(NoSeriesLine3);
+              CLEAR(NoSerManag);
+            END;
+            }
+
+            //NC MIO-10.7 > DP
+            {
+            ConsolidationMgt.CreateConsDimList(TMPDimCheck,ConsolidationSource,FALSE);
+
+            ConsolidationMgt.CreateConsDimList(TMPDimCheckNeedMapp,ConsolidationSource,TRUE);
+            }
+            SpecCorrDimFilter := GV.GetSpecCorrDimFilter;
+            IF SpecCorrDimFilter = '' THEN BEGIN
+            //NC MIO-10.7 < DP
+
+            SpecCorrDimFilter := '';
+            SpecCorrSelectedDim.RESET;
+            SpecCorrSelectedDim.SETRANGE("User ID",'');
+            SpecCorrSelectedDim.SETRANGE("Object Type",6);
+            SpecCorrSelectedDim.SETRANGE("Object ID",CODEUNIT::"Consolidation Management");
+            SpecCorrSelectedDim.SETRANGE("Analysis View Code",'');
+            IF SpecCorrSelectedDim.FINDSET(FALSE,FALSE) THEN BEGIN
+              REPEAT
+                SpecCorrDimFilter := SpecCorrDimFilter + SpecCorrSelectedDim."Dimension Code" + '|';
+              UNTIL SpecCorrSelectedDim.NEXT = 0;
+              SpecCorrDimFilter := DELSTR(SpecCorrDimFilter,STRLEN(SpecCorrDimFilter),1);
+            END ELSE
+              SpecCorrDimFilter := '!-!NONE!-!';
+
+            //NC MIO-10.7 > DP
+              GV.SetSpecCorrDimFilter(SpecCorrDimFilter);
+            END;
+            //NC MIO-10.7 < DP
+
+            GLEntryTemp.DELETEALL;
+            LedgerEntryDimTemp.DELETEALL;
+
+            TMPGLEntryException.DELETEALL;
+
+            ConsolidationMgt.SetGlobal;
+
+            //NC MIO-10.7 > DP
+            Log.StartCounter(31);
+            Log.StartCounter(-32);
+            Log.StartCounter(-45);
+            //NC MIO-10.7 < DP
+
+
+            //NC MIO-10.11 > DP
+            IF GLEntryBuffer.FIND('-') THEN
+            //NC MIO-10.11 < DP
+
+            REPEAT
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(45);
+              Log.StartCounter(-46);
+              //NC MIO-10.7 < DP
+
+              //NC DP > 29.07.11
+              {
+              TMPGLEntryException.DELETEALL;
+              }
+              //NC DP < 29.07.11
+
+              CountDim := 0;
+              LedgerEntryDimCheck.RESET;
+              //NC S676 > PCH
+              LedgerEntryDimCheck.SETRANGE("External System ID",GLEntryBuffer."External System ID");
+              //NC S676 < PCH
+              LedgerEntryDimCheck.SETRANGE("Id Legal Entity",GLEntryBuffer."Id Legal Entity");
+              LedgerEntryDimCheck.SETRANGE("Table ID",DATABASE::"G/L Entry");
+              LedgerEntryDimCheck.SETRANGE("Entry No.",GLEntryBuffer."Entry No.");
+              IF LedgerEntryDimCheck.FINDSET THEN REPEAT
+                LedgerEntryDimTemp.TRANSFERFIELDS(LedgerEntryDimCheck);
+                //NC S547 > PCH
+                //NC S547.1 > PCH
+                //IF (LedgerEntryDimCheck."Dimension Value Code" <> '') AND (LedgerEntryDimCheck."Dimension Value ID" <> '') THEN BEGIN
+                IF (LedgerEntryDimCheck."Dimension Value Code" <> '') AND (LedgerEntryDimCheck."Dimension Value ID" <> '') AND
+                   (LedgerEntryDimCheck."Dimension Value Code" <> LedgerEntryDimCheck."Dimension Value ID") THEN BEGIN
+                //NC S547.1 < PCH
+                  DimValue.RESET;
+                  DimValue.SETRANGE("Dimension Code",LedgerEntryDimCheck."Dimension Code");
+                  DimValue.SETRANGE("Rec ID",LedgerEntryDimCheck."Dimension Value ID");
+                  IF DimValue.FINDFIRST THEN
+                    LedgerEntryDimTemp."Dimension Value Code" := DimValue.Code;
+                END;
+                //NC S547 < PCH
+                LedgerEntryDimTemp.INSERT;
+                CountDim += 1;
+              UNTIL LedgerEntryDimCheck.NEXT = 0;
+
+              IF NOT OneMapping THEN
+                ConsolidationMgt.GetMapping(GLEntryBuffer."Posting Date",TempMapping);
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(46);
+              Log.StartCounter(-43);
+              //NC MIO-10.7 < DP
+
+              GLEntryBufferTemp.TRANSFERFIELDS(GLEntryBuffer);
+              GLEntryBufferTemp."Mapping Code" := TempMapping.Code;
+              GLEntryBufferTemp."Mapping Line No" := 0;
+              GLEntryBufferTemp."Count Dim. Processed" := CountDim;
+              IF NOT CheckErrorsConsFromNav(GLEntryBuffer,TMPDimCheckNeedMapp,LedgerEntryDimTemp,
+                                            "Cons. Register",ConsolidationSource,
+                                            TempMapping."Temp Use Masks",TempMapping."Temp No. Of Symb. In Masks",
+                                            GLEntryBufferTemp."Mapping Code",GLEntryBufferTemp."Mapping Line No",
+                                            "Line No.") THEN BEGIN
+
+                //NC DP > 29.07.11
+                {
+                GLEntryBufferTemp.INSERT;
+                }
+                IF GLEntryBufferTemp."Mapping Line No" <> 0 THEN
+                  IF GLEntryBufferTemp.INSERT THEN;
+                //NC DP < 29.07.11
+
+              END ELSE BEGIN
+                // проверка на то что эта полупроводка не должна выгружаться, например, Сумма = 0
+                IF NOT (TMPGLEntryException.GET(GLEntryBufferTemp."Entry No.") AND
+                       TMPGLEntryException."Not Consolidate" ) THEN
+                  IsError := TRUE;
+                IF GLEntryBufferTemp."Mapping Line No" <> 0 THEN
+                  GLEntryBufferTemp.INSERT;
+              END;
+
+              //NC DP > 29.09.11
+              {
+              TMPGLEntryException.SETRANGE("Entry No.",GLEntryBuffer."Entry No.");
+              TMPGLEntryException.SETRANGE("Not Consolidate",FALSE); // есть реальные исключения
+              IF NOT TMPGLEntryException.ISEMPTY THEN BEGIN
+                //NC S676 > PCH
+                //GLEntryBuffer2.GET(GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                GLEntryBuffer2.GET(GLEntryBuffer."External System ID",GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                //NC S676 < PCH
+                GLEntryBuffer2."Not Translate" := TRUE;
+                GLEntryBuffer2."Import Cons. Source Code" := ConsolidationSource.Code;
+                GLEntryBuffer2."Import Register No." := "Cons. Register";
+                //NC S676 > PCH
+                //IF GLEntryBufferTemp.GET(GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.") THEN
+                IF GLEntryBufferTemp.GET(GLEntryBuffer."External System ID",GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.") THEN
+                //NC S676 < PCH
+                  GLEntryBuffer2."Count Dim. Processed" := GLEntryBufferTemp."Count Dim. Processed";
+                GLEntryBuffer2.MODIFY;
+              END
+              }
+              //NC DP < 29.09.11
+
+              //NC S1907 > PCH
+              IF GLEntryBufferTemp."Mapping Line No" <> 0 THEN BEGIN
+                CountLine += 1;
+                IF CoAMapping.GET(GLEntryBufferTemp."Mapping Code",GLEntryBufferTemp."Mapping Line No") THEN BEGIN
+                  IF CoAMapping."Copy dims from balance account" THEN
+                    PL_LineNo := GLEntryBufferTemp."Entry No."
+                  ELSE IF GLAccount.GET(CoAMapping."Receiver Account Code") THEN
+                    IF GLAccount."Income/Balance" = GLAccount."Income/Balance"::"Balance Sheet" THEN
+                      BalanceLineNo := GLEntryBufferTemp."Entry No.";
+                END;
+              END;
+              //NC S1907 < PCH
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(43);
+              Log.StartCounter(-45);
+              //NC MIO-10.7 < DP
+
+            UNTIL GLEntryBuffer.NEXT = 0;
+
+            //NC MIO-10.7 > DP
+            Log.StartCounter(45);
+            Log.StartCounter(32);
+            //NC MIO-10.7 < DP
+
+            //NC S1907 > PCH
+            // копируем измерения balance -> p&l
+            IF (CountLine = 2) AND
+               (PL_LineNo <> 0) AND
+               (BalanceLineNo <> 0) THEN BEGIN
+              SelectedDim.RESET;
+              SelectedDim.SETFILTER("User ID",'%1','');
+              SelectedDim.SETRANGE("Object Type",6);
+              SelectedDim.SETRANGE("Object ID",50000);
+
+              LedgerEntryDimTemp.SETRANGE("Table ID", 17);
+              LedgerEntryDimTemp.SETRANGE("Entry No.", BalanceLineNo);
+              IF LedgerEntryDimTemp.FINDSET(FALSE,FALSE) THEN REPEAT
+                SelectedDim.SETRANGE("Dimension Code",LedgerEntryDimTemp."Dimension Code");
+                IF SelectedDim.ISEMPTY THEN BEGIN
+                  LedgerEntryDimTemp2 := LedgerEntryDimTemp;
+
+                  IF LedgerEntryDimTemp.GET(LedgerEntryDimTemp2."Table ID",
+                                            PL_LineNo,
+                                            LedgerEntryDimTemp2."Dimension Code") THEN BEGIN
+                    IF LedgerEntryDimTemp."Dimension Value Code" IN ['','DUMMY'] THEN BEGIN
+                      LedgerEntryDimTemp := LedgerEntryDimTemp2;
+                      LedgerEntryDimTemp."Entry No." := PL_LineNo;
+                      LedgerEntryDimTemp.MODIFY;
+                    END;
+                  END ELSE BEGIN
+                    LedgerEntryDimTemp := LedgerEntryDimTemp2;
+                    LedgerEntryDimTemp."Entry No." := PL_LineNo;
+                    LedgerEntryDimTemp.INSERT;
+                  END;
+
+
+                  LedgerEntryDimTemp.TRANSFERFIELDS(LedgerEntryDimCheck);
+
+                  LedgerEntryDimTemp := LedgerEntryDimTemp2;
+                END;
+              UNTIL LedgerEntryDimTemp.NEXT = 0;
+            END;
+
+            //Проверка на измерения
+            LedgerEntryDimTemp.RESET;
+            IF GLEntryBufferTemp.FIND('-') THEN REPEAT
+              IF CheckErrorsDimFromNav(GLEntryBufferTemp,TMPDimCheckNeedMapp,LedgerEntryDimTemp,
+                                        "Cons. Register",ConsolidationSource,
+                                        TempMapping."Temp Use Masks",TempMapping."Temp No. Of Symb. In Masks",
+                                        GLEntryBufferTemp."Mapping Code",GLEntryBufferTemp."Mapping Line No",
+                                        "Line No.") THEN
+                IsError := TRUE;
+            UNTIL GLEntryBufferTemp.NEXT = 0;
+            //NC S1907 < PCH
+
+            //NC DP > 29.07.11
+            TMPGLEntryException.SETRANGE("Entry No.");
+            //NC DP > 29.07.11
+            TMPGLEntryException.SETRANGE("Not Consolidate",FALSE); // есть реальные исключения
+            IF NOT TMPGLEntryException.ISEMPTY THEN BEGIN
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(-33);
+              //NC MIO-10.7 < DP
+
+              GLEntryBuffer.FIND('-');
+              REPEAT
+                //NC S676 > PCH
+                //GLEntryBuffer2.GET(GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                GLEntryBuffer2.GET(GLEntryBuffer."External System ID",GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                //NC S676 < PCH
+                GLEntryBuffer2."Not Translate" := TRUE;
+                GLEntryBuffer2."Import Cons. Source Code" := ConsolidationSource.Code;
+                GLEntryBuffer2."Import Register No." := "Cons. Register";
+                //NC S676 > PCH
+                //IF GLEntryBufferTemp.GET(GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.") THEN
+                IF GLEntryBufferTemp.GET(GLEntryBuffer."External System ID",GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.") THEN
+                //NC S676 < PCH
+                  GLEntryBuffer2."Count Dim. Processed" := GLEntryBufferTemp."Count Dim. Processed";
+
+                GLEntryBuffer2.MODIFY;
+              UNTIL GLEntryBuffer.NEXT = 0;
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(33);
+              //NC MIO-10.7 < DP
+
+            END ELSE IF NOT IsError THEN BEGIN
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(-34);
+              //NC MIO-10.7 < DP
+
+              GenJournalLineTemp.DELETEALL;
+
+              //NCS2103 > AAP
+              GLEntryBufferTemp.SETCURRENTKEY("Transaction No.","Document No.","Posting Date");
+              //NCS2103 < AAP
+
+              IF GLEntryBufferTemp.FIND('-') THEN BEGIN
+                REPEAT
+
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(-37);
+                  //NC MIO-10.7 < DP
+
+                  GLEntryTemp.TRANSFERFIELDS(GLEntryBufferTemp);
+                  //NC S1908 > PCH
+                  GLEntryTemp."Buffer Entry No." := GLEntryTemp."Entry No.";
+                  //NC S1908 < PCH
+                  IF ConsolidationSource."Use GL Mapping" THEN BEGIN
+                    IF (GLEntryBufferTemp."Original Amount" = 0) AND (GLEntryBufferTemp.Amount <> 0) THEN BEGIN
+                      GetAmountsDiff(GLEntryBufferTemp,ConsolidationSource."LCY Code",
+                                     GLEntryBufferTemp."Mapping Code",GLEntryTemp);
+
+                    END ELSE CASE ConsolidationSource."Check Original Currency" OF
+                      ConsolidationSource."Check Original Currency"::None :
+                        GetAmountsNone(GLEntryBufferTemp,ConsolidationSource."LCY Code",
+                                       GLEntryBufferTemp."Mapping Code",GLEntryTemp);
+
+                      ConsolidationSource."Check Original Currency"::Position :
+                        GetAmountsPosition(GLEntryBufferTemp,ConsolidationSource."LCY Code",
+                                           GLEntryBufferTemp."Mapping Code",GLEntryBufferTemp."Mapping Line No",
+                                           GLEntryTemp,LedgerEntryDimTemp);
+
+                      ConsolidationSource."Check Original Currency"::Rates :
+                        GetAmountsRates(GLEntryBufferTemp,ConsolidationSource."LCY Code",
+                                        GLEntryBufferTemp."Mapping Code",GLEntryTemp);
+                    END;
+                  END ELSE BEGIN
+                    IF ConsolidationSource."LCY Code" = '' THEN BEGIN
+                      GLEntryTemp."Original Currency Code" := ConvertCurrencyCode(GLEntryTemp."Original Currency Code");
+                    END ELSE BEGIN
+                      IF (GLEntryTemp."Original Currency Code" = '') OR
+                         (GLEntryTemp."Original Currency Code" = ConsolidationSource."LCY Code")
+                      THEN BEGIN
+                        GLEntryTemp."Original Amount" := GLEntryTemp.Amount;
+                        GLEntryTemp."Original Currency Code" := ConsolidationSource."LCY Code";
+                        GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                               GLEntryTemp."Posting Date",
+                                               ConsolidationSource."LCY Code",
+                                               GLEntryTemp.Amount,
+                                               CurrExchRate.ExchangeRate(
+                                                 GLEntryTemp."Posting Date",
+                                                 ConsolidationSource."LCY Code"));
+                      END ELSE BEGIN
+                        GLEntryTemp."Original Currency Code" := ConvertCurrencyCode(GLEntryTemp."Original Currency Code");
+                        GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                               GLEntryTemp."Posting Date",
+                                               ConsolidationSource."LCY Code",
+                                               GLEntryTemp.Amount,
+                                               CurrExchRate.ExchangeRate(
+                                                 GLEntryTemp."Posting Date",
+                                                 ConsolidationSource."LCY Code"));
+                      END;
+                    END;
+                  END;
+
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(37);
+                  //NC MIO-10.7 < DP
+
+
+                  IF (GLEntryTemp.Amount = 0) AND (GLEntryTemp."Original Amount" = 0) AND
+                     (GLEntryTemp.Quantity <> 0)
+                     //NC M1 > DP
+                     AND (ConsolidationSource."Check Original Currency"<>ConsolidationSource."Check Original Currency"::Position)
+                     //NC M1 < DP
+                     THEN
+                    GLEntryTemp."Original Currency Code" := '';
+
+
+                  OperType := OperType::Normal;
+                  IF (GLEntryTemp."Debit Amount" < 0) OR (GLEntryTemp."Credit Amount" < 0)  OR
+
+                     //NC NCS-884.3 > DP
+                     ((GLEntryTemp."Debit Quantity" < 0) AND (GLEntryTemp.Amount*GLEntryTemp.Quantity>=0)) OR
+                     ((GLEntryTemp."Credit Quantity" < 0) AND (GLEntryTemp.Amount*GLEntryTemp.Quantity>=0))
+
+
+                     {
+                     //NC NCS-884.2 > DP
+                     ((GLEntryTemp."Debit Quantity" < 0) AND (GLEntryTemp."Credit Amount"=0)) OR
+                     ((GLEntryTemp."Credit Quantity" < 0) AND (GLEntryTemp."Debit Amount"=0))
+                     {
+                     (GLEntryTemp."Debit Quantity" < 0) OR (GLEntryTemp."Credit Quantity" < 0)
+                     }
+                     //NC NCS-884.2 < DP
+                     }
+
+                     //NC NCS-884.3 < DP
+
+                  THEN
+                    OperType := OperType::Repost;
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(-38);
+                  //NC MIO-10.7 < DP
+
+                  ConsolidationMgt.CreateJnlLine(GenJournalLine, ConsolidationSource, GLEntryTemp, GLEntryTemp."Document No.",
+                                                 "Cons. Register" ,
+                                                 LedgerEntryDimTemp, 0, ConsType::Buffer, OperType,
+                                                 FALSE, FALSE,GLEntryBufferTemp."Mapping Line No",GLEntryBufferTemp."Mapping Code");
+                  //NC MIO-63 > DP
+                  {
+
+                  // NC NCS-909 >> SKV
+                  IF CurrentBufferEntryNo <> GenJournalLine."Buffer Entry No." THEN BEGIN
+
+                    CurrentBufferEntryNo := GenJournalLine."Buffer Entry No.";
+                    IF GenJournalLine."Currency Code" <> '' THEN
+                      CurrencyCode := GenJournalLine."Currency Code"
+                    ELSE
+                      CurrencyCode := '';
+
+                  END ELSE BEGIN
+                    IF GenJournalLine."Currency Code" <> '' THEN BEGIN
+                      CurrencyCode := GenJournalLine."Currency Code"
+                    END ELSE BEGIN
+                      IF CurrencyCode <> '' THEN BEGIN //в рамках одной операции буффера эта строка без кода валюты, а предыдущая - с кодом
+                        GenJournalLine."Currency Index Entry" := TRUE;
+                        GenJournalLine."Currency Index"       := CurrencyCode;
+                        GenJournalLine."Local G/L Account" := '';
+                      END;
+                    END;
+                  END;
+                  // NC NCS-909 << SKV
+
+                  }
+                  //NC MIO-63 < DP
+
+
+                  //NC M1 > DP
+                  IF (GLEntryTemp.Amount = 0) AND (GLEntryTemp."Original Amount" = 0) AND
+                     (GLEntryTemp.Quantity <> 0) AND
+                     (ConsolidationSource."Check Original Currency"=ConsolidationSource."Check Original Currency"::Position) THEN
+                  GenJournalLine."Allow Zero-Amount Posting" := TRUE;
+                  //NC M1 < DP
+
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(38);
+                  Log.StartCounter(-39);
+                  //NC MIO-10.7 < DP
+
+                  IF ConsolidationSource."Consolidate Dimensions" THEN BEGIN
+                    CloseOperation := FALSE;
+                    LedgerEntryDimTemp.RESET;
+                    LedgerEntryDimTemp.SETRANGE("Table ID", 17);
+                    LedgerEntryDimTemp.SETRANGE("Entry No.", GLEntryBufferTemp."Entry No.");
+                    IF LedgerEntryDimTemp.FINDSET(FALSE,FALSE) THEN
+                      REPEAT
+                        //NC MIO-10.9 > DP
+                        DefaultDim.CHANGECOMPANY(ConsolidationSource."Company Name");
+                        IF NOT (GV.GET_DefDim(DefaultDim,15,GenJournalLine."Account No.",LedgerEntryDimTemp."Dimension Code")  AND
+                          (DefaultDim."Value Posting"=DefaultDim."Value Posting"::"No Code"))
+                        THEN BEGIN
+                        //NC MIO-10.9 < DP
+
+              //          IF TMPDimCheck.GET(LedgerEntryDimTemp."Dimension Code") THEN
+
+                          //NC MIO-10.7 > DP
+                          {
+                          ConsolidationMgt.CreateJnlLineDimensions(GenJournalLine, JournalLineDimension, LedgerEntryDimTemp, "Cons. Register",
+                            InterCompany, ConsolidationSource,GLEntryTemp."G/L Account No.",GLEntryBufferTemp."Mapping Code");
+                          }
+                          JournalLineDimension.INIT;
+                          JournalLineDimension."Table ID" := DATABASE::"Gen. Journal Line";
+                          JournalLineDimension."Journal Template Name" := GenJournalLine."Journal Template Name";
+                          JournalLineDimension."Journal Batch Name" := GenJournalLine."Journal Batch Name";
+                          JournalLineDimension."Journal Line No." := GenJournalLine."Line No.";
+                          JournalLineDimension."Allocation Line No." := 0;
+                          JournalLineDimension."Dimension Code" := LedgerEntryDimTemp."Dimension Code";
+                          JournalLineDimension."Dimension Value Code" := LedgerEntryDimTemp."Dimension Value Code";
+                          JournalLineDimension."Dim in Source" := LedgerEntryDimTemp."Dim in Source";
+                          JournalLineDimension."Dim Value Code in Source" := LedgerEntryDimTemp."Dim Value Code in Source";
+                          IF GLSetup."Global Dimension 1 Code" = JournalLineDimension."Dimension Code" THEN
+                            GenJournalLine."Shortcut Dimension 1 Code" := JournalLineDimension."Dimension Value Code";
+                          IF GLSetup."Global Dimension 2 Code" = JournalLineDimension."Dimension Code" THEN
+                            GenJournalLine."Shortcut Dimension 2 Code" := JournalLineDimension."Dimension Value Code";
+                          JournalLineDimension.INSERT;
+                          IF JournalLineDimension."Dimension Code" = ConsolidationSetup."Fin. Instrument Dimension Code" THEN BEGIN
+                            GenJournalLine."Financial Instrument No." := JournalLineDimension."Dimension Value Code";
+                          END;
+                          //NC MIO-10.7 < DP
+                          //NC S1896 > PCH
+                          IF (JournalLineDimension."Dimension Code" = ConsolidationSetup."Deal Dimension Code") AND
+                             ConsolidationSetup."Create Agreements Transform." AND
+                             (GenJournalLine."Account Type" = GenJournalLine."Account Type"::Customer) THEN BEGIN
+                            IF (JournalLineDimension."Dimension Value Code" <> '') AND
+                               NOT CustomerAgreement.GET(GenJournalLine."Account No.", JournalLineDimension."Dimension Value Code") THEN BEGIN
+                              CreateCustomerAgreement(GenJournalLine,JournalLineDimension);
+                            END;
+                            GenJournalLine."Agreement No." := JournalLineDimension."Dimension Value Code";
+                          END;
+                          //NC S1896 < PCH
+                          //NC S2031 > PCH
+                          IF (JournalLineDimension."Dimension Code" = ConsolidationSetup."Deal Dimension Code") AND
+                             ConsolidationSetup."Create Agreements Transform." AND
+                             (GenJournalLine."Account Type" = GenJournalLine."Account Type"::Vendor) THEN BEGIN
+                            IF (JournalLineDimension."Dimension Value Code" <> '') AND
+                               NOT VendorAgreement.GET(GenJournalLine."Account No.", JournalLineDimension."Dimension Value Code") THEN BEGIN
+                              CreateVendorAgreement(GenJournalLine,JournalLineDimension);
+                            END;
+                            GenJournalLine."Agreement No." := JournalLineDimension."Dimension Value Code";
+                          END;
+                          //NC S2031 < PCH
+
+                        //NC MIO-10.9 > DP
+                        END;
+                        //NC MIO-10.9 < DP
+
+                      UNTIL LedgerEntryDimTemp.NEXT = 0;
+
+                  END;
+
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(39);
+                  Log.StartCounter(-40);
+                  //NC MIO-10.7 < DP
+
+                  GenJournalLine."Buffer Entry No." := GLEntryBufferTemp."ID Entry No.";
+                  IF GLEntryBufferTemp.Reversed AND
+                     (GLEntryBufferTemp."Reversed Entry No." <> 0) THEN BEGIN
+                     //NC S676 > PCH
+                     //IF GLEntryBufferCorr.GET(GLEntryBufferTemp."Id Legal Entity",GLEntryBufferTemp."Reversed Entry No.") THEN BEGIN
+                     IF GLEntryBufferCorr.GET(GLEntryBufferTemp."External System ID",
+                                              GLEntryBufferTemp."Id Legal Entity",GLEntryBufferTemp."Reversed Entry No.") THEN BEGIN
+                     //NC S676 < PCH
+                         GenJournalLine.Removed := TRUE;
+                       GLEntryBufferCorr.Reversed := TRUE;
+                       GLEntryBufferCorr."Reversed by Entry No." := GLEntryBufferTemp."Entry No.";
+
+                       //NC MIO-10.7 > DP
+                       Log.StartCounter(-49);
+                       //NC MIO-10.7 < DP
+
+                       GLEntryBufferCorr.MODIFY;
+
+                       //NC MIO-10.7 > DP
+                       Log.StartCounter(49);
+                       //NC MIO-10.7 < DP
+
+                     END;
+                  END;
+
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(40);
+                  Log.StartCounter(-41);
+                  //NC MIO-10.7 < DP
+
+                  GenJournalLine.INSERT;
+
+                  //NC S2006 > PCH
+                  CASE GenJournalLine."Account Type" OF
+                    GenJournalLine."Account Type"::Customer : Cust.GET(GenJournalLine."Account No.");
+                    GenJournalLine."Account Type"::Vendor : Vend.GET(GenJournalLine."Account No.");
+                    GenJournalLine."Account Type"::"Bank Account" : Bank.GET(GenJournalLine."Account No.");
+                  END;
+                  //NC S2006 < PCH
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(41);
+                  Log.StartCounter(-50);
+                  //NC MIO-10.7 < DP
+
+                  //NC MIO-10.7 > DP  перенесено в CU 50050
+                  {
+                  //TDRANCS-1176>
+                  l_RecRef.GETTABLE(GenJournalLine);
+                  l_cuChangLogMgt.Notify(0,l_RecRef,l_RecRef);
+                  //TDRANCS-1176<
+                  }
+                  Log.StartCounter(50);
+                  Log.StartCounter(-42);
+                  //NC MIO-10.7 < DP
+
+                  // сохранение диапазона добавленных строк журналов
+                  GenJournalLineTemp.RESET;
+                  GenJournalLineTemp.SETRANGE("Journal Template Name",GenJournalLine."Journal Template Name");
+                  GenJournalLineTemp.SETRANGE("Journal Batch Name",GenJournalLine."Journal Batch Name");
+                  IF GenJournalLineTemp.FINDFIRST THEN BEGIN
+                    GenJournalLineTemp."Source Entry No." := GenJournalLine."Line No."; // послендняя добавленная строка
+                    GenJournalLineTemp.MODIFY;
+                  END ELSE BEGIN
+                    GenJournalLineTemp.INIT;
+                    GenJournalLineTemp."Journal Template Name" := GenJournalLine."Journal Template Name";
+                    GenJournalLineTemp."Journal Batch Name" := GenJournalLine."Journal Batch Name";
+                    GenJournalLineTemp."Line No." := GenJournalLine."Line No.";  // первая добавленная строка
+                    GenJournalLineTemp."Document No." := GenJournalLine."Document No.";
+                    GenJournalLineTemp.INSERT;
+                  END;
+
+                  //NC S676 > PCH
+                  //GLEntryBuffer2.GET(GLEntryBufferTemp."Id Legal Entity",GLEntryBufferTemp."Entry No.");
+                  GLEntryBuffer2.GET(GLEntryBufferTemp."External System ID",GLEntryBufferTemp."Id Legal Entity",GLEntryBufferTemp."Entry No.")
+            ;
+                  //NC S676 < PCH
+                  GLEntryBuffer2."Import Cons. Source Code" := ConsolidationSource.Code;
+                  GLEntryBuffer2."Import Register No." := "Cons. Register";
+                  GLEntryBuffer2."Mapping Code" := GLEntryBufferTemp."Mapping Code";
+                  GLEntryBuffer2."Mapping Line No" := GLEntryBufferTemp."Mapping Line No";
+                  GLEntryBuffer2."Count Dim. Processed" := GLEntryBufferTemp."Count Dim. Processed";
+
+                  GLEntryBuffer2.MODIFY;
+
+                  //NC MIO-10.7 > DP
+                  Log.StartCounter(42);
+                  //NC MIO-10.7 < DP
+
+                UNTIL GLEntryBufferTemp.NEXT = 0;
+
+                InsertCorrectLine(GenJournalLineTemp,GenJournalLine,JournalLineDimension);
+
+              END;
+
+              //NC MIO-10.7 > PCH
+              Log.StartCounter(-59);
+              //NC MIO-10.7 < PCH
+              TMPGLEntryException.SETRANGE("Not Consolidate",TRUE); // отсеянные полупроводки
+              IF TMPGLEntryException.FIND('-') THEN REPEAT
+                //NC S676 > PCH
+                //GLEntryBuffer2.GET(TMPGLEntryException."IC Partner Code",TMPGLEntryException."Entry No.");
+                GLEntryBuffer2.GET(TMPGLEntryException."External System ID",
+                                   TMPGLEntryException."IC Partner Code",TMPGLEntryException."Entry No.");
+                //NC S676 < PCH
+                GLEntryBuffer2."Not Translate" := TRUE;
+                GLEntryBuffer2."Import Cons. Source Code" := ConsolidationSource.Code;
+                GLEntryBuffer2."Import Register No." := "Cons. Register";
+                //NC S676 > PCH
+                //IF GLEntryBufferTemp.GET(TMPGLEntryException."IC Partner Code",TMPGLEntryException."Entry No.") THEN
+                IF GLEntryBufferTemp.GET(TMPGLEntryException."External System ID",
+                                         TMPGLEntryException."IC Partner Code",TMPGLEntryException."Entry No.") THEN
+                //NC S676 < PCH
+                  GLEntryBuffer2."Count Dim. Processed" := GLEntryBufferTemp."Count Dim. Processed";
+
+                GLEntryBuffer2.MODIFY;
+              UNTIL TMPGLEntryException.NEXT = 0;
+
+              //NC MIO-10.7 > PCH
+              Log.StartCounter(59);
+              //NC MIO-10.7 < PCH
+              //NC MIO-10.7 > DP
+              Log.StartCounter(34);
+              //NC MIO-10.7 < DP
+
+            END ELSE BEGIN
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(-35);
+              //NC MIO-10.7 < DP
+
+              GLEntryBuffer.FIND('-');
+              REPEAT
+                //NC S676 > PCH
+                //GLEntryBuffer2.GET(GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                GLEntryBuffer2.GET(GLEntryBuffer."External System ID",GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.");
+                //NC S676 < PCH
+                GLEntryBuffer2."Error in Import" := TRUE;
+                //NC S676 > PCH
+                //IF GLEntryBufferTemp.GET(GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.") THEN BEGIN
+                IF GLEntryBufferTemp.GET(GLEntryBuffer."External System ID",
+                                         GLEntryBuffer."Id Legal Entity",GLEntryBuffer."Entry No.") THEN BEGIN
+                //NC S676 < PCH
+                  GLEntryBuffer2."Mapping Code" := GLEntryBufferTemp."Mapping Code";
+                  GLEntryBuffer2."Mapping Line No" := GLEntryBufferTemp."Mapping Line No";
+                  GLEntryBuffer2."Count Dim. Processed" := GLEntryBufferTemp."Count Dim. Processed";
+                END;
+
+                GLEntryBuffer2.MODIFY;
+              UNTIL GLEntryBuffer.NEXT = 0;
+
+              //NC MIO-10.7 > DP
+              Log.StartCounter(35);
+              //NC MIO-10.7 < DP
+
+            END;
+
+            //NC MIO-10.7 > DP
+            Log.StartCounter(-36);
+            //NC MIO-10.7 < DP
+
+
+            //NC MIO-10.7 > DP
+            Log.StartCounter(36);
+            //NC MIO-10.7 < DP
+
+            ConsolidationSource."Last Consolidation Date" := TODAY;
+            ConsolidationSource."Last Consolidation Time" := TIME;
+            ConsolidationSource.MODIFY;
+
+            //NC MIO-10.7 > DP
+            Log.StartCounter(30);
+            //NC MIO-10.7 < DP
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup@1101495000 : Record 98;
+      ConsolidationSetup@1101495001 : Record 50000;
+      ConsolidationSource@1101495002 : Record 50001;
+      SourceCodeSetup@1101495003 : Record 242;
+      NoSeriesRec@1101495004 : Record 308;
+      NoSerManag@1101495005 : Codeunit 396;
+      NoSeriesLine1@1101495006 : Record 309;
+      NoSeriesLine2@1101495007 : Record 309;
+      NoSeriesLine3@1101495008 : Record 309;
+      ConsolidationMgt@1101495009 : Codeunit 50000;
+      RecID@1101495010 : RecordID;
+      RecRef@1101495011 : RecordRef;
+      Text001@1101495012 : TextConst 'ENU=Wrong identifier to record;RUS=Неправильный идентификатор записи';
+      SpecCorrDimFilter@1101495013 : Code[1024];
+      TMPGLEntryException@1101495014 : TEMPORARY Record 17;
+      Text010@1101495017 : TextConst 'ENU="There is no mapping for G/L Account ";RUS="Для счета "';
+      Text011@1101495016 : TextConst 'ENU=.;RUS=" не задан соответствующий счет в МСФО"';
+      Text012@1101495043 : TextConst 'ENU="There is no mapping for value ";RUS="Для значения "';
+      Text013@1101495042 : TextConst 'ENU=" of Dimension ";RUS=" измерения "';
+      Text014@1101495041 : TextConst 'ENU=.;RUS=" не задано преобразование."';
+      Text016@1101495022 : TextConst 'ENU="G/L Account ";RUS="Счет "';
+      Text017@1101495021 : TextConst 'ENU=" does not exist in the chart of accounts.";RUS=" отсутствует в плане счетов МСФО."';
+      Text019@1101495044 : TextConst 'ENU=" there is no required dimension ";RUS=" нет обязательного измерения "';
+      Text020@1101495037 : TextConst 'ENU="For Entry on G/L Account ";RUS="На операции по счету "';
+      IsGlobalError@1101495018 : Boolean;
+      IsError@1101495032 : Boolean;
+      ErrMessage@1101495019 : Text[250];
+      ErrorJournal@1101495020 : Record 50023;
+      Text021@1101495045 : TextConst 'ENU=" with value ";RUS=" со значением "';
+      Text022@1101495029 : TextConst 'ENU="Dimension ";RUS="Для измерения "';
+      Text023@1101495030 : TextConst 'ENU=" value ";RUS=" нет значения "';
+      Text024@1101495031 : TextConst 'ENU=" does no exist in NAV.";RUS=" в справочнике NAV."';
+      Text025@1101495028 : TextConst 'ENU="Dimension ";RUS="Измерение "';
+      Text026@1101495034 : TextConst 'RUS=" значение "';
+      Text027@1101495035 : TextConst 'ENU=" is blocked in NAV.";RUS=" блокировано в справочнике NAV."';
+      Text028@1101495048 : TextConst 'ENU=" Dimension ";RUS=" Измерение "';
+      Text029@1101495047 : TextConst 'ENU=" is not allowed for posting.";RUS=" не разрешено для учета."';
+      Text030@1101495015 : TextConst 'ENU=" in correspondence with account ";RUS=" в корреспонденции со счетом "';
+      Text032@1101495033 : TextConst 'ENU=" Value Type must be Standart.";RUS=" Тип Значения должен быть Стандартный."';
+      Text033@1101495046 : TextConst 'ENU="For G/L Account ";RUS="Для счета "';
+      Text034@1101495027 : TextConst 'ENU="For value ";RUS="Для значения "';
+      Text035@1101495023 : TextConst 'ENU=Account Type for G/L Account %1 must be Posting.;RUS=Тип Счета %1 должен быть Учетный.';
+      Text041@1101495024 : TextConst 'ENU=G/L Account %1 is blocked in NAV.;RUS=Фин. Счет %1 блокирован в NAV.';
+      Text042@1101495026 : TextConst 'ENU=Dimension %1 is blocked in NAV.;RUS=Измерение %1 блокировано в NAV.';
+      Text043@1101495025 : TextConst 'ENU=Dimension %1 does not exist in NAV.;RUS=Измерение %1 не существует в NAV.';
+      ConsType@1101495039 : 'Buffer,Navision';
+      OperType@1101495038 : 'Normal,Repost';
+      CloseOperation@1101495040 : Boolean;
+      CurrExchRate@1101495036 : Record 330;
+      Text044@1101495049 : TextConst 'ENU=On the operation did not state the Amount or Quantity.;RUS=По операции не указана Сумма или Количество.';
+      CountDim@1101495050 : Integer;
+      Text045@1101495054 : TextConst 'RUS=Документ %1 не балансирует на %2';
+      GLEntry@1101495053 : Record 17;
+      ChangeLogMgt@1101495052 : Codeunit 423;
+      CountGL@1101495051 : Integer;
+      Text061@1101495056 : TextConst 'ENU=" should be equal to Dimension Value ";RUS=" должно быть равно значению измерения "';
+      Log@1101495057 : Codeunit 50014;
+      GV@1101495055 : Codeunit 50033;
+      OffsetExceptionsDT@1101495061 : Boolean;
+      OffsetExceptionsCT@1101495060 : Boolean;
+      OffsetFromDate@1101495059 : Date;
+      OffsetToDate@1101495058 : Date;
+      TextEDTC27@1101495062 : TextConst 'ENU=In %1 value %2 should be ''%3''.;RUS=В %1 величина %2 должна быть ''%3''.';
+      CoAMapping@1101495067 : Record 50002;
+      CountLine@1101495066 : Integer;
+      GLAccount@1101495065 : Record 15;
+      BalanceLineNo@1101495064 : Integer;
+      PL_LineNo@1101495068 : Integer;
+      SelectedDim@1101495063 : Record 369;
+      Text062@1000000000 : TextConst 'ENU=In buffer not empty dimension of %1.;RUS=В буфере не передано измерение %1.';
+      Text063@1101495069 : TextConst 'ENU=" (ext: %1)";RUS=" (внеш: %1)"';
+      CustomerAgreement@1101495070 : Record 14902;
+      Text064@1101495071 : TextConst 'ENU=Amounts OCY LCY and have different signs.;RUS=Суммы OCY и LCY имеют разные знаки.';
+      VendorAgreement@1101495072 : Record 14901;
+
+    PROCEDURE CheckErrorsConsFromNav@1210015(GLEntryBuffer@1210000 : Record 50093;VAR TMPDimCheck@1210001 : TEMPORARY Record 348;VAR LedgEntryDimCheck@1210002 : Record 355;ConsRegisterNo@1210003 : Integer;ConsSource@1210004 : Record 50001;UseCoAMappingMask@1101495006 : Boolean;NoOfSymbolsInMask@1101495005 : Integer;VAR MappingCode@1101495001 : Code[20];VAR LineNo@1101495000 : Integer;JobProcStatusLineNo@1101495003 : Integer) : Boolean;
+    VAR
+      lConsDataBuffer@1000000000 : Record 50008;
+      GLEntry@1101495002 : Record 17;
+      DimMappingSel@1101495004 : Record 50031;
+      IsExceptCorr@1101495007 : Boolean;
+      DimValue@1101495008 : Record 349;
+    BEGIN
+      //NC MIO-10.7 > DP
+      Log.StartCounter(-48);
+      //NC MIO-10.7 < DP
+
+      GLEntry.TRANSFERFIELDS(GLEntryBuffer);
+      IF (GLEntry.Amount = 0) AND (GLEntry."Original Amount" = 0) AND  // исключение ДОВ
+         (GLEntry."Additional-Currency Amount" <> 0)
+      // NC SB > !!!
+         AND (GLEntry.Quantity = 0)
+      // NC SB < !!!
+         THEN BEGIN
+        TMPGLEntryException.INIT;
+        //NC S676 > PCH
+        TMPGLEntryException."External System ID" := GLEntryBuffer."External System ID";
+        //NC S676 < PCH
+        TMPGLEntryException."IC Partner Code" := GLEntryBuffer."Id Legal Entity";
+        TMPGLEntryException."Entry No." := GLEntry."Entry No.";
+        TMPGLEntryException."Journal Batch Name" := ConsolidationSetup."Exception Batch Name";
+        TMPGLEntryException."Not Consolidate" := TRUE; // Пропустить полупроводку
+        TMPGLEntryException.INSERT;
+
+        //NC MIO-10.7 > DP
+        Log.StartCounter(48);
+        //NC MIO-10.7 < DP
+
+        EXIT(TRUE);
+      END;
+      IF (GLEntry.Amount = 0) AND (GLEntry."Original Amount" = 0) AND
+         (GLEntry.Quantity = 0) THEN BEGIN
+        ErrorJournal.AddErrorGLBuffer(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                      ConsSource.Code,ConsRegisterNo,'EDTC01',
+                                      Text044,COMPANYNAME,GLEntryBuffer,JobProcStatusLineNo);
+        //NC M1 > PCH
+        // обрабатываентся как исключение, проставляется NotTranslate
+        TMPGLEntryException.INIT;
+        //NC S676 > PCH
+        TMPGLEntryException."External System ID" := GLEntryBuffer."External System ID";
+        //NC S676 < PCH
+        TMPGLEntryException."IC Partner Code" := GLEntryBuffer."Id Legal Entity";
+        TMPGLEntryException."Entry No." := GLEntry."Entry No.";
+        TMPGLEntryException."Journal Batch Name" := ConsolidationSetup."Exception Batch Name";
+        TMPGLEntryException."Not Consolidate" := TRUE; // Пропустить полупроводку
+        TMPGLEntryException.INSERT;
+        //NC M1 < PCH
+
+        //NC MIO-10.7 > DP
+        Log.StartCounter(48);
+        //NC MIO-10.7 < DP
+
+        EXIT(TRUE);
+      END;
+
+      //NC S2006 > PCH
+      IF (GLEntry.Amount * GLEntry."Original Amount" < 0) THEN BEGIN
+        ErrorJournal.AddErrorGLBuffer(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                      ConsSource.Code,ConsRegisterNo,'EDTC01',
+                                      Text064,COMPANYNAME,GLEntryBuffer,JobProcStatusLineNo);
+        EXIT(TRUE);
+      END;
+      //NC S2006 < PCH
+      //NC M3 > DP
+      // обрабатывается внешнее исключение
+      IF GLEntryBuffer."Not Translate" THEN BEGIN
+        TMPGLEntryException.INIT;
+        //NC S676 > PCH
+        TMPGLEntryException."External System ID" := GLEntryBuffer."External System ID";
+        //NC S676 < PCH
+        TMPGLEntryException."IC Partner Code" := GLEntryBuffer."Id Legal Entity";
+        TMPGLEntryException."Entry No." := GLEntry."Entry No.";
+        TMPGLEntryException."Journal Batch Name" := ConsolidationSetup."Exception Batch Name";
+        TMPGLEntryException."Not Consolidate" := TRUE; // Пропустить полупроводку
+        TMPGLEntryException.INSERT;
+
+        //NC MIO-10.7 > DP
+        Log.StartCounter(48);
+        //NC MIO-10.7 < DP
+
+        EXIT(TRUE);
+      END;
+      //NC M3 < DP
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(48);
+      //NC MIO-10.7 < DP
+
+      IF NOT CheckExceptionCorrespondense(GLEntryBuffer,LedgEntryDimCheck,ConsSource,UseCoAMappingMask,NoOfSymbolsInMask,
+                                          GLEntry."G/L Account No.",MappingCode) THEN BEGIN
+
+        IF ConsolidationSource."Use GL Mapping" THEN BEGIN
+          //NC MIO-10.7 > DP
+          Log.StartCounter(-44);
+          //NC MIO-10.7 < DP
+
+          GLEntry."G/L Account No." := CheckGLMapp(GLEntryBuffer,LedgEntryDimCheck,ConsSource,ConsRegisterNo,
+                                                   GLEntry."Document No.",MappingCode,LineNo,JobProcStatusLineNo);
+
+          //NC MIO-10.7 > DP
+          Log.StartCounter(44);
+          //NC MIO-10.7 < DP
+
+        END;
+      END ELSE
+        IsExceptCorr := TRUE;
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(-47);
+      //NC MIO-10.7 < DP
+
+      IF ConsSource."Consolidate Dimensions" AND
+         ((NOT IsExceptCorr)
+         )
+      THEN BEGIN
+
+        DimMappingSel.SETRANGE("Mapping Code",MappingCode);
+
+        //NC MIO-10.7 > DP
+        {
+        IF DimMappingSel.FINDSET THEN REPEAT
+        }
+        IF GV.FIND_DimMappingSelection(DimMappingSel) THEN REPEAT
+        //NC MIO-10.7 < DP
+
+          IF LedgEntryDimCheck.GET(17,GLEntryBuffer."Entry No.",DimMappingSel."Dimension Code") AND
+             (LedgEntryDimCheck."Dim in Source" = '')
+          THEN
+            CheckDimMapp(GLEntryBuffer,LedgEntryDimCheck,ConsSource,ConsRegisterNo,
+                         DimMappingSel."Save when Mapping",MappingCode,JobProcStatusLineNo);
+
+        //NC MIO-10.7 > DP
+        {
+        UNTIL DimMappingSel.NEXT = 0;
+        }
+        UNTIL GV.NEXT_DimMappingSelection(DimMappingSel) = 0;
+        //NC MIO-10.7 < DP
+
+      END;
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(47);
+      Log.StartCounter(-52);
+      //NC MIO-10.7 < DP
+
+      //NC S1907 > PCH
+      {
+      IF NOT IsExceptCorr THEN BEGIN
+        CheckDefaultDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+        CheckSameCodeDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+        CheckRestrictedDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+
+        //NC MIO-34 > DP
+        CheckRealDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+        //NC MIO-34 < DP
+
+        //NC MIO-10.7 > DP
+        Log.StartCounter(-58);
+        //NC MIO-10.7 < DP
+        // проверка на наличие измерений
+        LedgEntryDimCheck.RESET;
+        LedgEntryDimCheck.SETRANGE("Table ID",17);
+        LedgEntryDimCheck.SETRANGE("Entry No.",GLEntryBuffer."Entry No.");
+        IF LedgEntryDimCheck.FINDSET THEN REPEAT
+          IF NOT DimValue.GET(LedgEntryDimCheck."Dimension Code",LedgEntryDimCheck."Dimension Value Code") THEN BEGIN
+            ErrMessage := Text022 + FORMAT(LedgEntryDimCheck."Dimension Code") + Text023 +
+                          FORMAT(LedgEntryDimCheck."Dimension Value Code") + Text024;
+            ErrorJournal.AddErrorGLBuffer(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                          ConsSource.Code,ConsRegisterNo,'EDTC06',
+                                          ErrMessage,COMPANYNAME,GLEntryBuffer,JobProcStatusLineNo);
+            IsGlobalError := TRUE;
+          END;
+        UNTIL LedgEntryDimCheck.NEXT = 0;
+
+        //NC MIO-10.7 > DP
+        Log.StartCounter(58);
+        //NC MIO-10.7 < DP
+      END;
+      }
+      //NC S1907 < PCH
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(52);
+      //NC MIO-10.7 < DP
+
+      EXIT(IsGlobalError);
+    END;
+
+    PROCEDURE CheckErrorsDimFromNav@1101495003(GLEntryBuffer@1210000 : Record 50093;VAR TMPDimCheck@1210001 : TEMPORARY Record 348;VAR LedgEntryDimCheck@1210002 : Record 355;ConsRegisterNo@1210003 : Integer;ConsSource@1210004 : Record 50001;UseCoAMappingMask@1101495006 : Boolean;NoOfSymbolsInMask@1101495005 : Integer;VAR MappingCode@1101495001 : Code[20];VAR LineNo@1101495000 : Integer;JobProcStatusLineNo@1101495003 : Integer) : Boolean;
+    VAR
+      lConsDataBuffer@1000000000 : Record 50008;
+      GLEntry@1101495002 : Record 17;
+      DimMappingSel@1101495004 : Record 50031;
+      IsExceptCorr@1101495007 : Boolean;
+      DimValue@1101495008 : Record 349;
+    BEGIN
+      //NC S1907 > PCH
+
+      CheckDefaultDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+      CheckSameCodeDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+      CheckRestrictedDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+
+      //NC MIO-34 > DP
+      CheckRealDimensions(ConsSource,GLEntryBuffer,LedgEntryDimCheck,ConsRegisterNo,MappingCode,LineNo,JobProcStatusLineNo);
+      //NC MIO-34 < DP
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(-58);
+      //NC MIO-10.7 < DP
+      // проверка на наличие измерений
+      LedgEntryDimCheck.RESET;
+      LedgEntryDimCheck.SETRANGE("Table ID",17);
+      LedgEntryDimCheck.SETRANGE("Entry No.",GLEntryBuffer."Entry No.");
+      IF LedgEntryDimCheck.FINDSET THEN REPEAT
+        IF NOT DimValue.GET(LedgEntryDimCheck."Dimension Code",LedgEntryDimCheck."Dimension Value Code") THEN BEGIN
+          ErrMessage := Text022 + FORMAT(LedgEntryDimCheck."Dimension Code") + Text023 +
+                        FORMAT(LedgEntryDimCheck."Dimension Value Code") + Text024;
+          ErrorJournal.AddErrorGLBuffer(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                        ConsSource.Code,ConsRegisterNo,'EDTC06',
+                                        ErrMessage,COMPANYNAME,GLEntryBuffer,JobProcStatusLineNo);
+          IsGlobalError := TRUE;
+        END;
+      UNTIL LedgEntryDimCheck.NEXT = 0;
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(58);
+      //NC MIO-10.7 < DP
+
+      EXIT(IsGlobalError);
+      //NC S1907 < PCH
+    END;
+
+    PROCEDURE CheckExceptionCorrespondense@1101495005(GLBuffer@1210003 : Record 50093;VAR LedgEntryDimCheck@1101495000 : Record 355;ConsSource@1210012 : Record 50001;UseCoAMappingMask@1000000005 : Boolean;NoOfSymbolsInMask@1000000004 : Integer;VAR ExtAccCode@1000000006 : Code[20];MappingCode@1000000008 : Code[20]) : Boolean;
+    VAR
+      SpecCorrespondense@1210002 : Record 50009;
+      SpecCorrespondense1@1210011 : Record 50009;
+      DebitAccount@1210001 : Code[20];
+      CreditAccount@1210000 : Code[20];
+      DocumentType1C@1210006 : Text[30];
+      CorrespondenseType@1210005 : 'CurExchange,Exception,Reclassification';
+      LedgEntryDim@1210007 : Record 355;
+      DimCode@1210009 : Code[20];
+      DimVal@1210010 : Code[20];
+      GLEntry1@1210013 : Record 17;
+      GLFilter@1210014 : Text[90];
+      SpecNotExcept@1000000000 : Boolean;
+      SpecDim@1000000001 : Boolean;
+      Spec@1000000002 : Boolean;
+      SelectedExceptDim@1000000003 : Record 369;
+    BEGIN
+      //NC MIO-10.7 > DP
+      Log.StartCounter(-51);
+      //NC MIO-10.7 < DP
+
+      IF (GLBuffer."Debit Amount" <> 0) OR (GLBuffer."Add.-Currency Debit Amount" <> 0) THEN BEGIN
+        DebitAccount := GLBuffer."G/L Account No.";
+        CreditAccount := GLBuffer."Bal. Account No.";
+      END ELSE BEGIN
+        DebitAccount := GLBuffer."Bal. Account No.";
+        CreditAccount := GLBuffer."G/L Account No.";
+      END;
+
+      IF UseCoAMappingMask THEN BEGIN
+        DebitAccount := ConsolidationMgt.FindAccountFromMask(DebitAccount,
+                                            MappingCode,
+                                            NoOfSymbolsInMask,0);
+        CreditAccount := ConsolidationMgt.FindAccountFromMask(CreditAccount,
+                                            MappingCode,
+                                            NoOfSymbolsInMask,0);
+      END;
+
+      SpecCorrespondense1.SETRANGE("Mapping Code", MappingCode);
+
+      //NC MIO-10.7 > DP
+      {
+      IF NOT SpecCorrespondense1.FINDFIRST THEN
+      }
+      IF SpecCorrespondense1.ISEMPTY THEN
+      //NC MIO-10.7 < DP
+
+        EXIT(FALSE);
+
+      SpecNotExcept := FALSE;
+      LedgEntryDimCheck.SETRANGE("Table ID", 17);
+      LedgEntryDimCheck.SETRANGE("Entry No.", GLBuffer."Entry No.");
+
+      //NC MIO-10.7 > PCH
+      OffsetExceptionsDT := FALSE;
+      OffsetExceptionsCT := FALSE;
+      OffsetFromDate := 0D;
+      OffsetToDate := 0D;
+      //SpecDim := ConsolidationMgt.CheckCorr3(MappingCode,
+      //                      DebitAccount,CreditAccount,
+      //                      SpecNotExcept,LedgEntryDimCheck,TRUE);
+      SpecDim := CheckCorr3(MappingCode,
+                            DebitAccount,CreditAccount,
+                            SpecNotExcept,LedgEntryDimCheck,TRUE);
+      //NC MIO-10.7 < PCH
+
+
+      IF (NOT SpecNotExcept) AND (NOT SpecDim) THEN BEGIN
+
+          //NC MIO-10.7 > PCH
+          //Spec := ConsolidationMgt.CheckCorr3(MappingCode,
+          //                  DebitAccount,CreditAccount,
+          //                  SpecNotExcept,LedgEntryDimCheck,FALSE);
+          Spec := CheckCorr3(MappingCode,
+                            DebitAccount,CreditAccount,
+                            SpecNotExcept,LedgEntryDimCheck,FALSE);
+          //NC MIO-10.7 < PCH
+      END;
+
+      //NC MIO-10.7 > PCH
+      ConsolidationMgt.SetOffset(OffsetExceptionsDT,OffsetExceptionsCT,OffsetFromDate,OffsetToDate);
+      //NC MIO-10.7 < PCH
+      IF (Spec OR SpecDim) AND (NOT SpecNotExcept) THEN BEGIN
+        TMPGLEntryException.INIT;
+        //NS S676 > PCH
+        TMPGLEntryException."External System ID" := GLBuffer."External System ID";
+        //NS S676 < PCH
+        TMPGLEntryException."IC Partner Code" := GLBuffer."Id Legal Entity";
+        TMPGLEntryException."Entry No." := GLBuffer."Entry No.";
+        TMPGLEntryException."Journal Batch Name" := ConsolidationSetup."Exception Batch Name";
+        TMPGLEntryException.INSERT;
+
+        //NC MIO-10.7 > DP
+        Log.StartCounter(51);
+        //NC MIO-10.7 < DP
+
+        EXIT(TRUE);
+      END;
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(51);
+      //NC MIO-10.7 < DP
+
+      EXIT(FALSE);
+      //NC PIF010 < MP
+    END;
+
+    PROCEDURE CheckGLMapp@1210014(VAR GLEntryBuffer@1000000001 : Record 50093;VAR LedgDimension@1000000010 : Record 355;ConsolidationSource1@1000000009 : Record 50001;ConsSession@1210000 : Integer;DocumentNo@1210002 : Code[20];VAR MappingCode@1000000000 : Code[20];VAR LineNo@1101495004 : Integer;JobProcStatusLineNo@1101495006 : Integer) cConsAcc : Code[20];
+    VAR
+      ConvOfChartOfAccounts@1000000008 : Record 50002;
+      OperationType@1000000015 : ' ,Debit,Credit';
+      DimCode1@1000000014 : Code[20];
+      DimCode2@1000000013 : Code[20];
+      DimVal1@1000000016 : Code[20];
+      DimVal2@1000000017 : Code[20];
+      MappingFind@1000000018 : Boolean;
+      GLAccount@1210001 : Record 15;
+      IsErr@1210003 : Boolean;
+      LedgDimContr@1210004 : Record 355;
+      LedgDimIntContr@1210005 : Record 355;
+      Text50055@1210006 : TextConst 'ENU="You should define Dimension %1 %2/%3/%4 in table %5 ";RUS=Вы должны определить Измерение %1 в %2 или в %3 или в %4 таблицы %5.';
+      DimValueContr@1000000002 : Record 349;
+      lDim1Exist@1210009 : Boolean;
+      lDim2Exist@1210008 : Boolean;
+      lDim3Exist@1210007 : Boolean;
+      ICDim1Exist@1210013 : Boolean;
+      ICDim2Exist@1210012 : Boolean;
+      ICDim3Exist@1210011 : Boolean;
+      CountLEDim@1101495000 : Integer;
+      Rating@1101495001 : Integer;
+      SourceGLAccountNo@1101495002 : Code[20];
+      SourceCorrGLAccountNo@1101495003 : Code[20];
+      GLEntry@1101495005 : Record 17;
+      IsAccBalance@1101495007 : Boolean;
+      Dimension@1101495008 : Record 348;
+      DimValue@1101495009 : Record 349;
+      DefDim@1101495012 : Record 352;
+      TmpBool@1101495010 : Boolean;
+      LinkedDim@1101495011 : Record 50016;
+    BEGIN
+      GLEntry.TRANSFERFIELDS(GLEntryBuffer);
+      //Определение типа операции
+      OperationType := OperationType::" ";
+      IF GLEntryBuffer."Debit Amount" <> 0 THEN
+        OperationType := OperationType::Debit
+      ELSE
+        IF GLEntryBuffer."Credit Amount" <> 0 THEN
+          OperationType := OperationType::Credit;
+      MappingFind := FALSE;
+
+      SourceGLAccountNo := GLEntryBuffer."G/L Account No.";
+      SourceCorrGLAccountNo := GLEntryBuffer."Bal. Account No.";
+
+      //NC MIO-10.7 > DP
+      Log.StartCounter(-53);
+      // !!! ПЕРЕДЕЛАН ВЫЗОВ ConsolidationMgt.IsFoundGLMapp на локальную функцию
+      {
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,SourceCorrGLAccountNo,OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,SourceCorrGLAccountNo,0,            cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,'',                   OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,'',                   0,            cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,SourceCorrGLAccountNo,OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,SourceCorrGLAccountNo,0,            cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,'',                   OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT ConsolidationMgt.IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,'',                   0,            cConsAcc,LineNo)
+      THEN;
+      }
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,SourceCorrGLAccountNo,OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,SourceCorrGLAccountNo,0,            cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,'',                   OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           COMPANYNAME,SourceGLAccountNo,'',                   0,            cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,SourceCorrGLAccountNo,OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,SourceCorrGLAccountNo,0,            cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,'',                   OperationType,cConsAcc,LineNo)
+      THEN
+      IF NOT IsFoundGLMapp(GLEntryBuffer."Entry No.",LedgDimension,MappingCode,
+                           '',         SourceGLAccountNo,'',                   0,            cConsAcc,LineNo)
+      THEN;
+      Log.StartCounter(53);
+      //NC MIO-10.7 < DP
+
+
+      IF cConsAcc <> '' THEN BEGIN
+        MappingFind := TRUE;
+      END;
+      IsErr := FALSE;
+      IF NOT MappingFind THEN BEGIN
+        IsErr := TRUE;
+        IsGlobalError := TRUE;
+      END;
+      IF IsErr THEN BEGIN
+        //NC > AIG
+        {
+        ErrMessage := Text010 + FORMAT(SourceGLAccountNo) + Text030 + FORMAT(SourceCorrGLAccountNo) + Text011;
+        }
+        ErrMessage := Text010 + FORMAT(SourceGLAccountNo) + Text011;
+        //NC < AIG
+        ErrorJournal.AddErrorGLBuffer(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                      ConsolidationSource1.Code,ConsSession,'EDTC01',
+                                      ErrMessage,COMPANYNAME,GLEntryBuffer,JobProcStatusLineNo);
+      END;
+
+      IF cConsAcc <> '' THEN
+        IF NOT GLAccount.GET(cConsAcc) THEN BEGIN
+          IsErr := TRUE;
+          IsGlobalError := TRUE;
+          ErrMessage := Text016 + FORMAT(cConsAcc) + Text017;
+          ErrorJournal.AddErrorGLBuffer(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                        ConsolidationSource1.Code,ConsSession,'EDTC03',
+                                        ErrMessage,COMPANYNAME,GLEntryBuffer,JobProcStatusLineNo);
+          //NC MDM04 < MP
+        END ELSE BEGIN
+          IsAccBalance := (GLAccount."Income/Balance" = GLAccount."Income/Balance"::"Balance Sheet");
+          IF GLAccount."Account Type" <> GLAccount."Account Type"::Posting THEN BEGIN
+            IsGlobalError := TRUE;
+            ConvOfChartOfAccounts.GET(MappingCode,LineNo);
+            ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                  ConsolidationSource1.Code,ConsSession,'EDTC10',
+                                                  STRSUBSTNO(Text035,GLAccount."No."),COMPANYNAME,GLEntryBuffer,GLAccount,
+                                                  ConvOfChartOfAccounts,JobProcStatusLineNo);
+          END;
+          //NC MDTC02.1 > MP
+          IF GLAccount.Blocked THEN BEGIN
+            IsGlobalError := TRUE;
+            ConvOfChartOfAccounts.GET(MappingCode,LineNo);
+            ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                  ConsolidationSource1.Code,ConsSession,'EDTC15',
+                                                  STRSUBSTNO(Text041,GLAccount."No."),COMPANYNAME,GLEntryBuffer,GLAccount,
+                                                  ConvOfChartOfAccounts,JobProcStatusLineNo);
+          END;
+          //NC MDTC02.1 < MP
+
+          //NC NCS-1908 > DP
+          ConvOfChartOfAccounts.GET(MappingCode,LineNo);
+          IF ConvOfChartOfAccounts."Ext. Source Type" IN [ConvOfChartOfAccounts."Ext. Source Type"::Customer,
+                                              ConvOfChartOfAccounts."Ext. Source Type"::Vendor,
+                                              ConvOfChartOfAccounts."Ext. Source Type"::"Bank Account"] THEN BEGIN
+            IF ConvOfChartOfAccounts."Gen. Posting Type" <> 0 THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                        ConsolidationSource1.Code,ConsSession,'EDTC27',
+                    STRSUBSTNO(TextEDTC27, ConvOfChartOfAccounts.TABLECAPTION,ConvOfChartOfAccounts.FIELDCAPTION("Gen. Posting Type"),''
+      ),
+                                                        COMPANYNAME,GLEntryBuffer,GLAccount,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+            IF ConvOfChartOfAccounts."VAT Bus. Posting Group" <> '' THEN BEGIN
+               IsGlobalError := TRUE;
+               ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                        ConsolidationSource1.Code,ConsSession,'EDTC27',
+               STRSUBSTNO(TextEDTC27, ConvOfChartOfAccounts.TABLECAPTION,ConvOfChartOfAccounts.FIELDCAPTION("VAT Bus. Posting Group"),''
+      ),
+                                                        COMPANYNAME,GLEntryBuffer,GLAccount,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+            IF ConvOfChartOfAccounts."VAT Prod. Posting Group" <> '' THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                        ConsolidationSource1.Code,ConsSession,'EDTC27',
+             STRSUBSTNO(TextEDTC27, ConvOfChartOfAccounts.TABLECAPTION,ConvOfChartOfAccounts.FIELDCAPTION("VAT Prod. Posting Group"),'')
+      ,
+                                                        COMPANYNAME,GLEntryBuffer,GLAccount,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+          END;
+          IF GLAccount."Ext. Source Type" IN [GLAccount."Ext. Source Type"::Customer,
+                                              GLAccount."Ext. Source Type"::Vendor,
+                                              GLAccount."Ext. Source Type"::"Bank Account"] THEN BEGIN
+            IF ConvOfChartOfAccounts."Gen. Posting Type" <> 0 THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                        ConsolidationSource1.Code,ConsSession,'EDTC27',
+                    STRSUBSTNO(TextEDTC27, ConvOfChartOfAccounts.TABLECAPTION,ConvOfChartOfAccounts.FIELDCAPTION("Gen. Posting Type"),''
+      ),
+                                                        COMPANYNAME,GLEntryBuffer,GLAccount,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+            IF ConvOfChartOfAccounts."VAT Bus. Posting Group" <> '' THEN BEGIN
+               IsGlobalError := TRUE;
+               ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                        ConsolidationSource1.Code,ConsSession,'EDTC27',
+               STRSUBSTNO(TextEDTC27, ConvOfChartOfAccounts.TABLECAPTION,ConvOfChartOfAccounts.FIELDCAPTION("VAT Bus. Posting Group"),''
+      ),
+                                                        COMPANYNAME,GLEntryBuffer,GLAccount,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+            IF ConvOfChartOfAccounts."VAT Prod. Posting Group" <> '' THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                        ConsolidationSource1.Code,ConsSession,'EDTC27',
+             STRSUBSTNO(TextEDTC27, ConvOfChartOfAccounts.TABLECAPTION,ConvOfChartOfAccounts.FIELDCAPTION("VAT Prod. Posting Group"),'')
+      ,
+                                                        COMPANYNAME,GLEntryBuffer,GLAccount,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+          END;
+          //NC NCS-1908 < DP
+        END;
+      //NC MDTC02 < MP
+      //NC MDTC03 > MP
+      IF (ConsolidationSource1."Import Format" = ConsolidationSource1."Import Format"::FromBufferNAV) AND
+         ConsolidationSource1."Use GL Mapping" AND (cConsAcc <> '') AND (LineNo <> 0)
+      THEN BEGIN
+        ConvOfChartOfAccounts.GET(MappingCode,LineNo);
+        IF (ConvOfChartOfAccounts."Receiver Dimension Code 1" <> '') AND
+           (ConvOfChartOfAccounts."Receiver Dim. Value Code 1" <> '')
+        THEN BEGIN
+
+          //NCS-2089 > AAP
+          ConvOfChartOfAccounts.ReceiverDimValueCode(1,GLEntryBuffer);
+          //NCS-2089 < AAP
+
+          IF Dimension.GET(ConvOfChartOfAccounts."Receiver Dimension Code 1") THEN BEGIN
+            IF Dimension.Blocked THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource1.Code,ConsSession,'EDTC16',
+                                         STRSUBSTNO(Text042,ConvOfChartOfAccounts."Receiver Dimension Code 1"),
+                                         COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+          END ELSE BEGIN
+            IsGlobalError := TRUE;
+            ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource1.Code,ConsSession,'EDTC17',
+                                       STRSUBSTNO(Text043,ConvOfChartOfAccounts."Receiver Dimension Code 1"),
+                                       COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+
+          END;
+
+          IF NOT DimValue.GET(ConvOfChartOfAccounts."Receiver Dimension Code 1",ConvOfChartOfAccounts."Receiver Dim. Value Code 1")
+          THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrMessage := Text022 + FORMAT(ConvOfChartOfAccounts."Receiver Dimension Code 1") + Text023 +
+                          FORMAT(ConvOfChartOfAccounts."Receiver Dim. Value Code 1") + Text024;
+            ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                  ConsolidationSource1.Code,ConsSession,'EDTC06',
+                                                  ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+          END ELSE BEGIN
+            IF DimValue."Dimension Value Type" <> DimValue."Dimension Value Type"::Standard THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrMessage := Text034 + FORMAT(DimValue.Code) + Text013 + FORMAT(DimValue."Dimension Code") + Text032;
+              ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource1.Code,ConsSession,'EDTC09',
+                                         ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END ELSE BEGIN
+              IF DimValue.Blocked THEN BEGIN
+                IsGlobalError := TRUE;
+                ErrMessage := Text025 + FORMAT(DimValue."Dimension Code") + Text026 + FORMAT(DimValue.Code) + Text027;
+                ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                           ConsolidationSource1.Code,ConsSession,'EDTC07',
+                                           ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+              END ELSE BEGIN
+                LedgDimension.INIT;
+                LedgDimension."Table ID" := 17;
+                LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+                LedgDimension."Dimension Code" := ConvOfChartOfAccounts."Receiver Dimension Code 1";
+                LedgDimension."Dimension Value Code" := ConvOfChartOfAccounts."Receiver Dim. Value Code 1";
+                IF NOT LedgDimension.INSERT THEN BEGIN
+                  TmpBool := TRUE;//LedgDimensionTMP.MODIFY;
+                  //NCS-2089 > AAP
+                  IF ConvOfChartOfAccounts."Receiver Forced Dim. Value 1" THEN BEGIN
+                    LedgDimension.MODIFY;
+                  END;
+                  //NCS-2089 < AAP
+                END ELSE BEGIN
+                  LinkedDim.RESET;
+                  LinkedDim.SETRANGE("Dimension Code",ConvOfChartOfAccounts."Receiver Dimension Code 1");
+                  LinkedDim.SETRANGE("Dimension Value",ConvOfChartOfAccounts."Receiver Dim. Value Code 1");
+                  IF LinkedDim.FINDSET THEN
+                    REPEAT
+                      LedgDimension.INIT;
+                      LedgDimension."Table ID" := 17;
+                      LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+                      LedgDimension."Dimension Code" := LinkedDim."Linked Dimension Code";
+                      LedgDimension."Dimension Value Code" := LinkedDim."Linked Dimension Value";
+                      IF NOT LedgDimension.INSERT THEN;
+                        //  LedgDimensionTMP.MODIFY;
+                    UNTIL LinkedDim.NEXT = 0;
+                END;
+              END
+            END;
+          END;
+        END;
+        IF (ConvOfChartOfAccounts."Receiver Dimension Code 2" <> '') AND
+           (ConvOfChartOfAccounts."Receiver Dim. Value Code 2" <> '')
+        THEN BEGIN
+
+          //NCS-2089 > AAP
+          ConvOfChartOfAccounts.ReceiverDimValueCode(2,GLEntryBuffer);
+          //NCS-2089 < AAP
+
+          IF Dimension.GET(ConvOfChartOfAccounts."Receiver Dimension Code 2") THEN BEGIN
+            IF Dimension.Blocked THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 ConsolidationSource1.Code,ConsSession,'EDTC16',
+                                                 STRSUBSTNO(Text042,ConvOfChartOfAccounts."Receiver Dimension Code 2"),
+                                                 COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+          END ELSE BEGIN
+            IsGlobalError := TRUE;
+            ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                               ConsolidationSource1.Code,ConsSession,'EDTC17',
+                                               STRSUBSTNO(Text043,ConvOfChartOfAccounts."Receiver Dimension Code 2"),
+                                               COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+
+          END;
+          IF NOT DimValue.GET(ConvOfChartOfAccounts."Receiver Dimension Code 2",ConvOfChartOfAccounts."Receiver Dim. Value Code 2")
+          THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrMessage := Text022 + FORMAT(ConvOfChartOfAccounts."Receiver Dimension Code 2") + Text023 +
+                          FORMAT(ConvOfChartOfAccounts."Receiver Dim. Value Code 2") + Text024;
+            ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                               ConsolidationSource1.Code,ConsSession,'EDTC06',
+                                               ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+          END ELSE BEGIN
+            IF DimValue."Dimension Value Type" <> DimValue."Dimension Value Type"::Standard THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrMessage := Text034 + FORMAT(DimValue.Code) + Text013 + FORMAT(DimValue."Dimension Code") + Text032;
+              ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                 ConsolidationSource1.Code,ConsSession,'EDTC09',
+                                                 ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END ELSE BEGIN
+              IF DimValue.Blocked THEN BEGIN
+                IsGlobalError := TRUE;
+                ErrMessage := Text025 + FORMAT(DimValue."Dimension Code") + Text026 + FORMAT(DimValue.Code) + Text027;
+                ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                   ConsolidationSource1.Code,ConsSession,'EDTC07',
+                                                   ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+              END ELSE BEGIN
+                LedgDimension.INIT;
+                LedgDimension."Table ID" := 17;
+                LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+                LedgDimension."Dimension Code" := ConvOfChartOfAccounts."Receiver Dimension Code 2";
+                LedgDimension."Dimension Value Code" := ConvOfChartOfAccounts."Receiver Dim. Value Code 2";
+                IF NOT LedgDimension.INSERT THEN BEGIN
+                  TmpBool := TRUE;//LedgDimensionTMP.MODIFY
+                  //NCS-2089 > AAP
+                  IF ConvOfChartOfAccounts."Receiver Forced Dim. Value 2" THEN BEGIN
+                    LedgDimension.MODIFY;
+                  END;
+                  //NCS-2089 < AAP
+                END ELSE BEGIN
+                  LinkedDim.RESET;
+                  LinkedDim.SETRANGE("Dimension Code",ConvOfChartOfAccounts."Receiver Dimension Code 2");
+                  LinkedDim.SETRANGE("Dimension Value",ConvOfChartOfAccounts."Receiver Dim. Value Code 2");
+                  IF LinkedDim.FINDSET THEN
+                    REPEAT
+                      LedgDimension.INIT;
+                      LedgDimension."Table ID" := 17;
+                      LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+                      LedgDimension."Dimension Code" := ConvOfChartOfAccounts."Receiver Dimension Code 2";
+                      LedgDimension."Dimension Value Code" := ConvOfChartOfAccounts."Receiver Dim. Value Code 2";
+                      LedgDimension."Dimension Code" := LinkedDim."Linked Dimension Code";
+                      LedgDimension."Dimension Value Code" := LinkedDim."Linked Dimension Value";
+                      IF NOT LedgDimension.INSERT THEN;
+                      //  LedgDimensionTMP.MODIFY;
+                    UNTIL LinkedDim.NEXT = 0;
+                END;
+              END;
+            END;
+          END;
+        END;
+        IF (ConvOfChartOfAccounts."Receiver Dimension Code 3" <> '') AND
+           (ConvOfChartOfAccounts."Receiver Dim. Value Code 3" <> '')
+        THEN BEGIN
+
+          //NCS-2089 > AAP
+          ConvOfChartOfAccounts.ReceiverDimValueCode(3,GLEntryBuffer);
+          //NCS-2089 < AAP
+
+          IF Dimension.GET(ConvOfChartOfAccounts."Receiver Dimension Code 3") THEN BEGIN
+            IF Dimension.Blocked THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource1.Code,ConsSession,'EDTC16',
+                                         STRSUBSTNO(Text042,ConvOfChartOfAccounts."Receiver Dimension Code 3"),
+                                         COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END;
+          END ELSE BEGIN
+            IsGlobalError := TRUE;
+            ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource1.Code,ConsSession,'EDTC17',
+                                       STRSUBSTNO(Text043,ConvOfChartOfAccounts."Receiver Dimension Code 3"),
+                                       COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+
+          END;
+          IF NOT DimValue.GET(ConvOfChartOfAccounts."Receiver Dimension Code 3",ConvOfChartOfAccounts."Receiver Dim. Value Code 3")
+          THEN BEGIN
+            IsGlobalError := TRUE;
+            ErrMessage := Text022 + FORMAT(ConvOfChartOfAccounts."Receiver Dimension Code 3") + Text023 +
+                          FORMAT(ConvOfChartOfAccounts."Receiver Dim. Value Code 3") + Text024;
+            ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                  ConsolidationSource1.Code,ConsSession,'EDTC06',
+                                                  ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+          END ELSE BEGIN
+            IF DimValue."Dimension Value Type" <> DimValue."Dimension Value Type"::Standard THEN BEGIN
+              IsGlobalError := TRUE;
+              ErrMessage := Text034 + FORMAT(DimValue.Code) + Text013 + FORMAT(DimValue."Dimension Code") + Text032;
+              ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource1.Code,ConsSession,'EDTC09',
+                                         ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+            END ELSE BEGIN
+              IF DimValue.Blocked THEN BEGIN
+                IsGlobalError := TRUE;
+                ErrMessage := Text025 + FORMAT(DimValue."Dimension Code") + Text026 + FORMAT(DimValue.Code) + Text027;
+                ErrorJournal.AddErrorGLBufferGLMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                           ConsolidationSource1.Code,ConsSession,'EDTC07',
+                                           ErrMessage,COMPANYNAME,GLEntryBuffer,ConvOfChartOfAccounts,JobProcStatusLineNo);
+              END ELSE BEGIN
+                LedgDimension.INIT;
+                LedgDimension."Table ID" := 17;
+                LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+                LedgDimension."Dimension Code" := ConvOfChartOfAccounts."Receiver Dimension Code 3";
+                LedgDimension."Dimension Value Code" := ConvOfChartOfAccounts."Receiver Dim. Value Code 3";
+                IF NOT LedgDimension.INSERT THEN BEGIN
+                  TmpBool := TRUE;//LedgDimensionTMP.MODIFY;
+                  //NCS-2089 > AAP
+                  IF ConvOfChartOfAccounts."Receiver Forced Dim. Value 3" THEN BEGIN
+                    LedgDimension.MODIFY;
+                  END;
+                  //NCS-2089 < AAP
+                END ELSE BEGIN
+                  LinkedDim.RESET;
+                  LinkedDim.SETRANGE("Dimension Code",ConvOfChartOfAccounts."Receiver Dimension Code 3");
+                  LinkedDim.SETRANGE("Dimension Value",ConvOfChartOfAccounts."Receiver Dim. Value Code 3");
+                  IF NOT LedgDimension.INSERT THEN
+                    LedgDimension.MODIFY;
+                  IF LinkedDim.FINDSET THEN
+                    REPEAT
+                      LedgDimension.INIT;
+                      LedgDimension."Table ID" := 17;
+                      LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+                      LedgDimension."Dimension Code" := ConvOfChartOfAccounts."Receiver Dimension Code 3";
+                      LedgDimension."Dimension Value Code" := ConvOfChartOfAccounts."Receiver Dim. Value Code 3";
+                      LedgDimension."Dimension Code" := LinkedDim."Linked Dimension Code";
+                      LedgDimension."Dimension Value Code" := LinkedDim."Linked Dimension Value";
+                      IF NOT LedgDimension.INSERT THEN;
+                      //  LedgDimensionTMP.MODIFY;
+                    UNTIL LinkedDim.NEXT = 0;
+                END;
+              END;
+            END;
+          END;
+        END;
+        //NC MDTC01 > MP Добавляем стандартные измерения со счета
+        DefDim.SETRANGE("Table ID",15);
+        DefDim.SETRANGE("No.",cConsAcc);
+        DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+        //NC MIO-10.7 > DP
+        {
+        IF DefDim.FINDSET THEN
+        }
+        IF GV.FIND_DefDim(DefDim) THEN
+        //NC MIO-10.7 < DP
+
+
+          REPEAT
+            LedgDimension.INIT;
+            LedgDimension."Table ID" := 17;
+            LedgDimension."Entry No." := GLEntryBuffer."Entry No.";
+            LedgDimension."Dimension Code" := DefDim."Dimension Code";
+            LedgDimension."Dimension Value Code" := DefDim."Dimension Value Code";
+
+            //NC NCS-1180 > DP
+            IF DefDim."Value Posting" = DefDim."Value Posting"::"Same Code" THEN BEGIN
+              LedgDimension."Dim in Source" :=DefDim."Dimension Code";
+              LedgDimension."Dim Value Code in Source" := DefDim."Dimension Value Code";
+            END;
+            //NC NCS-1180 < DP
+
+            IF NOT LedgDimension.INSERT THEN
+
+              //NC NCS-1180 > DP
+              IF DefDim."Value Posting" = DefDim."Value Posting"::"Same Code" THEN
+                LedgDimension.MODIFY
+              //NC NCS-1180 < DP
+
+            ;
+
+          //NC MIO-10.7 > DP
+          {
+          UNTIL DefDim.NEXT = 0;
+          }
+          UNTIL GV.NEXT_DefDim(DefDim) = 0;
+          //NC MIO-10.7 < DP
+
+
+        //NC MDTC01 < MP
+      END;
+      //NC MDTC03 < MP
+
+      //NC MDTC03, MDTM04< MP
+
+      EXIT;
+      {
+      Приоритет при поиске мэппинга:
+      Фирма | Дебет/Кредит | Корр.Счет
+        +          +            +
+        +          +            -
+        +          -            +
+        +          -            -
+        -          +            +
+        -          +            -
+        -          -            +
+        -          -            -
+      }
+    END;
+
+    PROCEDURE CheckDimMapp@1000000032(GLBuffer@1210001 : Record 50093;VAR LedgDimensionTmp@1000000010 : TEMPORARY Record 355;ConsolidationSource@1000000009 : Record 50001;ConsSession@1210000 : Integer;SaveSourceDimValue@1000000001 : Boolean;MappingCode@1000000002 : Code[20];JobProcStatusLineNo@1101495001 : Integer) IsErr : Boolean;
+    VAR
+      ConvDimensions@1000000008 : Record 50003;
+      DimCode@1000000014 : Code[20];
+      DimVal@1000000013 : Code[20];
+      tmp@1210002 : Integer;
+      lDim1Exist@1210007 : Boolean;
+      lDim2Exist@1210006 : Boolean;
+      lDim3Exist@1210005 : Boolean;
+      ConsDimCode@1210004 : Code[20];
+      LedgDimension1@1210003 : Record 355;
+      DimensionValue@1101495000 : Record 349;
+      LedgDimensionTmp2@1101495002 : TEMPORARY Record 355;
+      IsNotModify@1101495003 : Boolean;
+    BEGIN
+      IsErr := FALSE;
+      DimCode := LedgDimensionTmp."Dimension Code";
+      DimVal := LedgDimensionTmp."Dimension Value Code";
+
+      IF ConsolidationSetup."Mapping Dimension Type"=ConsolidationSetup."Mapping Dimension Type"::"Combination-To-One" THEN BEGIN
+        ConsDimCode :='';
+
+        LedgDimensionTmp.RESET;
+        LedgDimensionTmp.SETRANGE("Table ID", DATABASE::"G/L Entry");
+        LedgDimensionTmp.SETRANGE("Entry No.", GLBuffer."Entry No.");
+
+        ConvDimensions.RESET;
+        ConvDimensions.SETRANGE("Mapping Code",MappingCode);
+        ConvDimensions.SETRANGE("Source Dimension Code",DimCode);
+        ConvDimensions.SETRANGE("Source Dimension Value Code",DimVal);
+        IF ConvDimensions.FINDSET THEN
+          REPEAT
+            //проверяем, есть ли строка, соответствующая исключению, в измерениях в данной операции
+
+            IF ConsDimCode='' THEN BEGIN
+              //Проверка на соответствие до 3-х измерений
+              lDim1Exist := TRUE;
+              lDim2Exist := TRUE;
+              lDim3Exist := TRUE;
+
+              WITH LedgDimensionTmp DO BEGIN
+                IF ConvDimensions."Source Dimension Code" <> '' THEN BEGIN
+                  SETRANGE("Dimension Code", ConvDimensions."Source Dimension Code");
+                  SETRANGE("Dimension Value Code", ConvDimensions."Source Dimension Value Code");
+                  lDim1Exist := NOT ISEMPTY;
+                END;
+
+                IF ConvDimensions."Source Dimension Code 2" <> '' THEN BEGIN
+                  SETRANGE("Dimension Code", ConvDimensions."Source Dimension Code 2");
+                  SETRANGE("Dimension Value Code", ConvDimensions."Source Dimension Value Code 2");
+                  lDim2Exist := NOT ISEMPTY;
+                END;
+
+                IF ConvDimensions."Source Dimension Code 3" <> '' THEN BEGIN
+                  SETRANGE("Dimension Code", ConvDimensions."Source Dimension Code 3");
+                  SETRANGE("Dimension Value Code", ConvDimensions."Source Dimension Value Code 3");
+                  lDim3Exist := NOT ISEMPTY;
+                END;
+              END;
+             IF (lDim1Exist AND lDim2Exist AND lDim3Exist) THEN
+               ConsDimCode := ConvDimensions."Receiver Dimension Code";
+            END;
+          UNTIL (ConvDimensions.NEXT = 0) OR (ConsDimCode <> '');
+          IF ConsDimCode='' THEN BEGIN
+            ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+            IsErr := TRUE;
+            IsGlobalError := TRUE;
+            IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+            ErrorJournal.AddErrorGLBufferDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,ConsSession,'EDTC02',
+                                       ErrMessage,COMPANYNAME,GLBuffer,DimensionValue,JobProcStatusLineNo);
+         END;
+      END ELSE BEGIN
+        ConvDimensions.SETCURRENTKEY("Company Name","Source Dimension Code","Source Dimension Value Code");
+        ConvDimensions.SETRANGE("Mapping Code",MappingCode);
+        ConvDimensions.SETRANGE("Company Name",COMPANYNAME);
+        ConvDimensions.SETRANGE("Source Dimension Code",DimCode);
+        ConvDimensions.SETRANGE("Source Dimension Value Code",DimVal);
+        IF NOT ConvDimensions.FINDFIRST THEN BEGIN
+          ConvDimensions.SETRANGE("Company Name",'');
+          IF NOT ConvDimensions.FINDFIRST THEN BEGIN
+            ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+            IsErr := TRUE;
+            IsGlobalError := TRUE;
+            IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+            ErrorJournal.AddErrorGLBufferDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,ConsSession,'EDTC02',
+                                       ErrMessage,COMPANYNAME,GLBuffer,DimensionValue,JobProcStatusLineNo);
+          END ELSE BEGIN
+            IF (ConvDimensions."Receiver Dimension Code" = '') OR (ConvDimensions."Receiver Dimension Value Code" = '') THEN BEGIN
+              ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+              IsErr := TRUE;
+              IsGlobalError := TRUE;
+              IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+              ErrorJournal.AddErrorGLBufferDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource.Code,ConsSession,'EDTC02',
+                                         ErrMessage,COMPANYNAME,GLBuffer,DimensionValue,JobProcStatusLineNo);
+            END ELSE BEGIN
+              IF NOT DimensionValue.GET(ConvDimensions."Receiver Dimension Code",ConvDimensions."Receiver Dimension Value Code")
+              THEN BEGIN
+                IsGlobalError := TRUE;
+                IsErr := TRUE;
+                ErrMessage := Text022 + FORMAT(ConvDimensions."Receiver Dimension Code") + Text023 +
+                              FORMAT(ConvDimensions."Receiver Dimension Value Code") + Text024;
+                ErrorJournal.AddErrorGLBufferDimMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                           ConsolidationSource.Code,ConsSession,'EDTC06',
+                                           ErrMessage,COMPANYNAME,GLBuffer,ConvDimensions,JobProcStatusLineNo);
+
+              END ELSE BEGIN
+                  LedgDimensionTmp2 := LedgDimensionTmp;
+
+                  //NC NCS-1180 > DP
+                  IsNotModify := FALSE;
+                  IF LedgDimensionTmp2.GET(17,GLBuffer."Entry No.",ConvDimensions."Receiver Dimension Code") THEN
+                   IF (LedgDimensionTmp2."Dimension Code"=LedgDimensionTmp2."Dim in Source") AND
+                   (LedgDimensionTmp2."Dimension Value Code"=LedgDimensionTmp2."Dim Value Code in Source") THEN
+                      IsNotModify := TRUE;
+                  //NC NCS-1180 < DP
+
+                  IF NOT SaveSourceDimValue THEN
+                    LedgDimensionTmp.DELETE;
+
+                  //NC NCS-1180 > DP
+                  IF NOT IsNotModify THEN BEGIN
+                  //NC NCS-1180 < DP
+
+                  LedgDimensionTmp.INIT;
+                  LedgDimensionTmp."Table ID" := 17;
+                  LedgDimensionTmp."Entry No." := GLBuffer."Entry No.";
+                  LedgDimensionTmp."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+                  LedgDimensionTmp."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+                  LedgDimensionTmp."Dim in Source" := DimCode;
+                  LedgDimensionTmp."Dim Value Code in Source" := DimVal;
+                  IF NOT LedgDimensionTmp.INSERT THEN
+                    LedgDimensionTmp.MODIFY;
+
+                  //NC NCS-1180 > DP
+                  END;
+                  //NC NCS-1180 < DP
+
+                  LedgDimensionTmp := LedgDimensionTmp2;
+              END;
+            END;
+          END;
+        END ELSE BEGIN
+          IF (ConvDimensions."Receiver Dimension Code" = '') OR (ConvDimensions."Receiver Dimension Value Code" = '') THEN BEGIN
+            ErrMessage := Text012 + FORMAT(DimVal) + Text013 + FORMAT(DimCode) + Text014;
+            IsErr := TRUE;
+            IsGlobalError := TRUE;
+            IF NOT DimensionValue.GET(DimCode,DimVal) THEN;
+            ErrorJournal.AddErrorGLBufferDimVal(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                       ConsolidationSource.Code,ConsSession,'EDTC02',
+                                       ErrMessage,COMPANYNAME,GLBuffer,DimensionValue,JobProcStatusLineNo);
+              END ELSE BEGIN
+            IF NOT DimensionValue.GET(ConvDimensions."Receiver Dimension Code",ConvDimensions."Receiver Dimension Value Code")
+            THEN BEGIN
+              IsGlobalError := TRUE;
+              IsErr := TRUE;
+              ErrMessage := Text022 + FORMAT(ConvDimensions."Receiver Dimension Code") + Text023 +
+                            FORMAT(ConvDimensions."Receiver Dimension Value Code") + Text024;
+              ErrorJournal.AddErrorGLBufferDimMapp(COMPANYNAME,ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                         ConsolidationSource.Code,ConsSession,'EDTC06',
+                                         ErrMessage,COMPANYNAME,GLBuffer,ConvDimensions,JobProcStatusLineNo);
+            END ELSE BEGIN
+                  LedgDimensionTmp2 := LedgDimensionTmp;
+                  IF NOT SaveSourceDimValue THEN
+                    LedgDimensionTmp.DELETE;
+                  LedgDimensionTmp.INIT;
+                  LedgDimensionTmp."Table ID" := 17;
+                  LedgDimensionTmp."Entry No." := GLBuffer."Entry No.";
+                  LedgDimensionTmp."Dimension Code" := ConvDimensions."Receiver Dimension Code";
+                  LedgDimensionTmp."Dimension Value Code" := ConvDimensions."Receiver Dimension Value Code";
+                  LedgDimensionTmp."Dim in Source" := DimCode;
+                  LedgDimensionTmp."Dim Value Code in Source" := DimVal;
+                  IF NOT LedgDimensionTmp.INSERT THEN
+                    LedgDimensionTmp.MODIFY;
+                  LedgDimensionTmp := LedgDimensionTmp2;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetAmountsNone@1000000042(GLBuff@1000000003 : Record 50093;ConsSourceCurrencyCode@1000000000 : Code[20];MappingCode@1000000004 : Code[20];VAR GLEntryTemp@1000000001 : TEMPORARY Record 17);
+    VAR
+      GLMapp@1000000005 : Record 50002;
+      CurrExchRate@1000000006 : Record 330;
+      GLAcc@1000000007 : Record 15;
+      AccType@1000000009 : 'IncSt,BS,OffBS,None';
+    BEGIN
+      IF (GLBuff."Original Amount" = 0) AND (GLBuff.Amount <> 0) THEN BEGIN
+        GetAmountsDiff(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+
+      //NC DP > 04.09.2011
+      IF GLMapp.GET(MappingCode,GLBuff."Mapping Line No") THEN
+        IF GLMapp."Convert to Currency Code" <>'' THEN BEGIN
+          GetAmountsConvert(GLBuff,ConsSourceCurrencyCode,GLMapp,GLEntryTemp);
+          EXIT;
+        END;
+      //NC DP <
+
+
+      IF ConsSourceCurrencyCode = '' THEN BEGIN //локальные валюты во внешней системе и в нав совпадают
+        IF ((GLBuff."Original Currency Code" = '') AND
+             ((GLBuff."Original Amount" = 0) OR (ROUND(GLBuff."Original Amount",0.01) = ROUND(GLBuff.Amount,0.01)))
+            OR
+            ((GLBuff."Original Currency Code" = GLSetup."LCY Code") AND
+             (ROUND(GLBuff."Original Amount",0.01) = ROUND(GLBuff.Amount,0.01))))
+        THEN BEGIN
+          GLEntryTemp."Original Currency Code" := '';
+          GLEntryTemp."Original Amount" := ROUND(GLBuff.Amount,0.01);
+          GLEntryTemp.Amount := ROUND(GLBuff.Amount,0.01);
+        END;
+        IF ((GLBuff."Original Currency Code" <> '') AND (GLBuff."Original Currency Code" <> GLSetup."LCY Code")) THEN BEGIN
+          GLEntryTemp."Original Currency Code" := GLBuff."Original Currency Code";
+          GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+          GLEntryTemp.Amount := ROUND(GLBuff.Amount,0.01);
+          IF GLEntryTemp.Amount <> 0 THEN
+            GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+          ELSE
+            IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+              //NCS-601 > DP
+              IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+              ELSE
+              //NCS-601 > DP
+
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+        END;
+      END ELSE BEGIN //локальные валюты во внешней системе и в нав НЕ совпадают
+        IF ((GLBuff."Original Currency Code" = '') AND
+             ((GLBuff."Original Amount" = 0) OR (ROUND(GLBuff."Original Amount",0.01) = ROUND(GLBuff.Amount,0.01)))
+            OR
+            ((GLBuff."Original Currency Code" = ConsSourceCurrencyCode) AND
+             (ROUND(GLBuff."Original Amount",0.01) = ROUND(GLBuff.Amount,0.01))))
+        THEN BEGIN
+          GLEntryTemp."Original Currency Code" := ConsSourceCurrencyCode;
+          GLEntryTemp."Original Amount" := ROUND(GLBuff.Amount,0.01);
+          //GLEntryTemp.Amount := //ROUND(GLBuff."Amount (LCY)",0.01); //тут все равно, какой счет - BS или PL
+
+          //NCS-601 > DP
+          IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+           GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLBuff."Historical Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLEntryTemp."Original Amount",
+                                   CurrExchRate.ExchangeRate(
+                                     GLBuff."Historical Date",
+                                     GLEntryTemp."Original Currency Code"))
+
+          ELSE
+          //NCS-601 < DP
+
+          GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLBuff."Posting Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLEntryTemp."Original Amount",
+                                   CurrExchRate.ExchangeRate(
+                                     GLBuff."Posting Date",
+                                     GLEntryTemp."Original Currency Code"));
+
+          IF GLEntryTemp.Amount <> 0 THEN
+            GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+          ELSE
+            IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+              //NCS-601 > DP
+              IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+              ELSE
+              //NCS-601 > DP
+
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+        END;
+        IF GLBuff."Original Currency Code" = GLSetup."LCY Code" THEN BEGIN
+          GLEntryTemp."Original Currency Code" := '';
+          GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+          GLEntryTemp.Amount := GLBuff."Original Amount";
+        END;
+        IF (GLBuff."Original Currency Code" <> '') AND (GLBuff."Original Currency Code" <> GLSetup."LCY Code") AND
+           (GLBuff."Original Currency Code" <> ConsSourceCurrencyCode)
+        THEN BEGIN
+          GLEntryTemp."Original Currency Code" := GLBuff."Original Currency Code";
+          GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+
+          //NCS-601 > DP
+          IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+           GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLBuff."Historical Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLEntryTemp."Original Amount",
+                                   CurrExchRate.ExchangeRate(
+                                     GLBuff."Historical Date",
+                                     GLEntryTemp."Original Currency Code"))
+
+          ELSE
+          //NCS-601 < DP
+
+          GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLBuff."Posting Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLEntryTemp."Original Amount",
+                                   CurrExchRate.ExchangeRate(
+                                     GLBuff."Posting Date",
+                                     GLEntryTemp."Original Currency Code"));
+          IF GLEntryTemp.Amount <> 0 THEN
+            GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+          ELSE
+            IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+              //NCS-601 > DP
+              IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+              ELSE
+              //NCS-601 > DP
+
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+        END;
+      END;
+    END;
+
+    PROCEDURE GetAmountsPosition@1101495000(GLBuff@1000000003 : Record 50093;ConsSourceCurrencyCode@1000000000 : Code[20];MappingCode@1000000004 : Code[20];MappLineNo@1101495007 : Integer;VAR GLEntryTemp@1000000001 : TEMPORARY Record 17;VAR LedgDimensionTemp@1101495008 : TEMPORARY Record 355);
+    VAR
+      GLMapp@1000000005 : Record 50002;
+      CurrExchRate@1000000006 : Record 330;
+      GLAcc@1000000007 : Record 15;
+      LocGLAccTmp@1101495000 : TEMPORARY Record 15;
+      FICode@1101495001 : Code[20];
+      FI@1101495002 : Record 50021;
+      FIType@1101495003 : Record 50051;
+      Emitent@1101495004 : Record 18;
+      Country@1101495005 : Record 9;
+      NewOriginalCurrencyCode@1101495006 : Code[10];
+      l_recDeal@1000000009 : Record 50037;
+      l_recDealType@1000000008 : Record 50038;
+      l_codeDeal@1000000002 : Code[20];
+    BEGIN
+      IF (GLBuff."Original Amount" = 0) AND (GLBuff.Amount <> 0) THEN BEGIN
+        GetAmountsDiff(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+
+      GLMapp.GET(MappingCode,MappLineNo);
+      GLAcc.GET(GLMapp."Receiver Account Code");
+      IF NOT GLAcc."FI Required" THEN BEGIN
+        GetAmountsNone(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+
+      LocGLAccTmp.RESET;
+      LocGLAccTmp.DELETEALL;
+      LocGLAccTmp."No." := GLBuff."G/L Account No.";
+      LocGLAccTmp.INSERT;
+      LocGLAccTmp.SETFILTER("No.",ConsolidationSetup."Position Ext. G/L Account Filt");
+      IF LocGLAccTmp.ISEMPTY THEN BEGIN
+        GetAmountsNone(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+
+      LedgDimensionTemp.GET(17,GLBuff."Entry No.",ConsolidationSetup."Fin. Instrument Dimension Code");
+      FICode := LedgDimensionTemp."Dimension Value Code";
+
+      //TDRANCS-1269>
+      IF LedgDimensionTemp.GET(17,GLBuff."Entry No.",ConsolidationSetup."Deal Dimension Code") THEN
+        l_codeDeal := LedgDimensionTemp."Dimension Value Code";
+      //TDRANCS-1269<
+
+      IF NOT FI.GET(FICode) THEN BEGIN
+        GetAmountsNone(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+      IF NOT FIType.GET(FI."Type FI") THEN BEGIN
+        GetAmountsNone(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+      IF NOT FIType."Change Original Currency" THEN BEGIN
+        GetAmountsNone(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      //TDRANCS-1269>
+      END ELSE BEGIN
+        IF l_recDeal.GET(l_codeDeal) THEN
+          IF l_recDealType.GET(l_recDeal."Type Deal") THEN
+            IF NOT l_recDealType."Change Original Currency" THEN BEGIN
+              GetAmountsNone(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+              EXIT;
+            END;
+      END;
+      //TDRANCS-1269<
+
+
+      NewOriginalCurrencyCode := ConsolidationMgt.ConvertCurrencyCode(FI."Currency of Nominal");
+
+      GLEntryTemp."Original Currency Code" := NewOriginalCurrencyCode;
+      IF ( (GLBuff."Original Currency Code" <> '') AND
+           (NewOriginalCurrencyCode <> ConsolidationMgt.ConvertCurrencyCode(GLBuff."Original Currency Code")) ) OR
+         ( (GLBuff."Original Currency Code" = '') AND
+           (NewOriginalCurrencyCode <> ConsSourceCurrencyCode) ) THEN
+        GLEntryTemp."Original Amount" := ROUND(CurrExchRate.ExchangeAmtFCYToFCY(GLBuff."Posting Date",
+                                                                                ConsSourceCurrencyCode,
+                                                                                NewOriginalCurrencyCode,
+                                                                                GLBuff.Amount),0.01)
+      ELSE
+        GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+
+        //NCS-601 > DP
+        IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+        GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                 GLBuff."Historical Date",
+                                 GLEntryTemp."Original Currency Code",
+                                 GLEntryTemp."Original Amount",
+                                 CurrExchRate.ExchangeRate(
+                                   GLBuff."Historical Date",
+                                   GLEntryTemp."Original Currency Code"))
+        ELSE
+        //NCS-601 < DP
+
+
+      GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                               GLBuff."Posting Date",
+                               GLEntryTemp."Original Currency Code",
+                               GLEntryTemp."Original Amount",
+                               CurrExchRate.ExchangeRate(
+                                 GLBuff."Posting Date",
+                                 GLEntryTemp."Original Currency Code"));
+      IF GLEntryTemp.Amount <> 0 THEN
+        GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+      ELSE
+
+        //NCS-601 > DP
+        IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+          GLEntryTemp."Original Currency Factor" :=
+            CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+        ELSE
+        //NCS-601 > DP
+
+        GLEntryTemp."Original Currency Factor" :=
+          CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+    END;
+
+    PROCEDURE GetAmountsRates@1101495001(GLBuff@1000000003 : Record 50093;ConsSourceCurrencyCode@1000000000 : Code[20];MappingCode@1000000004 : Code[20];VAR GLEntryTemp@1000000001 : TEMPORARY Record 17);
+    VAR
+      GLMapp@1000000005 : Record 50002;
+      CurrExchRate@1000000006 : Record 330;
+      GLAcc@1000000007 : Record 15;
+      ExchRate@1101495000 : Decimal;
+      OrigCurrCode@1101495001 : Code[10];
+    BEGIN
+      //NC MDTY01 > MP
+      IF (GLBuff."Original Amount" = 0) AND (GLBuff.Amount <> 0) THEN BEGIN
+        GetAmountsDiff(GLBuff,ConsSourceCurrencyCode,MappingCode,GLEntryTemp);
+        EXIT;
+      END;
+
+      IF ConsSourceCurrencyCode = '' THEN BEGIN //локальные валюты во внешней системе и в нав совпадают
+        IF ((GLBuff."Original Currency Code" = '') AND
+             ((GLBuff."Original Amount" = 0) OR (GLBuff."Original Amount" = GLBuff.Amount))
+            OR
+            ((GLBuff."Original Currency Code" = GLSetup."LCY Code") AND
+             (GLBuff."Original Amount" = GLBuff.Amount)))
+        THEN BEGIN //Тут курс проверять не надо, всегда совпадают!
+          GLEntryTemp."Original Currency Code" := '';
+          GLEntryTemp."Original Amount" := GLBuff.Amount;
+          GLEntryTemp.Amount := GLBuff.Amount;
+        END;
+        IF ((GLBuff."Original Currency Code" <> '') AND (GLBuff."Original Currency Code" <> GLSetup."LCY Code")) THEN BEGIN
+          IF ConsolidationMgt.IsCBRates(GLBuff."Original Currency Code",ConsSourceCurrencyCode,
+                                        GLBuff."Original Amount",GLBuff.Amount,GLBuff."Posting Date")
+          THEN BEGIN
+            GLEntryTemp."Original Currency Code" := GLBuff."Original Currency Code";
+            GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+
+            //NCS-601 > DP
+            IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN BEGIN
+              ExchRate := CurrExchRate.ExchangeRate(GLBuff."Historical Date",ConsSourceCurrencyCode);
+              GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Historical Date",
+                                                                   GLEntryTemp."Original Currency Code",
+                                                                   GLEntryTemp."Original Amount",
+                                                                   CurrExchRate.ExchangeRate(GLBuff."Historical Date",
+                                                                                             GLEntryTemp."Original Currency Code"));
+
+            END ELSE BEGIN
+            //NCS-601 > DP
+
+            ExchRate := CurrExchRate.ExchangeRate(GLBuff."Posting Date",ConsSourceCurrencyCode);
+            GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Posting Date",
+                                                                   GLEntryTemp."Original Currency Code",
+                                                                   GLEntryTemp."Original Amount",
+                                                                   CurrExchRate.ExchangeRate(GLBuff."Posting Date",
+                                                                                             GLEntryTemp."Original Currency Code"));
+            //NCS-601 > DP
+            END;
+            //NCS-601 < DP
+
+            IF GLEntryTemp.Amount <> 0 THEN
+              GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+            ELSE
+              IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+               //NCS-601 > DP
+               IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+                 GLEntryTemp."Original Currency Factor" :=
+                   CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+               ELSE
+               //NCS-601 > DP
+
+                GLEntryTemp."Original Currency Factor" :=
+                  CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+          END ELSE BEGIN
+            GLEntryTemp."Original Currency Code" := ConsSourceCurrencyCode;
+
+            //NCS-601 > DP
+            IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN BEGIN
+              ExchRate := CurrExchRate.ExchangeRate(GLBuff."Historical Date",ConsSourceCurrencyCode);
+              GLEntryTemp."Original Amount" := CurrExchRate.ExchangeAmtLCYToFCY(GLBuff."Historical Date",
+                                                                              ConsSourceCurrencyCode,
+                                                                              GLBuff.Amount,
+                                                                              ExchRate);
+
+              GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Historical Date",
+                                                                   ConsSourceCurrencyCode,
+                                                                   GLEntryTemp."Original Amount",
+                                                                   ExchRate);
+            END ELSE BEGIN
+            //NCS-601 > DP
+
+            ExchRate := CurrExchRate.ExchangeRate(GLBuff."Posting Date",ConsSourceCurrencyCode);
+            GLEntryTemp."Original Amount" := CurrExchRate.ExchangeAmtLCYToFCY(GLBuff."Posting Date",
+                                                                              ConsSourceCurrencyCode,
+                                                                              GLBuff.Amount,
+                                                                              ExchRate);
+            GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Posting Date",
+                                                                   ConsSourceCurrencyCode,
+                                                                   GLEntryTemp."Original Amount",ExchRate);
+            //NCS-601 > DP
+            END;
+            //NCS-601 < DP
+
+            IF GLEntryTemp.Amount <> 0 THEN
+              GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+            ELSE
+              IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+               //NCS-601 > DP
+               IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+                 GLEntryTemp."Original Currency Factor" :=
+                   CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+               ELSE
+               //NCS-601 > DP
+
+                GLEntryTemp."Original Currency Factor" :=
+                  CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+          END;
+        END;
+      END ELSE BEGIN //локальные валюты во внешней системе и в нав НЕ совпадают
+        IF ((GLBuff."Original Currency Code" = '') AND
+             ((GLBuff."Original Amount" = 0) OR (GLBuff."Original Amount" = GLBuff.Amount))
+            OR
+            ((GLBuff."Original Currency Code" = ConsSourceCurrencyCode) AND
+             (GLBuff."Original Amount" = GLBuff.Amount)))
+        THEN BEGIN // тут курс проверять не надо, они всегда совпадают
+          GLEntryTemp."Original Currency Code" := ConsSourceCurrencyCode;
+          GLEntryTemp."Original Amount" := GLBuff.Amount;
+
+          //NCS-601 > DP
+          IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+            GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLEntryTemp."Historical Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLEntryTemp."Original Amount",
+                                   CurrExchRate.ExchangeRate(
+                                     GLEntryTemp."Historical Date",
+                                     GLEntryTemp."Original Currency Code"))
+          ELSE
+          //NCS-601 < DP
+
+          GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLEntryTemp."Posting Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLEntryTemp."Original Amount",
+                                   CurrExchRate.ExchangeRate(
+                                     GLEntryTemp."Posting Date",
+                                     GLEntryTemp."Original Currency Code"));
+
+          IF GLEntryTemp.Amount <> 0 THEN
+            GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+          ELSE
+            IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+               //NCS-601 > DP
+               IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+                 GLEntryTemp."Original Currency Factor" :=
+                   CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+               ELSE
+               //NCS-601 > DP
+
+              GLEntryTemp."Original Currency Factor" :=
+                CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+        END;
+        IF ((GLBuff."Original Currency Code" <> '') AND (GLBuff."Original Currency Code" <> ConsSourceCurrencyCode)) OR
+         (GLBuff."Original Currency Code" = GLSetup."LCY Code")
+        THEN BEGIN
+          IF ConsolidationMgt.IsCBRates(GLBuff."Original Currency Code",ConsSourceCurrencyCode,
+                              GLBuff."Original Amount",GLBuff.Amount,GLBuff."Posting Date")
+          THEN BEGIN
+            GLEntryTemp."Original Currency Code" := GLBuff."Original Currency Code";
+            GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+
+            //NCS-601 > DP
+            IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN BEGIN
+              ExchRate := CurrExchRate.ExchangeRate(GLBuff."Historical Date",ConsSourceCurrencyCode);
+              GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Historical Date",
+                                                                   GLEntryTemp."Original Currency Code",
+                                                                   GLEntryTemp."Original Amount",
+                                                                   CurrExchRate.ExchangeRate(GLBuff."Document Date",
+                                                                                             GLEntryTemp."Original Currency Code"));
+
+            END ELSE BEGIN
+            //NCS-601 < DP
+
+            ExchRate := CurrExchRate.ExchangeRate(GLBuff."Posting Date",ConsSourceCurrencyCode);
+            GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Posting Date",
+                                                                   GLEntryTemp."Original Currency Code",
+                                                                   GLEntryTemp."Original Amount",
+                                                                   CurrExchRate.ExchangeRate(GLBuff."Document Date",
+                                                                                             GLEntryTemp."Original Currency Code"));
+            //NCS-601 > DP
+            END;
+            //NCS-601 < DP
+
+            IF GLEntryTemp.Amount <> 0 THEN
+              GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+            ELSE
+              IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+               //NCS-601 > DP
+               IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+                 GLEntryTemp."Original Currency Factor" :=
+                   CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+               ELSE
+               //NCS-601 > DP
+
+                GLEntryTemp."Original Currency Factor" :=
+                  CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+          END ELSE BEGIN
+            GLEntryTemp."Original Currency Code" := ConsSourceCurrencyCode;
+            //NCS-601 > DP
+            IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN BEGIN
+              ExchRate := CurrExchRate.ExchangeRate(GLBuff."Historical Date",ConsSourceCurrencyCode);
+              GLEntryTemp."Original Amount" := GLBuff.Amount;
+              GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Historical Date",
+                                                                   ConsSourceCurrencyCode,
+                                                                   GLEntryTemp."Original Amount",
+                                                                   ExchRate);
+            //NCS-601 > DP
+            END ELSE BEGIN
+            //NCS-601 < DP
+
+            ExchRate := CurrExchRate.ExchangeRate(GLBuff."Posting Date",ConsSourceCurrencyCode);
+            GLEntryTemp."Original Amount" := GLBuff.Amount;
+            GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(GLBuff."Posting Date",
+                                                                   ConsSourceCurrencyCode,
+                                                                   GLEntryTemp."Original Amount",
+                                                                   ExchRate);
+            //NCS-601 > DP
+            END;
+            //NCS-601 < DP
+
+            IF GLEntryTemp.Amount <> 0 THEN
+              GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+            ELSE
+              IF GLEntryTemp."Original Currency Code" <> '' THEN
+
+               //NCS-601 > DP
+               IF GLBuff.Reverse AND (GLBuff."Historical Date"<>0D) THEN
+                 GLEntryTemp."Original Currency Factor" :=
+                   CurrExchRate.ExchangeRate(GLBuff."Historical Date",GLEntryTemp."Original Currency Code")
+               ELSE
+               //NCS-601 > DP
+
+                GLEntryTemp."Original Currency Factor" :=
+                  CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetAmountsDiff@1000000037(GLBuff@1000000003 : Record 50093;ConsSourceCurrencyCode@1000000000 : Code[20];MappingCode@1000000004 : Code[20];VAR GLEntryTemp@1000000001 : TEMPORARY Record 17);
+    VAR
+      GLMapp@1000000005 : Record 50002;
+      CurrExchRate@1000000006 : Record 330;
+      GLAcc@1000000007 : Record 15;
+      AccType@1000000009 : 'IncSt,BS,OffBS,None';
+    BEGIN
+      IF ConsSourceCurrencyCode = '' THEN BEGIN //локальные валюты во внешней системе и в нав совпадают
+        GLEntryTemp."Original Currency Code" := GLBuff."Original Currency Code";
+        GLEntryTemp."Original Amount" := 0;
+        GLEntryTemp.Amount := GLBuff.Amount;
+        GLEntryTemp."Use Tax" := TRUE;
+      END ELSE BEGIN //локальные валюты во внешней системе и в нав НЕ совпадают
+        IF ((GLBuff."Original Currency Code" = '')
+           OR
+           (GLBuff."Original Currency Code" = ConsSourceCurrencyCode))
+        THEN BEGIN
+          GLEntryTemp."Original Currency Code" := ConsSourceCurrencyCode;
+          GLEntryTemp."Original Amount" := 0;
+          GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLBuff."Posting Date",
+                                   GLEntryTemp."Original Currency Code",
+                                   GLBuff.Amount,
+                                   CurrExchRate.ExchangeRate(
+                                     GLBuff."Posting Date",
+                                     GLEntryTemp."Original Currency Code"));
+
+          GLEntryTemp."Use Tax" := TRUE;
+        END;
+        IF GLBuff."Original Currency Code" = GLSetup."LCY Code" THEN BEGIN //По идее это error
+
+          //NC MIO-10.15 > DP
+          {
+          //NC 06.02.12 > DP
+          IF (GLSetup."Revaluate To Curr. Code"<>'') AND
+            (GLSetup."Revaluate To Curr. Code"<>GLSetup."LCY Code") THEN
+            GLEntryTemp."Original Currency Code" :=GLSetup."LCY Code"
+          ELSE
+          //NC 06.02.12 < DP
+          }
+          //NC MIO-10.15 > DP
+
+          GLEntryTemp."Original Currency Code" := '';
+
+
+          IF GLBuff."Original Amount" <> 0 THEN BEGIN
+            GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+            GLEntryTemp.Amount := GLBuff."Original Amount";
+          END ELSE BEGIN
+            GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                     GLBuff."Posting Date",
+                                     ConsSourceCurrencyCode,
+                                     GLBuff.Amount,
+                                     CurrExchRate.ExchangeRate(
+                                       GLBuff."Posting Date",
+                                       ConsSourceCurrencyCode));
+            //NC MCO04.2 > DP  Ticket#2011111510000546
+            {
+            GLEntryTemp."Original Amount" := GLEntryTemp.Amount;
+            }
+            GLEntryTemp."Original Amount" := 0;
+            GLEntryTemp."Use Tax" := TRUE;
+            //NC MCO04.2 < DP
+          END;
+
+        END;
+        IF (GLBuff."Original Currency Code" <> '') AND (GLBuff."Original Currency Code" <> GLSetup."LCY Code") AND
+           (GLBuff."Original Currency Code" <> ConsSourceCurrencyCode)
+        THEN BEGIN
+          GLEntryTemp."Original Currency Code" := GLBuff."Original Currency Code";
+          GLEntryTemp."Original Amount" := 0;
+          GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                   GLBuff."Posting Date",
+                                   ConsSourceCurrencyCode,
+                                   GLBuff.Amount,
+                                   CurrExchRate.ExchangeRate(
+                                     GLBuff."Posting Date",
+                                     ConsSourceCurrencyCode));
+          GLEntryTemp."Use Tax" := TRUE;
+        END;
+      END;
+    END;
+
+    PROCEDURE ConvertCurrencyCode@1101495007(BufferCode@1210000 : Code[10]) : Code[10];
+    VAR
+      Currency@1210001 : Record 4;
+    BEGIN
+      IF BufferCode='' THEN EXIT(BufferCode);
+      GLSetup.GET;
+      IF GLSetup."LCY Code" = BufferCode THEN
+        EXIT('');
+      Currency.GET(BufferCode);
+      EXIT(Currency.Code);
+    END;
+
+    PROCEDURE CheckDefaultDimensions@1000000027(ConsSource@1000000000 : Record 50001;GLBuffer@1000000001 : Record 50093;VAR LedgEntryDimCheck@1101495002 : Record 355;ConsRegNo@1000000004 : Integer;MappingCode@1000000007 : Code[20];MappingLineNo@1101495000 : Integer;JobProcStatusLineNo@1101495001 : Integer);
+    VAR
+      GLMapp@1000000002 : Record 50002;
+      DefDim@1000000003 : Record 352;
+      Dim@1000000005 : Record 348;
+      GLAcc@1000000006 : Record 15;
+      Company@1101495003 : Record 2000000006;
+      MovingDataSetup@1101495004 : Record 50064;
+    BEGIN
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(-54);
+      //NC MIO-10.7 < PCH
+      IF (MappingLineNo <> 0) AND GLMapp.GET(MappingCode,MappingLineNo) THEN
+        IF GLMapp."Receiver Account Code" <> '' THEN BEGIN
+
+          //NC MIO-10.3 > DP
+          Company.GET(COMPANYNAME);
+          DefDim.RESET;
+          DefDim.SETRANGE("Table ID", DATABASE::"Legal Entity Type");
+          DefDim.SETRANGE("No.", Company."Legal Entity Type");
+
+          //NC MIO-10.7 > DP
+          {
+          IF DefDim.FINDSET THEN
+          }
+          IF GV.FIND_DefDim(DefDim) THEN
+          //NC MIO-10.7 < DP
+
+          IF DefDim.FINDSET THEN
+          REPEAT
+            LedgEntryDimCheck.INIT;
+            LedgEntryDimCheck."Table ID" := DATABASE::"G/L Entry";
+            LedgEntryDimCheck."Entry No." := GLBuffer."Entry No.";
+            LedgEntryDimCheck."Dimension Code" := DefDim."Dimension Code";
+            LedgEntryDimCheck."Dimension Value Code" := DefDim."Dimension Value Code";
+            IF (DefDim."Value Posting" = DefDim."Value Posting"::"Code Mandatory") AND
+              (DefDim."Dimension Value Code" <> '') THEN BEGIN
+              IF NOT LedgEntryDimCheck.INSERT(TRUE) THEN BEGIN
+                MovingDataSetup.GET;
+                IF LedgEntryDimCheck."Dimension Code" <> MovingDataSetup."INC.TAX Dimension Code" THEN
+                  LedgEntryDimCheck.MODIFY(TRUE);
+              END;
+            END ELSE
+              IF LedgEntryDimCheck.INSERT(TRUE) THEN;
+
+          //NC MIO-10.7 > DP
+          {
+          UNTIL DefDim.NEXT = 0;
+          }
+          UNTIL GV.NEXT_DefDim(DefDim) = 0;
+          //NC MIO-10.7 < DP
+
+          //NC MIO-10.3 < DP
+
+          DefDim.RESET;
+          DefDim.SETRANGE("Table ID",15);
+          DefDim.SETRANGE("No.",GLMapp."Receiver Account Code");
+          DefDim.SETRANGE("Value Posting",DefDim."Value Posting"::"Code Mandatory");
+          IF DefDim.FINDSET THEN
+            REPEAT
+
+              //NC MIO-10.7 > DP
+              {
+              LedgEntryDimCheck.RESET;
+              LedgEntryDimCheck.SETRANGE("Table ID",17);
+              LedgEntryDimCheck.SETRANGE("Entry No.",GLBuffer."Entry No.");
+              LedgEntryDimCheck.SETRANGE("Dimension Code",DefDim."Dimension Code");
+              IF NOT LedgEntryDimCheck.FINDFIRST THEN BEGIN
+              }
+              IF NOT LedgEntryDimCheck.GET(17,GLBuffer."Entry No.",DefDim."Dimension Code") THEN BEGIN
+              //NC MIO-10.7 < DP
+
+                IsGlobalError := TRUE;
+                //NC S1908 > PCH
+                //ErrMessage := Text020 + FORMAT(GLMapp."Receiver Account Code") + Text019 + FORMAT(DefDim."Dimension Code");
+                ErrMessage := Text020 + FORMAT(GLMapp."Receiver Account Code") +
+                              STRSUBSTNO(Text063,GLMapp."Source Account Code") +
+                              Text019 + FORMAT(DefDim."Dimension Code");
+                //NC S1908 < PCH
+                IF NOT GLAcc.GET(GLMapp."Receiver Account Code") THEN;
+                IF NOT Dim.GET(DefDim."Dimension Code") THEN;
+                ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,
+                                                      ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                      ConsSource.Code,ConsRegNo,'EDTC04',
+                                                      ErrMessage,COMPANYNAME,GLBuffer,GLAcc,GLMapp,JobProcStatusLineNo);
+              END;
+            UNTIL DefDim.NEXT = 0;
+        END;
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(54);
+      //NC MIO-10.7 < PCH
+    END;
+
+    PROCEDURE CheckSameCodeDimensions@1000000028(ConsSource@1101495006 : Record 50001;GLBuffer@1101495005 : Record 50093;VAR LedgEntryDimCheck@1101495004 : Record 355;ConsRegNo@1101495003 : Integer;MappingCode@1101495002 : Code[20];MappingLineNo@1101495001 : Integer;JobProcStatusLineNo@1101495000 : Integer);
+    VAR
+      GLMapp@1000000002 : Record 50002;
+      DefDim@1000000003 : Record 352;
+      GLAcc@1000000005 : Record 15;
+      DimValue@1000000006 : Record 349;
+    BEGIN
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(-55);
+      //NC MIO-10.7 < PCH
+      IF (MappingLineNo <> 0) AND GLMapp.GET(MappingCode,MappingLineNo) THEN
+        IF GLMapp."Receiver Account Code" <> '' THEN BEGIN
+          DefDim.RESET;
+          DefDim.SETRANGE("Table ID",15);
+          DefDim.SETRANGE("No.",GLMapp."Receiver Account Code");
+          DefDim.SETRANGE("Value Posting",DefDim."Value Posting"::"Same Code");
+
+          //NC MIO-10.7 > DP
+          {
+          IF DefDim.FINDSET THEN
+          }
+          IF GV.FIND_DefDim(DefDim) THEN
+          //NC MIO-10.7 > DP
+
+            REPEAT
+
+              //NC MIO-10.7 > DP
+              {
+              LedgEntryDimCheck.RESET;
+              LedgEntryDimCheck.SETRANGE("Table ID",17);
+              LedgEntryDimCheck.SETRANGE("Entry No.",GLBuffer."Entry No.");
+              LedgEntryDimCheck.SETRANGE("Dimension Code",DefDim."Dimension Code");
+              IF NOT LedgEntryDimCheck.FINDFIRST THEN BEGIN
+              }
+              IF NOT LedgEntryDimCheck.GET(17,GLBuffer."Entry No.",DefDim."Dimension Code") THEN BEGIN
+              //NC MIO-10.7 < DP
+
+                IsGlobalError := TRUE;
+                //NC S1908 > PCH
+                //ErrMessage := Text020 + FORMAT(GLMapp."Receiver Account Code") + Text019 + FORMAT(DefDim."Dimension Code") +
+                ErrMessage := Text020 + FORMAT(GLMapp."Receiver Account Code") +
+                              STRSUBSTNO(Text063,GLMapp."Source Account Code") +
+                              Text019 + FORMAT(DefDim."Dimension Code") +
+                //NC S1908 < PCH
+                  Text021 + FORMAT(DefDim."Dimension Value Code");
+                IF NOT GLAcc.GET(GLMapp."Receiver Account Code") THEN;
+                ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,
+                                                   ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                   ConsSource.Code,ConsRegNo,'EDTC05',
+                                                   ErrMessage,COMPANYNAME,GLBuffer,GLAcc,GLMapp,JobProcStatusLineNo);
+              END ELSE BEGIN
+                IF LedgEntryDimCheck."Dimension Value Code" <> DefDim."Dimension Value Code" THEN BEGIN
+                  IsGlobalError := TRUE;
+                  //NC S1908 > PCH
+                  //ErrMessage := Text020 + FORMAT(GLMapp."Receiver Account Code") + Text019 + FORMAT(DefDim."Dimension Code") +
+                  ErrMessage := Text020 + FORMAT(GLMapp."Receiver Account Code") +
+                                STRSUBSTNO(Text063,GLMapp."Source Account Code") +
+                                Text019 + FORMAT(DefDim."Dimension Code") +
+                  //NC S1908 < PCH
+                    Text021 + FORMAT(DefDim."Dimension Value Code");
+                  IF NOT GLAcc.GET(GLMapp."Receiver Account Code") THEN;
+                  ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,
+                                                     ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                     ConsSource.Code,ConsRegNo,'EDTC05',
+                                                     ErrMessage,COMPANYNAME,GLBuffer,GLAcc,GLMapp,JobProcStatusLineNo);
+                END;
+              END;
+
+            //NC MIO-10.7 > DP
+            {
+            UNTIL DefDim.NEXT = 0;
+            }
+            UNTIL GV.NEXT_DefDim(DefDim) = 0;
+            //NC MIO-10.7 < DP
+
+        END;
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(55);
+      //NC MIO-10.7 < PCH
+    END;
+
+    PROCEDURE CheckRestrictedDimensions@1000000029(ConsSource@1101495006 : Record 50001;GLBuffer@1101495005 : Record 50093;VAR LedgEntryDimCheck@1101495004 : Record 355;ConsRegNo@1101495003 : Integer;MappingCode@1101495002 : Code[20];MappingLineNo@1101495001 : Integer;JobProcStatusLineNo@1101495000 : Integer);
+    VAR
+      GLMapp@1000000002 : Record 50002;
+      DefDim@1000000003 : Record 352;
+      AccDim@1000000005 : Record 50030;
+      GLAcc@1000000006 : Record 15;
+    BEGIN
+      IF NOT GLSetup."Check Account Dimension" THEN
+        EXIT;
+
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(-56);
+      //NC MIO-10.7 < PCH
+      //NC MIO-10.7 > PCH
+      //IF (MappingLineNo <> 0) AND GLMapp.GET(MappingCode,MappingLineNo) THEN
+      IF (MappingLineNo <> 0) AND GV.GET_CoAMapping(GLMapp,MappingCode,MappingLineNo) THEN
+      //NC MIO-10.7 < PCH
+        IF GLMapp."Receiver Account Code" <> '' THEN BEGIN
+          LedgEntryDimCheck.RESET;
+          LedgEntryDimCheck.SETRANGE("Table ID",17);
+          LedgEntryDimCheck.SETRANGE("Entry No.",GLBuffer."Entry No.");
+          IF LedgEntryDimCheck.FINDSET THEN
+            REPEAT
+              AccDim.RESET;
+              AccDim.SETRANGE("Account No.", GLMapp."Receiver Account Code");
+              AccDim.SETRANGE("Dimension Code", LedgEntryDimCheck."Dimension Code");
+              //AccDim.SETRANGE(Type,AccDim.Type::"0");
+
+              //NC MIO-10.7 > DP
+              {
+              IF AccDim.FINDFIRST THEN
+              }
+              IF GV.FIND_AccDim(AccDim) THEN
+                {
+                IF NOT AccDim.GET(GLMapp."Receiver Account Code",
+                                  LedgEntryDimCheck."Dimension Code",
+                                  LedgEntryDimCheck."Dimension Value Code")
+                }
+
+                //NC MIO-10.9 > DP
+                {
+                IF GV.GET_AccDim(AccDim,
+                }
+                IF NOT GV.GET_AccDim(AccDim,
+                //NC MIO-10.9 < DP
+                                 GLMapp."Receiver Account Code",
+                                 LedgEntryDimCheck."Dimension Code",
+                                 LedgEntryDimCheck."Dimension Value Code")
+                //NC MIO-10.7 < DP
+
+                THEN BEGIN
+                  IsGlobalError := TRUE;
+                  ErrMessage := Text033 + FORMAT(GLMapp."Receiver Account Code") + Text028 +
+                    FORMAT(LedgEntryDimCheck."Dimension Code") +
+                    Text026 + FORMAT(LedgEntryDimCheck."Dimension Value Code") + Text029;
+                  IF NOT GLAcc.GET(GLMapp."Receiver Account Code") THEN;
+                  ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,
+                                                     ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                     ConsSource.Code,ConsRegNo,'EDTC08',
+                                                     ErrMessage,COMPANYNAME,GLBuffer,GLAcc,GLMapp,JobProcStatusLineNo);
+                END;
+            UNTIL LedgEntryDimCheck.NEXT = 0;
+        END;
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(56);
+      //NC MIO-10.7 < PCH
+    END;
+
+    PROCEDURE InsertCorrectLine@1101495012(VAR GenJournalLineTemp@1101495002 : TEMPORARY Record 81;VAR GenJournalLine@1101495001 : Record 81;VAR JournalLineDimension@1101495000 : Record 356);
+    VAR
+      DocBalanceAmount@1101495003 : Decimal;
+    BEGIN
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(-60);
+      //NC MIO-10.7 < PCH
+      GenJournalLineTemp.RESET;
+      IF GenJournalLineTemp.FINDSET THEN REPEAT
+
+        IF GenJournalLineTemp."Source Entry No." = 0 THEN
+          GenJournalLineTemp."Source Entry No." := GenJournalLineTemp."Line No.";
+
+        GenJournalLine.RESET;
+        GenJournalLine.SETRANGE("Journal Template Name",GenJournalLineTemp."Journal Template Name");
+        GenJournalLine.SETRANGE("Journal Batch Name",GenJournalLineTemp."Journal Batch Name");
+        GenJournalLine.SETRANGE("Line No.",GenJournalLineTemp."Line No.",GenJournalLineTemp."Source Entry No.");
+        //NC MIO-10.7 > PCH
+        //ConsolidationMgt.InsertRoundingCorrectionLines(ConsolidationSource.Code, GenJournalLine, JournalLineDimension);
+        InsertRoundingCorrectionLines(GenJournalLine, JournalLineDimension);
+        //NC MIO-10.7 < PCH
+
+        //Проверка баланса
+        IF GenJournalLine.FINDFIRST THEN BEGIN
+          GenJournalLine.SETFILTER("Line No.",'>=%1',GenJournalLineTemp."Line No.");
+                                                       //т.к. могли добавиться проводки функцией вставки балансирующих строк
+          GenJournalLine.SETRANGE("Document No.",GenJournalLineTemp."Document No.");
+          DocBalanceAmount := 0;
+          IF GenJournalLine.FINDSET THEN REPEAT
+            DocBalanceAmount := DocBalanceAmount + GenJournalLine."Amount (LCY)";
+          UNTIL GenJournalLine.NEXT = 0;
+
+          IF DocBalanceAmount <> 0 THEN
+            ERROR(Text045,GenJournalLine."Document No.",DocBalanceAmount);
+
+        END;
+
+      UNTIL GenJournalLineTemp.NEXT = 0;
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(60);
+      //NC MIO-10.7 < PCH
+    END;
+
+    PROCEDURE GetAmountsConvert@1101495009(GLBuff@1000000003 : Record 50093;ConsSourceCurrencyCode@1000000000 : Code[20];rGLMapp@1000000004 : Record 50002;VAR GLEntryTemp@1000000001 : TEMPORARY Record 17);
+    VAR
+      GLMapp@1000000005 : Record 50002;
+      CurrExchRate@1000000006 : Record 330;
+      GLAcc@1000000007 : Record 15;
+      LocGLAccTmp@1101495000 : TEMPORARY Record 15;
+      FICode@1101495001 : Code[20];
+      FI@1101495002 : Record 50021;
+      FIType@1101495003 : Record 50051;
+      Emitent@1101495004 : Record 18;
+      Country@1101495005 : Record 9;
+      NewOriginalCurrencyCode@1101495006 : Code[10];
+    BEGIN
+      //NC DP > 25.10.2011
+      NewOriginalCurrencyCode := rGLMapp."Convert to Currency Code";
+      GLEntryTemp."Original Currency Code" := NewOriginalCurrencyCode;
+
+      //NC Ticket#2011120710007482 > DP
+      IF GLBuff."Original Currency Code" = '' THEN
+        GLBuff."Original Currency Code" := ConsSourceCurrencyCode;
+      //NC Ticket#2011120710007482 < DP
+
+      IF NewOriginalCurrencyCode <> ConsolidationMgt.ConvertCurrencyCode2(GLBuff."Original Currency Code") THEN
+        GLEntryTemp."Original Amount" := ROUND(CurrExchRate.ExchangeAmtFCYToFCY(GLBuff."Posting Date",
+                                                             ConsolidationMgt.ConvertCurrencyCode2(GLBuff."Original Currency Code"),
+                                                                                  NewOriginalCurrencyCode,
+                                                                                  GLBuff."Original Amount"),0.01)
+        ELSE
+          GLEntryTemp."Original Amount" := GLBuff."Original Amount";
+        GLEntryTemp.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                                 GLBuff."Posting Date",
+                                 GLEntryTemp."Original Currency Code",
+                                 GLEntryTemp."Original Amount",
+                                 CurrExchRate.ExchangeRate(
+                                   GLBuff."Posting Date",
+                                   GLEntryTemp."Original Currency Code"));
+
+        IF GLEntryTemp.Amount <> 0 THEN
+          GLEntryTemp."Original Currency Factor" := GLEntryTemp."Original Amount" / GLEntryTemp.Amount
+        ELSE
+          GLEntryTemp."Original Currency Factor" :=
+            CurrExchRate.ExchangeRate(GLBuff."Posting Date",GLEntryTemp."Original Currency Code");
+      //NC DP < 25.10.2011
+    END;
+
+    PROCEDURE CheckRealDimensions@1101495002(ConsSource@1101495006 : Record 50001;GLBuffer@1101495005 : Record 50093;VAR LedgEntryDimCheck@1101495004 : Record 355;ConsRegNo@1101495003 : Integer;MappingCode@1101495002 : Code[20];MappingLineNo@1101495001 : Integer;JobProcStatusLineNo@1101495000 : Integer);
+    VAR
+      GLMapp@1000000002 : Record 50002;
+      DefDim@1000000003 : Record 352;
+      GLAcc@1000000005 : Record 15;
+      DimValue@1000000006 : Record 349;
+      DimValueCode@1101495007 : Code[20];
+      MovingDataSetup@1101495008 : Record 50064;
+    BEGIN
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(-57);
+      //NC MIO-10.7 < PCH
+      //NC MIO-34 > DP
+      IF (MappingLineNo <> 0) AND GLMapp.GET(MappingCode,MappingLineNo) THEN
+        IF GLMapp."Receiver Account Code" <> '' THEN BEGIN
+          IF GLAcc.GET(GLMapp."Receiver Account Code") AND
+            (GLAcc."Real Counterparty Value"=GLAcc."Real Counterparty Value"::"Same Value") THEN BEGIN
+            DimValueCode := '';
+            IF LedgEntryDimCheck.GET(17,GLBuffer."Entry No.",MovingDataSetup."Customer Dimension Code") THEN BEGIN
+              DimValueCode := LedgEntryDimCheck."Dimension Value Code";
+              IF LedgEntryDimCheck.GET(17,GLBuffer."Entry No.",MovingDataSetup."Real Counterparty Dim. Code") AND
+                (LedgEntryDimCheck."Dimension Value Code"<> DimValueCode)
+              THEN BEGIN
+                  IsGlobalError := TRUE;
+                  ErrMessage := Text033 + FORMAT(GLMapp."Receiver Account Code") + Text026 + Text013 +
+                    FORMAT(LedgEntryDimCheck."Dimension Code") +
+                    Text061 + FORMAT(MovingDataSetup."Customer Dimension Code") + ' (' + DimValueCode + ').';
+                  ErrorJournal.AddErrorGLBufferGLAccGLMapp(COMPANYNAME,
+                                                     ErrorJournal."Error Group"::Transformation,ErrorJournal.Type::Error,
+                                                     ConsSource.Code,ConsRegNo,'EDTC08',
+                                                     ErrMessage,COMPANYNAME,GLBuffer,GLAcc,GLMapp,JobProcStatusLineNo);
+              END;
+            END;
+          END;
+        END;
+      //NC MIO-34 < DP
+      //NC MIO-10.7 > PCH
+      Log.StartCounter(57);
+      //NC MIO-10.7 < PCH
+    END;
+
+    PROCEDURE IsFoundGLMapp@1000000030(EntryNo@1000000001 : Integer;VAR LedgDimensionTMP@1000000010 : TEMPORARY Record 355;MappingCode@1000000009 : Code[20];CompName@1000000007 : Text[30];SourceGLAccountNo@1000000011 : Code[20];SourceCorrGLAccountNo@1000000012 : Code[20];OperationType@1000000004 : ' ,Debit,Credit';VAR cConsAcc@1000000015 : Code[20];VAR LineNo@1000000003 : Integer) : Boolean;
+    VAR
+      ConvOfChartOfAccounts@1000000008 : Record 50002;
+      DimCode1@1000000014 : Code[20];
+      DimCode2@1000000013 : Code[20];
+      DimVal1@1000000016 : Code[20];
+      DimVal2@1000000017 : Code[20];
+      GLAccount@1210001 : Record 15;
+      LedgDimContr@1210004 : Record 355;
+      LedgDimIntContr@1210005 : Record 355;
+      Text50055@1210006 : TextConst 'ENU="You should define Dimension %1 %2/%3/%4 in table %5 ";RUS=Вы должны определить Измерение %1 в %2 или в %3 или в %4 таблицы %5.';
+      DimValueContr@1000000002 : Record 349;
+      lDim1Exist@1210009 : Boolean;
+      lDim2Exist@1210008 : Boolean;
+      lDim3Exist@1210007 : Boolean;
+      ICDim1Exist@1210013 : Boolean;
+      ICDim2Exist@1210012 : Boolean;
+      ICDim3Exist@1210011 : Boolean;
+      CountLEDim@1101495000 : Integer;
+      Rating@1101495001 : Integer;
+    BEGIN
+      //NC MIO-10.7 > DP перенесено из CU50000
+      //NC MDTM04 > MP
+      LedgDimensionTMP.RESET;
+      LedgDimensionTMP.SETRANGE("Table ID", DATABASE::"G/L Entry");
+      LedgDimensionTMP.SETRANGE("Entry No.", EntryNo);
+      CountLEDim := LedgDimensionTMP.COUNT;
+
+      ConvOfChartOfAccounts.SETCURRENTKEY("Mapping Code","Company Name","Source Account Code",
+                                          "Source Corresp. Account Code","Operation Type",
+                                          "Rating Transformation",Active);
+      ConvOfChartOfAccounts.SETRANGE("Company Name",CompName);
+      ConvOfChartOfAccounts.SETRANGE(Active,TRUE);
+      ConvOfChartOfAccounts.SETFILTER("Rating Transformation",'>=%1',-CountLEDim);
+      ConvOfChartOfAccounts.SETRANGE("Mapping Code",MappingCode);
+      ConvOfChartOfAccounts.SETRANGE("Source Account Code",SourceGLAccountNo);
+      ConvOfChartOfAccounts.SETRANGE("Source Corresp. Account Code",SourceCorrGLAccountNo);
+      ConvOfChartOfAccounts.SETRANGE("Operation Type",OperationType);
+
+      //NC MIO-10.7 > DP
+      {
+      IF ConvOfChartOfAccounts.FINDSET THEN
+      }
+      IF GV.FIND_CoAMapping(ConvOfChartOfAccounts) THEN
+      //NC MIO-10.7 < DP
+
+        REPEAT
+          IF cConsAcc='' THEN BEGIN
+            //Проверка на соответствие до 3-х измерений
+            lDim1Exist := TRUE;
+            lDim2Exist := TRUE;
+            lDim3Exist := TRUE;
+            //NC OPT > PCH
+            Rating := 0;
+            //NC OPT < PCH
+
+            WITH LedgDimensionTMP DO BEGIN
+              IF (ConvOfChartOfAccounts."Source Dimension Code 1" <> '') AND (ConvOfChartOfAccounts."Source Dimension Value Code 1" <>
+      '')
+              THEN BEGIN
+                SETRANGE("Dimension Code", ConvOfChartOfAccounts."Source Dimension Code 1");
+                SETFILTER("Dimension Value Code", ConvOfChartOfAccounts."Source Dimension Value Code 1");
+                lDim1Exist := NOT ISEMPTY;
+                //NC OPT > PCH
+                IF lDim1Exist THEN
+                  Rating -= 1;
+                //NC OPT < PCH
+              END;
+
+              IF (ConvOfChartOfAccounts."Source Dimension Code 2" <> '') AND (ConvOfChartOfAccounts."Source Dimension Value Code 2" <>
+      '')
+              THEN BEGIN
+                SETRANGE("Dimension Code", ConvOfChartOfAccounts."Source Dimension Code 2");
+                SETFILTER("Dimension Value Code", ConvOfChartOfAccounts."Source Dimension Value Code 2");
+                lDim2Exist := NOT ISEMPTY;
+                //NC OPT > PCH
+                IF lDim2Exist THEN
+                  Rating -= 1;
+                //NC OPT < PCH
+              END;
+
+              IF (ConvOfChartOfAccounts."Source Dimension Code 3" <> '') AND (ConvOfChartOfAccounts."Source Dimension Value Code 3" <>
+      '')
+              THEN BEGIN
+                SETRANGE("Dimension Code", ConvOfChartOfAccounts."Source Dimension Code 3");
+                SETFILTER("Dimension Value Code", ConvOfChartOfAccounts."Source Dimension Value Code 3");
+                lDim3Exist := NOT ISEMPTY;
+                //NC OPT > PCH
+                IF lDim3Exist THEN
+                  Rating -= 1;
+                //NC OPT < PCH
+              END;
+            END;
+
+            //NC OPT > PCH
+            //IF lDim1Exist AND lDim2Exist AND lDim3Exist THEN
+            IF ConvOfChartOfAccounts."Rating Transformation" = Rating THEN BEGIN
+            //NC OPT < PCH
+              cConsAcc := ConvOfChartOfAccounts."Receiver Account Code";
+              LineNo := ConvOfChartOfAccounts."Line No.";
+            END;
+          END;
+
+        //NC MIO-10.7 > DP
+        {
+        UNTIL (ConvOfChartOfAccounts.NEXT = 0) OR (cConsAcc <> '');
+        }
+        UNTIL (GV.NEXT_CoAMapping(ConvOfChartOfAccounts) = 0) OR (cConsAcc <> '');
+        //NC MIO-10.7 < DP
+
+      EXIT(cConsAcc <> '');
+      //NC MDTM04 < MP
+      //NC MIO-10.7 < DP перенесено из CU50000
+    END;
+
+    PROCEDURE CheckCorr3@1101495006(MappingCode@1210005 : Code[20];DebitAccount@1210007 : Code[20];CreditAccount@1210006 : Code[20];VAR SpecNotExcept@1000000000 : Boolean;VAR LedgEntryDim@1101495000 : Record 355;UseDimFilter@1101495001 : Boolean) Spec : Boolean;
+    VAR
+      Exceptions@1000000001 : Record 50009;
+      IsFound@1101495002 : Boolean;
+    BEGIN
+      //NC MIO-10.7 > PCH перенесено из CU50000
+      //NC MDTX02 > MP
+      Spec := FALSE;
+      IsFound := FALSE;
+      Exceptions.SETCURRENTKEY("Company Name","Ext. Debit Account No.","Ext. Credit Account No.","Dimension Code","Dimension Value Code"
+      );
+      //NC MDTX02 < MP
+      Exceptions.SETRANGE("Mapping Code",MappingCode);
+      //NC MDTX02 > MP
+      Exceptions.SETRANGE("Company Name",COMPANYNAME);
+      //NC MDTX02 < MP
+      Exceptions.SETRANGE("Ext. Debit Account No.",DebitAccount);
+      Exceptions.SETRANGE("Ext. Credit Account No.",CreditAccount);
+      IF UseDimFilter THEN BEGIN
+        Exceptions.SETFILTER("Dimension Code",'<>%1','');
+        Exceptions.SETFILTER("Dimension Value Code",'<>%1','');
+      END ELSE BEGIN
+        Exceptions.SETRANGE("Dimension Code",'');
+        Exceptions.SETRANGE("Dimension Value Code",'');
+      END;
+      //NC MIO-10.7 > PCH
+      //IF Exceptions.FINDSET THEN
+      IF GV.FIND_Exceptions(Exceptions) THEN
+      //NC MIO-10.7 < PCH
+        REPEAT
+          IF Exceptions."Dimension Code" <> '' THEN BEGIN
+            LedgEntryDim.SETRANGE("Dimension Code",Exceptions."Dimension Code");
+            LedgEntryDim.SETRANGE("Dimension Value Code",Exceptions."Dimension Value Code");
+            IsFound := NOT LedgEntryDim.ISEMPTY;
+            IF IsFound THEN BEGIN
+              //NC MTD06 > AIG
+              IF Exceptions."Offset Exception Debit" THEN BEGIN
+                OffsetExceptionsDT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              IF Exceptions."Offset Exception Credit" THEN BEGIN
+                OffsetExceptionsCT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              //NC MTD06 < AIG
+              IF NOT Exceptions."Not Except" THEN
+                Spec := TRUE
+              ELSE
+                SpecNotExcept := TRUE;
+              EXIT;
+            END;
+          END ELSE BEGIN
+            //NC MTD06 > AIG
+            IF Exceptions."Offset Exception Debit" THEN BEGIN
+              OffsetExceptionsDT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            IF Exceptions."Offset Exception Credit" THEN BEGIN
+              OffsetExceptionsCT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            //NC MTD06 < AIG
+
+            IF NOT Exceptions."Not Except" THEN
+              Spec := TRUE
+            ELSE
+              SpecNotExcept := TRUE;
+            EXIT;
+          END;
+        //NC MIO-10.7 > PCH
+        //UNTIL (Exceptions.NEXT = 0) OR IsFound;
+        UNTIL (GV.NEXT_Exceptions(Exceptions) = 0) OR IsFound;
+        //NC MIO-10.7 < PCH
+
+      Exceptions.SETRANGE("Ext. Credit Account No.",'');
+      //NC MIO-10.7 > PCH
+      //IF Exceptions.FINDSET THEN
+      IF GV.FIND_Exceptions(Exceptions) THEN
+      //NC MIO-10.7 < PCH
+        REPEAT
+          IF Exceptions."Dimension Code" <> '' THEN BEGIN
+            LedgEntryDim.SETRANGE("Dimension Code",Exceptions."Dimension Code");
+            LedgEntryDim.SETRANGE("Dimension Value Code",Exceptions."Dimension Value Code");
+            IsFound := NOT LedgEntryDim.ISEMPTY;
+            IF IsFound THEN BEGIN
+              //NC MTD06 > AIG
+              IF Exceptions."Offset Exception Debit" THEN BEGIN
+                OffsetExceptionsDT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              IF Exceptions."Offset Exception Credit" THEN BEGIN
+                OffsetExceptionsCT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              //NC MTD06 < AIG
+
+              IF NOT Exceptions."Not Except" THEN
+                Spec := TRUE
+              ELSE
+                SpecNotExcept := TRUE;
+              EXIT;
+            END;
+          END ELSE BEGIN
+            //NC MTD06 > AIG
+            IF Exceptions."Offset Exception Debit" THEN BEGIN
+              OffsetExceptionsDT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            IF Exceptions."Offset Exception Credit" THEN BEGIN
+              OffsetExceptionsCT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            //NC MTD06 < AIG
+
+            IF NOT Exceptions."Not Except" THEN
+              Spec := TRUE
+            ELSE
+              SpecNotExcept := TRUE;
+            EXIT;
+          END;
+        //NC MIO-10.7 > PCH
+        //UNTIL (Exceptions.NEXT = 0) OR IsFound;
+        UNTIL (GV.NEXT_Exceptions(Exceptions) = 0) OR IsFound;
+        //NC MIO-10.7 < PCH
+
+      Exceptions.SETRANGE("Ext. Debit Account No.",'');
+      Exceptions.SETRANGE("Ext. Credit Account No.",CreditAccount);
+      //NC MIO-10.7 > PCH
+      //IF Exceptions.FINDSET THEN
+      IF GV.FIND_Exceptions(Exceptions) THEN
+      //NC MIO-10.7 < PCH
+        REPEAT
+          IF Exceptions."Dimension Code" <> '' THEN BEGIN
+            LedgEntryDim.SETRANGE("Dimension Code",Exceptions."Dimension Code");
+            LedgEntryDim.SETRANGE("Dimension Value Code",Exceptions."Dimension Value Code");
+            IsFound := NOT LedgEntryDim.ISEMPTY;
+            IF IsFound THEN BEGIN
+              //NC MTD06 > AIG
+              IF Exceptions."Offset Exception Debit" THEN BEGIN
+                OffsetExceptionsDT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              IF Exceptions."Offset Exception Credit" THEN BEGIN
+                OffsetExceptionsCT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              //NC MTD06 < AIG
+
+              IF NOT Exceptions."Not Except" THEN
+                Spec := TRUE
+              ELSE
+                SpecNotExcept := TRUE;
+              EXIT;
+            END;
+          END ELSE BEGIN
+            //NC MTD06 > AIG
+            IF Exceptions."Offset Exception Debit" THEN BEGIN
+              OffsetExceptionsDT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            IF Exceptions."Offset Exception Credit" THEN BEGIN
+              OffsetExceptionsCT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            //NC MTD06 < AIG
+
+            IF NOT Exceptions."Not Except" THEN
+              Spec := TRUE
+            ELSE
+              SpecNotExcept := TRUE;
+            EXIT;
+          END;
+        //NC MIO-10.7 > PCH
+        //UNTIL (Exceptions.NEXT = 0) OR IsFound;
+        UNTIL (GV.NEXT_Exceptions(Exceptions) = 0) OR IsFound;
+        //NC MIO-10.7 < PCH
+
+      //NC MDTX02 > MP
+      Exceptions.SETRANGE("Company Name",'');
+      Exceptions.SETRANGE("Ext. Debit Account No.",DebitAccount);
+      Exceptions.SETRANGE("Ext. Credit Account No.",CreditAccount);
+      //NC MIO-10.7 > PCH
+      //IF Exceptions.FINDSET THEN
+      IF GV.FIND_Exceptions(Exceptions) THEN
+      //NC MIO-10.7 < PCH
+        REPEAT
+          IF Exceptions."Dimension Code" <> '' THEN BEGIN
+            LedgEntryDim.SETRANGE("Dimension Code",Exceptions."Dimension Code");
+            LedgEntryDim.SETRANGE("Dimension Value Code",Exceptions."Dimension Value Code");
+            IsFound := NOT LedgEntryDim.ISEMPTY;
+            IF IsFound THEN BEGIN
+              //NC MTD06 > AIG
+              IF Exceptions."Offset Exception Debit" THEN BEGIN
+                OffsetExceptionsDT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              IF Exceptions."Offset Exception Credit" THEN BEGIN
+                OffsetExceptionsCT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              //NC MTD06 < AIG
+
+              IF NOT Exceptions."Not Except" THEN
+                Spec := TRUE
+              ELSE
+                SpecNotExcept := TRUE;
+              EXIT;
+            END;
+          END ELSE BEGIN
+            //NC MTD06 > AIG
+            IF Exceptions."Offset Exception Debit" THEN BEGIN
+              OffsetExceptionsDT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            IF Exceptions."Offset Exception Credit" THEN BEGIN
+              OffsetExceptionsCT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            //NC MTD06 < AIG
+
+            IF NOT Exceptions."Not Except" THEN
+              Spec := TRUE
+            ELSE
+              SpecNotExcept := TRUE;
+            EXIT;
+          END;
+        //NC MIO-10.7 > PCH
+        //UNTIL (Exceptions.NEXT = 0) OR IsFound;
+        UNTIL (GV.NEXT_Exceptions(Exceptions) = 0) OR IsFound;
+        //NC MIO-10.7 < PCH
+
+      Exceptions.SETRANGE("Ext. Credit Account No.",'');
+      //NC MIO-10.7 > PCH
+      //IF Exceptions.FINDSET THEN
+      IF GV.FIND_Exceptions(Exceptions) THEN
+      //NC MIO-10.7 < PCH
+        REPEAT
+          IF Exceptions."Dimension Code" <> '' THEN BEGIN
+            LedgEntryDim.SETRANGE("Dimension Code",Exceptions."Dimension Code");
+            LedgEntryDim.SETRANGE("Dimension Value Code",Exceptions."Dimension Value Code");
+            IsFound := NOT LedgEntryDim.ISEMPTY;
+            IF IsFound THEN BEGIN
+              //NC MTD06 > AIG
+              IF Exceptions."Offset Exception Debit" THEN BEGIN
+                OffsetExceptionsDT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              IF Exceptions."Offset Exception Credit" THEN BEGIN
+                OffsetExceptionsCT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              //NC MTD06 < AIG
+
+              IF NOT Exceptions."Not Except" THEN
+                Spec := TRUE
+              ELSE
+                SpecNotExcept := TRUE;
+              EXIT;
+            END;
+          END ELSE BEGIN
+            //NC MTD06 > AIG
+            IF Exceptions."Offset Exception Debit" THEN BEGIN
+              OffsetExceptionsDT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            IF Exceptions."Offset Exception Credit" THEN BEGIN
+              OffsetExceptionsCT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            //NC MTD06 < AIG
+
+            IF NOT Exceptions."Not Except" THEN
+              Spec := TRUE
+            ELSE
+              SpecNotExcept := TRUE;
+            EXIT;
+          END;
+        //NC MIO-10.7 > PCH
+        //UNTIL (Exceptions.NEXT = 0) OR IsFound;
+        UNTIL (GV.NEXT_Exceptions(Exceptions) = 0) OR IsFound;
+        //NC MIO-10.7 < PCH
+
+      Exceptions.SETRANGE("Ext. Debit Account No.",'');
+      Exceptions.SETRANGE("Ext. Credit Account No.",CreditAccount);
+      //NC MIO-10.7 > PCH
+      //IF Exceptions.FINDSET THEN
+      IF GV.FIND_Exceptions(Exceptions) THEN
+      //NC MIO-10.7 < PCH
+        REPEAT
+          IF Exceptions."Dimension Code" <> '' THEN BEGIN
+            LedgEntryDim.SETRANGE("Dimension Code",Exceptions."Dimension Code");
+            LedgEntryDim.SETRANGE("Dimension Value Code",Exceptions."Dimension Value Code");
+            IsFound := NOT LedgEntryDim.ISEMPTY;
+            IF IsFound THEN BEGIN
+              //NC MTD06 > AIG
+              IF Exceptions."Offset Exception Debit" THEN BEGIN
+                OffsetExceptionsDT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              IF Exceptions."Offset Exception Credit" THEN BEGIN
+                OffsetExceptionsCT := TRUE;
+                OffsetFromDate := Exceptions."From Date";
+                OffsetToDate := Exceptions."To Date";
+              END;
+              //NC MTD06 < AIG
+
+              IF NOT Exceptions."Not Except" THEN
+                Spec := TRUE
+              ELSE
+                SpecNotExcept := TRUE;
+              EXIT;
+            END;
+          END ELSE BEGIN
+            //NC MTD06 > AIG
+            IF Exceptions."Offset Exception Debit" THEN BEGIN
+              OffsetExceptionsDT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            IF Exceptions."Offset Exception Credit" THEN BEGIN
+              OffsetExceptionsCT := TRUE;
+              OffsetFromDate := Exceptions."From Date";
+              OffsetToDate := Exceptions."To Date";
+            END;
+            //NC MTD06 < AIG
+
+            IF NOT Exceptions."Not Except" THEN
+              Spec := TRUE
+            ELSE
+              SpecNotExcept := TRUE;
+            EXIT;
+          END;
+        //NC MIO-10.7 > PCH
+        //UNTIL (Exceptions.NEXT = 0) OR IsFound;
+        UNTIL (GV.NEXT_Exceptions(Exceptions) = 0) OR IsFound;
+        //NC MIO-10.7 < PCH
+
+      //NC MDTX02 < MP
+      //NC MIO-10.7 < PCH перенесено из CU50000
+    END;
+
+    PROCEDURE InsertRoundingCorrectionLines@1210016(VAR locJnlLine@1210007 : Record 81;VAR locLineDim@1210006 : Record 356);
+    VAR
+      DocBalanceAmount@1101495002 : Decimal;
+      TmpGenJournalLine@1210005 : TEMPORARY Record 81;
+      Text000@1210000 : TextConst 'ENU=Rounding correction for Doc No. %1;RUS=Ошибка округления для Док. № %1';
+      TmpGenJournalLineInsert@1210001 : TEMPORARY Record 81;
+      TmpJnlDimInsert@1000000000 : TEMPORARY Record 356;
+      DefDim@1000000002 : Record 352;
+      JLD@1000000003 : Record 356;
+      oldDimValueCode@1101495001 : Code[20];
+      locJnlLine1@1101495000 : Record 81;
+      LineNo@1101495003 : Integer;
+    BEGIN
+      //NC MIO-10.7 > PCH перенесено из CU50000
+      //NC PIF001 > DP
+      IF NOT ConsolidationSource."Cons. Balance" THEN
+        EXIT;
+
+      //NC S622 > PCH
+      ConsolidationSource.TESTFIELD("Exch. Rate Gains Acc.");
+      ConsolidationSource.TESTFIELD("Exch. Rate Losses Acc.");
+      //NC S622 < PCH
+
+      DocBalanceAmount := 0;
+
+      //NC NCS-1577 > PCH
+      locJnlLine.FINDLAST;
+      LineNo := locJnlLine."Line No." + 1;
+      //NC NCS-1577 < PCH
+
+      IF locJnlLine.FINDSET THEN REPEAT
+        DocBalanceAmount := DocBalanceAmount + locJnlLine."Amount (LCY)";
+
+        DefDim.RESET;
+        DefDim.SETRANGE("Table ID",15);
+        DefDim.SETRANGE("No.",locJnlLine."Account No.");
+
+        DefDim.SETFILTER("Value Posting",'%1|%2',DefDim."Value Posting"::"Code Mandatory",
+                                                 DefDim."Value Posting"::"Same Code");
+        DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+        IF GV.FIND_DefDim(DefDim) THEN REPEAT
+          TmpJnlDimInsert.RESET;
+          TmpJnlDimInsert.SETRANGE("Table ID",81);
+          //NC NCS-1577 > PCH
+          {
+          TmpJnlDimInsert.SETRANGE("Journal Template Name", TmpGenJournalLine."Journal Template Name");
+          TmpJnlDimInsert.SETRANGE("Journal Batch Name", TmpGenJournalLine."Journal Batch Name");
+          TmpJnlDimInsert.SETRANGE("Journal Line No.",TmpGenJournalLine."Line No.");
+          }
+          TmpJnlDimInsert.SETRANGE("Journal Template Name", locJnlLine."Journal Template Name");
+          TmpJnlDimInsert.SETRANGE("Journal Batch Name", locJnlLine."Journal Batch Name");
+          TmpJnlDimInsert.SETRANGE("Journal Line No.",LineNo);
+          //NC NCS-1577 < PCH
+          TmpJnlDimInsert.SETRANGE("Dimension Code",DefDim."Dimension Code");
+            IF NOT TmpJnlDimInsert.FINDFIRST THEN BEGIN
+               TmpJnlDimInsert.INIT;
+               TmpJnlDimInsert."Table ID":= 81;
+               TmpJnlDimInsert."Journal Template Name" := locJnlLine."Journal Template Name";
+               TmpJnlDimInsert."Journal Batch Name" := locJnlLine."Journal Batch Name";
+               TmpJnlDimInsert."Journal Line No." := LineNo;
+               TmpJnlDimInsert."Dimension Code" := DefDim."Dimension Code";
+               TmpJnlDimInsert."Dimension Value Code" := DefDim."Dimension Value Code";
+               //NC NCS-1577 > PCH
+               {
+               TmpJnlDimInsert.INSERT THEN
+               }
+               IF TmpJnlDimInsert.INSERT THEN;
+               //NC NCS-1577 < PCH
+            END;
+        UNTIL GV.NEXT_DefDim(DefDim) = 0;
+
+      UNTIL locJnlLine.NEXT = 0;
+
+      TmpGenJournalLine := locJnlLine;
+
+      TmpGenJournalLine."Not Translate" := ConsolidationSource."Not Translate";
+      TmpGenJournalLine."Not Translate IFRS" := ConsolidationSource."Not Translate IFRS";
+
+      // --- Балансирование в конце раздела >
+      IF (DocBalanceAmount <> 0) AND
+         (ABS(DocBalanceAmount) <= ConsolidationSource."Cons. Max Round. Amount") THEN BEGIN;
+         TmpGenJournalLineInsert               := TmpGenJournalLine;
+         //NC NCS-1577 > PCH
+         //TmpGenJournalLineInsert."Line No."    := TmpGenJournalLine."Line No." + 1;
+         TmpGenJournalLineInsert."Line No."    := LineNo;
+         //NC NCS-1577 < PCH
+
+         IF DocBalanceAmount>0 THEN
+           TmpGenJournalLineInsert."Account No." := ConsolidationSource."Exch. Rate Gains Acc."
+         ELSE
+           TmpGenJournalLineInsert."Account No." := ConsolidationSource."Exch. Rate Losses Acc.";
+
+         TmpGenJournalLineInsert.VALIDATE("Currency Code",'');
+         TmpGenJournalLineInsert.VALIDATE(Amount, -DocBalanceAmount);
+         TmpGenJournalLineInsert.Description   := STRSUBSTNO(Text000, TmpGenJournalLineInsert."Document No.");
+         TmpGenJournalLineInsert."Source No." := '';
+         TmpGenJournalLineInsert.INSERT;
+
+         // insert last line dims
+         locLineDim.SETRANGE("Table ID", DATABASE::"Gen. Journal Line");
+         locLineDim.SETRANGE("Journal Template Name", TmpGenJournalLine."Journal Template Name");
+         locLineDim.SETRANGE("Journal Batch Name", TmpGenJournalLine."Journal Batch Name");
+         locLineDim.SETRANGE("Journal Line No.", TmpGenJournalLine."Line No.");
+         IF locLineDim.FINDSET THEN REPEAT
+           TmpJnlDimInsert := locLineDim;
+           TmpJnlDimInsert."Journal Line No." := TmpGenJournalLineInsert."Line No.";
+
+           //NC NCS-2175 > DP
+           {
+           TmpJnlDimInsert.INSERT;
+           }
+           IF TmpJnlDimInsert.INSERT THEN;
+           //NC NCS-2175 < DP
+
+           UNTIL locLineDim.NEXT = 0;
+
+         //NC APCOC-72 > DP
+         DefDim.RESET;
+         DefDim.SETRANGE("Table ID",50064);
+         DefDim.SETRANGE("No.",'');
+         DefDim.SETFILTER("Value Posting",'%1|%2',DefDim."Value Posting"::"Code Mandatory",
+                                              DefDim."Value Posting"::"Same Code");
+         DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+         IF GV.FIND_DefDim(DefDim) THEN
+           REPEAT
+             TmpJnlDimInsert.RESET;
+             IF NOT TmpJnlDimInsert.GET(81,
+                                     TmpGenJournalLineInsert."Journal Template Name",
+                                     TmpGenJournalLineInsert."Journal Batch Name",
+                                     TmpGenJournalLineInsert."Line No.",
+                                     0,
+                                     DefDim."Dimension Code") THEN BEGIN
+               TmpJnlDimInsert.INIT;
+               TmpJnlDimInsert."Table ID":= 81;
+               TmpJnlDimInsert."Journal Template Name" := TmpGenJournalLineInsert."Journal Template Name";
+               TmpJnlDimInsert."Journal Batch Name" := TmpGenJournalLineInsert."Journal Batch Name";
+               TmpJnlDimInsert."Journal Line No." := TmpGenJournalLineInsert."Line No.";
+               TmpJnlDimInsert."Allocation Line No." := 0;
+               TmpJnlDimInsert."Dimension Code" := DefDim."Dimension Code";
+               TmpJnlDimInsert."Dimension Value Code" := DefDim."Dimension Value Code";
+               IF TmpJnlDimInsert.INSERT THEN;
+             END ELSE BEGIN
+               oldDimValueCode := TmpJnlDimInsert."Dimension Value Code";
+               TmpJnlDimInsert."Dimension Value Code" := DefDim."Dimension Value Code";
+               IF (DefDim."Value Posting" = DefDim."Value Posting"::"Same Code") OR
+                  (oldDimValueCode = '') THEN
+                 TmpJnlDimInsert.MODIFY;
+             END;
+           UNTIL GV.NEXT_DefDim(DefDim) = 0;
+         //NC APCOC-72 < DP
+         DefDim.RESET;
+         DefDim.SETRANGE("Table ID",15);
+         DefDim.SETRANGE("No.",TmpGenJournalLineInsert."Account No.");
+
+         DefDim.SETFILTER("Value Posting",'%1|%2',DefDim."Value Posting"::"Code Mandatory",
+                                                  DefDim."Value Posting"::"Same Code");
+         DefDim.SETFILTER("Dimension Value Code",'<>%1','');
+
+         IF GV.FIND_DefDim(DefDim) THEN REPEAT
+           TmpJnlDimInsert.RESET;
+           IF NOT TmpJnlDimInsert.GET(81,
+                                   TmpGenJournalLineInsert."Journal Template Name",
+                                   TmpGenJournalLineInsert."Journal Batch Name",
+                                   TmpGenJournalLineInsert."Line No.",
+                                   0,
+                                   DefDim."Dimension Code") THEN BEGIN
+             TmpJnlDimInsert.INIT;
+             TmpJnlDimInsert."Table ID":= 81;
+             TmpJnlDimInsert."Journal Template Name" := TmpGenJournalLineInsert."Journal Template Name";
+             TmpJnlDimInsert."Journal Batch Name" := TmpGenJournalLineInsert."Journal Batch Name";
+             TmpJnlDimInsert."Journal Line No." := TmpGenJournalLineInsert."Line No.";
+             TmpJnlDimInsert."Allocation Line No." := 0;
+             TmpJnlDimInsert."Dimension Code" := DefDim."Dimension Code";
+             TmpJnlDimInsert."Dimension Value Code" := DefDim."Dimension Value Code";
+             IF TmpJnlDimInsert.INSERT THEN;
+           END ELSE BEGIN
+             oldDimValueCode := TmpJnlDimInsert."Dimension Value Code";
+             TmpJnlDimInsert."Dimension Value Code" := DefDim."Dimension Value Code";
+             IF (DefDim."Value Posting" = DefDim."Value Posting"::"Same Code") OR
+                (oldDimValueCode = '') THEN
+               TmpJnlDimInsert.MODIFY;
+           END;
+         UNTIL GV.NEXT_DefDim(DefDim) = 0;
+
+      END;
+      // --- Балансирование в конце раздела <
+
+
+      IF TmpGenJournalLineInsert.FINDSET THEN
+        REPEAT
+          locJnlLine := TmpGenJournalLineInsert;
+          locJnlLine.INSERT;
+        UNTIL TmpGenJournalLineInsert.NEXT = 0;
+
+      IF TmpJnlDimInsert.FINDSET THEN
+        REPEAT
+          locLineDim := TmpJnlDimInsert;
+          IF locLineDim.INSERT THEN;
+        UNTIL TmpJnlDimInsert.NEXT = 0;
+
+      //NC PIF001 < DP
+      //NC MIO-10.7 < PCH перенесено из CU50000
+    END;
+
+    PROCEDURE CreateCustomerAgreement@1101495013(VAR GenJournalLine@1101495002 : Record 81;VAR JournalLineDimension@1101495001 : Record 356);
+    BEGIN
+      //NC S1896 > PCH
+      CustomerAgreement.INIT;
+      CustomerAgreement."Customer No." := GenJournalLine."Account No.";
+      CustomerAgreement."No." := JournalLineDimension."Dimension Value Code";
+
+      //NC MTD03.1 > DP
+      JournalLineDimension.CALCFIELDS("Dimension Value Name");
+      CustomerAgreement."External Agreement No." := JournalLineDimension."Dimension Value Name";
+      //NC MTD03.1 < DP
+
+      CustomerAgreement.Description := JournalLineDimension."Dimension Value Name";
+      CustomerAgreement.Active := TRUE;
+      CustomerAgreement."Customer Posting Group" := GenJournalLine."Posting Group";
+      CustomerAgreement."Deal No." := JournalLineDimension."Dimension Value Code";
+      CustomerAgreement."Currency Code" := GenJournalLine."Currency Code";
+      CustomerAgreement."Agreement Type" := CustomerAgreement."Agreement Type"::Trade;
+      IF CustomerAgreement.INSERT THEN;
+      //NC S1896 < PCH
+    END;
+
+    PROCEDURE CreateVendorAgreement@1101495008(VAR GenJournalLine@1101495002 : Record 81;VAR JournalLineDimension@1101495001 : Record 356);
+    BEGIN
+      //NC S2031 > PCH
+      VendorAgreement.INIT;
+      VendorAgreement."Vendor No." := GenJournalLine."Account No.";
+      VendorAgreement."No." := JournalLineDimension."Dimension Value Code";
+
+      //NC MTD03.1 > DP
+      JournalLineDimension.CALCFIELDS("Dimension Value Name");
+      VendorAgreement."External Agreement No." := JournalLineDimension."Dimension Value Name";
+      //NC MTD03.1 < DP
+
+      VendorAgreement.Description := JournalLineDimension."Dimension Value Name";
+      VendorAgreement.Active := TRUE;
+      VendorAgreement."Vendor Posting Group" := GenJournalLine."Posting Group";
+      VendorAgreement."Deal No." := JournalLineDimension."Dimension Value Code";
+      VendorAgreement."Currency Code" := GenJournalLine."Currency Code";
+      //VendorAgreement."Agreement Type" := VendorAgreement."Agreement Type"::Trade;
+      IF VendorAgreement.INSERT THEN;
+      //NC S2031 < PCH
+    END;
+
+    BEGIN
+    {
+      NC MIO-10 DP Перенесена модификация
+      NC MCO04.2 DP Изменена функция GetAmountsDiff (2011111510000546)
+      NC MCO04.3 DP Изменена функция CheckErrorsConsFromNav
+      NC 7482 DP Ошибка трансформации к USD, если в буфере ориг. валюта ''
+      NC S601 DP Передача курса в случае реверса
+      NC S676 PCH Фильтр на код внешней компании
+      NC NCS-884.2 DP Учет проводок с отрицательным количеством по дебету
+      NC NCS-884.3 DP Изменена функция OnRun
+      NC S547 PCH обработка измерений по ID
+      NC S547.1 PCH оптимизация
+      NC NCS-1180 DP Обработка измерений, имеющих для счета тип учета "Единый Код"
+      TDRANSC-1176>
+        Modified OnRun
+      NC NCS-909 SKV
+      CN NCS-909 KP "Local G/L Account" в операциях по разницам должно быть пусто
+      TDRANCS-1269>
+        Modified func GETAmountsPosition, changing currency for entries depends on Deal Type
+      NC MIO-10.3 DP Изменена функция CheckDefaultDimensions
+      NC MIO-34 DP Добавлена функция CheckRealDimensions, изменена функция CheckErrorsConsFromNav
+      NC MIO-10.7 DP Изменены функции
+          OnRun
+          CheckErrorsConsFromNav
+          CheckExceptionCorrespondense
+          CheckGLMapp
+          CheckDefaultDimensions
+          CheckSameCodeDimensions
+          CheckRestrictedDimensions
+        Добавлена функция IsFoundGLMapp
+      NC MIO-10.9 Изменена функция OnRun, CheckRestrictedDimensions
+      NC MIO-10.11 DP Изменена функция OnRun
+      NC MIO-10.7 PCH Оптимизация
+      NC MIO-10.15 DP Изменена функция GetAmountsDiff
+      NC MIO-63 DP Изменена функция OnRun
+      NC NCS-1577 PCH Изменена функция InsertRoundingCorrectionLines
+      NC NCS-1908 DP Изменена функция CheckGLMapp
+      NC S1907 PCH копирование атрибутов balance->p&l
+      NC S1896 PCH создание карточки договора
+      NC S2006 PCH
+      NC S2031 PCH создание карточки договора поставщика
+      NC S2006.1 PCH обработка признака
+      NC S2089 AAP Изменение мепинга.
+      NC S2103 AAP Инменение ключа сортировки при чтении буфера
+      NC NCS-2175 DP Изменена функция InsertRoundingCorrectionLines
+    }
+    END.
+  }
+}
+

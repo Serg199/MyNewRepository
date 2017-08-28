@@ -1,0 +1,470 @@
+OBJECT Codeunit 50020 Supervisor
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.11.14;
+    Time=16:06:09;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    SingleInstance=Yes;
+    OnRun=VAR
+            Company@1000000000 : Record 2000000006;
+            JobProcStatus@1000000002 : Record 50063;
+            JobProcStatus2@1000000010 : Record 50063;
+            JobProcStatusTemp@1000000003 : TEMPORARY Record 50063;
+            JobProcStatusTemp2@1000000007 : TEMPORARY Record 50063;
+            NAS@1000000012 : Record 50080;
+            NASStatus@1000000004 : Record 50067;
+            NASStatus2@1000000008 : Record 50067;
+            IsCompl@1000000005 : Boolean;
+            RecRefNASStatus@1000000006 : RecordRef;
+            TransactionNo@1000000009 : Integer;
+            JobProc@1000000011 : Record 50062;
+            CompanyRate@1101495002 : TEMPORARY Record 50063;
+            MaxInteger@1101495001 : Integer;
+            isExit@1101495000 : Boolean;
+            l_boolSkip@1101495003 : Boolean;
+            isNewJobs@1101495004 : Boolean;
+          BEGIN
+            MovingDataSetup.GET;
+            //IF NOT MovingDataSetup."Automation Works" THEN
+            //  EXIT;
+
+            //групприровка по Компания - Сервис NAS + Внешний источник в случае Консолидирующей фирмы
+            JobProcStatus.RESET;
+            JobProcStatus.SETRANGE(Blocked,FALSE);
+            JobProcStatus.SETRANGE("Auto Start",TRUE);
+            JobProcStatus.SETFILTER("Name Service NAS",'<>%1','');
+            JobProcStatus.SETRANGE(Status,JobProcStatus.Status::Planed);
+            GroupJobProc(JobProcStatus,JobProcStatusTemp);
+            //NC S1197,MIO55 > PCH
+            // Построение списка компаний с приоритетом по номеру запланированного задания
+            MaxInteger := 2147483647;
+            CompanyRate.RESET;
+            CompanyRate.DELETEALL;
+            Company.RESET;
+            IF Company.FINDSET THEN REPEAT
+              JobProcStatus.SETRANGE("Company No.",Company.Name);
+              CompanyRate.INIT;
+              IF JobProcStatus.FINDFIRST THEN
+                CompanyRate."Line No." := JobProcStatus."Line No."
+              ELSE BEGIN
+                CompanyRate."Line No." := MaxInteger; // нет задач
+                MaxInteger -= 1;
+              END;
+              CompanyRate."Company No." := Company.Name;
+              CompanyRate.INSERT;
+            UNTIL Company.NEXT = 0;
+            JobProcStatus.SETRANGE("Company No.");
+            //NC S1197,MIO55 < PCH
+            COMMIT;
+
+            //NC S1197,MIO55 > PCH
+            {
+            Company.RESET;
+
+            IF Company.FINDSET THEN REPEAT
+            }
+            // перебор списка компаний с сортировкой по номеру запланированного задания
+            isExit := FALSE;
+            CompanyRate.RESET;
+            IF CompanyRate.FINDSET THEN REPEAT
+              Company.GET(CompanyRate."Company No.");
+            //NC S1197,MIO55 < PCH
+              //ОСТАНОВКА СЕРВИСОВ
+              NASStatus.RESET;
+              NASStatus.SETRANGE("Company No.",Company.Name);
+              NASStatus.SETFILTER(Status,'%1|%2|%3',NASStatus.Status::"Competed Successfully",
+                                                    NASStatus.Status::"Error Reported",
+                                                    NASStatus.Status::Canceled);
+              NASStatus.SETRANGE("NAS Mode",NASStatus."NAS Mode"::Flexible);
+              IF NASStatus.FINDSET THEN REPEAT
+                //NC S1197,MIO55 > PCH
+                {
+                IsCompl := JobProcStatus.IsStatusProc(NASStatus."Company No.",'',NASStatus."Name Service NAS",'*',
+                                                      STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                         JobProcStatus.Status::Working));
+                IF NOT IsCompl THEN BEGIN
+                }
+                //NC S1197,MIO55 < PCH
+                  RecRefNASStatus.GETTABLE(NASStatus);
+                  JobProcStatusTemp2."Company No." := NASStatus."Company No.";
+                  JobProcStatusTemp2."Record ID" := RecRefNASStatus.RECORDID;
+                  IF CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp2) THEN BEGIN
+                    // !!!!!!!!!!!! Остановка сервиса NASStatus."Name Service NAS"
+                    NASStatus.Async := TRUE;
+                    NASStatus."Status NAS" := NASStatus."Status NAS"::Stopped;
+                    IF CODEUNIT.RUN(CODEUNIT::"Run Service",NASStatus) THEN BEGIN
+                      NASStatus2.GET(NASStatus."Company No.",NASStatus."Name Service NAS");
+                      //NC S1197,MIO55 > PCH
+                      //NASStatus2.DELETE;
+                      NASStatus2.DELETE(TRUE);
+                      isExit := TRUE;
+                      //NC S1197,MIO55 < PCH
+                    END ELSE BEGIN
+                      ErrorJournal.AddError('',ErrorJournal."Error Group"::System,ErrorJournal.Type::Error,
+                                            '',STRSUBSTNO(Text001,NASStatus."Name Service NAS",NASStatus."Name Server NAS"),0);
+                    END;
+                    COMMIT;
+                  END;
+                //NC S1197,MIO55 > PCH
+                {
+                END;
+                }
+                //NC S1197,MIO55 < PCH
+              UNTIL NASStatus.NEXT = 0;
+
+              //КОНТРОЛЬ СЕРВИСОВ
+              NASStatus.RESET;
+              NASStatus.SETRANGE("Company No.",Company.Name);
+              NASStatus.SETRANGE(Status,NASStatus.Status::Scheduled);
+              NASStatus.SETFILTER("Time Status",'<%1',CURRENTDATETIME - MovingDataSetup."Timeout Startup NAS (sec)"*1000);
+              IF NASStatus.FINDSET THEN REPEAT
+                RecRefNASStatus.GETTABLE(NASStatus);
+                JobProcStatusTemp2."Company No." := NASStatus."Company No.";
+                JobProcStatusTemp2."Record ID" := RecRefNASStatus.RECORDID;
+                IF CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp2) THEN BEGIN
+                  // !!!!!!!!!!!! Остановка сервиса NASStatus."Name Service NAS"
+                  NASStatus.Async := TRUE;
+                  NASStatus."Status NAS" := NASStatus."Status NAS"::Stopped;
+                  IF CODEUNIT.RUN(CODEUNIT::"Run Service",NASStatus) THEN BEGIN
+                    NASStatus2.GET(NASStatus."Company No.",NASStatus."Name Service NAS");
+                    NASStatus2.DELETE(TRUE);
+                    //NC S1197,MIO55 > PCH
+                    isExit := TRUE;
+                    //NC S1197,MIO55 < PCH
+                  END ELSE BEGIN
+                    ErrorJournal.AddError('',ErrorJournal."Error Group"::System,ErrorJournal.Type::Error,
+                                          '',STRSUBSTNO(Text001,NASStatus."Name Service NAS",NASStatus."Name Server NAS"),0);
+                  END;
+                  COMMIT;
+                END;
+              UNTIL NASStatus.NEXT = 0;
+
+              NASStatus.RESET;
+              NASStatus.SETRANGE("Company No.",Company.Name);
+              NASStatus.SETFILTER(Status,'>=%1',NASStatus.Status::Working);
+              IF NASStatus.FINDSET THEN REPEAT
+                NASStatus.GetStatus;
+                IF NASStatus."Status NAS" = NASStatus."Status NAS"::Stopped THEN BEGIN
+                  NASStatus2.GET(NASStatus."Company No.",NASStatus."Name Service NAS");
+                  NASStatus2.DELETE(TRUE);
+                  //NC S1197,MIO55 > PCH
+                  isExit := TRUE;
+                  //NC S1197,MIO55 < PCH
+                  COMMIT;
+                END;
+              UNTIL NASStatus.NEXT = 0;
+
+              IF NOT Company."Block Automations" AND
+                 //NC S1197,MIO55 > PCH
+                 NOT isExit AND
+                 //NC S1197,MIO55 < PCH
+                 NOT MovingDataSetup."Bulk Data Exchange" THEN BEGIN
+
+                NASStatus.RESET;
+
+                JobProcStatusTemp.RESET;
+                JobProcStatusTemp.SETRANGE("Company No.",Company.Name);
+                IF JobProcStatusTemp.FINDSET THEN REPEAT
+                  NAS.GET(JobProcStatusTemp."Name Service NAS");
+                  TransactionNo := 0;
+
+                  IF Company."Company Type" = Company."Company Type"::Consolidation THEN BEGIN
+                    IF JobProcStatusTemp."External Source" = '' THEN
+                      IsCompl := FALSE
+                    ELSE
+                      IsCompl := JobProcStatus.IsStatusProc(JobProcStatusTemp."External Source",'','','*',
+                                                            STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                               JobProcStatus.Status::Working))
+                  END ELSE
+                    //NC MIO55 > PCH
+                    //IsCompl := JobProcStatus.IsStatusProc('','','',Company.Name,
+                    IsCompl := JobProcStatus.IsStatusProc(Company.Name,'','','',
+                    //NC MIO55 < PCH
+                                                          STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                             JobProcStatus.Status::Working));
+
+                  IF NOT IsCompl AND
+                     (
+                       ( NOT NASStatus.GET(Company.Name,JobProcStatusTemp."Name Service NAS") AND // сервис не запущен
+                         (MovingDataSetup."Max. Qty. Sessions NAS" > NASStatus.COUNT)             // есть свободные сессии NAS
+                       ) OR
+                       ( NASStatus.GET(Company.Name,JobProcStatusTemp."Name Service NAS") AND     // сервис запущен
+                         (NAS."NAS Mode" = NAS."NAS Mode"::Fixed)                                 // в режиме фикс
+                       )
+                     ) THEN BEGIN
+                    // проверка на захваченные записи
+                    JobProcStatus.SETRANGE("Name Service NAS",JobProcStatusTemp."Name Service NAS");
+                    IF JobProcTestBlock(JobProcStatus) THEN BEGIN
+                      //смена статуса на выполнение
+                      JobProcStatus.FINDSET(TRUE);
+                      TransactionNo := JobProcStatus.GetNewTransactionNo;
+                      //NC MIO20,MIO83 > PCH
+                      l_boolSkip := FALSE;
+                      //NC MIO20,MIO83 < PCH
+                      //NC MIO83 > PCH
+                      isNewJobs := FALSE;
+                      //NC MIO83 < PCH
+                      REPEAT
+                        //NC MIO20,MIO83 > PCH
+                        l_boolSkip := fn_CheckDepend(JobProcStatus);
+                        l_boolSkip := l_boolSkip OR JobProcTestDependTimeout(JobProcStatus);
+                        IF NOT l_boolSkip THEN BEGIN
+                        //NC MIO20,MIO83 < PCH
+                          JobProcStatus.Status := JobProcStatus.Status::Scheduled;
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus."Transaction No." := TransactionNo;
+                          // проверка что бы исключить запареллеливания загрузки
+                          IF JobProcStatus."Check Uniqueness" THEN BEGIN
+                            JobProc.TRANSFERFIELDS(JobProcStatus);
+                            IF NOT JobProcStatus.IsCheckUniq(JobProc,STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                                        JobProcStatus.Status::Working)) THEN
+                              JobProcStatus.Status := JobProcStatus.Status::Canceled;
+                          END;
+                          JobProcStatus.MODIFY;
+                          //NC MIO83 > PCH
+                          IF JobProcStatus.Status = JobProcStatus.Status::Scheduled THEN
+                            isNewJobs := TRUE;
+                          //NC MIO83 < PCH
+                        //NC MIO20,MIO83 > PCH
+                        END;
+                        //NC MIO20,MIO83 < PCH
+                      UNTIL JobProcStatus.NEXT = 0;
+
+                      IF NOT NASStatus.GET(Company.Name,JobProcStatusTemp."Name Service NAS") AND
+                        //NC MIO83 > PCH
+                        isNewJobs THEN BEGIN
+                        //NC MIO83 < PCH
+                        NASStatus.INIT;
+                        NASStatus."Company No." := Company.Name;
+                        NASStatus."Name Service NAS" := JobProcStatusTemp."Name Service NAS";
+                        NASStatus."Name Server NAS" := JobProcStatusTemp."Name Server NAS";
+                        NASStatus."NAS Mode" := NAS."NAS Mode";
+                        NASStatus.Status := NASStatus.Status::Planed;
+                        NASStatus."Time Status" := CURRENTDATETIME;
+                        NASStatus.INSERT;
+                      END;
+                      COMMIT;
+                    END;
+                    JobProcStatus.SETRANGE("Name Service NAS");
+                  END;
+                UNTIL JobProcStatusTemp.NEXT = 0;
+
+                COMMIT;
+                // ЗАПУСК СЕРВИСОВ
+                NASStatus.RESET;
+                NASStatus.SETRANGE("Company No.",Company.Name);
+                NASStatus.SETFILTER(Status,'%1',NASStatus.Status::Planed);
+                IF NASStatus.FINDSET THEN REPEAT
+                  // !!!!!!!!!!!! Запуск сервиса сервиса NASStatus."Name Service NAS"
+                  NASStatus2.GET(NASStatus."Company No.",NASStatus."Name Service NAS");
+                  NASStatus2.Status := NASStatus2.Status::Scheduled;
+                  NASStatus2."Time Status" := CURRENTDATETIME;
+                  NASStatus2.MODIFY;
+                  COMMIT;
+
+                  NASStatus2.Async := TRUE;
+                  NASStatus2."Status NAS" := NASStatus2."Status NAS"::Running;
+                  IF NOT CODEUNIT.RUN(CODEUNIT::"Run Service",NASStatus2) THEN BEGIN
+                    NASStatus2.GET(NASStatus."Company No.",NASStatus."Name Service NAS");
+                    NASStatus2.DELETE(TRUE);
+                    //NC S1197,MIO55 > PCH
+                    isExit := TRUE;
+                    //NC S1197,MIO55 < PCH
+
+                    ErrorJournal.AddError('',ErrorJournal."Error Group"::System,ErrorJournal.Type::Error,
+                                          '',STRSUBSTNO(Text002,NASStatus."Name Service NAS",NASStatus."Name Server NAS"),0);
+                  END;
+
+                UNTIL NASStatus.NEXT = 0;
+                COMMIT;
+
+              END;
+
+            //NC S1197,MIO55 > PCH
+            {
+            UNTIL Company.NEXT = 0;
+            }
+            UNTIL CompanyRate.NEXT = 0;
+            //NC S1197,MIO55 < PCH
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ErrorJournal@1000000000 : Record 50023;
+      Text001@1000000001 : TextConst 'ENU=Stopping service% 1 led to a system error.;RUS=Остановка сервиса %1 %2 привела к возникновению системной ошибки.';
+      Text002@1000000002 : TextConst 'ENU=Start the service %1 %2 has led to a system error.;RUS=Запуск сервиса %1 %2 привел к возникновению системной ошибки.';
+      MovingDataSetup@1101495001 : Record 50064;
+
+    PROCEDURE GroupJobProc@1000000005(VAR JobPrStatus@1000000000 : Record 50063;VAR JobPrStatusTemp@1000000001 : TEMPORARY Record 50063);
+    VAR
+      Company2@1000000002 : Record 2000000006;
+    BEGIN
+      JobPrStatusTemp.DELETEALL;
+      IF JobPrStatus.FINDSET THEN REPEAT
+        Company2.GET(JobPrStatus."Company No.");
+        JobPrStatusTemp.RESET;
+        JobPrStatusTemp.SETRANGE("Company No.",JobPrStatus."Company No.");
+        JobPrStatusTemp.SETRANGE("Name Service NAS",JobPrStatus."Name Service NAS");
+        IF Company2."Company Type" = Company2."Company Type"::Consolidation THEN
+          JobPrStatusTemp.SETRANGE("External Source",JobPrStatus."External Source");
+        IF JobPrStatusTemp.ISEMPTY THEN BEGIN
+          JobPrStatusTemp."Company No." := JobPrStatus."Company No.";
+          JobPrStatusTemp."Line No." := JobPrStatus."Line No.";
+          JobPrStatusTemp."Name Service NAS" := JobPrStatus."Name Service NAS";
+          JobPrStatusTemp."Name Server NAS" := JobPrStatus."Name Server NAS";
+          IF Company2."Company Type" = Company2."Company Type"::Consolidation THEN
+            JobPrStatusTemp."External Source" := JobPrStatus."External Source";
+          JobPrStatusTemp.INSERT;
+        END;
+      UNTIL JobPrStatus.NEXT = 0;
+    END;
+
+    PROCEDURE JobProcTestBlock@1000000013(VAR JobPrStatus@1000000000 : Record 50063) : Boolean;
+    VAR
+      JobProcStatusTemp3@1000000002 : TEMPORARY Record 50063;
+      RecRefJobPrStatus@1000000001 : RecordRef;
+    BEGIN
+      IF JobPrStatus.FINDSET THEN REPEAT
+        RecRefJobPrStatus.GETTABLE(JobPrStatus);
+        JobProcStatusTemp3."Company No." := JobPrStatus."Company No.";
+        JobProcStatusTemp3."Record ID" := RecRefJobPrStatus.RECORDID;
+        IF NOT CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp3) THEN
+          EXIT(FALSE);
+
+      UNTIL JobPrStatus.NEXT = 0;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE fn_CheckDepend@1000000000(p_recJobProcStatus@1000000000 : Record 50063) : Boolean;
+    VAR
+      l_recJobProcStatus@1000000001 : Record 50063;
+      l_recCompany@1000000002 : Record 2000000006;
+    BEGIN
+      //NC MIO20,MIO83 > PCH
+      // TDRANCS-1196 >
+      // проверка на зависимость текущего задания от предыдущих, TRUE - зависит.
+      // если задание зависит от дргугого (которое выполняется или запланировано), то оно остается в статусе план.
+
+      // Проверка на одновременный запуск заданий по одной компании
+      // такие задания в план не ставятся, за исключением пакетного запуска >
+      IF (p_recJobProcStatus.Dependency = 0) AND
+          (p_recJobProcStatus."Type Processing" = p_recJobProcStatus."Type Processing"::"Program Module") THEN BEGIN
+        l_recJobProcStatus.SETRANGE("Company No.",p_recJobProcStatus."Company No.");
+        l_recJobProcStatus.SETRANGE(Processor,p_recJobProcStatus.Processor);
+        l_recJobProcStatus.SETRANGE(Blocked,FALSE);
+        //NC MIO83 > PCH  задания в одной фирме должны ставиться в один пакет иначе вся автоматизация будет тормозить
+        //l_recJobProcStatus.SETRANGE(Status,l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Working);
+        l_recJobProcStatus.SETFILTER(Status,'%1|%2',l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Working);
+        //NC MIO83 < PCH
+        l_recJobProcStatus.SETFILTER("Line No.",'<%1',p_recJobProcStatus."Line No.");
+        //NC MIO83 > PCH
+        //IF l_recJobProcStatus.FINDSET THEN
+        IF NOT l_recJobProcStatus.ISEMPTY THEN
+        //NC MIO83 < PCH
+          EXIT(TRUE)
+        ELSE
+          EXIT(FALSE);
+      END;
+      // <
+
+      IF p_recJobProcStatus.Dependency = 0
+        THEN EXIT(FALSE);
+      IF NOT l_recJobProcStatus.GET(p_recJobProcStatus.Dependency)
+        THEN EXIT(FALSE);
+      IF NOT l_recCompany.GET(p_recJobProcStatus."Company No.")
+        THEN EXIT(FALSE);
+
+      IF  l_recCompany."Company Type" = l_recCompany."Company Type"::Consolidation THEN BEGIN
+        IF p_recJobProcStatus.Processor = FORMAT(CODEUNIT::RunPeriodicAcivity) THEN BEGIN
+          l_recJobProcStatus.RESET;
+          IF p_recJobProcStatus."Line No." - p_recJobProcStatus.Dependency > 1 THEN
+            l_recJobProcStatus.SETRANGE("Line No.",p_recJobProcStatus.Dependency,p_recJobProcStatus."Line No." - 1)
+          ELSE
+            l_recJobProcStatus.SETRANGE("Line No.",p_recJobProcStatus.Dependency);
+          l_recJobProcStatus.SETRANGE(Status,l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Working);
+          //NC MIO83 > PCH
+          //IF l_recJobProcStatus.FINDSET THEN
+          IF NOT l_recJobProcStatus.ISEMPTY THEN
+          //NC MIO83 < PCH
+            EXIT(TRUE)
+          ELSE
+            EXIT(FALSE);
+        END ELSE BEGIN
+          //NC MIO83 > PCH задания в одной фирме должны ставиться в один пакет иначе вся автоматизация будет тормозить
+          IF p_recJobProcStatus."Company No." = l_recJobProcStatus."Company No." THEN
+            EXIT (l_recJobProcStatus.Status IN [l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Working])
+          ELSE
+          //NC MIO83 < PCH
+          IF l_recJobProcStatus.Status IN [l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Scheduled,
+                                           l_recJobProcStatus.Status::Working] THEN
+            EXIT(TRUE)
+          ELSE
+            EXIT(FALSE);
+        END;
+      END ELSE BEGIN
+        //NC MIO83 > PCH задания в одной фирме должны ставиться в один пакет иначе вся автоматизация будет тормозить
+        IF p_recJobProcStatus."Company No." = l_recJobProcStatus."Company No." THEN
+          EXIT (l_recJobProcStatus.Status IN [l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Working])
+        ELSE
+        //NC MIO83 < PCH
+        IF l_recJobProcStatus.Status IN [l_recJobProcStatus.Status::Planed,l_recJobProcStatus.Status::Scheduled,
+                                         l_recJobProcStatus.Status::Working] THEN
+          EXIT(TRUE)
+        ELSE
+          EXIT(FALSE);
+      END;
+      //NC MIO20,MIO83 < PCH
+    END;
+
+    PROCEDURE JobProcTestDependTimeout@1101495000(VAR JobPrStatus@1000000000 : Record 50063) : Boolean;
+    VAR
+      Company@1101495001 : Record 2000000006;
+      JobProcStatusTemp3@1000000002 : TEMPORARY Record 50063;
+      RecRefJobPrStatus@1000000001 : RecordRef;
+      JobPrStatus2@1101495000 : Record 50063;
+      NASServiceStatus3@1101495002 : Record 50067;
+    BEGIN
+      //NC MIO83 > PCH
+      // обеспечение задержки для связанных задач выполняющихся в других фирмах
+      Company.GET(JobPrStatus."Company No.");
+      IF JobPrStatus.Dependency <> 0 THEN BEGIN
+        JobPrStatus2.RESET;
+        JobPrStatus2.SETFILTER(Status,'%1|%2',JobPrStatus2.Status::Scheduled,JobPrStatus2.Status::Working);
+        JobPrStatus2.SETFILTER("Company No.",'<>%1',JobPrStatus."Company No."); // проверка только в других фирмах
+        JobPrStatus2.SETRANGE("Line No.",JobPrStatus.Dependency);
+        IF NOT JobPrStatus2.ISEMPTY THEN
+          EXIT(TRUE);
+
+        JobPrStatus2.SETRANGE(Status,JobPrStatus2.Status::"Competed Successfully");
+
+        IF JobPrStatus2.FINDSET THEN REPEAT
+          IF NASServiceStatus3.GET(JobPrStatus2."Company No.",JobPrStatus2."Name Service NAS") THEN BEGIN
+            IF NASServiceStatus3."NAS Mode" = NASServiceStatus3."NAS Mode"::Flexible THEN
+              EXIT(TRUE)
+            ELSE IF JobPrStatus2."Time Status" > CURRENTDATETIME - MovingDataSetup."Interval Check NAS_LOAD" THEN
+              EXIT(TRUE);
+          END;
+        UNTIL JobPrStatus2.NEXT = 0;
+      END;
+      //NC MIO83 < PCH
+    END;
+
+    BEGIN
+    {
+      NC MDM01 PCH
+      NC S1197 PCH Перенос логики с MIS. Включены запросы S616, S1062 частично
+      NC MIO55 PCH Отключена проверка, перенос связанной доработки S1197
+      NC MIO83 PCH помечен кусочек MIO20 для переноса на прод
+                   MovingDataSetup сделана глобальной
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,345 @@
+OBJECT Report 17304 Create FE from Sold FA
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create FE from Sold FA;
+               RUS=Создание РБП по проданным ОС];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  FETemplate.GET(FETemplateNo);
+
+                  WITH FEDeprBook DO BEGIN
+                    SETRANGE("FA No.",FETemplateNo);
+                    FEDeprBookAccounting.FINDFIRST;
+                    REPEAT
+                      FEDeprBookAccounting := FEDeprBook;
+                      IF NOT DeprBookAccounting.GET("Depreciation Book Code") THEN
+                        DeprBookAccounting.INIT;
+                    UNTIL (NEXT(1) = 0) OR
+                          (DeprBookAccounting."Posting Book Type" = DeprBookAccounting."Posting Book Type"::Accounting);
+                  END;
+
+                  IF DeprBookAccounting."Posting Book Type" = DeprBookAccounting."Posting Book Type"::Accounting THEN BEGIN
+                    FEDeprBookAccounting.TESTFIELD("Depreciation Method",FEDeprBookAccounting."Depreciation Method"::"Straight-Line");
+                    FEJnlSetup.FAJnlName(DeprBookAccounting,FEJnlLineTmp,JnlNextLineNo);
+                    FEJnlTemplate.GET(FEJnlLineTmp."Journal Template Name");
+                    FEJnlTemplate.TESTFIELD(Type,FEJnlTemplate.Type::"Future Expenses");
+                  END ELSE BEGIN
+                    DeprBookAccounting."Posting Book Type" := DeprBookAccounting."Posting Book Type"::Accounting;
+                    ERROR(Text1001,
+                      FETemplateNo,
+                      DeprBookAccounting.TABLECAPTION,
+                      DeprBookAccounting.FIELDCAPTION("Posting Book Type"),
+                      DeprBookAccounting."Posting Book Type");
+                  END;
+
+                  WITH FEDeprBook DO BEGIN
+                    FIND('-');
+                    REPEAT
+                      FEDeprBookTaxAccounting := FEDeprBook;
+                      IF NOT DeprBookTaxAccounting.GET("Depreciation Book Code") THEN
+                        DeprBookTaxAccounting.INIT;
+                    UNTIL (NEXT(1) = 0) OR
+                          (DeprBookTaxAccounting."Posting Book Type" = DeprBookTaxAccounting."Posting Book Type"::"Tax Accounting");
+                  END;
+
+                  IF DeprBookTaxAccounting."Posting Book Type" = DeprBookTaxAccounting."Posting Book Type"::"Tax Accounting" THEN BEGIN
+                    FEDeprBookTaxAccounting.TESTFIELD("Depreciation Method",FEDeprBookTaxAccounting."Depreciation Method"::"Straight-Line");
+                    FEJnlSetup.FAJnlName(DeprBookTaxAccounting,FEJnlLineTmp,JnlNextLineNo);
+                    FEJnlTemplate.GET(FEJnlLineTmp."Journal Template Name");
+                    FEJnlTemplate.TESTFIELD(Type,FEJnlTemplate.Type::"Future Expenses");
+                  END ELSE BEGIN
+                    DeprBookTaxAccounting."Posting Book Type" := DeprBookTaxAccounting."Posting Book Type"::"Tax Accounting";
+                    ERROR(Text1001,
+                      FETemplateNo,
+                      DeprBookTaxAccounting.TABLECAPTION,
+                      DeprBookTaxAccounting.FIELDCAPTION("Posting Book Type"),
+                      DeprBookTaxAccounting."Posting Book Type");
+                  END;
+                END;
+
+    OnPostReport=BEGIN
+                   WITH FEJnlLine DO BEGIN
+                     FEJnlLineTmp.RESET;
+                     IF FEJnlLineTmp.FIND('-') THEN BEGIN
+                       LOCKTABLE;
+                       REPEAT
+                         IF (FEJnlLineTmp."Journal Template Name" <> "Journal Template Name") OR
+                            (FEJnlLineTmp."Journal Batch Name" <> "Journal Batch Name")
+                         THEN BEGIN
+                           DeprBook.GET(FEJnlLineTmp."Depreciation Book Code");
+                           FEJnlSetup.FAJnlName(DeprBook,FEJnlLine,JnlNextLineNo);
+                           PostingNoSeries := FEJnlSetup.GetFANoSeries(FEJnlLine);
+                           IF DocumentNo = '' THEN
+                             DocumentNo2 := FEJnlSetup.GetFAJnlDocumentNo(FEJnlLine,FEJnlLineTmp."FA Posting Date",TRUE)
+                           ELSE
+                             DocumentNo2 := DocumentNo;
+                         END;
+                         INIT;
+                         FEJnlSetup.SetFAJnlTrailCodes(FEJnlLine);
+                         "FA Posting Date" := FEJnlLineTmp."FA Posting Date";
+                         "Posting Date" := 0D;
+                         "FA Posting Type" := FEJnlLineTmp."FA Posting Type";
+                         VALIDATE("FA No.",FEJnlLineTmp."FA No.");
+                         "Document No." := DocumentNo2;
+                         "Posting No. Series" := PostingNoSeries;
+                         Description := FEJnlLineTmp.Description;
+                         VALIDATE("Depreciation Book Code",FEJnlLineTmp."Depreciation Book Code");
+                         VALIDATE(Amount,FEJnlLineTmp.Amount);
+                         "No. of Depreciation Days" := FEJnlLineTmp."No. of Depreciation Days";
+                         JnlNextLineNo := JnlNextLineNo + 10000;
+                         "Line No." := JnlNextLineNo;
+                         "Depr. Period Starting Date" := FEJnlLineTmp."Depr. Period Starting Date";
+                         INSERT(TRUE);
+                         FEJnlLineTmp.DELETE;
+                       UNTIL FEJnlLineTmp.NEXT = 0;
+                     END;
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+    { 3794;    ;DataItem;                    ;
+               DataItemTable=Table5600;
+               DataItemTableView=SORTING(FA Type)
+                                 WHERE(FA Type=FILTER(<>Future Expense));
+               OnAfterGetRecord=BEGIN
+                                  GainLoss := 0;
+                                  DisposalDate := 0D;
+                                  DepreciationEndingDate := 0D;
+
+                                  FE.RESET;
+                                  FE.SETCURRENTKEY("Created by FA No.");
+                                  FE.SETRANGE("Created by FA No.","No.");
+                                  IF FE.FINDFIRST THEN
+                                    CurrReport.SKIP;
+
+                                  FATaxDeprBook.SETRANGE("FA No.","No.");
+                                  IF FATaxDeprBook.FINDSET THEN
+                                    REPEAT
+                                      DeprBook.GET(FATaxDeprBook."Depreciation Book Code");
+                                    UNTIL (FATaxDeprBook.NEXT = 0) OR (DeprBook."Posting Book Type" = DeprBook."Posting Book Type"::"Tax Accounting");
+                                  FATaxDeprBook.CALCFIELDS("Gain/Loss");
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 1106;1   ;DataItem;                    ;
+               DataItemTable=Table5611;
+               DataItemTableView=SORTING(Code)
+                                 WHERE(Posting Book Type=CONST(Tax Accounting));
+               OnPostDataItem=BEGIN
+                                IF GainLoss = 0 THEN
+                                  EXIT;
+
+                                WITH FE DO BEGIN
+                                  FE := FETemplate;
+                                  Blocked := FALSE;
+                                  Inactive := FALSE;
+                                  "No." := NoSeriesMgt.GetNextNo(NoSeriesCode,TODAY,TRUE);
+                                  "No. Series" := NoSeriesCode;
+                                  "FA Type" := "FA Type"::"Future Expense";
+                                  "Created by FA No." := "Fixed Asset"."No.";
+                                  INSERT;
+                                  VALIDATE(Description,COPYSTR(STRSUBSTNO(Text1000,"Fixed Asset"."No."),1,MAXSTRLEN(Description)));
+                                END;
+
+                                WITH FEDeprBook DO BEGIN
+                                  FEDeprBook := FEDeprBookAccounting;
+                                  "FA No." := FE."No.";
+                                  Description := FE.Description;
+                                  INSERT(TRUE);
+                                  VALIDATE("Depreciation Starting Date",0D);
+                                  MODIFY;
+
+                                  FEDeprBook := FEDeprBookTaxAccounting;
+                                  "FA No." := FE."No.";
+                                  Description := FE.Description;
+                                  INSERT(TRUE);
+                                  VALIDATE("Depreciation Starting Date",CALCDATE('<CM+1D>',DisposalDate));
+                                  VALIDATE("Depreciation Ending Date",FATaxDeprBook."Depreciation Ending Date");
+                                  MODIFY;
+                                END;
+
+                                IF NOT DeprBookAccounting."G/L Integration - Acq. Cost" THEN BEGIN
+                                  FEJnlSetup.FAJnlName(DeprBookAccounting,FEJnlLineTmp,JnlNextLineNo);
+                                  FEJnlLineTmp."FA No." := FE."No.";
+                                  FEJnlLineTmp."FA Posting Type" := FEJnlLineTmp."FA Posting Type"::"Acquisition Cost";
+                                  FEJnlLineTmp."FA Posting Date" := DisposalDate;
+                                  FEJnlLineTmp.Amount := GainLoss;
+                                  FEJnlLineTmp."Line No." := FEJnlLineTmp."Line No." + 1;
+                                  FEJnlLineTmp."Depreciation Book Code" := FEDeprBookAccounting."Depreciation Book Code";
+                                  FEJnlLineTmp.Description := FE.Description;
+                                  FEJnlLineTmp.INSERT;
+                                END ELSE BEGIN
+                                  FEJnlSetup.GenJnlName(DeprBookAccounting,GenJnlLine,JnlNextLineNo);
+                                  GenJnlLineTmp."Account No." := FE."No.";
+                                  GenJnlLineTmp."FA Posting Date" := DisposalDate;
+                                  GenJnlLineTmp."Posting Date" := DisposalDate;
+                                  GenJnlLineTmp."FA Posting Type" := GenJnlLineTmp."FA Posting Type"::"Acquisition Cost";
+                                  GenJnlLineTmp.Amount := GainLoss;
+                                  GenJnlLineTmp."Line No." := GenJnlLineTmp."Line No." + 1;
+                                  GenJnlLineTmp."Depreciation Book Code" := FEDeprBookAccounting."Depreciation Book Code";
+                                  GenJnlLineTmp.INSERT;
+                                END;
+
+                                IF NOT DeprBookTaxAccounting."G/L Integration - Acq. Cost" THEN BEGIN
+                                  FEJnlSetup.FAJnlName(DeprBookTaxAccounting,FEJnlLineTmp,JnlNextLineNo);
+                                  FEJnlLineTmp."FA No." := FE."No.";
+                                  FEJnlLineTmp."FA Posting Type" := FEJnlLineTmp."FA Posting Type"::"Acquisition Cost";
+                                  FEJnlLineTmp."FA Posting Date" := DisposalDate;
+                                  FEJnlLineTmp.Amount := FATaxDeprBook."Gain/Loss";
+                                  FEJnlLineTmp."Line No." := FEJnlLineTmp."Line No." + 1;
+                                  FEJnlLineTmp."Depreciation Book Code" := FEDeprBookTaxAccounting."Depreciation Book Code";
+                                  FEJnlLineTmp.Description := FE.Description;
+                                  FEJnlLineTmp.INSERT;
+                                END ELSE BEGIN
+                                  FEJnlSetup.GenJnlName(DeprBookTaxAccounting,GenJnlLine,JnlNextLineNo);
+                                  GenJnlLineTmp."Account No." := FE."No.";
+                                  GenJnlLineTmp."FA Posting Date" := DisposalDate;
+                                  GenJnlLineTmp."Posting Date" := DisposalDate;
+                                  GenJnlLineTmp."FA Posting Type" := GenJnlLineTmp."FA Posting Type"::"Acquisition Cost";
+                                  GenJnlLineTmp.Amount := FATaxDeprBook."Gain/Loss";
+                                  GenJnlLineTmp."Line No." := GenJnlLineTmp."Line No." + 1;
+                                  GenJnlLineTmp."Depreciation Book Code" := FEDeprBookTaxAccounting."Depreciation Book Code";
+                                  GenJnlLineTmp.Description := FE.Description;
+                                  GenJnlLineTmp.INSERT;
+                                END;
+                              END;
+                               }
+
+    { 2285;2   ;DataItem;                    ;
+               DataItemTable=Table5612;
+               DataItemTableView=SORTING(FA No.,Depreciation Book Code)
+                                 WHERE(Disposal Date=FILTER(<>''));
+               OnPreDataItem=BEGIN
+                               SETRANGE("FA No.","Fixed Asset"."No.");
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CALCFIELDS("Book Value","Gain/Loss");
+                                  IF ("Book Value" = 0) AND ("Gain/Loss" > 0) THEN BEGIN
+                                    GainLoss += "Gain/Loss";
+                                    TESTFIELD("Depreciation Ending Date");
+                                    IF DisposalDate = 0D THEN BEGIN
+                                      DisposalDate := "Disposal Date";
+                                      DepreciationEndingDate := "Depreciation Ending Date";
+                                    END ELSE BEGIN
+                                      TESTFIELD("Disposal Date",DisposalDate);
+                                      TESTFIELD("Depreciation Ending Date",DepreciationEndingDate)
+                                    END;
+                                  END;
+                                END;
+
+               DataItemLink=Depreciation Book Code=FIELD(Code) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=FE Template;
+                             RUS=Шаблон РБП];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=FETemplateNo;
+                  TableRelation="Fixed Asset" WHERE (FA Type=CONST(Future Expense),
+                                                     Blocked=CONST(Yes),
+                                                     Inactive=CONST(Yes));
+                  OnValidate=BEGIN
+                               FETemplateNoOnAfterValidate;
+                             END;
+                              }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=FE No. Series;
+                             RUS=Серия номеров РБП];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=NoSeriesCode;
+                  TableRelation="No. Series";
+                  OnValidate=BEGIN
+                               NoSeriesCodeOnAfterValidate;
+                             END;
+                              }
+
+      { 7   ;2   ;Field     ;
+                  CaptionML=[ENU=Document No;
+                             RUS=Номер документа];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DocumentNo }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FE@1002 : Record 5600;
+      FETemplate@1013 : Record 5600;
+      DeprBook@1032 : Record 5611;
+      DeprBookAccounting@1009 : Record 5611;
+      DeprBookTaxAccounting@1028 : Record 5611;
+      FEDeprBook@1011 : Record 5612;
+      FEDeprBookAccounting@1003 : Record 5612;
+      FEDeprBookTaxAccounting@1010 : Record 5612;
+      FATaxDeprBook@1210000 : Record 5612;
+      FEJnlSetup@1019 : Record 5605;
+      FEJnlTemplate@1018 : Record 5619;
+      FEJnlLine@1031 : Record 5621;
+      FEJnlLineTmp@1017 : TEMPORARY Record 5621;
+      GenJnlLine@1035 : Record 81;
+      GenJnlLineTmp@1037 : TEMPORARY Record 81;
+      NoSeries@1014 : Record 308;
+      NoSeriesMgt@1007 : Codeunit 396;
+      FETemplateNo@1001 : Code[20];
+      DocumentNo@1033 : Code[20];
+      DocumentNo2@1034 : Code[20];
+      NoSeriesCode@1006 : Code[10];
+      Text1000@1008 : TextConst 'ENU=FA %1 was disposed with loss;RUS=ОС %1 списано с убытком';
+      Text1001@1004 : TextConst 'ENU=%2 with %3 %4 is not defined for FE %1.;RUS=%2 с %3 %4 не определено для РБП %1';
+      PostingNoSeries@1030 : Code[10];
+      JnlNextLineNo@1020 : Integer;
+      GainLoss@1000 : Decimal;
+      DisposalDate@1026 : Date;
+      DepreciationEndingDate@1025 : Date;
+
+    LOCAL PROCEDURE FETemplateNoOnAfterValidate@19000358();
+    BEGIN
+      IF NOT FETemplate.GET(FETemplateNo) THEN
+        FETemplate.INIT;
+    END;
+
+    LOCAL PROCEDURE NoSeriesCodeOnAfterValidate@19035590();
+    BEGIN
+      IF NOT NoSeries.GET(NoSeriesCode) THEN
+        NoSeries.INIT;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

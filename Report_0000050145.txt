@@ -1,0 +1,249 @@
+OBJECT Report 50145 Transfer GL Entries to Company
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.06.17;
+    Time=13:21:27;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Transfer GL Entries To GJ;
+               RUS=Перенос Фин. Операций в Фин. Журнал];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   ConsSetup.GET;
+                   ConsSetup.TESTFIELD("Gen. Jnl. Template");
+                   TemplateCode := ConsSetup."Gen. Jnl. Template";
+                   UseNewPosting := FALSE;
+                   NewPostingDate := 0D;
+                   //TDRANCS-1632>
+                   g_intRepeat := 1;
+                   //TDRANCS-1632<
+                 END;
+
+    OnPreReport=BEGIN
+                  IF UseNewPosting THEN
+                    IF NewPostingDate = 0D THEN
+                      ERROR(Text000);
+                  IF NOT UseNewPosting THEN
+                    IF NewPostingDate > 0D THEN
+                      ERROR(Text001);
+                  {IF NewPostingDate > 0D THEN
+                    IF NORMALDATE(NewPostingDate) <> NewPostingDate THEN
+                      ERROR(Text002);}
+                  TransferGLtoGenJnl.SetReceiverCompany(NewCompany);
+
+                  IF IsRemoveOnly THEN
+                    TransferGLtoGenJnl.TransferLines1(GLEntryTmp,NewPostingDate,TemplateCode,BatchCode,ReasonCode,Storno)
+                  ELSE
+                  //TDRANCS-1526>
+                  //TransferGLtoGenJnl.TransferLines(GLEntryTmp,NewPostingDate,TemplateCode,BatchCode,ReasonCode,Storno);
+                    //TDRANCS-1632>
+                  //TransferGLtoGenJnl.TransferLines(GLEntryTmp,NewPostingDate,TemplateCode,BatchCode,ReasonCode,Storno,FALSE);
+                    TransferGLtoGenJnl.TransferLines(GLEntryTmp,NewPostingDate,
+                                                     TemplateCode,BatchCode,ReasonCode,Storno,FALSE,g_intRepeat);
+                    //TDRANCS-1632<
+                  //TDRANCS-1526<
+                END;
+
+    OnPostReport=BEGIN
+                   MESSAGE(Text55001)
+                 END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=VAR
+                   GenJnlTemplate@1101495000 : Record 80;
+                 BEGIN
+                   UseNewPosting := FALSE;
+                   NewPostingDate := 0D;
+                   NewPostingDateEnabled := FALSE; // NC NOS-26 SPA
+
+                   //NC MTF02 > AKU
+                   GLEntryTmp.SETRANGE("Source Type", GLEntryTmp."Source Type"::"Fin. Instrument");
+                   IF GLEntryTmp.FINDFIRST THEN BEGIN
+                     IF GLEntryTmp."Source Code" <> '' THEN BEGIN
+                       GenJnlTemplate.SETRANGE("Source Code", GLEntryTmp."Source Code");
+                       IF GenJnlTemplate.FINDFIRST THEN
+                         TemplateCode := GenJnlTemplate.Name
+                       ELSE BEGIN
+                         GenJnlTemplate.RESET;
+                         GenJnlTemplate.SETRANGE(Type, GenJnlTemplate.Type::FI);
+                         IF GenJnlTemplate.FINDFIRST THEN
+                           TemplateCode := GenJnlTemplate.Name;
+                       END;
+                     END;
+                   END;
+                   GLEntryTmp.RESET;
+                   //NC MTF02 < AKU
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Field  ;
+                  CaptionML=[ENU=Transfer Into Company;
+                             RUS=Перенести в Фирму];
+                  SourceExpr=NewCompany;
+                  TableRelation=Company;
+                  OnLookup=VAR
+                             CompanyToSelect@1101495000 : Record 2000000006;
+                           BEGIN
+                             CompanyToSelect.SETFILTER(Name,'<>%1',COMPANYNAME);
+                             IF PAGE.RUNMODAL(0, CompanyToSelect) = ACTION::LookupOK THEN
+                               NewCompany := CompanyToSelect.Name;
+                           END;
+                            }
+
+      { 1101495002;1;Field  ;
+                  CaptionML=[ENU=Gen. Journal Template;
+                             RUS=Фин. Журнал Шаблон];
+                  SourceExpr=TemplateCode;
+                  Editable=FALSE }
+
+      { 1101495003;1;Field  ;
+                  CaptionML=[ENU=Gen. Journal Batch.;
+                             RUS=Фин. Журнал Раздел];
+                  SourceExpr=BatchCode;
+                  OnValidate=BEGIN
+                               //NC PIF001 > DP
+                               IF BatchCode <> '' THEN BEGIN
+                                 GenJnlBatch.GET(TemplateCode, BatchCode);
+                               END;
+                               //NC PIF001 < DP
+                             END;
+
+                  OnLookup=BEGIN
+                             //NC PIF001 > DP
+                             GenJnlBatch.SETRANGE("Journal Template Name", TemplateCode);
+                             IF PAGE.RUNMODAL(PAGE::"General Journal Batches", GenJnlBatch) = ACTION::LookupOK THEN BEGIN
+                               BatchCode := GenJnlBatch.Name;
+                             END;
+                             //NC PIF001 < DP
+                           END;
+                            }
+
+      { 1101495004;1;Field  ;
+                  CaptionML=[ENU=Reason Code;
+                             RUS=Код Причины];
+                  SourceExpr=ReasonCode;
+                  OnValidate=BEGIN
+                               //NC PIF001 > DP
+                               IF ReasonCode <> '' THEN BEGIN
+                                 Reason.GET(ReasonCode);
+                               END;
+                               //NC PIF001 < DP
+                             END;
+
+                  OnLookup=BEGIN
+                             //NC PIF001 > DP
+                             IF PAGE.RUNMODAL(PAGE::"Reason Codes",Reason) = ACTION::LookupOK THEN BEGIN
+                               ReasonCode := Reason.Code;
+                             END;
+                             //NC PIF001 < DP
+                           END;
+                            }
+
+      { 1101495006;1;Field  ;
+                  CaptionML=[ENU=Use New Posting Date;
+                             RUS=Исп. Новую Дату Учета];
+                  SourceExpr=UseNewPosting;
+                  OnValidate=BEGIN
+                               NewPostingDateEnabled := UseNewPosting; // NC NOS-26 SPA
+                               IF NOT UseNewPosting THEN
+                                 NewPostingDate := 0D;
+                             END;
+                              }
+
+      { 1101495005;1;Field  ;
+                  CaptionML=[ENU=New Posting Date;
+                             RUS=Новая Дата Учета];
+                  SourceExpr=NewPostingDate;
+                  Enabled=NewPostingDateEnabled }
+
+      { 1101495007;1;Field  ;
+                  CaptionML=[ENU=Correction;
+                             RUS=Перенести с Обратным Знаком];
+                  SourceExpr=Storno }
+
+      { 1101495008;1;Field  ;
+                  CaptionML=[ENU=Remove Only;
+                             RUS=Только Удаление];
+                  SourceExpr=IsRemoveOnly }
+
+      { 1101495009;1;Field  ;
+                  CaptionML=[ENU=Repeat N times;
+                             RUS=Повторить N раз];
+                  SourceExpr=g_intRepeat }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GLEntryTmp@1101495013 : TEMPORARY Record 17;
+      UseNewPosting@1101495012 : Boolean;
+      NewPostingDate@1101495011 : Date;
+      TransferGLtoGenJnl@1101495010 : Codeunit 50004;
+      TemplateCode@1101495009 : Code[20];
+      BatchCode@1101495008 : Code[20];
+      ConsSetup@1101495007 : Record 50000;
+      GenJnlBatch@1101495006 : Record 232;
+      ReasonCode@1101495005 : Code[10];
+      Reason@1101495004 : Record 231;
+      Storno@1101495003 : Boolean;
+      NewCompany@1101495002 : Text[30];
+      IsRemoveOnly@1101495001 : Boolean;
+      g_intRepeat@1101495000 : Integer;
+      Text000@1101495017 : TextConst 'ENU=You must specify New Posting Date.;RUS=Вы должны определить Новую Дату Учета.';
+      Text001@1101495016 : TextConst 'ENU=You must not specify New Posting Date.;RUS=Вы не должны определять Новую Дату Учета.';
+      Text002@1101495015 : TextConst 'ENU=You must not specify a closing date.;RUS=Вы не должны определять закрывающую дату.';
+      Text55001@1101495014 : TextConst 'ENU=Entries were transferes to Gen. Journal.;RUS=Операции успешно перенесены в Финансовый Журнал.';
+      NewPostingDateEnabled@1101495018 : Boolean INDATASET;
+
+    PROCEDURE GetGLEntry@1(VAR GLEntry2Tmp@1000 : TEMPORARY Record 17);
+    BEGIN
+      GLEntryTmp.RESET;
+      GLEntryTmp.DELETEALL;
+      IF GLEntry2Tmp.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          GLEntryTmp.INIT;
+          GLEntryTmp.COPY(GLEntry2Tmp);
+          GLEntryTmp.INSERT;
+        UNTIL GLEntry2Tmp.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      NC MP 15.05.07 Отчет по переносу строк из главной книги в фин. журнал.
+      NC MTF02 AKU Выбор шаблона учета ФИ при копировании операций ФИ
+      NC MTF02 AKU Свойство SaveValues установлено в No
+      TDRANCS-1526>
+        Currency Factor depend on Posting Date
+        Modified OnPreReport
+      TDRANCS-1632>
+        Repeat N times
+      -------------------------
+      NC NOS-26 SPA Миграция на функциональность NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

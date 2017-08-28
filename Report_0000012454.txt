@@ -1,0 +1,486 @@
+OBJECT Report 12454 Posted Advance Statement
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Posted Advance Statement;
+               RUS=Учт. авансовый отчет];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CompInf.GET;
+                END;
+
+  }
+  DATASET
+  {
+    { 3733;    ;DataItem;                    ;
+               DataItemTable=Table122;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               CLEAR(DtAccount);
+                               CLEAR(DtSum);
+                               CtAccount := '';
+                               CtSum := 0;
+                               CLEAR(Rest);
+                               CLEAR(Overdraft);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LineAmountInclVAT@1210000 : Decimal;
+                                  LineAmount@1210001 : Decimal;
+                                BEGIN
+                                  CALCFIELDS("Amount Including VAT");
+                                  IF "Currency Code" <> '' THEN
+                                    AmountInclVATLCY := CurrencyExchRate.ExchangeAmtFCYToFCY("Posting Date","Currency Code",'',"Amount Including VAT")
+                                  ELSE
+                                    AmountInclVATLCY := "Amount Including VAT";
+
+                                  VendLedgerEntry2.RESET;
+                                  VendLedgerEntry2.SETCURRENTKEY("Vendor No.","Posting Date");
+                                  VendLedgerEntry2.SETRANGE("Vendor No.","Buy-from Vendor No.");
+                                  VendLedgerEntry2.SETRANGE(Positive,FALSE);
+                                  VendLedgerEntry2.SETFILTER("Posting Date",'<= %1',"Posting Date");
+                                  IF VendLedgerEntry2.FINDLAST THEN;
+
+                                  Vend.GET("Buy-from Vendor No.");
+                                  Vend.SETRANGE("Date Filter",0D,CALCDATE('<-1D>',"Posting Date"));
+                                  Vend.CALCFIELDS("Net Change (LCY)");
+                                  IF Vend."Net Change (LCY)" < 0 THEN
+                                    Rest[1] := ABS(Vend."Net Change (LCY)")
+                                  ELSE
+                                    Overdraft[1] := ABS(Vend."Net Change (LCY)");
+
+                                  PaymentNo := 0;
+
+                                  VendLedgerEntry1.RESET;
+                                  VendLedgerEntry1.SETCURRENTKEY("Document No.","Document Type","Vendor No.");
+                                  VendLedgerEntry1.SETRANGE("Document No.","Purch. Inv. Header"."No.");
+                                  VendLedgerEntry1.SETRANGE("Vendor No.","Purch. Inv. Header"."Buy-from Vendor No.");
+                                  VendLedgerEntry1.SETRANGE("Document Type",VendLedgerEntry1."Document Type"::Invoice);
+                                  VendLedgerEntry1.FINDFIRST;
+                                  InvoiceEntryNo := VendLedgerEntry1."Entry No.";
+                                  FindApplnEntries(InvoiceEntryNo);
+
+                                  VendLedgerEntry.RESET;
+                                  VendLedgerEntry.SETCURRENTKEY("Vendor No.",Open,Positive);
+                                  VendLedgerEntry.SETRANGE("Vendor No.",Vend."No.");
+                                  VendLedgerEntry.SETRANGE(Open,TRUE);
+                                  VendLedgerEntry.SETRANGE(Positive,TRUE);
+                                  VendLedgerEntry.SETRANGE("Posting Date",VendLedgerEntry2."Posting Date","Posting Date");
+                                  VendLedgerEntry.SETRANGE("Entry No.",0,InvoiceEntryNo);
+                                  IF VendLedgerEntry.FIND('-') THEN
+                                    REPEAT
+                                      VendLedgerEntry.CALCFIELDS("Remaining Amt. (LCY)");
+                                      AddPayment(VendLedgerEntry."Remaining Amt. (LCY)",VendLedgerEntry."Document No.");
+                                    UNTIL VendLedgerEntry.NEXT = 0;
+                                  VendLedgerEntry.SETRANGE(Positive,TRUE);
+
+                                  PurchaseLine.RESET;
+                                  PurchaseLine.SETRANGE("Document No.","No.");
+                                  IF PurchaseLine.FIND('-') THEN
+                                    REPEAT
+                                      LineAmountInclVAT :=
+                                        CurrencyExchRate.ExchangeAmtFCYToFCY("Posting Date","Currency Code",'',PurchaseLine."Amount Including VAT");
+                                      CtSum := CtSum + LineAmountInclVAT;
+                                      AccountNo := GetDebitAccount(PurchaseLine);
+                                      IF PurchaseLine.Amount = PurchaseLine."Amount Including VAT" THEN
+                                        CheckDebitAccount(AccountNo,LineAmountInclVAT)
+                                      ELSE
+                                        IF PurchaseLine."Amount Including VAT" <> 0 THEN BEGIN
+                                          LineAmount := LineAmountInclVAT /
+                                            PurchaseLine."Amount Including VAT" * PurchaseLine.Amount;
+                                          CheckDebitAccount(AccountNo,LineAmount);
+                                          AccountNo := GetVATDebitAccount(PurchaseLine);
+                                          CheckDebitAccount(AccountNo,LineAmountInclVAT - LineAmount);
+                                        END;
+                                    UNTIL PurchaseLine.NEXT = 0;
+
+                                  VendorPostingGroup.GET("Vendor Posting Group");
+                                  CtAccount := VendorPostingGroup."Payables Account";
+                                  Temp := Rest[1] - Overdraft[1] - AmountInclVATLCY;
+                                  IF Temp > 0 THEN
+                                    Rest[2] := Temp
+                                  ELSE
+                                    Overdraft[2] := Temp;
+
+                                  IF "Remaining/Overdraft Doc. No." <> '' THEN BEGIN
+                                    VendLedgerEntry3.RESET;
+                                    VendLedgerEntry3.SETCURRENTKEY("Document No.");
+                                    VendLedgerEntry3.SETRANGE("Document No.","Remaining/Overdraft Doc. No.");
+                                    IF VendLedgerEntry3.FINDFIRST THEN BEGIN
+                                      VendLedgerEntry3.CALCFIELDS("Amount (LCY)");
+                                      Temp := VendLedgerEntry3."Amount (LCY)";
+                                      IF Temp < 0 THEN
+                                        Rest[3] := Temp
+                                      ELSE
+                                        Overdraft[3] := Temp;
+                                    END;
+                                  END;
+
+                                  AdvanceStatementHelper.InitReportTemplate;
+                                  AdvanceStatementHelper.FillHeader(
+                                    AmountInclVATLCY,"No.","Document Date","Buy-from Vendor No.","Buy-from Vendor Name","Advance Purpose");
+                                  AdvanceStatementHelper.FillAdvance(ABS(Rest[1]),ABS(Overdraft[1]));
+                                  AdvanceStatementHelper.FillAdvanceDetails(
+                                    Poluch,Sum,AmountInclVATLCY,Rest[2],Overdraft[2],DtAccount,DtSum,CtAccount,CtSum);
+                                  AdvanceStatementHelper.FillSummary(
+                                    "No. of Documents","No. of Pages",AmountInclVATLCY,AccountantCode,
+                                    Rest[3],Overdraft[3],VendLedgerEntry3."Document No.",VendLedgerEntry3."Document Date",
+                                    CashierCode,"Document Date");
+                                  AdvanceStatementHelper.FillReceipt(
+                                    "No.","Document Date",AmountInclVATLCY,
+                                    "No. of Documents","No. of Pages",CashierCode);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF FileName <> '' THEN
+                                  AdvanceStatementHelper.ExportDataToClientFile(FileName)
+                                ELSE
+                                  AdvanceStatementHelper.ExportData;
+                              END;
+
+               ReqFilterFields=No. }
+
+    { 5707;1   ;DataItem;                    ;
+               DataItemTable=Table123;
+               DataItemTableView=SORTING(Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  VATAccountNo@1210001 : Code[10];
+                                  Separator@1210000 : Text[1];
+                                BEGIN
+                                  AccountNo := GetDebitAccount("Purch. Inv. Line");
+                                  Buffer.SETRANGE("Empl. Purchase Document Date","Empl. Purchase Document Date");
+                                  Buffer.SETRANGE("Empl. Purchase Document No.","Empl. Purchase Document No.");
+                                  IF NOT Buffer.FIND('-') THEN BEGIN
+                                    Buffer := "Purch. Inv. Line";
+                                    IF "Amount Including VAT" <> Amount THEN
+                                      VATAccountNo := GetVATDebitAccount("Purch. Inv. Line");
+                                    Separator := '';
+                                    IF VATAccountNo <> '' THEN
+                                      Separator := ',';
+                                    Buffer."Description 2" := COPYSTR(AccountNo + Separator + VATAccountNo,1,30);
+                                    Buffer.INSERT;
+                                  END ELSE BEGIN
+                                    Buffer."Amount Including VAT" += "Amount Including VAT";
+                                    IF AccountNo <> Buffer."Description 2" THEN
+                                      Buffer."Description 2" := '';
+                                    Buffer.MODIFY;
+                                  END;
+                                END;
+
+               DataItemLink=Document No.=FIELD(No.) }
+
+    { 5444;1   ;DataItem;                    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               Buffer.RESET;
+                               SETRANGE(Number,1,Buffer.COUNT);
+                               TotalCurrAmount := 0;
+                               TotalCurrAmount2 := 0;
+
+                               AdvanceStatementHelper.FillPageHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    Buffer.FIND('-')
+                                  ELSE
+                                    Buffer.NEXT;
+                                  IF (Buffer."Empl. Purchase Document Date" = 0D) OR
+                                     (Buffer."Empl. Purchase Document No." = '')
+                                  THEN BEGIN
+                                    Buffer."Empl. Purchase Document Date" := "Purch. Inv. Header"."Posting Date";
+                                    Buffer."Empl. Purchase Document No." := "Purch. Inv. Header"."No.";
+                                    Buffer.Description := "Purch. Inv. Header"."Posting Description";
+                                  END;
+
+                                  IF "Purch. Inv. Header"."Currency Code" = '' THEN BEGIN
+                                    CurrAmount := Buffer."Amount Including VAT";
+                                    TotalCurrAmount += Buffer."Amount Including VAT";
+                                  END ELSE BEGIN
+                                    CurrAmount2 := Buffer."Amount Including VAT";
+                                    TotalCurrAmount2 += Buffer."Amount Including VAT";
+                                  END;
+
+                                  AdvanceStatementHelper.FillBody(
+                                    Number,Buffer."Empl. Purchase Document Date",Buffer."Empl. Purchase Document No.",
+                                    Buffer.Description,CurrAmount,CurrAmount2,Buffer."Description 2");
+                                END;
+
+               OnPostDataItem=BEGIN
+                                AdvanceStatementHelper.FillFooter(TotalCurrAmount,TotalCurrAmount2);
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Accountant (cashier);
+                             RUS=Бухгалтер (кассир)];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CashierCode;
+                  TableRelation=Employee }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Accountant;
+                             RUS=Бухгалтер];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AccountantCode;
+                  TableRelation=Employee }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompInf@1210041 : Record 79;
+      Vend@1210040 : Record 23;
+      VendLedgerEntry@1210039 : Record 25;
+      VendorPostingGroup@1210038 : Record 93;
+      PurchaseLine@1210036 : Record 123;
+      GeneralPostingSetup@1210035 : Record 252;
+      InvPostingSetup@1210034 : Record 5813;
+      Buffer@1210030 : TEMPORARY Record 123;
+      FAPostingGroup@1210022 : Record 5606;
+      FA@1210021 : Record 5600;
+      FADeprecationBook@1210003 : Record 5612;
+      VendLedgerEntry1@1210102 : Record 25;
+      VendLedgerEntry2@1210001 : Record 25;
+      VendLedgerEntry3@1210000 : Record 25;
+      CurrencyExchRate@1210005 : Record 330;
+      AdvanceStatementHelper@1210002 : Codeunit 14945;
+      PaymentNo@1210029 : Integer;
+      Poluch@1210028 : ARRAY [4] OF Text;
+      Sum@1210024 : ARRAY [4] OF Decimal;
+      DtSum@1210016 : ARRAY [8] OF Decimal;
+      CtSum@1210015 : Decimal;
+      DtAccount@1210014 : ARRAY [8] OF Code[10];
+      CtAccount@1210013 : Code[10];
+      Rest@1210011 : ARRAY [4] OF Decimal;
+      Overdraft@1210010 : ARRAY [4] OF Decimal;
+      Temp@1210009 : Decimal;
+      AccountNo@1210006 : Code[10];
+      CashierCode@1210004 : Code[10];
+      AccountantCode@1210046 : Code[10];
+      CurrAmount@1210053 : Decimal;
+      CurrAmount2@1210047 : Decimal;
+      AmountInclVATLCY@1210054 : Decimal;
+      InvoiceEntryNo@1001 : Integer;
+      TotalCurrAmount@1210017 : Decimal;
+      TotalCurrAmount2@1210012 : Decimal;
+      AdvanceErrorErr@1210018 : TextConst 'ENU=Cannot be issued more than 3 advances.;RUS=Невозможно выдать больше 3 авансов.';
+      FileName@1210007 : Text;
+
+    PROCEDURE InsertDebitAccount@1210003(Account@1210000 : Code[10];Sum@1210001 : Decimal);
+    VAR
+      k@1210002 : Integer;
+    BEGIN
+      FOR k := 1 TO 8 DO BEGIN
+        IF DtAccount[k] = '' THEN BEGIN
+          DtAccount[k] := Account;
+          DtSum[k] := Sum;
+          EXIT;
+        END
+      END;
+    END;
+
+    PROCEDURE CheckDebitAccount@1210004(Account@1210000 : Code[10];Sum@1210001 : Decimal);
+    VAR
+      k@1210002 : Integer;
+    BEGIN
+      FOR k := 1 TO 8 DO
+        IF DtAccount[k] = Account THEN BEGIN
+          DtSum[k] := DtSum[k] + Sum;
+          EXIT;
+        END;
+      InsertDebitAccount(Account,Sum);
+    END;
+
+    PROCEDURE GetDebitAccount@1210001(PurchesLineLoc@1210000 : Record 123) : Code[10];
+    BEGIN
+      WITH PurchesLineLoc DO
+        CASE Type OF
+          Type::"G/L Account":
+            EXIT("No.");
+          Type::Item:
+            BEGIN
+              InvPostingSetup.GET("Location Code","Posting Group");
+              EXIT(InvPostingSetup."Inventory Account");
+            END;
+          Type::"Charge (Item)":
+            BEGIN
+              GeneralPostingSetup.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+              EXIT(GeneralPostingSetup."Purch. Account");
+            END;
+          Type::"Fixed Asset":
+            BEGIN
+              FA.GET("No.");
+              TESTFIELD("Depreciation Book Code");
+              FADeprecationBook.GET("No.","Depreciation Book Code");
+              FAPostingGroup.GET(FADeprecationBook."FA Posting Group");
+              EXIT(FAPostingGroup."Acquisition Cost Account");
+            END;
+          Type::"Empl. Purchase":
+            BEGIN
+              TESTFIELD("Empl. Purchase Vendor No.");
+              TESTFIELD("Empl. Purchase Entry No.");
+              Vend.GET("Empl. Purchase Vendor No.");
+              Vend.TESTFIELD("Vendor Posting Group");
+              VendorPostingGroup.GET(Vend."Vendor Posting Group");
+              EXIT(VendorPostingGroup."Payables Account");
+            END;
+        END;
+    END;
+
+    PROCEDURE GetVATDebitAccount@1210000(PurchesLineLoc@1210000 : Record 123) : Code[10];
+    VAR
+      VATPostingSetup@1210001 : Record 325;
+    BEGIN
+      WITH PurchesLineLoc DO BEGIN
+        VATPostingSetup.RESET;
+        VATPostingSetup.SETRANGE("VAT Bus. Posting Group","VAT Bus. Posting Group");
+        VATPostingSetup.SETRANGE("VAT Prod. Posting Group","VAT Prod. Posting Group");
+        IF VATPostingSetup.FINDFIRST THEN BEGIN
+          IF VATPostingSetup."Unrealized VAT Type" <> VATPostingSetup."Unrealized VAT Type"::" " THEN BEGIN
+            VATPostingSetup.TESTFIELD("Purch. VAT Unreal. Account");
+            EXIT(VATPostingSetup."Purch. VAT Unreal. Account");
+          END;
+          VATPostingSetup.TESTFIELD("Trans. VAT Account");
+          EXIT(VATPostingSetup."Trans. VAT Account");
+        END;
+      END;
+    END;
+
+    PROCEDURE FindApplnEntries@1(VendorLedgerEntryNo@1004 : Integer);
+    VAR
+      VendorLedgerEntry@1000 : Record 25;
+    BEGIN
+      IF NOT VendorLedgerEntry.GET(VendorLedgerEntryNo) THEN
+        EXIT;
+      GetAppliedVendorLedgerEntries(VendorLedgerEntry);
+      VendorLedgerEntry.SETRANGE("Posting Date",0D,"Purch. Inv. Header"."Posting Date" - 1);
+      IF VendorLedgerEntry.FINDSET THEN
+        REPEAT
+          VendorLedgerEntry.CALCFIELDS("Amount (LCY)");
+          AddPayment(VendorLedgerEntry."Amount (LCY)",VendorLedgerEntry."Document No.");
+        UNTIL VendorLedgerEntry.NEXT = 0;
+    END;
+
+    PROCEDURE AddPayment@4(Amount@1000 : Decimal;DocumentNo@1001 : Code[20]);
+    BEGIN
+      PaymentNo += 1;
+      Sum[PaymentNo] := Amount;
+      Poluch[PaymentNo] := DocumentNo;
+      IF PaymentNo = 4 THEN
+        ERROR(AdvanceErrorErr);
+    END;
+
+    PROCEDURE GetAppliedVendorLedgerEntries@1000000000(VAR VendLedgerEntry@1000000000 : Record 25);
+    VAR
+      CreateVendLedgerEntry@1000000001 : Record 25;
+      DtldVendLedgerEntry1@1000000002 : Record 380;
+      DtldVendLedgerEntry2@1000000003 : Record 380;
+    BEGIN
+      CreateVendLedgerEntry := VendLedgerEntry;
+      DtldVendLedgerEntry1.SETCURRENTKEY("Vendor Ledger Entry No.");
+      DtldVendLedgerEntry1.SETRANGE("Vendor Ledger Entry No.",CreateVendLedgerEntry."Entry No.");
+      DtldVendLedgerEntry1.SETRANGE(Unapplied,FALSE);
+      IF DtldVendLedgerEntry1.FINDSET THEN BEGIN
+        REPEAT
+          IF DtldVendLedgerEntry1."Vendor Ledger Entry No." =
+             DtldVendLedgerEntry1."Applied Vend. Ledger Entry No."
+          THEN BEGIN
+            DtldVendLedgerEntry2.INIT;
+            DtldVendLedgerEntry2.SETCURRENTKEY("Applied Vend. Ledger Entry No.","Entry Type");
+            DtldVendLedgerEntry2.SETRANGE(
+              "Applied Vend. Ledger Entry No.",DtldVendLedgerEntry1."Applied Vend. Ledger Entry No.");
+            DtldVendLedgerEntry2.SETRANGE("Entry Type",DtldVendLedgerEntry2."Entry Type"::Application);
+            DtldVendLedgerEntry2.SETRANGE(Unapplied,FALSE);
+            IF DtldVendLedgerEntry2.FIND('-') THEN BEGIN
+              REPEAT
+                IF DtldVendLedgerEntry2."Vendor Ledger Entry No." <>
+                   DtldVendLedgerEntry2."Applied Vend. Ledger Entry No."
+                THEN BEGIN
+                  VendLedgerEntry.SETCURRENTKEY("Entry No.");
+                  VendLedgerEntry.SETRANGE("Entry No.",DtldVendLedgerEntry2."Vendor Ledger Entry No.");
+                  IF VendLedgerEntry.FINDFIRST THEN
+                    VendLedgerEntry.MARK(TRUE);
+                END;
+              UNTIL DtldVendLedgerEntry2.NEXT = 0;
+            END;
+          END ELSE BEGIN
+            VendLedgerEntry.SETCURRENTKEY("Entry No.");
+            VendLedgerEntry.SETRANGE("Entry No.",DtldVendLedgerEntry1."Applied Vend. Ledger Entry No.");
+            IF VendLedgerEntry.FINDFIRST THEN
+              VendLedgerEntry.MARK(TRUE);
+          END;
+        UNTIL DtldVendLedgerEntry1.NEXT = 0;
+      END;
+      VendLedgerEntry.SETCURRENTKEY("Entry No.");
+      VendLedgerEntry.SETRANGE("Entry No.");
+      IF CreateVendLedgerEntry."Closed by Entry No." <> 0 THEN BEGIN
+        VendLedgerEntry."Entry No." := CreateVendLedgerEntry."Closed by Entry No.";
+        VendLedgerEntry.MARK(TRUE);
+      END;
+      VendLedgerEntry.SETCURRENTKEY("Closed by Entry No.");
+      VendLedgerEntry.SETRANGE("Closed by Entry No.",CreateVendLedgerEntry."Entry No.");
+      IF VendLedgerEntry.FINDSET THEN
+        REPEAT
+          VendLedgerEntry.MARK(TRUE);
+        UNTIL VendLedgerEntry.NEXT = 0;
+      VendLedgerEntry.SETCURRENTKEY("Entry No.");
+      VendLedgerEntry.SETRANGE("Closed by Entry No.");
+      VendLedgerEntry.MARKEDONLY(TRUE);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210002(NewFileName@1210000 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    {
+      <changelog>
+        <change releaseversion="RU4.00.03">Fix 15874</change>
+        <change releaseversion="RU4.00.03">PS17293</change>
+        <change releaseversion="RU5.00.01">PS19748</change>
+        <change dev="olegrom" date="2009-11-19" feature="PS55454"
+         releaseversion="RU5.00.01.04">Fix for RFH 55053</change>
+        <change dev="ayakunin" date="2009-08-21" area="Captions"
+          baseversion="RU5.00.01" releaseversion="RU6.00.01">Remove RU captions in request form</change>
+        <change id="RU41360" dev="ayakunin" date="2009-12-07" area="HRP"
+          releaseversion="RU6.00.01" feature="NC41360">HRP Merge</change>
+        <change dev="i-seshma" date="2011-01-19"
+          releaseversion="RU6.00.01" feature="244393">HRP Merge</change>
+      </changelog>
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

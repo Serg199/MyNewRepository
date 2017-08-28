@@ -1,0 +1,941 @@
+OBJECT Report 50077 Export Data
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:09;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 86=rimd;
+    CaptionML=[ENU=Export Data;
+               RUS=Выгрузка остатков на дату];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   ConsSetup.GET;
+                   MovSetup.GET;
+                   BusUnitCode:='';
+                   IF ConsSetup."Consolidation Filial Code"<>'' THEN
+                    BusUnitCode := ConsSetup."Consolidation Filial Code";
+
+                   GLSetup.GET;
+
+                   AdjRegTmpCnt:=1;
+                 END;
+
+    OnPreReport=VAR
+                  s@1210000 : Text[1024];
+                BEGIN
+                  IF GUIALLOWED THEN
+                    Window.OPEN(Text019 + Text009 + Text50013 + Text011);
+
+                  ConsSource.RESET;
+                  //ConsSource.SETRANGE("Receive Company",COMPANYNAME);
+                  //IF ConsSource.FINDFIRST THEN
+                    ExportConsSourceCode := ConsSource.Code;
+
+                  //NC MREV02> AG
+                  IF SourceCodeSetup.GET THEN;
+                  //NC MREV02< AG
+                END;
+
+    OnPostReport=BEGIN
+                   IF GUIALLOWED THEN
+                     Window.CLOSE;
+                   {
+                   ExcelBuf.CreateBook;
+                   ExcelBuf.CreateSheet('Cons. Data PreBuffer','Export',COMPANYNAME,USERID);
+                   ExcelBuf.GiveUserControl;
+                   }
+                 END;
+
+    UseRequestPage=Yes;
+  }
+  DATASET
+  {
+    { 5970;    ;DataItem;OtherOperations     ;
+               DataItemTable=Table15;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(Account Type=CONST(Posting));
+               OnPreDataItem=BEGIN
+                               CorrAcc := 'ZZZ';
+
+                               NoOfAccounts := OtherOperations.COUNT;
+                               ThisAccountNo := 0;
+
+                               IF GLAccFilter1_Reload1 <> '' THEN
+                                 SETFILTER("No.",GLAccFilter1_Reload1);
+
+
+                               //ExcelBuf.DELETEALL;
+
+                               MappingLE.RESET;
+                               MappingLE.SETRANGE("Company No.", COMPANYNAME);
+                               MappingLE.FINDSET;
+
+                               //Получение кодов измерений из настроект источника консолидации
+                               IF ConsSetup.FINDFIRST THEN
+                                 ConsSource.GET(MainConsolidationSource)
+                               ELSE
+                                 ERROR(Text014);
+
+                               //PrintHeader;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  lRecSet@1000000004 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000535-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Recordset";
+                                  lcount@1000000003 : Integer;
+                                  lAcc@1000000005 : Code[20];
+                                  lCurr@1000000006 : Code[10];
+                                  lAmount@1000000007 : Decimal;
+                                  lOrigAmount@1000000008 : Decimal;
+                                  lDimCode@1000000009 : Code[20];
+                                  lDimVal@1000000010 : Code[20];
+                                  lrDefDim@1000000011 : Record 352;
+                                BEGIN
+                                  CurrReport.BREAK;
+
+                                  ThisAccountNo := ThisAccountNo + 1;
+                                  MaxEntry :=1;
+                                  EntryCount:=0;
+                                  Window.UPDATE(1,"No.");
+                                  Window.UPDATE(4,ROUND(ThisAccountNo / NoOfAccounts * 10000,1));
+                                  Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+                                  Window.UPDATE(6,Text50011);
+
+                                  //получение набора данных из хранимой процедуры AccFxBalance
+                                  cuAdoFunc.ExportBalance(COMPANYNAME,OtherOperations."No.",IndexDate,lRecSet);
+
+                                  lcount:=lRecSet.RecordCount();
+                                  Window.UPDATE(6,Text50012);
+
+                                  IF lcount>0 THEN BEGIN
+                                    MaxEntry :=lcount;
+                                    EntryCount:=0;
+                                    Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+                                    lRecSet.MoveFirst;
+                                    WHILE NOT lRecSet.EOF() DO BEGIN
+                                      EntryCount += 1;
+                                      Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+
+                                      lAcc:=       cuAdoFunc.VarToText(lRecSet.Fields().Item('Acc').Value);
+                                      lCurr:=      cuAdoFunc.VarToText(lRecSet.Fields().Item('Curr').Value);
+                                      lAmount:=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('Amount').Value));
+                                      lOrigAmount:=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('OriginalAmount').Value));
+                                      lQuantity :=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('Quantity').Value));;
+
+                                      IF (lAmount <> 0) OR (lOrigAmount <> 0) OR (OtherOperations."FI Revaluate" AND (lQuantity <> 0)) THEN BEGIN
+
+                                      RowNo += 1;
+                                      i += 1;
+
+                                      ConsDataPreBuffer.INIT;
+                                      ConsDataPreBuffer.VALIDATE("Entry No.", 0);
+                                      ConsDataPreBuffer.VALIDATE("Time Creation", CURRENTDATETIME);
+                                      ConsDataPreBuffer.VALIDATE(Type, ConsDataPreBuffer.Type::Modify); // !!! Может Modify?
+                                      ConsDataPreBuffer.VALIDATE(Status, ConsDataPreBuffer.Status::New);
+
+                                      ConsDataPreBuffer.VALIDATE("Dimension 1 Code", ConsSource."Shortcut Dimension 1 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 2 Code", ConsSource."Shortcut Dimension 2 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 3 Code", ConsSource."Shortcut Dimension 3 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 4 Code", ConsSource."Shortcut Dimension 4 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 5 Code", ConsSource."Shortcut Dimension 5 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 6 Code", ConsSource."Shortcut Dimension 6 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 7 Code", ConsSource."Shortcut Dimension 7 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 8 Code", ConsSource."Shortcut Dimension 8 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 9 Code", ConsSource."Shortcut Dimension 9 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 10 Code", ConsSource."Shortcut Dimension 10 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 11 Code", ConsSource."Shortcut Dimension 11 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 12 Code", ConsSource."Shortcut Dimension 12 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 13 Code", ConsSource."Shortcut Dimension 13 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 14 Code", ConsSource."Shortcut Dimension 14 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 15 Code", ConsSource."Shortcut Dimension 15 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 16 Code", ConsSource."Shortcut Dimension 16 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 17 Code", ConsSource."Shortcut Dimension 17 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 18 Code", ConsSource."Shortcut Dimension 18 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 19 Code", ConsSource."Shortcut Dimension 19 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 20 Code", ConsSource."Shortcut Dimension 20 Code");
+
+                                  {
+                                      EnterCell(RowNo,1,'Проводка',FALSE,FALSE,'@');
+                                      EnterCell(RowNo,2,'IB'+FORMAT(i),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE("Document Type", 'Проводка');
+                                      ConsDataPreBuffer.VALIDATE("Document No.", 'IB'+FORMAT(i));
+
+                                      //дата
+                                  {
+                                      EnterCell(RowNo,3,FORMAT(IndexDate),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE("Document Date", IndexDate);
+                                      IF lAmount > 0 THEN BEGIN
+                                        {
+                                        EnterCell(RowNo,4,lAcc,FALSE,FALSE,'@');
+                                        EnterCell(RowNo,5,CorrAcc,FALSE,FALSE,'@');
+                                        }
+                                        ConsDataPreBuffer.VALIDATE("Debit G/L Account No.", lAcc);
+                                        ConsDataPreBuffer.VALIDATE("Credit G/L Account No.", CorrAcc);
+                                      END ELSE BEGIN
+                                        {
+                                        EnterCell(RowNo,4,CorrAcc,FALSE,FALSE,'@');
+                                        EnterCell(RowNo,5,lAcc,FALSE,FALSE,'@');
+                                        }
+                                        ConsDataPreBuffer.VALIDATE("Debit G/L Account No.", CorrAcc);
+                                        ConsDataPreBuffer.VALIDATE("Credit G/L Account No.", lAcc);
+                                      END;
+                                  {
+                                      EnterCell(RowNo,6,PostingDescription,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,8,FORMAT(ABS(lAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,9,lCurr,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,10,FORMAT(ABS(lOrigAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,11,lCurr,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,12,FORMAT(ABS(lOrigAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,14,FORMAT(ABS(lQuantity)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,16,FORMAT(i),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE(Description, PostingDescription);
+                                      ConsDataPreBuffer.VALIDATE("Amount (LCY)", ABS(lAmount));
+                                      ConsDataPreBuffer.VALIDATE("Debit Currency Code", lCurr);
+                                      ConsDataPreBuffer.VALIDATE("Debit Original Amount", ABS(lOrigAmount));
+                                      ConsDataPreBuffer.VALIDATE("Credit Currency Code", lCurr);
+                                      ConsDataPreBuffer.VALIDATE("Credit Original Amount", ABS(lOrigAmount));
+                                      ConsDataPreBuffer.VALIDATE(Quantity, ABS(lQuantity));
+                                      ConsDataPreBuffer.VALIDATE("Document ID", 'up3-' + FORMAT(i));
+                                      ConsDataPreBuffer.VALIDATE(Status, ConsDataPreBuffer.Status::New);
+                                      ConsDataPreBuffer.VALIDATE(Type, ConsDataPreBuffer.Type::New);
+
+                                      //внешняя система
+                                      {
+                                      EnterCell(RowNo,19,'N',FALSE,FALSE,'@');
+                                      EnterCell(RowNo,20,MappingLE."External Id Legal Entity",FALSE,FALSE,'@');
+                                      }
+                                      ConsDataPreBuffer.VALIDATE("Id External System", 'N');
+                                      ConsDataPreBuffer.VALIDATE("External Id Legal Entity", MappingLE."External Id Legal Entity");
+
+                                      DefaultDimension.RESET;
+                                      DefaultDimension.SETRANGE("Table ID", 15);
+                                      DefaultDimension.SETRANGE("No.", "No.");
+                                      DefaultDimension.SETRANGE("Value Posting", DefaultDimension."Value Posting"::"Code Mandatory");
+                                      IF DefaultDimension.FINDSET THEN
+                                      REPEAT
+                                        Str := DefaultDimension."Dimension Code";        Pos := STRPOS(Str, '.');
+                                        IF Pos <> 0 THEN
+                                          Str := INSSTR(DELSTR(Str,Pos,1), '_', Pos);
+                                        PostDim(DefaultDimension."Dimension Code",
+                                        cuAdoFunc.VarToText(lRecSet.Fields().Item(Str).Value), RowNo);
+                                      UNTIL DefaultDimension.NEXT = 0;
+                                      ConsDataPreBuffer.INSERT(TRUE);
+                                      END;
+                                      lRecSet.MoveNext;
+                                  {
+                                  IF RowNo > 20000 THEN BEGIN
+                                    ExcelBuf.CreateBook;
+                                    ExcelBuf.CreateSheet('Cons. Data PreBuffer','Export',COMPANYNAME,USERID);
+                                    ExcelBuf.DELETEALL;
+                                    ExcelBuf.GiveUserControl;
+                                    PrintHeader;
+                                  END;
+                                  }
+
+                                    END;
+                                  END;
+                                END;
+                                 }
+
+    { 3505;    ;DataItem;CapitalOperations   ;
+               DataItemTable=Table15;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(Account Type=CONST(Posting));
+               OnPreDataItem=BEGIN
+                               IF (GLAccFilter_Reload1 <> '') AND (GLAccFilter_Reload1 <> ' ') THEN
+                                 SETFILTER("No.",GLAccFilter_Reload1);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  lRecSet@1101495008 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000535-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Recordset";
+                                  lcount@1101495007 : Integer;
+                                  lAcc@1101495006 : Code[20];
+                                  lCurr@1101495005 : Code[10];
+                                  lAmount@1101495004 : Decimal;
+                                  lOrigAmount@1101495003 : Decimal;
+                                  lDimCode@1101495002 : Code[20];
+                                  lDimVal@1101495001 : Code[20];
+                                  lrDefDim@1101495000 : Record 352;
+                                  lPostingDate@1101495009 : Date;
+                                BEGIN
+                                  CurrReport.BREAK;
+
+                                  ThisAccountNo := ThisAccountNo + 1;
+                                  MaxEntry :=1;
+                                  EntryCount:=0;
+                                  Window.UPDATE(1,"No.");
+                                  Window.UPDATE(4,ROUND(ThisAccountNo / NoOfAccounts * 10000,1));
+                                  Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+                                  Window.UPDATE(6,Text50011);
+
+                                  //получение набора данных из хранимой процедуры AccFxBalance
+                                  cuAdoFunc.ExportCapital(COMPANYNAME,CapitalOperations."No.",IndexDate,lRecSet);
+
+                                  lcount:=lRecSet.RecordCount();
+                                  Window.UPDATE(6,Text50012);
+
+                                  IF lcount>0 THEN BEGIN
+                                    MaxEntry :=lcount;
+                                    EntryCount:=0;
+                                    Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+                                    lRecSet.MoveFirst;
+                                    WHILE NOT lRecSet.EOF() DO BEGIN
+                                      EntryCount += 1;
+                                      Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+
+                                      lAcc:=       cuAdoFunc.VarToText(lRecSet.Fields().Item('Acc').Value);
+                                      lCurr:=      cuAdoFunc.VarToText(lRecSet.Fields().Item('Curr').Value);
+                                      lAmount:=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('Amount').Value));
+                                      lOrigAmount:=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('OriginalAmount').Value));
+                                      lQuantity :=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('Quantity').Value));
+                                      lPostingDate := cuAdoFunc.VarToDate(lRecSet.Fields().Item('PostingDate').Value);
+                                      IF (lAmount <> 0) OR (lOrigAmount <> 0) OR (CapitalOperations."FI Revaluate" AND (lQuantity <> 0)) THEN BEGIN
+                                      RowNo += 1;
+                                      i += 1;
+                                      ConsDataPreBuffer.INIT;
+                                      ConsDataPreBuffer.VALIDATE("Entry No.", 0);
+                                      ConsDataPreBuffer.VALIDATE("Time Creation", CURRENTDATETIME);
+                                      ConsDataPreBuffer.VALIDATE(Type, ConsDataPreBuffer.Type::Modify); // !!! Может Modify?
+                                      ConsDataPreBuffer.VALIDATE(Status, ConsDataPreBuffer.Status::New);
+
+                                      ConsDataPreBuffer.VALIDATE("Dimension 1 Code", ConsSource."Shortcut Dimension 1 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 2 Code", ConsSource."Shortcut Dimension 2 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 3 Code", ConsSource."Shortcut Dimension 3 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 4 Code", ConsSource."Shortcut Dimension 4 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 5 Code", ConsSource."Shortcut Dimension 5 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 6 Code", ConsSource."Shortcut Dimension 6 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 7 Code", ConsSource."Shortcut Dimension 7 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 8 Code", ConsSource."Shortcut Dimension 8 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 9 Code", ConsSource."Shortcut Dimension 9 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 10 Code", ConsSource."Shortcut Dimension 10 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 11 Code", ConsSource."Shortcut Dimension 11 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 12 Code", ConsSource."Shortcut Dimension 12 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 13 Code", ConsSource."Shortcut Dimension 13 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 14 Code", ConsSource."Shortcut Dimension 14 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 15 Code", ConsSource."Shortcut Dimension 15 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 16 Code", ConsSource."Shortcut Dimension 16 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 17 Code", ConsSource."Shortcut Dimension 17 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 18 Code", ConsSource."Shortcut Dimension 18 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 19 Code", ConsSource."Shortcut Dimension 19 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 20 Code", ConsSource."Shortcut Dimension 20 Code");
+                                  {
+                                      EnterCell(RowNo,1,'Проводка',FALSE,FALSE,'@');
+                                      EnterCell(RowNo,2,'IB'+FORMAT(i),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE("Document Type", 'Проводка');
+                                      ConsDataPreBuffer.VALIDATE("Document No.", 'IB'+FORMAT(i));
+
+                                      //дата
+                                      {
+                                      EnterCell(RowNo,3,FORMAT(lPostingDate),FALSE,FALSE,'@');
+                                      }
+                                      ConsDataPreBuffer.VALIDATE("Document Date", IndexDate);
+                                      IF lAmount > 0 THEN BEGIN
+                                      {
+                                        EnterCell(RowNo,4,lAcc,FALSE,FALSE,'@');
+                                        EnterCell(RowNo,5,CorrAcc,FALSE,FALSE,'@');
+                                      }
+                                        ConsDataPreBuffer.VALIDATE("Debit G/L Account No.", lAcc);
+                                        ConsDataPreBuffer.VALIDATE("Credit G/L Account No.", CorrAcc);
+                                      END ELSE BEGIN
+                                      {
+                                        EnterCell(RowNo,4,CorrAcc,FALSE,FALSE,'@');
+                                        EnterCell(RowNo,5,lAcc,FALSE,FALSE,'@');
+                                      }
+                                        ConsDataPreBuffer.VALIDATE("Debit G/L Account No.", CorrAcc);
+                                        ConsDataPreBuffer.VALIDATE("Credit G/L Account No.", lAcc);
+                                      END;
+                                  {
+                                      EnterCell(RowNo,6,PostingDescription,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,8,FORMAT(ABS(lAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,9,lCurr,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,10,FORMAT(ABS(lOrigAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,11,lCurr,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,12,FORMAT(ABS(lOrigAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,14,FORMAT(ABS(lQuantity)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,16,FORMAT(i),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE(Description, PostingDescription);
+                                      ConsDataPreBuffer.VALIDATE("Amount (LCY)", ABS(lAmount));
+                                      ConsDataPreBuffer.VALIDATE("Debit Currency Code", lCurr);
+                                      ConsDataPreBuffer.VALIDATE("Debit Original Amount", ABS(lOrigAmount));
+                                      ConsDataPreBuffer.VALIDATE("Credit Currency Code", lCurr);
+                                      ConsDataPreBuffer.VALIDATE("Credit Original Amount", ABS(lOrigAmount));
+                                      ConsDataPreBuffer.VALIDATE(Quantity, ABS(lQuantity));
+                                      ConsDataPreBuffer.VALIDATE("Document ID", 'up3-' + FORMAT(i));
+                                      ConsDataPreBuffer.VALIDATE(Status, ConsDataPreBuffer.Status::New);
+                                      ConsDataPreBuffer.VALIDATE(Type, ConsDataPreBuffer.Type::New);
+
+                                      //внешняя система
+                                      {
+                                      //EnterCell(RowNo,19,,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,20,MappingLE."External Id Legal Entity",FALSE,FALSE,'@');
+                                      }
+                                      ConsDataPreBuffer.VALIDATE("Id External System", 'N');
+                                      ConsDataPreBuffer.VALIDATE("External Id Legal Entity", MappingLE."External Id Legal Entity");
+
+                                      Dimension.RESET;
+                                      IF Dimension.FINDSET THEN
+                                      REPEAT
+                                        Str := Dimension.Code;        Pos := STRPOS(Str, '.');
+                                        IF Pos <> 0 THEN
+                                          Str := INSSTR(DELSTR(Str,Pos,1), '_', Pos);
+                                        PostDim(Dimension.Code,
+                                        cuAdoFunc.VarToText(lRecSet.Fields().Item(Str).Value), RowNo);
+
+                                      UNTIL Dimension.NEXT = 0;
+                                      ConsDataPreBuffer.INSERT(TRUE);
+                                      END;
+                                      lRecSet.MoveNext;
+                                    END;
+                                  {
+                                  IF RowNo > 20000 THEN BEGIN
+                                    ExcelBuf.CreateBook;
+                                    ExcelBuf.CreateSheet('Cons. Data PreBuffer','Export',COMPANYNAME,USERID);
+                                    ExcelBuf.DELETEALL;
+                                    ExcelBuf.GiveUserControl;
+                                    PrintHeader;
+                                  END;
+                                  }
+                                  END;
+                                END;
+                                 }
+
+    { 9046;    ;DataItem;Derevativ           ;
+               DataItemTable=Table15;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               IF FuturesPostionFilter <> '' THEN
+                                 SETFILTER("No.", FuturesPostionFilter7aug);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  lRecSet@1101495009 : Automation "{2A75196C-D9EB-4129-B803-931327F72D5C} 2.8:{00000535-0000-0010-8000-00AA006D2EA4}:'Microsoft ActiveX Data Objects 2.8 Library'.Recordset";
+                                  lcount@1101495008 : Integer;
+                                  lAcc@1101495007 : Code[20];
+                                  lCurr@1101495006 : Code[10];
+                                  lAmount@1101495005 : Decimal;
+                                  lOrigAmount@1101495004 : Decimal;
+                                  lDimCode@1101495003 : Code[20];
+                                  lDimVal@1101495002 : Code[20];
+                                  lrDefDim@1101495001 : Record 352;
+                                  lPostingDate@1101495000 : Date;
+                                BEGIN
+                                  //CurrReport.BREAK;
+
+                                  ThisAccountNo := ThisAccountNo + 1;
+                                  MaxEntry :=1;
+                                  EntryCount:=0;
+                                  Window.UPDATE(1,"No.");
+                                  Window.UPDATE(4,ROUND(ThisAccountNo / NoOfAccounts * 10000,1));
+                                  Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+                                  Window.UPDATE(6,Text50011);
+
+                                  //получение набора данных из хранимой процедуры AccFxBalance
+                                  cuAdoFunc.ExportBalance(COMPANYNAME,Derevativ."No.",IndexDate,lRecSet);
+
+                                  lcount:=lRecSet.RecordCount();
+                                  Window.UPDATE(6,Text50012);
+
+                                  IF lcount>0 THEN BEGIN
+                                    MaxEntry :=lcount;
+                                    EntryCount:=0;
+                                    Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+                                    lRecSet.MoveFirst;
+                                    WHILE NOT lRecSet.EOF() DO BEGIN
+                                      EntryCount += 1;
+                                      Window.UPDATE(3,ROUND(EntryCount / MaxEntry * 10000,1));
+
+                                      lAcc:=       cuAdoFunc.VarToText(lRecSet.Fields().Item('Acc').Value);
+                                      lCurr:=      cuAdoFunc.VarToText(lRecSet.Fields().Item('Curr').Value);
+                                      lAmount:=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('Amount').Value));
+                                      lOrigAmount:=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('OriginalAmount').Value));
+                                      lQuantity :=ROUND(cuAdoFunc.VarToDec(lRecSet.Fields().Item('Quantity').Value));
+
+                                      IF (lAmount <> 0) OR (lOrigAmount <> 0) OR (lQuantity <> 0) THEN BEGIN
+
+                                      RowNo += 1;
+                                      i += 1;
+
+                                      ConsDataPreBuffer.INIT;
+                                      ConsDataPreBuffer.VALIDATE("Entry No.", 0);
+                                      ConsDataPreBuffer.VALIDATE("Time Creation", CURRENTDATETIME);
+                                      ConsDataPreBuffer.VALIDATE(Type, ConsDataPreBuffer.Type::Modify); // !!! Может Modify?
+                                      ConsDataPreBuffer.VALIDATE(Status, ConsDataPreBuffer.Status::New);
+
+                                      ConsDataPreBuffer.VALIDATE("Dimension 1 Code", ConsSource."Shortcut Dimension 1 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 2 Code", ConsSource."Shortcut Dimension 2 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 3 Code", ConsSource."Shortcut Dimension 3 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 4 Code", ConsSource."Shortcut Dimension 4 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 5 Code", ConsSource."Shortcut Dimension 5 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 6 Code", ConsSource."Shortcut Dimension 6 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 7 Code", ConsSource."Shortcut Dimension 7 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 8 Code", ConsSource."Shortcut Dimension 8 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 9 Code", ConsSource."Shortcut Dimension 9 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 10 Code", ConsSource."Shortcut Dimension 10 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 11 Code", ConsSource."Shortcut Dimension 11 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 12 Code", ConsSource."Shortcut Dimension 12 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 13 Code", ConsSource."Shortcut Dimension 13 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 14 Code", ConsSource."Shortcut Dimension 14 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 15 Code", ConsSource."Shortcut Dimension 15 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 16 Code", ConsSource."Shortcut Dimension 16 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 17 Code", ConsSource."Shortcut Dimension 17 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 18 Code", ConsSource."Shortcut Dimension 18 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 19 Code", ConsSource."Shortcut Dimension 19 Code");
+                                      ConsDataPreBuffer.VALIDATE("Dimension 20 Code", ConsSource."Shortcut Dimension 20 Code");
+
+                                  {
+                                      EnterCell(RowNo,1,'Проводка',FALSE,FALSE,'@');
+                                      EnterCell(RowNo,2,'IB'+FORMAT(i),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE("Document Type", 'Проводка');
+                                      ConsDataPreBuffer.VALIDATE("Document No.", 'IB'+FORMAT(i));
+
+                                      //дата
+                                  {
+                                      EnterCell(RowNo,3,FORMAT(IndexDate),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE("Document Date", IndexDate);
+                                      IF lAmount >= 0 THEN BEGIN
+                                        {
+                                        EnterCell(RowNo,4,lAcc,FALSE,FALSE,'@');
+                                        EnterCell(RowNo,5,CorrAcc,FALSE,FALSE,'@');
+                                        }
+                                        ConsDataPreBuffer.VALIDATE("Debit G/L Account No.", lAcc);
+                                        ConsDataPreBuffer.VALIDATE("Credit G/L Account No.", CorrAcc);
+                                        ConsDataPreBuffer.VALIDATE("Amount (LCY)", lAmount);
+                                        ConsDataPreBuffer.VALIDATE("Debit Original Amount", lOrigAmount);
+                                        ConsDataPreBuffer.VALIDATE("Credit Original Amount", lOrigAmount);
+                                        ConsDataPreBuffer.VALIDATE(Quantity, lQuantity);
+                                      END ELSE BEGIN
+                                        {
+                                        EnterCell(RowNo,4,CorrAcc,FALSE,FALSE,'@');
+                                        EnterCell(RowNo,5,lAcc,FALSE,FALSE,'@');
+                                        }
+                                        ConsDataPreBuffer.VALIDATE("Debit G/L Account No.", CorrAcc);
+                                        ConsDataPreBuffer.VALIDATE("Credit G/L Account No.", lAcc);
+                                        ConsDataPreBuffer.VALIDATE("Amount (LCY)", -lAmount);
+                                        ConsDataPreBuffer.VALIDATE("Debit Original Amount", -lOrigAmount);
+                                        ConsDataPreBuffer.VALIDATE("Credit Original Amount", -lOrigAmount);
+                                        ConsDataPreBuffer.VALIDATE(Quantity, -lQuantity);
+                                      END;
+                                  {
+                                      EnterCell(RowNo,6,PostingDescription,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,8,FORMAT(ABS(lAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,9,lCurr,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,10,FORMAT(ABS(lOrigAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,11,lCurr,FALSE,FALSE,'@');
+                                      EnterCell(RowNo,12,FORMAT(ABS(lOrigAmount)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,14,FORMAT(ABS(lQuantity)),FALSE,FALSE,'@');
+                                      EnterCell(RowNo,16,FORMAT(i),FALSE,FALSE,'@');
+                                  }
+                                      ConsDataPreBuffer.VALIDATE(Description, PostingDescription);
+                                      //ConsDataPreBuffer.VALIDATE("Amount (LCY)", ABS(lAmount));
+                                      ConsDataPreBuffer.VALIDATE("Debit Currency Code", lCurr);
+                                      //ConsDataPreBuffer.VALIDATE("Debit Original Amount", ABS(lOrigAmount));
+                                      ConsDataPreBuffer.VALIDATE("Credit Currency Code", lCurr);
+                                      //ConsDataPreBuffer.VALIDATE("Credit Original Amount", ABS(lOrigAmount));
+                                      //ConsDataPreBuffer.VALIDATE(Quantity, ABS(lQuantity));
+                                      ConsDataPreBuffer.VALIDATE("Document ID", 'up7-' + FORMAT(i));
+                                      ConsDataPreBuffer.VALIDATE(Status, ConsDataPreBuffer.Status::New);
+                                      ConsDataPreBuffer.VALIDATE(Type, ConsDataPreBuffer.Type::New);
+
+                                      //внешняя система
+                                      {
+                                      EnterCell(RowNo,19,'N',FALSE,FALSE,'@');
+                                      EnterCell(RowNo,20,MappingLE."External Id Legal Entity",FALSE,FALSE,'@');
+                                      }
+                                      ConsDataPreBuffer.VALIDATE("Id External System", 'N');
+                                      ConsDataPreBuffer.VALIDATE("External Id Legal Entity", MappingLE."External Id Legal Entity");
+
+                                      DefaultDimension.RESET;
+                                      DefaultDimension.SETRANGE("Table ID", 15);
+                                      DefaultDimension.SETRANGE("No.", "No.");
+                                      DefaultDimension.SETRANGE("Value Posting", DefaultDimension."Value Posting"::"Code Mandatory");
+                                      IF DefaultDimension.FINDSET THEN
+                                      REPEAT
+                                        Str := DefaultDimension."Dimension Code";        Pos := STRPOS(Str, '.');
+                                        IF Pos <> 0 THEN
+                                          Str := INSSTR(DELSTR(Str,Pos,1), '_', Pos);
+                                        PostDim(DefaultDimension."Dimension Code",
+                                        cuAdoFunc.VarToText(lRecSet.Fields().Item(Str).Value), RowNo);
+                                      UNTIL DefaultDimension.NEXT = 0;
+                                      ConsDataPreBuffer.INSERT(TRUE);
+                                      END;
+                                      lRecSet.MoveNext;
+                                  {
+                                  IF RowNo > 20000 THEN BEGIN
+                                    ExcelBuf.CreateBook;
+                                    ExcelBuf.CreateSheet('Cons. Data PreBuffer','Export',COMPANYNAME,USERID);
+                                    ExcelBuf.DELETEALL;
+                                    ExcelBuf.GiveUserControl;
+                                    PrintHeader;
+                                  END;
+                                  }
+
+                                    END;
+                                  END;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      IndexDate@1101495000 : Date;
+      DocumentNo@1210002 : Code[20];
+      CurrCodeFilter@1210005 : Code[10];
+      IndexDim@1210006 : Boolean;
+      GLAccount@1210007 : Record 15;
+      GLSetup@1210008 : Record 98;
+      ConsSetup@1210009 : Record 50000;
+      "-----"@1210012 : Integer;
+      GLEntry@1210013 : Record 17;
+      OriginalAmountInLCY@1210016 : Decimal;
+      AmountLCY@1210017 : Decimal;
+      ExchRate@1210018 : Decimal;
+      Text00001@1210019 : TextConst 'ENU=Revaluation of foreign currency transactions successfully completed;RUS=Переоценка валютных операций успешно выполнена';
+      DimensionValue@1210020 : Record 349;
+      Indicator@1210023 : Dialog;
+      ColumnDim@1210024 : Text[250];
+      GLEntry2@1000000000 : Record 17;
+      ConsSource@1000000001 : Record 50001;
+      DimCompanyFilter@1000000002 : Code[20];
+      Text020@1210030 : TextConst 'ENU=The following %1s have mandatory dimension codes that have not been selected:;RUS=Для следующих %1 заданы обязательные коды измерений, которые не выбраны:';
+      Text021@1210031 : TextConst 'ENU=\\In order to post to these accounts you must also select these dimensions:;RUS=\\Чтобы учесть эти счета, необходимо также выбрать следующие измерения:';
+      Text007@1210032 : TextConst 'ENU=Do you wish to continue?;RUS=Продолжить?';
+      MaxEntry@1210022 : Integer;
+      EntryNoAmountBuf@1210036 : TEMPORARY Record 386;
+      EntryCount@1210035 : Integer;
+      LastWindowUpdate@1210037 : Time;
+      DimBufMgt@1210011 : Codeunit 411;
+      ExportConsSourceCode@1210041 : Code[20];
+      Window@1210044 : Dialog;
+      Text008@1210051 : TextConst 'ENU=Creating general journal lines...\\;RUS=Создание строк финансового журнала...\\';
+      Text014@1210052 : TextConst 'ENU=Currency            #5##################\;RUS=Валюта              #5##################\';
+      Text009@1210050 : TextConst 'ENU=#1##################\;RUS=#1##################\';
+      Text010@1210049 : TextConst 'ENU=Now performing      #2##################\;RUS=Выполняется         #2##################\';
+      Text011@1210048 : TextConst 'ENU=@3@@@@@@@@@@@@@@@@@@\;RUS=@3@@@@@@@@@@@@@@@@@@\';
+      Text019@1210047 : TextConst 'ENU=@4@@@@@@@@@@@@@@@@@@\;RUS=@4@@@@@@@@@@@@@@@@@@\';
+      Text012@1210046 : TextConst 'ENU=Creating Gen. Journal lines;RUS=Создание строк фин. журнала';
+      Text013@1210045 : TextConst 'ENU=Calculating Amounts;RUS=Выполняется подсчет сумм';
+      NoOfAccounts@1210053 : Integer;
+      ThisAccountNo@1210054 : Integer;
+      "TEST>"@1101495002 : Integer;
+      TestCount@1101495001 : Integer;
+      GLAccountRevalType@1101495004 : ' ,Cash,FI,Receivable,Payable,Loan Receivable,Loan Payable';
+      "TEST<"@1101495003 : Integer;
+      "NCMREV02>"@1000000003 : Integer;
+      cuAdoFunc@1000000004 : Codeunit 50024;
+      Currency@1000000005 : Record 4;
+      gPost81@1000000006 : Boolean;
+      SourceCodeSetup@1000000008 : Record 242;
+      BusUnitCode@1000000009 : Code[20];
+      AdjRegTmp@1000000010 : TEMPORARY Record 86;
+      ExchRateAdjReg@1000000011 : Record 86;
+      AdjRegTmpCnt@1000000012 : Integer;
+      PostingDescription@1000000014 : Text[50];
+      LineMin@1000000017 : Integer;
+      LineMax@1000000016 : Integer;
+      MovSetup@1000000022 : Record 50064;
+      ProgressStatus@1000000024 : Text[128];
+      "NCMREV02<"@1000000007 : Integer;
+      Text50002@1000000015 : TextConst 'ENU=Please set in;RUS="Не заполнены настройки в "';
+      Text50003@1000000018 : TextConst 'ENU=In %1 not found from previous account %2;RUS=В %1 не найден имевшийся ранее %2';
+      Text50004@1000000019 : TextConst 'ENU=Not filled field %1 in %2 for account %3and \field %4 in %5 for currency %6;RUS=Не заполнено поле %1 в %2 для счета %3 и \поле %4 в %5 для валюты %6';
+      Text50005@1000000020 : TextConst 'ENU=Recording Gen. Journal successfully created;RUS=Записи в фин. журнале успешно созданы';
+      Text50006@1000000023 : TextConst 'ENU=With the given parameters revaluation nothing;RUS=При заданных параметрах переоценивать нечего';
+      Text50011@1000000025 : TextConst 'ENU=Submitting Request...;RUS="Отправка запроса...     "';
+      Text50012@1000000026 : TextConst 'ENU=Processing ...;RUS="Обработка данных...     "';
+      Text50013@1000000027 : TextConst 'ENU=#6##################\;RUS=#6##################\';
+      ExcelBuf_del@1101495005 : TEMPORARY Record 370;
+      RowNo@1101495006 : Integer;
+      CorrAcc@1101495007 : Code[10];
+      MappingLE@1101495008 : Record 50075;
+      DefaultDimension@1101495009 : Record 352;
+      Str@1101495010 : Text[30];
+      Pos@1101495011 : Integer;
+      GLAccFilter@1101495012 : TextConst 'RUS=30000000..39999999';
+      Dimension@1101495013 : Record 348;
+      GLAccFilter1@1101495014 : TextConst 'RUS=10000000..10899999|11100000..29000000';
+      lQuantity@1101495015 : Decimal;
+      GLAccFilterTemp@1101495016 : TextConst 'RUS=10301011|10301012|20101010|20101020|10303011|20102011';
+      i@1101495017 : Integer;
+      ConsDataPreBuffer@1101495018 : Record 50007;
+      ConsolidationSource@1101495019 : Record 50001;
+      MainConsolidationSource@1101495021 : Code[20];
+      test@1101495020 : Text[30];
+      GLAccFilter_Reload1@1101495022 : TextConst 'RUS=-';
+      GLAccFilter1_Reload1@1101495023 : TextConst 'RUS=10301011..10303012|10303021|10303031|10401000|20101010..20102012|20102021|20102031|20201000|41317020|61110000..61140000|62110000..62140000|67100000..67400000|72240000';
+      DerevativAccFilter@1101495024 : TextConst 'RUS=10303040|10303990|20102040|20102990';
+      DerevativAccFilter2@1101495025 : TextConst 'RUS=10303022|10303032|20102022|20102032';
+      PositionAccFilter@1000000013 : TextConst 'RUS=10301011|10301012|10301013|10301014|10301021|10301022|10301023|10301024|10302011|10302012|10302021|10302022|10302031|10302032|10302041|10302042|10303011|10303012|10303021|10303031|10401000|20101010|20101020|20101030|20101040|20102011|20102012|20102021|20102031|20201000';
+      FuturesPostionFilter@1101495026 : TextConst 'RUS=10303021|10303022|10303023|20102021|20102022|20102023';
+      FuturesPostionFilter7aug@1101495027 : TextConst 'RUS=10303021|10303022|20102021|20102022';
+
+    LOCAL PROCEDURE EnterCell@3(RowNo@1000 : Integer;ColumnNo@1001 : Integer;CellValue@1002 : Text[250];Bold@1003 : Boolean;UnderLine@1004 : Boolean;NumberFormat@1005 : Text[30]);
+    BEGIN
+      {
+      ExcelBuf.INIT;
+      ExcelBuf.VALIDATE("Row No.",RowNo);
+      ExcelBuf.VALIDATE("Column No.",ColumnNo);
+      ExcelBuf."Cell Value as Text" := CellValue;
+      ExcelBuf.Formula := '';
+      ExcelBuf.Bold := Bold;
+      ExcelBuf.Underline := UnderLine;
+      ExcelBuf.NumberFormat := NumberFormat;
+      ExcelBuf.INSERT;
+      }
+    END;
+
+    PROCEDURE PostDim@1101495000(DimCode@1101495000 : Code[20];DimValue@1101495001 : Code[20];RowCell@1101495002 : Integer);
+    BEGIN
+      IF DimCode = 'BOOK' THEN BEGIN
+        {
+        EnterCell(RowCell,21,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,22,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 1 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 1 Value Code", DimValue);
+      END;
+      IF DimCode = 'COSTCENTER' THEN BEGIN
+      {
+        EnterCell(RowCell,23,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,24,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 2 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 2 Value Code", DimValue);
+      END;
+      IF DimCode = 'DEAL' THEN BEGIN
+      {
+        EnterCell(RowCell,25,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,26,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 3 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 3 Value Code", DimValue);
+      END;
+      IF DimCode = 'FIN.INSTR' THEN BEGIN
+      {
+        EnterCell(RowCell,27,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,28,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 4 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 4 Value Code", DimValue);
+      END;
+      IF DimCode = 'COUNTERPARTY' THEN BEGIN
+      {
+        EnterCell(RowCell,29,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,30,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 5 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 5 Value Code", DimValue);
+      END;
+      IF DimCode = 'BANK.ACC' THEN BEGIN
+      {
+        EnterCell(RowCell,31,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,32,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 6 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 6 Value Code", DimValue);
+      END;
+      IF DimCode = 'PROJECT' THEN BEGIN
+      {
+        EnterCell(RowCell,33,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,34,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 7 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 7 Value Code", DimValue);
+      END;
+      IF DimCode = 'ACCRUAL.TYPE' THEN BEGIN
+      {
+        EnterCell(RowCell,35,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,36,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 8 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 8 Value Code", DimValue);
+      END;
+      IF DimCode = 'AC.COMP' THEN BEGIN
+      {
+        EnterCell(RowCell,37,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,38,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 9 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 9 Value Code", DimValue);
+      END;
+      IF DimCode = 'COMMISSIONS' THEN BEGIN
+      {
+        EnterCell(RowCell,39,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,40,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 10 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 10 Value Code", DimValue);
+      END;
+      IF DimCode = 'EXP.OP' THEN BEGIN
+      {
+        EnterCell(RowCell,41,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,42,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 11 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 11 Value Code", DimValue);
+      END;
+      IF DimCode = 'PROVISIONS' THEN BEGIN
+      {
+        EnterCell(RowCell,43,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,44,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 12 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 12 Value Code", DimValue);
+      END;
+      IF DimCode = 'PROV.MOVEMENTS' THEN BEGIN
+      {
+        EnterCell(RowCell,45,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,46,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 13 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 13 Value Code", DimValue);
+      END;
+      IF DimCode = 'REVAL.TYPE' THEN BEGIN
+      {
+        EnterCell(RowCell,47,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,48,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 14 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 14 Value Code", DimValue);
+      END;
+      IF DimCode = 'TAX.JUR' THEN BEGIN
+      {
+        EnterCell(RowCell,49,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,50,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 15 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 15 Value Code", DimValue);
+      END;
+      IF DimCode = 'TAX.OTHER' THEN BEGIN
+      {
+        EnterCell(RowCell,51,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,52,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 16 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 16 Value Code", DimValue);
+      END;
+      IF DimCode = 'FA.OPERTYPE' THEN BEGIN
+      {
+        EnterCell(RowCell,53,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,54,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 17 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 17 Value Code", DimValue);
+      END;
+      IF DimCode = 'FA' THEN BEGIN
+      {
+        EnterCell(RowCell,55,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,56,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 18 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 18 Value Code", DimValue);
+      END;
+      IF DimCode = 'DF.EXPENSE' THEN BEGIN
+      {
+        EnterCell(RowCell,57,DimValue,FALSE,FALSE,'@');
+        EnterCell(RowCell,58,DimValue,FALSE,FALSE,'@');
+        }
+        ConsDataPreBuffer.VALIDATE("Debit Dimension 19 Value Code", DimValue);
+        ConsDataPreBuffer.VALIDATE("Credit Dimension 19 Value Code", DimValue);
+      END;
+    END;
+
+    PROCEDURE PrintHeader@1101495001();
+    BEGIN
+      RowNo := 1;
+
+      EnterCell(1,1,'Document Type',FALSE,FALSE,'@');
+      EnterCell(1,2,'Document No.',FALSE,FALSE,'@');
+      EnterCell(1,3,'Document Date',FALSE,FALSE,'@');
+      EnterCell(1,4,'Debit G/L Account No.',FALSE,FALSE,'@');
+      EnterCell(1,5,'Credit G/L Account No.',FALSE,FALSE,'@');
+      EnterCell(1,6,'Description',FALSE,FALSE,'@');
+      EnterCell(1,7,'Description 2',FALSE,FALSE,'@');
+      EnterCell(1,8,'Amount (LCY)',FALSE,FALSE,'@');
+      EnterCell(1,9,'Debit Currency Code',FALSE,FALSE,'@');
+      EnterCell(1,10,'Debit Original Amount',FALSE,FALSE,'@');
+      EnterCell(1,11,'Credit Currency Code',FALSE,FALSE,'@');
+      EnterCell(1,12,'Credit Original Amount',FALSE,FALSE,'@');
+      EnterCell(1,13,'FA Operation',FALSE,FALSE,'@');
+      EnterCell(1,14,'Quantity',FALSE,FALSE,'@');
+      EnterCell(1,15,'Original Doc. Date',FALSE,FALSE,'@');
+      EnterCell(1,16,'Document ID',FALSE,FALSE,'@');
+      EnterCell(1,17,'Amount Difference',FALSE,FALSE,'@');
+      EnterCell(1,18,'Due Date',FALSE,FALSE,'@');
+      EnterCell(1,19,'Id External System',FALSE,FALSE,'@');
+      EnterCell(1,20,'External Id Legal Entity',FALSE,FALSE,'@');
+      EnterCell(1,21,'Debit BOOK Code',FALSE,FALSE,'@');
+      EnterCell(1,22,'Credit BOOK Code',FALSE,FALSE,'@');
+      EnterCell(1,23,'Debit COSTCENTER Code',FALSE,FALSE,'@');
+      EnterCell(1,24,'Credit COSTCENTER Code',FALSE,FALSE,'@');
+      EnterCell(1,25,'Debit DEAL Code',FALSE,FALSE,'@');
+      EnterCell(1,26,'Credit DEAL Code',FALSE,FALSE,'@');
+      EnterCell(1,27,'Debit FIN.INSTR Code',FALSE,FALSE,'@');
+      EnterCell(1,28,'Credit FIN.INSTR Code',FALSE,FALSE,'@');
+      EnterCell(1,29,'Debit COUNTERPARTY Code',FALSE,FALSE,'@');
+      EnterCell(1,30,'Credit COUNTERPARTY Code',FALSE,FALSE,'@');
+      EnterCell(1,31,'Debit BANK.ACC Code',FALSE,FALSE,'@');
+      EnterCell(1,32,'Credit BANK.ACC Code',FALSE,FALSE,'@');
+      EnterCell(1,33,'Debit PROJECT Code',FALSE,FALSE,'@');
+      EnterCell(1,34,'Credit PROJECT Code',FALSE,FALSE,'@');
+      EnterCell(1,35,'Debit ACCRUAL.TYPE Code',FALSE,FALSE,'@');
+      EnterCell(1,36,'Credit ACCRUAL.TYPE Code',FALSE,FALSE,'@');
+      EnterCell(1,37,'Debit AC.COMP Code',FALSE,FALSE,'@');
+      EnterCell(1,38,'Credit AC.COMP Code',FALSE,FALSE,'@');
+      EnterCell(1,39,'Debit COMMISSIONS Code',FALSE,FALSE,'@');
+      EnterCell(1,40,'Credit COMMISSIONS Code',FALSE,FALSE,'@');
+      EnterCell(1,41,'Debit EXP.OP Code',FALSE,FALSE,'@');
+      EnterCell(1,42,'Credit EXP.OP Code',FALSE,FALSE,'@');
+      EnterCell(1,43,'Debit PROVISIONS Code',FALSE,FALSE,'@');
+      EnterCell(1,44,'Credit PROVISIONS Code',FALSE,FALSE,'@');
+      EnterCell(1,45,'Debit PROV.MOVEMENTS Code',FALSE,FALSE,'@');
+      EnterCell(1,46,'Credit PROV.MOVEMENTS Code',FALSE,FALSE,'@');
+      EnterCell(1,47,'Debit REVAL.TYPE Code',FALSE,FALSE,'@');
+      EnterCell(1,48,'Credit REVAL.TYPE Code',FALSE,FALSE,'@');
+      EnterCell(1,49,'Debit TAX.JUR Code',FALSE,FALSE,'@');
+      EnterCell(1,50,'Credit TAX.JUR Code',FALSE,FALSE,'@');
+      EnterCell(1,51,'Debit TAX.OTHER Code',FALSE,FALSE,'@');
+      EnterCell(1,52,'Credit TAX.OTHER Code',FALSE,FALSE,'@');
+
+      EnterCell(1,53,'Debit FA.OPERTYPE Code',FALSE,FALSE,'@');
+      EnterCell(1,54,'Credit FA.OPERTYPE Code',FALSE,FALSE,'@');
+      EnterCell(1,55,'Debit FA Code',FALSE,FALSE,'@');
+      EnterCell(1,56,'Credit FA Code',FALSE,FALSE,'@');
+      EnterCell(1,57,'Debit DF.EXPENSE Code',FALSE,FALSE,'@');
+      EnterCell(1,58,'Credit DF.EXPENSE Code',FALSE,FALSE,'@');
+    END;
+
+    BEGIN
+    {
+      NC AIG Создан отчет
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,1603 @@
+OBJECT Codeunit 17200 Tax Register Term Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ErrorText1@1000 : TextConst 'ENU="\\Following value has been calculated in the report\Line No.=%1, Column No.=%2.";RUS="\\В отчете произведено вычисление следующего значения:\номер строки = %1, номер столбца = %2"';
+      ErrorText2@1001 : TextConst 'ENU="\\Error in calculation of value in\No.=%3, Line No.=%4.";RUS="\\Произошла ошибка при вычислении значения:\Номер = %3, Номер строки = %4"';
+      WinTestText@1003 : TextConst 'ENU=Check cycle reference in Terms\;RUS=Проверка циклических ссылок в терминах\';
+      ReportTest1@1004 : TextConst 'ENU=Check completed. Cycle reference not found.;RUS=Проверка завершена. Циклические ссылки не обнаружены';
+      ReportTest2@1005 : TextConst 'ENU=Check completed. Cycle reference has been found for %1 items.;RUS=Проверка завершена. Элементов, для которых обнаружено наличие циклических ссылок: %1';
+      ErrorConst@1008 : TextConst 'ENU=Section %1 Term %2\Wrong constant %3.;RUS=Раздел %1, термин %2\Недопустимая константа %3';
+      ErrorType@1010 : TextConst 'ENU="Section %1 Term %2\G/L Account must be set with Type = %3.";RUS="Раздел %1, термин %2\Для счета ГК требуется указать тип = %3"';
+      ErrorInvolve@1011 : TextConst 'ENU=Navision cannot calculate the formula due to cycle reference.;RUS=Системе Navision не удается вычислить формулу из-за наличия циклической ссылки.';
+      ErrorValue@1014 : TextConst 'ENU=Wrong value or line number does not exist.;RUS=Указано неверное значение или номер несуществующей строки.';
+      ErrorDateFilter@1015 : TextConst 'ENU="Wrong value in Date Filter = %1.";RUS="Недопустимое значение фильтра по дате = %1."';
+      GenTemplateProfile@1016 : Record 17237;
+      GenTermProfile@1017 : Record 17238;
+      Field@1018 : Record 2000000041;
+      TaxRegValueBuffer@1019 : TEMPORARY Record 223;
+      TempTaxRegCalcBuf@1020 : TEMPORARY Record 17206;
+      LinkTableRecordRef@1021 : RecordRef;
+      Window@1210002 : Dialog;
+      RecurcLevel@1023 : Integer;
+      CreateCalcBuf@1024 : Boolean;
+      DecimalsSymbols@1025 : Text[2];
+      GlobalSectionCode@1026 : Code[10];
+      GlobalTemplateCode@1027 : Code[10];
+      GlobalTemplateLineNo@1028 : Integer;
+      GlobalDateFilter@1029 : Text;
+      Text17200@1470000 : TextConst '@@@={Locked};ENU="IF TERM(%1) < 0 THEN ";RUS="IF TERM(%1) < 0 THEN "';
+      Text17201@1470001 : TextConst '@@@={Locked};ENU=" ELSEIF TERM(%1) = 0 THEN ";RUS=" ELSEIF TERM(%1) = 0 THEN "';
+      Text17202@1470002 : TextConst '@@@={Locked};ENU=" ELSEIF TERM(%1) > 0 THEN ";RUS=" ELSEIF TERM(%1) > 0 THEN "';
+      Text17203@1470003 : TextConst 'ENU=Equal,Account,Term,CorrAcc,Norm,5,6,7,8,9,10;RUS=Равно,Счет,Термин,КоррСч,Норма,5,6,7,8,9,10';
+      Text17204@1470004 : TextConst 'ENU=DB-CR,DB,CR,4,5,6,7,8,9,10;RUS=DB-CR,DB,CR,4,5,6,7,8,9,10';
+      InvalidSymbol@1210001 : TextConst '@@@={Locked};ENU=@#^&*/-+(){}[]<>|\!:;RUS=@#^&*/-+(){}[]<>|\!:';
+      ErrorMassage@1210000 : TextConst 'ENU=The line should not contains following special symbols %1.;RUS=Строка не может содержать следующие специальные символы: %1.';
+
+    LOCAL PROCEDURE CalcTermValue@1(VAR TermNameRecordRef@1000 : RecordRef;VAR TempDimBuf@1001 : TEMPORARY Record 360) Output : Decimal;
+    VAR
+      GLEntry@1007 : Record 17;
+      GLCorrespondEntry@1008 : Record 12401;
+      TempGLEntryGlobalDimFilter@1009 : TEMPORARY Record 17;
+      TaxRegNormGroup@1010 : Record 17221;
+      TaxRegNormDetail@1011 : Record 17222;
+      TermLineRecordRef@1210004 : RecordRef;
+      RecurciveTermRecordRef@1210003 : RecordRef;
+      TermFieldRef@1210002 : FieldRef;
+      TermLineFieldRef@1210001 : FieldRef;
+      RecurciveTermFieldRef@1210000 : FieldRef;
+      Operand@1012 : Decimal;
+      ExitCycle@1013 : Boolean;
+      NoGlobalDimFilterNeed@1014 : Boolean;
+      FindUniqueRecursiveTerm@1015 : Boolean;
+      SectionCode@1016 : Code[20];
+      TermCode@1017 : Code[20];
+      ExpressionType@1018 : 'Plus/Minus,Multiply/Divide,Compare';
+      TermLineAccountType@1019 : 'Constant,GL Acc,Termin,Net Change,Norm';
+      TermLineAmountType@1020 : ' ,Net Change,Debit,Credit';
+      ValidateSign@1021 : ' ,Skip Negative,Skip Positive,Always Positve,Always Negative';
+      LineOperation@1022 : '+,-,*,/,Less 0,Equ 0,Grate 0';
+      ResultOfZeroDivided@1023 : 'Zero,One';
+      RoundingPrecision@1024 : Decimal;
+    BEGIN
+      GenTermProfile.TESTFIELD("Expression Type (Hdr)");
+      FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Expression Type (Hdr)");
+
+      ExpressionType := TermFieldRef.VALUE;
+      IF ExpressionType = ExpressionType::"Multiply/Divide" THEN
+        Output := 1
+      ELSE
+        Output := 0;
+
+      ExitCycle := FALSE;
+
+      TermLineRecordRef.OPEN(GenTemplateProfile."Term Line Table No.");
+
+      GenTermProfile.TESTFIELD("Section Code (Hdr)");
+      FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Section Code (Hdr)");
+      SectionCode := TermFieldRef.VALUE;
+
+      GenTermProfile.TESTFIELD("Section Code (Line)");
+      FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Section Code (Line)");
+      TermLineFieldRef.SETRANGE(SectionCode);
+
+      GenTermProfile.TESTFIELD("Term Code (Hdr)");
+      FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Term Code (Hdr)");
+      TermCode := TermFieldRef.VALUE;
+
+      GenTermProfile.TESTFIELD("Term Code (Line)");
+      FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Term Code (Line)");
+      TermLineFieldRef.SETRANGE(TermCode);
+
+      GenTermProfile.TESTFIELD("Account Type (Line)");
+      GenTermProfile.TESTFIELD("Account No. (Line)");
+      GenTermProfile.TESTFIELD("Amount Type (Line)");
+      GenTermProfile.TESTFIELD("Date Filter (Hdr)");
+
+      IF TermLineRecordRef.FINDSET THEN
+        REPEAT
+          FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Account Type (Line)");
+          TermLineAccountType := TermLineFieldRef.VALUE;
+
+          IF TermLineAccountType IN [
+                                     TermLineAccountType::"GL Acc",
+                                     TermLineAccountType::"Net Change"]
+          THEN
+            NoGlobalDimFilterNeed := SetDimFilters2GLEntry(TempGLEntryGlobalDimFilter,TempDimBuf);
+
+          FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Account No. (Line)");
+
+          CASE TermLineAccountType OF
+            TermLineAccountType::Constant:
+              IF NOT EvaluateDecimal(Operand,FORMAT(TermLineFieldRef.VALUE)) THEN BEGIN
+                Operand := 0;
+                MESSAGE(ErrorConst,SectionCode,TermCode,TermLineFieldRef.VALUE);
+              END;
+            TermLineAccountType::"Net Change":
+              WITH GLCorrespondEntry DO BEGIN
+                IF TempGLEntryGlobalDimFilter.GETFILTERS = '' THEN BEGIN
+                  SETCURRENTKEY("Debit Account No.","Credit Account No.","Posting Date");
+                  SETFILTER("Debit Account No.",FORMAT(TermLineFieldRef.VALUE));
+                END ELSE BEGIN
+                  SETCURRENTKEY(
+                    "Debit Account No.","Credit Account No.",
+                    "Debit Global Dimension 1 Code","Debit Global Dimension 2 Code",
+                    "Business Unit Code","Posting Date");
+                  SETFILTER("Debit Account No.",FORMAT(TermLineFieldRef.VALUE));
+                  TempGLEntryGlobalDimFilter.COPYFILTER("Global Dimension 1 Code","Debit Global Dimension 1 Code");
+                  TempGLEntryGlobalDimFilter.COPYFILTER("Global Dimension 2 Code","Debit Global Dimension 2 Code");
+                END;
+
+                GenTermProfile.TESTFIELD("Bal. Account No. (Line)");
+                FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Bal. Account No. (Line)");
+                SETFILTER("Credit Account No.",FORMAT(TermLineFieldRef.VALUE));
+
+                FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Date Filter (Hdr)");
+                IF Field.Class = Field.Class::FlowFilter THEN
+                  SETFILTER("Posting Date",TermFieldRef.GETFILTER)
+                ELSE
+                  SETFILTER("Posting Date",FORMAT(TermFieldRef.VALUE));
+
+                IF NoGlobalDimFilterNeed THEN BEGIN
+                  Operand := 0;
+                  IF FINDSET THEN
+                    REPEAT
+                      IF ValidateGLEntryDimFilters("Debit Dimension Set ID",TempDimBuf) THEN
+                        Operand += Amount;
+                    UNTIL NEXT(1) = 0;
+                END ELSE BEGIN
+                  CALCSUMS(Amount);
+                  Operand := Amount;
+                END;
+              END;
+            TermLineAccountType::"GL Acc":
+              WITH GLEntry DO BEGIN
+                IF TempGLEntryGlobalDimFilter.GETFILTERS = '' THEN BEGIN
+                  SETCURRENTKEY("G/L Account No.","Posting Date");
+                  SETFILTER("G/L Account No.",FORMAT(TermLineFieldRef.VALUE));
+                END ELSE BEGIN
+                  SETCURRENTKEY(
+                    "G/L Account No.","Business Unit Code",
+                    "Global Dimension 1 Code","Global Dimension 2 Code");
+                  SETFILTER("G/L Account No.",FORMAT(TermLineFieldRef.VALUE));
+                  TempGLEntryGlobalDimFilter.COPYFILTER("Global Dimension 1 Code","Global Dimension 1 Code");
+                  TempGLEntryGlobalDimFilter.COPYFILTER("Global Dimension 2 Code","Global Dimension 2 Code");
+                END;
+
+                FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Date Filter (Hdr)");
+                IF Field.Class = Field.Class::FlowFilter THEN
+                  SETFILTER("Posting Date",TermFieldRef.GETFILTER)
+                ELSE
+                  SETFILTER("Posting Date",FORMAT(TermFieldRef.VALUE));
+
+                FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Amount Type (Line)");
+                TermLineAmountType := TermLineFieldRef.VALUE;
+                IF NoGlobalDimFilterNeed THEN BEGIN
+                  CASE TermLineAmountType OF
+                    TermLineAmountType::"Net Change":
+                      SETFILTER(Amount,'<>0');
+                    TermLineAmountType::Debit:
+                      SETFILTER("Debit Amount",'<>0');
+                    TermLineAmountType::Credit:
+                      SETFILTER("Credit Amount",'<>0');
+                    ELSE
+                      ERROR(ErrorType,SectionCode,TermCode,TermLineFieldRef.VALUE);
+                  END;
+                  Operand := 0;
+                  IF FINDSET THEN
+                    REPEAT
+                      IF ValidateGLEntryDimFilters("Dimension Set ID",TempDimBuf) THEN
+                        CASE TermLineAmountType OF
+                          TermLineAmountType::"Net Change":
+                            Operand += Amount;
+                          TermLineAmountType::Debit:
+                            Operand += "Debit Amount";
+                          TermLineAmountType::Credit:
+                            Operand += "Credit Amount";
+                        END;
+                    UNTIL NEXT(1) = 0;
+                END ELSE
+                  CASE TermLineAmountType OF
+                    TermLineAmountType::"Net Change":
+                      BEGIN
+                        CALCSUMS(Amount);
+                        Operand := Amount;
+                      END;
+                    TermLineAmountType::Debit:
+                      BEGIN
+                        CALCSUMS("Debit Amount");
+                        Operand := "Debit Amount";
+                      END;
+                    TermLineAmountType::Credit:
+                      BEGIN
+                        CALCSUMS("Credit Amount");
+                        Operand := "Credit Amount";
+                      END;
+                    ELSE
+                      ERROR(ErrorType,SectionCode,TermCode,TermLineFieldRef.VALUE);
+                  END;
+              END;
+            TermLineAccountType::Norm:
+              BEGIN
+                GenTermProfile.TESTFIELD("Norm Jurisd. Code (Line)");
+                TaxRegNormDetail.SETRANGE("Norm Type",TaxRegNormDetail."Norm Type"::Amount);
+                TaxRegNormGroup.Code := FORMAT(TermLineFieldRef.VALUE);
+                TaxRegNormDetail.SETRANGE("Norm Group Code",TaxRegNormGroup.Code);
+                FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Norm Jurisd. Code (Line)");
+                TaxRegNormGroup."Norm Jurisdiction Code" := FORMAT(TermLineFieldRef.VALUE);
+                TaxRegNormDetail.SETRANGE("Norm Jurisdiction Code",TaxRegNormGroup."Norm Jurisdiction Code");
+                FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Date Filter (Hdr)");
+                IF Field.Class = Field.Class::FlowFilter THEN
+                  TaxRegNormDetail.SETFILTER("Effective Date",TermFieldRef.GETFILTER)
+                ELSE
+                  TaxRegNormDetail.SETFILTER("Effective Date",FORMAT(TermFieldRef.VALUE));
+                TaxRegNormGroup.FIND;
+                IF TaxRegNormGroup."Search Detail" = TaxRegNormGroup."Search Detail"::"To Date" THEN BEGIN
+                  TaxRegNormDetail.SETFILTER("Effective Date",'..%1',TaxRegNormDetail.GETRANGEMAX("Effective Date"));
+                  IF TaxRegNormDetail.FINDLAST THEN
+                    Operand := TaxRegNormDetail.Norm;
+                END ELSE BEGIN
+                  TaxRegNormDetail.SETRANGE("Effective Date",TaxRegNormDetail.GETRANGEMAX("Effective Date"));
+                  TaxRegNormDetail.FINDLAST;
+                  Operand := TaxRegNormDetail.Norm;
+                END;
+              END;
+            TermLineAccountType::Termin:
+              BEGIN
+                RecurciveTermRecordRef.CLOSE;
+                RecurciveTermRecordRef.OPEN(TermNameRecordRef.NUMBER);
+                RecurciveTermFieldRef := RecurciveTermRecordRef.FIELD(GenTermProfile."Section Code (Hdr)");
+                RecurciveTermFieldRef.SETRANGE(SectionCode);
+                RecurciveTermFieldRef := RecurciveTermRecordRef.FIELD(GenTermProfile."Term Code (Hdr)");
+                RecurciveTermFieldRef.SETRANGE(TermLineFieldRef.VALUE);
+                FindUniqueRecursiveTerm := RecurciveTermRecordRef.FINDFIRST;
+                IF FindUniqueRecursiveTerm THEN
+                  FindUniqueRecursiveTerm := RecurciveTermRecordRef.NEXT(1) = 0;
+                IF FindUniqueRecursiveTerm THEN BEGIN
+                  RecurciveTermRecordRef.SETVIEW(TermNameRecordRef.GETVIEW(FALSE));
+                  Operand := CalcTermValue(RecurciveTermRecordRef,TempDimBuf);
+                END ELSE
+                  Operand := 0;
+              END;
+          END;
+          IF TermLineAccountType <> TermLineAccountType::Termin THEN
+            IF GenTermProfile."Process Sign (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Process Sign (Line)");
+              ValidateSign := TermLineFieldRef.VALUE;
+              CASE ValidateSign OF
+                ValidateSign::"Skip Negative":
+                  IF Operand < 0 THEN
+                    Operand := 0;
+                ValidateSign::"Skip Positive":
+                  IF Operand > 0 THEN
+                    Operand := 0;
+                ValidateSign::"Always Negative":
+                  Operand := -ABS(Operand);
+                ValidateSign::"Always Positve":
+                  Operand := ABS(Operand);
+              END;
+            END;
+
+          IF CreateCalcBuf THEN BEGIN
+            IF GenTermProfile."Expression Type (Hdr)" <> 0 THEN BEGIN
+              FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Expression Type (Hdr)");
+              TempTaxRegCalcBuf."Term Type" := TermFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Operation (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Operation (Line)");
+              TempTaxRegCalcBuf.Operation := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Account Type (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Account Type (Line)");
+              TempTaxRegCalcBuf."Account Type" := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Account No. (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Account No. (Line)");
+              TempTaxRegCalcBuf."Account No." := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Amount Type (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Amount Type (Line)");
+              TempTaxRegCalcBuf."Amount Type" := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Bal. Account No. (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Bal. Account No. (Line)");
+              TempTaxRegCalcBuf."Bal. Account No." := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Process Sign (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Process Sign (Line)");
+              TempTaxRegCalcBuf."Process Sign" := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Line No. (Line)" <> 0 THEN BEGIN
+              FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Line No. (Line)");
+              TempTaxRegCalcBuf."Term Line No." := TermLineFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Description (Hdr)" <> 0 THEN BEGIN
+              FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Description (Hdr)");
+              TempTaxRegCalcBuf.Description := TermFieldRef.VALUE;
+            END;
+            IF GenTermProfile."Term Code (Hdr)" <> 0 THEN BEGIN
+              FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Term Code (Hdr)");
+              TempTaxRegCalcBuf.Expression := TermFieldRef.VALUE;
+            END;
+            TempTaxRegCalcBuf."Line Code" := '';
+            TempTaxRegCalcBuf."Section Code" := GlobalSectionCode;
+            TempTaxRegCalcBuf."Tax Register No." := GlobalTemplateCode;
+            TempTaxRegCalcBuf."Template Line No." := GlobalTemplateLineNo;
+            TempTaxRegCalcBuf."Date Filter" := COPYSTR(GlobalDateFilter,1,MAXSTRLEN(TempTaxRegCalcBuf."Date Filter"));
+            TempTaxRegCalcBuf."Expression Type" := TempTaxRegCalcBuf."Expression Type"::Term;
+            TempTaxRegCalcBuf.Amount := Operand;
+            TempTaxRegCalcBuf."Entry No." += 1;
+            TempTaxRegCalcBuf.INSERT;
+          END;
+
+          GenTermProfile.TESTFIELD("Operation (Line)");
+          FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Operation (Line)");
+          LineOperation := TermLineFieldRef.VALUE;
+          CASE LineOperation OF
+            LineOperation::"+":
+              Output := Output + Operand;
+            LineOperation::"-":
+              Output := Output - Operand;
+            LineOperation::"*":
+              Output := Output * Operand;
+            LineOperation::"/":
+              IF Operand <> 0 THEN
+                Output := Output / Operand
+              ELSE
+                IF GenTermProfile."Process Division by Zero(Line)" <> 0 THEN BEGIN
+                  FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Process Division by Zero(Line)");
+                  ResultOfZeroDivided := TermLineFieldRef.VALUE;
+                  CASE ResultOfZeroDivided OF
+                    ResultOfZeroDivided::Zero:
+                      Output := 0;
+                    ResultOfZeroDivided::One:
+                      Output := 1;
+                    ELSE
+                      Output := 0;
+                  END;
+                END;
+            LineOperation::"Less 0",
+            LineOperation::"Equ 0",
+            LineOperation::"Grate 0":
+              BEGIN
+                GenTermProfile.TESTFIELD("Line No. (Line)");
+                TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Line No. (Line)");
+                IF Operand < 0 THEN
+                  TermLineFieldRef.SETRANGE(10000)
+                ELSE
+                  IF Operand = 0 THEN
+                    TermLineFieldRef.SETRANGE(20000)
+                  ELSE
+                    TermLineFieldRef.SETRANGE(30000);
+                FindUniqueRecursiveTerm := TermLineRecordRef.FINDFIRST;
+                IF FindUniqueRecursiveTerm THEN
+                  FindUniqueRecursiveTerm := TermLineRecordRef.NEXT(1) = 0;
+                IF FindUniqueRecursiveTerm THEN BEGIN
+                  RecurciveTermRecordRef.OPEN(TermNameRecordRef.NUMBER);
+                  RecurciveTermFieldRef := RecurciveTermRecordRef.FIELD(GenTermProfile."Section Code (Hdr)");
+                  RecurciveTermFieldRef.SETRANGE(SectionCode);
+                  RecurciveTermFieldRef := RecurciveTermRecordRef.FIELD(GenTermProfile."Term Code (Hdr)");
+                  GenTermProfile.TESTFIELD("Bal. Account No. (Line)");
+                  FieldRefValue(TermLineFieldRef,TermLineRecordRef,GenTermProfile."Bal. Account No. (Line)");
+                  RecurciveTermFieldRef.SETRANGE(TermLineFieldRef.VALUE);
+                  FindUniqueRecursiveTerm := RecurciveTermRecordRef.FINDFIRST;
+                  IF FindUniqueRecursiveTerm THEN
+                    FindUniqueRecursiveTerm := RecurciveTermRecordRef.NEXT(1) = 0;
+                END;
+                IF FindUniqueRecursiveTerm THEN BEGIN
+                  RecurciveTermRecordRef.SETVIEW(TermNameRecordRef.GETVIEW(FALSE));
+                  Output := CalcTermValue(RecurciveTermRecordRef,TempDimBuf);
+                END ELSE
+                  Operand := 0;
+
+                ExitCycle := TRUE;
+              END;
+          END;
+          IF NOT ExitCycle THEN
+            ExitCycle := TermLineRecordRef.NEXT(1) = 0;
+        UNTIL ExitCycle;
+
+      IF GenTermProfile."Process Sign (Hdr)" <> 0 THEN BEGIN
+        FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Process Sign (Hdr)");
+        ValidateSign := TermFieldRef.VALUE;
+        CASE ValidateSign OF
+          ValidateSign::"Skip Negative":
+            IF Output < 0 THEN
+              Output := 0;
+          ValidateSign::"Skip Positive":
+            IF Output > 0 THEN
+              Output := 0;
+          ValidateSign::"Always Negative":
+            Output := -ABS(Output);
+          ValidateSign::"Always Positve":
+            Output := ABS(Output);
+        END;
+      END;
+
+      IF GenTermProfile."Rounding Precision (Hdr)" <> 0 THEN BEGIN
+        FieldRefValue(TermFieldRef,TermNameRecordRef,GenTermProfile."Rounding Precision (Hdr)");
+        RoundingPrecision := TermFieldRef.VALUE;
+        IF RoundingPrecision <> 0 THEN
+          Output := ROUND(Output,RoundingPrecision);
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcExpressionValue@2(VAR TemplateRecordRef@1000 : RecordRef) : Decimal;
+    VAR
+      TempDimBuf@1005 : TEMPORARY Record 360;
+      TaxRegNormGroup@1006 : Record 17221;
+      TaxRegNormDetail@1007 : Record 17222;
+      TermNameRecordRef@1210003 : RecordRef;
+      TermNameFieldRef@1210002 : FieldRef;
+      TemplateFieldRef@1210001 : FieldRef;
+      LinkTableFieldRef@1210000 : FieldRef;
+      TemplateCode@1008 : Code[10];
+      TemplateLine@1009 : Integer;
+      Expression@1010 : Text[250];
+      ExpressionType@1011 : 'Term,Link,Total,Header,SumField,Norm';
+      FindUniqueTerm@1012 : Boolean;
+      RoundingPrecision@1013 : Decimal;
+    BEGIN
+      GenTemplateProfile.TESTFIELD(Code);
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Code);
+      TemplateCode := TemplateFieldRef.VALUE;
+      GenTemplateProfile.TESTFIELD("Line No.");
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Line No.");
+      TemplateLine := TemplateFieldRef.VALUE;
+      IF NOT TaxRegValueBuffer.GET(TemplateCode,TemplateLine) THEN BEGIN
+        TaxRegValueBuffer.Quantity := 0;
+        GenTemplateProfile.TESTFIELD("Expression Type");
+        FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Expression Type");
+        ExpressionType := TemplateFieldRef.VALUE;
+        GenTemplateProfile.TESTFIELD(Expression);
+        FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Expression);
+        Expression := TemplateFieldRef.VALUE;
+        IF Expression <> '' THEN BEGIN
+          CASE ExpressionType OF
+            ExpressionType::Norm:
+              BEGIN
+                TaxRegNormDetail.SETRANGE("Norm Type",TaxRegNormDetail."Norm Type"::Amount);
+                TaxRegNormDetail.SETRANGE("Norm Group Code",Expression);
+                GenTemplateProfile.TESTFIELD("Norm Jurisd. Code (Line)");
+                FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Norm Jurisd. Code (Line)");
+                TaxRegNormGroup."Norm Jurisdiction Code" := FORMAT(TemplateFieldRef.VALUE);
+                TaxRegNormDetail.SETRANGE("Norm Jurisdiction Code",TaxRegNormGroup."Norm Jurisdiction Code");
+                GenTemplateProfile.TESTFIELD("Date Filter");
+                FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+                IF Field.Class = Field.Class::FlowFilter THEN
+                  TaxRegNormDetail.SETFILTER("Effective Date",TemplateFieldRef.GETFILTER)
+                ELSE
+                  TaxRegNormDetail.SETFILTER("Effective Date",FORMAT(TemplateFieldRef.VALUE));
+                TaxRegNormGroup.Code := COPYSTR(Expression,1,MAXSTRLEN(TaxRegNormGroup.Code));
+                TaxRegNormGroup.FIND;
+                IF TaxRegNormGroup."Search Detail" = TaxRegNormGroup."Search Detail"::"To Date" THEN BEGIN
+                  TaxRegNormDetail.SETFILTER("Effective Date",'..%1',TaxRegNormDetail.GETRANGEMAX("Effective Date"));
+                  IF TaxRegNormDetail.FINDLAST THEN
+                    TaxRegValueBuffer.Quantity := TaxRegNormDetail.Norm;
+                END ELSE BEGIN
+                  TaxRegNormDetail.SETRANGE("Effective Date",TaxRegNormDetail.GETRANGEMAX("Effective Date"));
+                  IF TaxRegNormDetail.FINDLAST THEN
+                    TaxRegValueBuffer.Quantity := TaxRegNormDetail.Norm;
+                END;
+              END;
+            ExpressionType::Term:
+              BEGIN
+                CopyTemplateDimFilters(TempDimBuf,FORMAT(TemplateFieldRef.VALUE),TemplateCode,TemplateLine);
+                TermNameRecordRef.OPEN(GenTemplateProfile."Term Header Table No.");
+                GenTemplateProfile.TESTFIELD("Section Code");
+                FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Section Code");
+                GenTermProfile.TESTFIELD("Section Code (Hdr)");
+                TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Section Code (Hdr)");
+                TermNameFieldRef.SETRANGE(FORMAT(TemplateFieldRef.VALUE));
+                GenTermProfile.TESTFIELD("Term Code (Hdr)");
+                TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Term Code (Hdr)");
+                TermNameFieldRef.SETRANGE(Expression);
+                FindUniqueTerm := TermNameRecordRef.FINDFIRST;
+                IF FindUniqueTerm THEN
+                  FindUniqueTerm := TermNameRecordRef.NEXT(1) = 0;
+                IF FindUniqueTerm THEN BEGIN
+                  GenTermProfile.TESTFIELD("Date Filter (Hdr)");
+                  TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Date Filter (Hdr)");
+                  GenTemplateProfile.TESTFIELD("Date Filter");
+                  FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+                  IF Field.Class = Field.Class::FlowFilter THEN
+                    TermNameFieldRef.SETFILTER(TemplateFieldRef.GETFILTER)
+                  ELSE
+                    TermNameFieldRef.SETFILTER(FORMAT(TemplateFieldRef.VALUE));
+                  TaxRegValueBuffer.Quantity := CalcTermValue(TermNameRecordRef,TempDimBuf);
+                END;
+              END;
+            ExpressionType::Link:
+              IF GenTemplateProfile."Value (Link)" <> 0 THEN BEGIN
+                GenTemplateProfile.TESTFIELD(Code);
+                FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Link Code");
+                LinkTableFieldRef := LinkTableRecordRef.FIELD(GenTemplateProfile."Header Code (Link)");
+                LinkTableFieldRef.SETRANGE(TemplateFieldRef.VALUE);
+                LinkTableFieldRef := LinkTableRecordRef.FIELD(GenTemplateProfile."Line Code (Link)");
+                LinkTableFieldRef.SETRANGE(Expression);
+                IF LinkTableRecordRef.FINDFIRST THEN BEGIN
+                  FieldRefValue(LinkTableFieldRef,LinkTableRecordRef,GenTemplateProfile."Value (Link)");
+                  TaxRegValueBuffer.Quantity := LinkTableFieldRef.VALUE;
+                END;
+              END;
+            ExpressionType::Total:
+              TaxRegValueBuffer.Quantity := CalcTotalValue(Expression,TemplateCode,TemplateLine);
+          END;
+          IF GenTemplateProfile."Rounding Precision" <> 0 THEN BEGIN
+            FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Rounding Precision");
+            RoundingPrecision := TemplateFieldRef.VALUE;
+            IF RoundingPrecision <> 0 THEN
+              TaxRegValueBuffer.Quantity := ROUND(TaxRegValueBuffer.Quantity,RoundingPrecision);
+          END;
+        END;
+        TaxRegValueBuffer."Order No." := TemplateCode;
+        TaxRegValueBuffer."Order Line No." := TemplateLine;
+        TaxRegValueBuffer.INSERT;
+
+        IF CreateCalcBuf AND (ExpressionType = ExpressionType::Total) THEN BEGIN
+          TempTaxRegCalcBuf."Term Type" := TempTaxRegCalcBuf."Term Type"::None;
+          TempTaxRegCalcBuf.Operation := TempTaxRegCalcBuf.Operation::None;
+          TempTaxRegCalcBuf."Account Type" := TempTaxRegCalcBuf."Account Type"::None;
+          TempTaxRegCalcBuf."Account No." := '';
+          TempTaxRegCalcBuf."Amount Type" := TempTaxRegCalcBuf."Amount Type"::" ";
+          TempTaxRegCalcBuf."Bal. Account No." := '';
+          TempTaxRegCalcBuf."Process Sign" := TempTaxRegCalcBuf."Process Sign"::None;
+          TempTaxRegCalcBuf."Tax Register No." := TemplateCode;
+          TempTaxRegCalcBuf."Template Line No." := TemplateLine;
+          TempTaxRegCalcBuf."Term Line No." := 0;
+          TempTaxRegCalcBuf."Date Filter" := COPYSTR(GlobalDateFilter,1,MAXSTRLEN(TempTaxRegCalcBuf."Date Filter"));
+          IF GenTemplateProfile.Description <> 0 THEN BEGIN
+            FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Description);
+            TempTaxRegCalcBuf.Description := TemplateFieldRef.VALUE;
+          END;
+          IF GenTemplateProfile."Line Code (Line)" <> 0 THEN BEGIN
+            FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Line Code (Line)");
+            TempTaxRegCalcBuf."Line Code" := TemplateFieldRef.VALUE;
+          END;
+          TempTaxRegCalcBuf."Section Code" := GlobalSectionCode;
+          TempTaxRegCalcBuf."Expression Type" := ExpressionType;
+          TempTaxRegCalcBuf.Expression := Expression;
+          TempTaxRegCalcBuf.Amount := TaxRegValueBuffer.Quantity;
+          TempTaxRegCalcBuf."Entry No." += 1;
+          TempTaxRegCalcBuf.INSERT;
+        END;
+      END;
+      EXIT(TaxRegValueBuffer.Quantity);
+    END;
+
+    LOCAL PROCEDURE CalcTotalValue@3(Expression@1000 : Text[150];TemplateCode@1001 : Code[10];TemplateLineNo@1002 : Integer) Output : Decimal;
+    VAR
+      TemplateRecordRef@1003 : RecordRef;
+      TemplateFieldRef@1004 : FieldRef;
+      Brackets@1005 : Integer;
+      Operator@1006 : Char;
+      LeftOperand@1007 : Text[80];
+      RightOperand@1008 : Text[80];
+      LeftCalcValue@1009 : Decimal;
+      RightCalcValue@1010 : Decimal;
+      idx@1011 : Integer;
+      HasExpression@1012 : Boolean;
+      Operators@1013 : Text[8];
+      OperatorNo@1014 : Integer;
+      FigureBrackets@1015 : Integer;
+      AngleBrackets@1016 : Integer;
+    BEGIN
+      Output := 0;
+
+      RecurcLevel := RecurcLevel + 1;
+
+      IF RecurcLevel > 25 THEN
+        ShowError(ErrorInvolve,TemplateCode,TemplateLineNo);
+
+      Expression := DELCHR(Expression,'<>',' ');
+      IF STRLEN(Expression) > 0 THEN BEGIN
+        Brackets := 0;
+        HasExpression := FALSE;
+        Operators := '+-*/^?';
+        OperatorNo := 1;
+        REPEAT
+          idx := STRLEN(Expression);
+          REPEAT
+            IF Expression[idx] = '(' THEN
+              Brackets := Brackets + 1
+            ELSE
+              IF Expression[idx] = ')' THEN
+                Brackets := Brackets - 1
+              ELSE
+                IF Expression[idx] = '{' THEN
+                  FigureBrackets := FigureBrackets + 1
+                ELSE
+                  IF Expression[idx] = '}' THEN
+                    FigureBrackets := FigureBrackets - 1
+                  ELSE
+                    IF Expression[idx] = '<' THEN
+                      AngleBrackets := AngleBrackets + 1
+                    ELSE
+                      IF Expression[idx] = '>' THEN
+                        AngleBrackets := AngleBrackets - 1;
+            IF (AngleBrackets = 0) AND
+               (FigureBrackets = 0) AND
+               (Brackets = 0) AND
+               (Expression[idx] = Operators[OperatorNo])
+            THEN
+              HasExpression := TRUE
+            ELSE
+              idx -= 1;
+          UNTIL HasExpression OR (idx <= 0);
+          IF NOT HasExpression THEN
+            OperatorNo := OperatorNo + 1;
+        UNTIL (OperatorNo > STRLEN(Operators)) OR HasExpression;
+        IF HasExpression THEN BEGIN
+          IF idx > 1 THEN
+            LeftOperand := COPYSTR(Expression,1,idx - 1)
+          ELSE
+            LeftOperand := '';
+          IF idx < STRLEN(Expression) THEN
+            RightOperand := COPYSTR(Expression,idx + 1)
+          ELSE
+            RightOperand := '';
+          Operator := Expression[idx];
+          LeftCalcValue := CalcTotalValue(LeftOperand,TemplateCode,TemplateLineNo);
+          RightCalcValue := CalcTotalValue(RightOperand,TemplateCode,TemplateLineNo);
+          CASE Operator OF
+            '^':
+              IF LeftCalcValue < RightCalcValue THEN
+                Output := RightCalcValue
+              ELSE
+                Output := LeftCalcValue;
+            '?':
+              IF LeftCalcValue > RightCalcValue THEN
+                Output := RightCalcValue
+              ELSE
+                Output := LeftCalcValue;
+            '*':
+              Output := LeftCalcValue * RightCalcValue;
+            '/':
+              IF RightCalcValue = 0 THEN
+                Output := 0
+              ELSE
+                Output := LeftCalcValue / RightCalcValue;
+            '+':
+              Output := LeftCalcValue + RightCalcValue;
+            '-':
+              Output := LeftCalcValue - RightCalcValue;
+          END;
+        END ELSE
+          IF ((Expression[1] = '(') AND (Expression[STRLEN(Expression)] = ')')) OR
+             ((Expression[1] = '<') AND (Expression[STRLEN(Expression)] = '>')) OR
+             ((Expression[1] = '{') AND (Expression[STRLEN(Expression)] = '}'))
+          THEN BEGIN
+            Output :=
+              CalcTotalValue(
+                COPYSTR(Expression,2,STRLEN(Expression) - 2),
+                TemplateCode,TemplateLineNo);
+            IF Expression[1] = '<' THEN
+              Output := ABS(Output)
+            ELSE
+              IF (Expression[1] = '{') AND (Output < 0) THEN
+                Output := 0;
+          END ELSE BEGIN
+            TemplateRecordRef.OPEN(GenTemplateProfile."Template Line Table No.");
+            GenTemplateProfile.TESTFIELD("Line Code (Line)");
+            TemplateFieldRef := TemplateRecordRef.FIELD(GenTemplateProfile."Line Code (Line)");
+            IF STRLEN(Expression) > TemplateFieldRef.LENGTH THEN BEGIN
+              IF NOT EvaluateDecimal(Output,Expression) THEN
+                ShowError(ErrorValue,TemplateCode,TemplateLineNo);
+            END ELSE BEGIN
+              GenTemplateProfile.TESTFIELD("Section Code");
+              TemplateFieldRef := TemplateRecordRef.FIELD(GenTemplateProfile."Section Code");
+              TemplateFieldRef.SETRANGE(GlobalSectionCode);
+              GenTemplateProfile.TESTFIELD(Code);
+              TemplateFieldRef := TemplateRecordRef.FIELD(GenTemplateProfile.Code);
+              TemplateFieldRef.SETRANGE(TemplateCode);
+              GenTemplateProfile.TESTFIELD("Line Code (Line)");
+              TemplateFieldRef := TemplateRecordRef.FIELD(GenTemplateProfile."Line Code (Line)");
+              TemplateFieldRef.SETFILTER(Expression);
+              IF TemplateRecordRef.FINDFIRST THEN BEGIN
+                GenTemplateProfile.TESTFIELD("Date Filter");
+                TemplateFieldRef := TemplateRecordRef.FIELD(GenTemplateProfile."Date Filter");
+                TemplateFieldRef.SETFILTER(GlobalDateFilter);
+                Output := CalcExpressionValue(TemplateRecordRef)
+              END ELSE
+                IF NOT EvaluateDecimal(Output,Expression) THEN
+                  ShowError(ErrorValue,TemplateCode,TemplateLineNo);
+            END;
+
+            IF CreateCalcBuf THEN BEGIN
+              TempTaxRegCalcBuf."Term Type" := TempTaxRegCalcBuf."Term Type"::None;
+              TempTaxRegCalcBuf.Operation := TempTaxRegCalcBuf.Operation::None;
+              TempTaxRegCalcBuf."Account Type" := TempTaxRegCalcBuf."Account Type"::None;
+              TempTaxRegCalcBuf."Account No." := '';
+              TempTaxRegCalcBuf."Amount Type" := TempTaxRegCalcBuf."Amount Type"::" ";
+              TempTaxRegCalcBuf."Bal. Account No." := '';
+              TempTaxRegCalcBuf."Process Sign" := TempTaxRegCalcBuf."Process Sign"::None;
+              TempTaxRegCalcBuf."Template Line No." := TemplateLineNo;
+              TempTaxRegCalcBuf."Tax Register No." := TemplateCode;
+              TempTaxRegCalcBuf."Date Filter" := COPYSTR(GlobalDateFilter,1,MAXSTRLEN(TempTaxRegCalcBuf."Date Filter"));
+              TempTaxRegCalcBuf.Description := '';
+              TempTaxRegCalcBuf."Line Code" := '';
+              TempTaxRegCalcBuf."Section Code" := GlobalSectionCode;
+              TempTaxRegCalcBuf."Term Line No." := 0;
+              TempTaxRegCalcBuf."Expression Type" := TempTaxRegCalcBuf."Expression Type"::Total;
+              TempTaxRegCalcBuf.Expression := Expression;
+              TempTaxRegCalcBuf.Amount := Output;
+              TempTaxRegCalcBuf."Entry No." += 1;
+              TempTaxRegCalcBuf.INSERT;
+            END;
+          END;
+      END;
+      RecurcLevel := RecurcLevel - 1;
+      EXIT(Output);
+    END;
+
+    LOCAL PROCEDURE ShowError@5(MessageString@1000 : Text[100];LineNo@1001 : Code[10];ColumnNo@1002 : Integer);
+    BEGIN
+      ERROR(MessageString + ErrorText1 + ErrorText2,
+        GlobalTemplateCode,GlobalTemplateLineNo,
+        LineNo,ColumnNo);
+    END;
+
+    LOCAL PROCEDURE EvaluateDecimal@6(VAR Dec@1000 : Decimal;Text@1001 : Text[30]) Bool : Boolean;
+    BEGIN
+      Bool := EVALUATE(Dec,Text);
+      IF NOT Bool THEN BEGIN
+        IF DecimalsSymbols = '' THEN
+          DecimalsSymbols := PADSTR('',2,COPYSTR(FORMAT(0.0,0,'<Integer><Decimals,3>'),2,1));
+        Text := CONVERTSTR(Text,'.,',DecimalsSymbols);
+        Bool := EVALUATE(Dec,Text);
+      END;
+    END;
+
+    PROCEDURE CheckTaxRegTerm@8(ErrorCycleLink@1000 : Boolean;SectionCode@1001 : Code[10];TermNameTableNo@1002 : Integer;TermLineTableNo@1003 : Integer);
+    VAR
+      GenTermProfile@1004 : Record 17238;
+      TermNameRecordRef@1005 : RecordRef;
+      TermNameRecordRef1@1006 : RecordRef;
+      TermLineRecordRef@1007 : RecordRef;
+      TermNameFieldRef@1009 : FieldRef;
+      TermNameFieldRef1@1010 : FieldRef;
+      TermLineFieldRef@1011 : FieldRef;
+      AnythingChange@1013 : Boolean;
+      FoundTerm@1014 : Boolean;
+      Total@1016 : Integer;
+      Progressing@1017 : Integer;
+      AccountType@1018 : 'Constant,GL Acc,Termin,Net Change,Norm';
+      LineOperation@1019 : '+,-,*,/,Negative,Zero,Positive';
+    BEGIN
+      GenTermProfile.GET(TermNameTableNo);
+      TermNameRecordRef.OPEN(TermNameTableNo);
+      TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Section Code (Hdr)");
+      TermNameFieldRef.SETRANGE(SectionCode);
+      IF NOT TermNameRecordRef.FINDFIRST THEN BEGIN
+        TermNameRecordRef.CLOSE;
+        EXIT;
+      END;
+
+      Total := TermNameRecordRef.COUNT;
+      Progressing := 0;
+      Window.OPEN(WinTestText + '@1@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+      TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Check (Hdr)");
+      REPEAT
+        TermNameFieldRef.VALUE := TRUE;
+        TermNameRecordRef.MODIFY;
+      UNTIL TermNameRecordRef.NEXT(1) = 0;
+
+      TermLineRecordRef.OPEN(TermLineTableNo);
+      TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Section Code (Line)");
+      TermLineFieldRef.SETRANGE(SectionCode);
+
+      TermNameRecordRef1.OPEN(TermNameTableNo);
+
+      TermNameFieldRef.SETRANGE(TRUE);
+      REPEAT
+        AnythingChange := FALSE;
+        IF TermNameRecordRef.FINDSET THEN
+          REPEAT
+            FoundTerm := FALSE;
+            TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Term Code (Hdr)");
+            TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Term Code (Line)");
+            TermLineFieldRef.SETRANGE(FORMAT(TermNameFieldRef.VALUE));
+            IF TermLineRecordRef.FINDSET THEN
+              REPEAT
+                TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Account Type (Line)");
+                AccountType := TermLineFieldRef.VALUE;
+                IF AccountType = AccountType::Termin THEN BEGIN
+                  TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Section Code (Hdr)");
+                  TermNameFieldRef1.SETRANGE(SectionCode);
+                  TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Term Code (Hdr)");
+                  TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Account No. (Line)");
+                  TermNameFieldRef1.SETRANGE(FORMAT(TermLineFieldRef.VALUE));
+                  IF TermNameRecordRef1.FINDFIRST THEN BEGIN
+                    TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Check (Hdr)");
+                    EVALUATE(FoundTerm,FORMAT(TermNameFieldRef1.VALUE));
+                  END;
+                END;
+                IF NOT FoundTerm THEN BEGIN
+                  TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Operation (Line)");
+                  LineOperation := TermLineFieldRef.VALUE;
+                  IF LineOperation IN [LineOperation::Negative..LineOperation::Positive] THEN BEGIN
+                    TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Section Code (Hdr)");
+                    TermNameFieldRef1.SETRANGE(SectionCode);
+                    TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Term Code (Hdr)");
+                    TermLineFieldRef := TermLineRecordRef.FIELD(GenTermProfile."Bal. Account No. (Line)");
+                    TermNameFieldRef1.SETRANGE(FORMAT(TermLineFieldRef.VALUE));
+                    IF TermNameRecordRef1.FINDFIRST THEN BEGIN
+                      TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Check (Hdr)");
+                      EVALUATE(FoundTerm,FORMAT(TermNameFieldRef1.VALUE));
+                    END;
+                  END;
+                END;
+              UNTIL NOT FoundTerm OR (TermLineRecordRef.NEXT = 0);
+            IF NOT FoundTerm THEN BEGIN
+              AnythingChange := TRUE;
+              TermNameRecordRef1 := TermNameRecordRef.DUPLICATE;
+              TermNameFieldRef1 := TermNameRecordRef1.FIELD(GenTermProfile."Check (Hdr)");
+              TermNameFieldRef1.VALUE := FALSE;
+              TermNameRecordRef1.MODIFY;
+              Progressing := Progressing + 1;
+              Window.UPDATE(1,ROUND((Progressing * 10000) / Total,1,'='));
+            END;
+          UNTIL TermNameRecordRef.NEXT(1) = 0;
+      UNTIL NOT AnythingChange;
+
+      Window.CLOSE;
+
+      IF ErrorCycleLink THEN BEGIN
+        IF TermNameRecordRef.FINDFIRST THEN
+          ERROR(ReportTest2,TermNameRecordRef.COUNT);
+      END ELSE
+        IF NOT TermNameRecordRef.FINDFIRST THEN
+          MESSAGE(ReportTest1)
+        ELSE
+          MESSAGE(ReportTest2,TermNameRecordRef.COUNT);
+    END;
+
+    PROCEDURE CheckTaxRegLink@9(ErrorCycleLink@1000 : Boolean;SectionCode@1001 : Code[10];TableNo@1002 : Integer);
+    VAR
+      TemplateProfile@1003 : Record 17237;
+      TemplateHeaderRecordRef@1004 : RecordRef;
+      TemplateHeaderRecordRef1@1005 : RecordRef;
+      TemplateLineRecordRef@1006 : RecordRef;
+      TemplateHeaderFieldRef@1007 : FieldRef;
+      TemplateHeaderFieldRef1@1008 : FieldRef;
+      TemplateLineFieldRef@1009 : FieldRef;
+      AnythingChange@1010 : Boolean;
+      FoundLink@1011 : Boolean;
+      Total@1013 : Integer;
+      Progressing@1014 : Integer;
+      LinkLevel@1015 : Integer;
+      FoundLevel@1016 : Integer;
+      ExpressionType@1017 : 'Term,Link,Total,Header,SumField,Norm';
+    BEGIN
+      TemplateProfile.GET(TableNo);
+      TemplateHeaderRecordRef.OPEN(TemplateProfile."Template Header Table No.");
+      TemplateHeaderFieldRef := TemplateHeaderRecordRef.FIELD(TemplateProfile."Section Code (Hdr)");
+      TemplateHeaderFieldRef.SETRANGE(SectionCode);
+      IF NOT TemplateHeaderRecordRef.FINDFIRST THEN BEGIN
+        TemplateHeaderRecordRef.CLOSE;
+        EXIT;
+      END;
+
+      Total := TemplateHeaderRecordRef.COUNT;
+      Progressing := 0;
+      Window.OPEN(WinTestText + '@1@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+      TemplateHeaderFieldRef := TemplateHeaderRecordRef.FIELD(TemplateProfile."Check (Hdr)");
+      TemplateHeaderFieldRef1 := TemplateHeaderRecordRef.FIELD(TemplateProfile."Level (Hdr)");
+      REPEAT
+        TemplateHeaderFieldRef.VALUE := TRUE;
+        TemplateHeaderFieldRef1.VALUE := 0;
+        TemplateHeaderRecordRef.MODIFY;
+      UNTIL TemplateHeaderRecordRef.NEXT(1) = 0;
+
+      TemplateLineRecordRef.OPEN(TemplateProfile."Template Line Table No.");
+      TemplateLineFieldRef := TemplateLineRecordRef.FIELD(TemplateProfile."Section Code");
+      TemplateLineFieldRef.SETRANGE(SectionCode);
+
+      TemplateHeaderFieldRef.SETRANGE(TRUE);
+
+      IF TemplateProfile."Storing Method (Hdr)" <> 0 THEN BEGIN
+        TemplateHeaderFieldRef := TemplateHeaderRecordRef.FIELD(TemplateProfile."Storing Method (Hdr)");
+        TemplateHeaderFieldRef.SETRANGE(1);
+      END;
+
+      TemplateHeaderRecordRef1.OPEN(TemplateProfile."Template Header Table No.");
+      TemplateHeaderFieldRef1 := TemplateHeaderRecordRef1.FIELD(TemplateProfile."Section Code (Hdr)");
+      TemplateHeaderFieldRef1.SETRANGE(SectionCode);
+
+      LinkLevel := 0;
+      REPEAT
+        AnythingChange := FALSE;
+        LinkLevel += 1;
+        IF TemplateHeaderRecordRef.FINDSET THEN
+          REPEAT
+            FoundLink := FALSE;
+            FieldRefValue(TemplateHeaderFieldRef,TemplateHeaderRecordRef,TemplateProfile."Code (Hdr)");
+            TemplateLineFieldRef := TemplateLineRecordRef.FIELD(TemplateProfile.Code);
+            TemplateLineFieldRef.SETRANGE(FORMAT(TemplateHeaderFieldRef.VALUE));
+            TemplateLineFieldRef := TemplateLineRecordRef.FIELD(TemplateProfile."Expression Type");
+            TemplateLineFieldRef.SETRANGE(ExpressionType::Link);
+            IF TemplateLineRecordRef.FINDSET THEN
+              REPEAT
+                FieldRefValue(TemplateLineFieldRef,TemplateLineRecordRef,TemplateProfile."Link Code");
+                TemplateHeaderFieldRef1 := TemplateHeaderRecordRef1.FIELD(TemplateProfile."Code (Hdr)");
+                TemplateHeaderFieldRef1.SETRANGE(FORMAT(TemplateLineFieldRef.VALUE));
+                IF TemplateProfile."Storing Method (Hdr)" <> 0 THEN BEGIN
+                  TemplateHeaderFieldRef1 := TemplateHeaderRecordRef1.FIELD(TemplateProfile."Storing Method (Hdr)");
+                  TemplateHeaderFieldRef1.SETRANGE(1);
+                END;
+                IF TemplateHeaderRecordRef1.FINDFIRST THEN BEGIN
+                  FieldRefValue(TemplateHeaderFieldRef1,TemplateHeaderRecordRef1,TemplateProfile."Check (Hdr)");
+                  EVALUATE(FoundLink,FORMAT(TemplateHeaderFieldRef1.VALUE));
+                  IF NOT FoundLink THEN BEGIN
+                    FieldRefValue(TemplateHeaderFieldRef1,TemplateHeaderRecordRef1,TemplateProfile."Level (Hdr)");
+                    EVALUATE(FoundLevel,FORMAT(TemplateHeaderFieldRef1.VALUE));
+                    FoundLink := LinkLevel = FoundLevel;
+                  END;
+                END;
+              UNTIL FoundLink OR (TemplateLineRecordRef.NEXT(1) = 0);
+            IF NOT FoundLink THEN BEGIN
+              AnythingChange := TRUE;
+              TemplateHeaderRecordRef1 := TemplateHeaderRecordRef.DUPLICATE;
+              TemplateHeaderFieldRef1 := TemplateHeaderRecordRef1.FIELD(TemplateProfile."Check (Hdr)");
+              TemplateHeaderFieldRef1.VALUE := FALSE;
+              TemplateHeaderFieldRef1 := TemplateHeaderRecordRef1.FIELD(TemplateProfile."Level (Hdr)");
+              TemplateHeaderFieldRef1.VALUE := LinkLevel;
+              TemplateHeaderRecordRef1.MODIFY;
+              Progressing := Progressing + 1;
+              Window.UPDATE(1,ROUND((Progressing * 10000) / Total,1,'='));
+            END;
+          UNTIL TemplateHeaderRecordRef.NEXT(1) = 0;
+      UNTIL NOT AnythingChange;
+
+      Window.CLOSE;
+
+      IF ErrorCycleLink THEN BEGIN
+        IF TemplateHeaderRecordRef.FINDFIRST THEN
+          ERROR(ReportTest2,TemplateHeaderRecordRef.COUNT);
+      END ELSE
+        IF NOT TemplateHeaderRecordRef.FINDFIRST THEN
+          MESSAGE(ReportTest1)
+        ELSE
+          MESSAGE(ReportTest2,TemplateHeaderRecordRef.COUNT);
+    END;
+
+    PROCEDURE AccumulateTaxRegTemplate@7(VAR TemplateRecordRef@1000 : RecordRef;VAR EntryNoAmountBuffer@1001 : Record 386;VAR LinlkAccumulateRecordRef@1002 : RecordRef);
+    VAR
+      TemplateRecordRef1@1003 : RecordRef;
+      TemplateFieldRef@1004 : FieldRef;
+      TemplatePeriod@1007 : Text[250];
+      MinRangeDateFilter@1008 : Date;
+      MaxRangeDateFilter@1009 : Date;
+    BEGIN
+      GenTemplateProfile.GET(TemplateRecordRef.NUMBER);
+      GenTermProfile.GET(GenTemplateProfile."Term Header Table No.");
+
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Section Code");
+      GlobalSectionCode := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Code);
+      GlobalTemplateCode := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Line No.");
+      GlobalTemplateLineNo := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+      GlobalDateFilter := TemplateFieldRef.GETFILTER;
+
+      TemplateRecordRef1 := TemplateRecordRef.DUPLICATE;
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile."Section Code");
+      TemplateFieldRef.SETRANGE(GlobalSectionCode);
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile.Code);
+      TemplateFieldRef.SETRANGE(GlobalTemplateCode);
+
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+      EVALUATE(MinRangeDateFilter,FORMAT(TemplateFieldRef.GETRANGEMIN));
+      EVALUATE(MaxRangeDateFilter,FORMAT(TemplateFieldRef.GETRANGEMAX));
+
+      TaxRegValueBuffer.RESET;
+      TaxRegValueBuffer.DELETEALL;
+
+      IF GenTemplateProfile."Value (Link)" <> 0 THEN BEGIN
+        LinkTableRecordRef := LinlkAccumulateRecordRef.DUPLICATE;
+        LinkTableRecordRef.SETVIEW(LinlkAccumulateRecordRef.GETVIEW(FALSE));
+      END;
+
+      IF TemplateRecordRef1.FINDSET THEN
+        REPEAT
+          FieldRefValue(TemplateFieldRef,TemplateRecordRef1,GenTemplateProfile.Period);
+          TemplatePeriod := TemplateFieldRef.VALUE;
+          GlobalDateFilter :=
+            CalcIntervalDate(MinRangeDateFilter,MaxRangeDateFilter,TemplatePeriod);
+
+          RecurcLevel := 0;
+
+          EntryNoAmountBuffer.Amount := CalcExpressionValue(TemplateRecordRef1);
+          FieldRefValue(TemplateFieldRef,TemplateRecordRef1,GenTemplateProfile."Line No.");
+          EVALUATE(EntryNoAmountBuffer."Entry No.",FORMAT(TemplateFieldRef.VALUE));
+          EntryNoAmountBuffer.INSERT;
+
+        UNTIL TemplateRecordRef1.NEXT(1) = 0;
+    END;
+
+    PROCEDURE CalculateTemplateEntry@18(VAR TemplateRecordRef@1000 : RecordRef;VAR EntryNoAmountBuffer@1001 : Record 386;VAR LinlkAccumulateRecordRef@1002 : RecordRef;VAR TmpEntryValueBuffer@1003 : TEMPORARY Record 223);
+    VAR
+      TemplateRecordRef1@1004 : RecordRef;
+      TemplateFieldRef@1005 : FieldRef;
+      TemplatePeriod@1008 : Text[250];
+      MinRangeDateFilter@1009 : Date;
+      MaxRangeDateFilter@1010 : Date;
+    BEGIN
+      GenTemplateProfile.GET(TemplateRecordRef.NUMBER);
+      GenTermProfile.GET(GenTemplateProfile."Term Header Table No.");
+
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Section Code");
+      GlobalSectionCode := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Code);
+      GlobalTemplateCode := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Line No.");
+      GlobalTemplateLineNo := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+      GlobalDateFilter := TemplateFieldRef.GETFILTER;
+
+      TemplateRecordRef1 := TemplateRecordRef.DUPLICATE;
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile."Section Code");
+      TemplateFieldRef.SETRANGE(GlobalSectionCode);
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile.Code);
+      TemplateFieldRef.SETRANGE(GlobalTemplateCode);
+
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+      EVALUATE(MinRangeDateFilter,FORMAT(TemplateFieldRef.GETRANGEMIN));
+      EVALUATE(MaxRangeDateFilter,FORMAT(TemplateFieldRef.GETRANGEMAX));
+
+      TaxRegValueBuffer.RESET;
+      TaxRegValueBuffer.DELETEALL;
+      IF TmpEntryValueBuffer.FINDSET THEN
+        REPEAT
+          TaxRegValueBuffer := TmpEntryValueBuffer;
+          TaxRegValueBuffer.INSERT;
+        UNTIL TmpEntryValueBuffer.NEXT(1) = 0;
+
+      IF GenTemplateProfile."Value (Link)" <> 0 THEN BEGIN
+        LinkTableRecordRef := LinlkAccumulateRecordRef.DUPLICATE;
+        LinkTableRecordRef.SETVIEW(LinlkAccumulateRecordRef.GETVIEW(FALSE));
+      END;
+
+      IF TemplateRecordRef1.FINDSET THEN
+        REPEAT
+          FieldRefValue(TemplateFieldRef,TemplateRecordRef1,GenTemplateProfile.Period);
+          TemplatePeriod := TemplateFieldRef.VALUE;
+          GlobalDateFilter :=
+            CalcIntervalDate(MinRangeDateFilter,MaxRangeDateFilter,TemplatePeriod);
+
+          RecurcLevel := 0;
+
+          EntryNoAmountBuffer.Amount := CalcExpressionValue(TemplateRecordRef1);
+          FieldRefValue(TemplateFieldRef,TemplateRecordRef1,GenTemplateProfile."Line No.");
+          EVALUATE(EntryNoAmountBuffer."Entry No.",FORMAT(TemplateFieldRef.VALUE));
+          EntryNoAmountBuffer.INSERT;
+
+        UNTIL TemplateRecordRef1.NEXT(1) = 0;
+    END;
+
+    PROCEDURE ShowExpressionValue@10(VAR TemplateRecordRef@1000 : RecordRef;VAR TaxRegCalcBuffer@1001 : Record 17206;VAR LinlkAccumulateRecordRef@1002 : RecordRef);
+    VAR
+      TempDimBuf@1210002 : TEMPORARY Record 360;
+      TaxRegNormGroup@1210001 : Record 17221;
+      TaxRegNormDetail@1210000 : Record 17222;
+      TemplateRecordRef1@1003 : RecordRef;
+      TemplateFieldRef@1004 : FieldRef;
+      TermNameRecordRef@1005 : RecordRef;
+      TermNameFieldRef@1006 : FieldRef;
+      TemplatePeriod@1010 : Text[250];
+      MinRangeDateFilter@1011 : Date;
+      MaxRangeDateFilter@1012 : Date;
+      Expression@1013 : Text[1024];
+      ExpressionType@1014 : 'Term,Link,Total,Header,SumField,Norm';
+      FindUniqueTerm@1015 : Boolean;
+    BEGIN
+      GenTemplateProfile.GET(TemplateRecordRef.NUMBER);
+      GenTermProfile.GET(GenTemplateProfile."Term Header Table No.");
+
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Section Code");
+      GlobalSectionCode := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Code);
+      GlobalTemplateCode := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Line No.");
+      GlobalTemplateLineNo := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Period);
+      TemplatePeriod := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Date Filter");
+      EVALUATE(MinRangeDateFilter,FORMAT(TemplateFieldRef.GETRANGEMIN));
+      EVALUATE(MaxRangeDateFilter,FORMAT(TemplateFieldRef.GETRANGEMAX));
+      GlobalDateFilter :=
+        CalcIntervalDate(MinRangeDateFilter,MaxRangeDateFilter,TemplatePeriod);
+
+      TempTaxRegCalcBuf.RESET;
+      TempTaxRegCalcBuf.DELETEALL;
+      CreateCalcBuf := TRUE;
+      RecurcLevel := 0;
+
+      TemplateRecordRef1 := TemplateRecordRef.DUPLICATE;
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile."Section Code");
+      TemplateFieldRef.SETRANGE(GlobalSectionCode);
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile.Code);
+      TemplateFieldRef.SETRANGE(GlobalTemplateCode);
+      TemplateFieldRef := TemplateRecordRef1.FIELD(GenTemplateProfile."Date Filter");
+      TemplateFieldRef.SETFILTER(GlobalDateFilter);
+
+      IF GenTemplateProfile."Value (Link)" <> 0 THEN BEGIN
+        LinkTableRecordRef := LinlkAccumulateRecordRef.DUPLICATE;
+        LinkTableRecordRef.SETVIEW(LinlkAccumulateRecordRef.GETVIEW(FALSE));
+      END;
+
+      TempTaxRegCalcBuf.Amount := 0;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Expression Type");
+      ExpressionType := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Expression);
+      Expression := TemplateFieldRef.VALUE;
+      IF Expression <> '' THEN
+        CASE ExpressionType OF
+          ExpressionType::Norm:
+            BEGIN
+              FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Norm Jurisd. Code (Line)");
+              TaxRegNormGroup."Norm Jurisdiction Code" := FORMAT(TemplateFieldRef.VALUE);
+              TaxRegNormDetail.SETRANGE("Norm Jurisdiction Code",TaxRegNormGroup."Norm Jurisdiction Code");
+              TaxRegNormDetail.SETRANGE("Norm Group Code",Expression);
+              TaxRegNormDetail.SETRANGE("Norm Type",TaxRegNormDetail."Norm Type"::Amount);
+              TaxRegNormDetail.SETFILTER("Effective Date",GlobalDateFilter);
+              TaxRegNormGroup.Code := COPYSTR(Expression,1,MAXSTRLEN(TaxRegNormGroup.Code));
+              TaxRegNormGroup.FIND;
+              IF TaxRegNormGroup."Search Detail" = TaxRegNormGroup."Search Detail"::"To Date" THEN BEGIN
+                TaxRegNormDetail.SETFILTER("Effective Date",'..%1',TaxRegNormDetail.GETRANGEMAX("Effective Date"));
+                IF TaxRegNormDetail.FINDLAST THEN
+                  TempTaxRegCalcBuf.Amount := TaxRegNormDetail.Norm;
+              END ELSE BEGIN
+                TaxRegNormDetail.SETRANGE("Effective Date",TaxRegNormDetail.GETRANGEMAX("Effective Date"));
+                TaxRegNormDetail.FINDLAST;
+                TempTaxRegCalcBuf.Amount := TaxRegNormDetail.Norm;
+              END;
+            END;
+          ExpressionType::Term:
+            BEGIN
+              TermNameRecordRef.OPEN(GenTemplateProfile."Term Header Table No.");
+              GenTermProfile.TESTFIELD("Section Code (Hdr)");
+              TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Section Code (Hdr)");
+              TermNameFieldRef.SETRANGE(FORMAT(GlobalSectionCode));
+              GenTermProfile.TESTFIELD("Term Code (Hdr)");
+              TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Term Code (Hdr)");
+              TermNameFieldRef.SETRANGE(Expression);
+              FindUniqueTerm := TermNameRecordRef.FINDFIRST;
+              IF FindUniqueTerm THEN
+                FindUniqueTerm := TermNameRecordRef.NEXT(1) = 0;
+              IF FindUniqueTerm THEN BEGIN
+                GenTermProfile.TESTFIELD("Date Filter (Hdr)");
+                TermNameFieldRef := TermNameRecordRef.FIELD(GenTermProfile."Date Filter (Hdr)");
+                TermNameFieldRef.SETFILTER(GlobalDateFilter);
+                CopyTemplateDimFilters(TempDimBuf,GlobalSectionCode,GlobalTemplateCode,GlobalTemplateLineNo);
+                TempTaxRegCalcBuf.Amount := CalcTermValue(TermNameRecordRef,TempDimBuf);
+              END;
+            END;
+          ExpressionType::Total:
+            TempTaxRegCalcBuf.Amount := CalcTotalValue(Expression,GlobalTemplateCode,GlobalTemplateLineNo);
+        END;
+      TempTaxRegCalcBuf."Term Type" := TempTaxRegCalcBuf."Term Type"::None;
+      TempTaxRegCalcBuf.Operation := TempTaxRegCalcBuf.Operation::None;
+      TempTaxRegCalcBuf."Account Type" := TempTaxRegCalcBuf."Account Type"::None;
+      TempTaxRegCalcBuf."Account No." := '';
+      TempTaxRegCalcBuf."Amount Type" := TempTaxRegCalcBuf."Amount Type"::" ";
+      TempTaxRegCalcBuf."Bal. Account No." := '';
+      TempTaxRegCalcBuf."Process Sign" := TempTaxRegCalcBuf."Process Sign"::None;
+      TempTaxRegCalcBuf."Template Line No." := GlobalTemplateLineNo;
+      TempTaxRegCalcBuf."Term Line No." := 0;
+      TempTaxRegCalcBuf."Tax Register No." := GlobalTemplateCode;
+      TempTaxRegCalcBuf."Date Filter" := COPYSTR(GlobalDateFilter,1,MAXSTRLEN(TempTaxRegCalcBuf."Date Filter"));
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile.Description);
+      TempTaxRegCalcBuf.Description := TemplateFieldRef.VALUE;
+      FieldRefValue(TemplateFieldRef,TemplateRecordRef,GenTemplateProfile."Line Code (Line)");
+      TempTaxRegCalcBuf."Line Code" := TemplateFieldRef.VALUE;
+      TempTaxRegCalcBuf."Section Code" := GlobalSectionCode;
+      TempTaxRegCalcBuf."Expression Type" := ExpressionType;
+      TempTaxRegCalcBuf.Expression := Expression;
+      TempTaxRegCalcBuf."Entry No." += 1;
+      TempTaxRegCalcBuf.INSERT;
+
+      CreateCalcBuf := FALSE;
+      TaxRegCalcBuffer.RESET;
+      TaxRegCalcBuffer.DELETEALL;
+
+      TempTaxRegCalcBuf.RESET;
+      IF TempTaxRegCalcBuf.FINDSET THEN
+        REPEAT
+          TaxRegCalcBuffer := TempTaxRegCalcBuf;
+          TaxRegCalcBuffer.INSERT;
+        UNTIL TempTaxRegCalcBuf.NEXT(1) = 0;
+    END;
+
+    PROCEDURE CalcIntervalDate@11(PeriodStart@1000 : Date;PeriodEnd@1001 : Date;DateFilter@1002 : Text[250]) : Text[30];
+    VAR
+      Position@1005 : Integer;
+      LengthDateFilter@1006 : Integer;
+    BEGIN
+      LengthDateFilter := STRLEN(DateFilter);
+      DateFilter := UPPERCASE(DateFilter);
+      Position := STRPOS(DateFilter,'..');
+
+      CASE TRUE OF
+        Position IN [1,3]:
+          CASE COPYSTR(DateFilter,1,4) OF
+            '..CP':
+              IF PeriodEnd <> 0D THEN
+                IF LengthDateFilter > 4 THEN
+                  EXIT(
+                    STRSUBSTNO(
+                      '%2..%1',
+                      CALCDATE(COPYSTR(DateFilter,5),PeriodEnd),
+                      CALCDATE('<-CY-1Y>',PeriodEnd)))
+                ELSE
+                  EXIT(STRSUBSTNO('..%1',CALCDATE('<-CY-1D>',PeriodEnd)))
+              ELSE
+                EXIT(
+                  STRSUBSTNO(
+                    '%2..%1',
+                    WORKDATE,
+                    CALCDATE('<-CY>',WORKDATE)));
+            '..BD':
+              IF PeriodStart <> 0D THEN
+                IF LengthDateFilter > 4 THEN
+                  EXIT(
+                    STRSUBSTNO(
+                      '..%1',
+                      CALCDATE(COPYSTR(DateFilter,5),CALCDATE('<-1D>',PeriodStart))))
+                ELSE
+                  EXIT(STRSUBSTNO('..%1',CALCDATE('<-1D>',PeriodStart)))
+              ELSE
+                EXIT(STRSUBSTNO('..%1',CALCDATE('<-1D>',WORKDATE)));
+            '..ED':
+              IF PeriodEnd <> 0D THEN
+                IF LengthDateFilter > 4 THEN
+                  EXIT(STRSUBSTNO('..%1',CALCDATE(COPYSTR(DateFilter,5),PeriodEnd)))
+                ELSE
+                  EXIT(STRSUBSTNO('..%1',PeriodEnd))
+              ELSE
+                EXIT(STRSUBSTNO('..%1',CALCDATE('<1D>',WORKDATE)));
+            'BD..':
+              IF PeriodStart <> 0D THEN
+                IF LengthDateFilter > 4 THEN
+                  EXIT(STRSUBSTNO('%1..',CALCDATE(COPYSTR(DateFilter,5),PeriodStart)))
+                ELSE
+                  EXIT(STRSUBSTNO('%1..',PeriodStart))
+              ELSE
+                EXIT(STRSUBSTNO('%1..',WORKDATE));
+            'ED..':
+              IF PeriodEnd <> 0D THEN
+                IF LengthDateFilter > 4 THEN
+                  EXIT(STRSUBSTNO('%1..',CALCDATE(COPYSTR(DateFilter,5),CALCDATE('<+1D>',PeriodEnd))))
+                ELSE
+                  EXIT(STRSUBSTNO('%1..',CALCDATE('<+1D>',PeriodEnd)))
+              ELSE
+                EXIT(STRSUBSTNO('%1..',CALCDATE('<+1D>',WORKDATE)));
+            'CP..':
+              IF LengthDateFilter = 4 THEN BEGIN
+                IF PeriodStart <> 0D THEN
+                  EXIT(STRSUBSTNO('%1..',CALCDATE('<-CY>',PeriodStart)));
+                IF PeriodEnd <> 0D THEN
+                  EXIT(STRSUBSTNO('%1..',CALCDATE('<-CY>',PeriodEnd)));
+              END ELSE
+                IF (COPYSTR(DateFilter,5,2) = 'BD') AND (PeriodStart <> 0D) THEN
+                  IF LengthDateFilter > 6 THEN
+                    EXIT(STRSUBSTNO('%1..%2',CALCDATE('<-CY>',PeriodStart),CALCDATE(COPYSTR(DateFilter,7),PeriodStart - 1)))
+                  ELSE
+                    EXIT(STRSUBSTNO('%1..%2',CALCDATE('<-CY>',PeriodStart),PeriodStart - 1))
+                ELSE
+                  IF (COPYSTR(DateFilter,5,2) = 'ED') AND (PeriodEnd <> 0D) THEN
+                    IF LengthDateFilter > 6 THEN
+                      EXIT(STRSUBSTNO('%1..%2',CALCDATE('<-CY>',PeriodStart),CALCDATE(COPYSTR(DateFilter,7),PeriodEnd)))
+                    ELSE
+                      EXIT(STRSUBSTNO('%1..%2',CALCDATE('<-CY>',PeriodEnd),PeriodEnd));
+          END;
+        Position = 0:
+          CASE COPYSTR(DateFilter,1,2) OF
+            'CP','':
+              IF LengthDateFilter > 2 THEN
+                IF (PeriodStart <> 0D) AND (PeriodEnd <> 0D) THEN
+                  EXIT(
+                    STRSUBSTNO(
+                      '%1..%2',
+                      CALCDATE(COPYSTR(DateFilter,3),PeriodStart),
+                      CALCDATE(COPYSTR(DateFilter,3),PeriodEnd)))
+                ELSE
+                  IF PeriodEnd <> 0D THEN
+                    EXIT(
+                      STRSUBSTNO(
+                        '..%1',
+                        CALCDATE(COPYSTR(DateFilter,3),PeriodEnd)))
+                  ELSE
+                    IF PeriodStart <> 0D THEN
+                      EXIT(
+                        STRSUBSTNO(
+                          '%1',
+                          CALCDATE(COPYSTR(DateFilter,3),PeriodStart)))
+                    ELSE
+                      EXIT(
+                        STRSUBSTNO(
+                          '..%1',
+                          CALCDATE(COPYSTR(DateFilter,3),WORKDATE)))
+              ELSE
+                IF (PeriodStart <> 0D) AND (PeriodEnd <> 0D) THEN
+                  EXIT(STRSUBSTNO('%1..%2',PeriodStart,PeriodEnd))
+                ELSE
+                  IF PeriodEnd <> 0D THEN
+                    EXIT(STRSUBSTNO('..%1',PeriodEnd))
+                  ELSE
+                    IF PeriodStart <> 0D THEN
+                      EXIT(STRSUBSTNO('%1',PeriodStart))
+                    ELSE
+                      EXIT(STRSUBSTNO('..%1',WORKDATE));
+            'BD':
+              IF PeriodStart <> 0D THEN
+                IF LengthDateFilter > 2 THEN
+                  EXIT(STRSUBSTNO('%1',CALCDATE(COPYSTR(DateFilter,3),PeriodStart)))
+                ELSE
+                  EXIT(STRSUBSTNO('%1',PeriodStart))
+              ELSE
+                IF LengthDateFilter > 2 THEN
+                  EXIT(STRSUBSTNO('%1',CALCDATE(COPYSTR(DateFilter,3),WORKDATE)))
+                ELSE
+                  EXIT(STRSUBSTNO('%1',WORKDATE));
+            'ED':
+              IF PeriodEnd <> 0D THEN
+                IF LengthDateFilter > 2 THEN
+                  EXIT(STRSUBSTNO('%1',CALCDATE(COPYSTR(DateFilter,3),PeriodEnd)))
+                ELSE
+                  EXIT(STRSUBSTNO('%1',PeriodEnd));
+            ELSE
+              IF LengthDateFilter > 2 THEN
+                EXIT(STRSUBSTNO('%1',CALCDATE(COPYSTR(DateFilter,3),WORKDATE)))
+              ELSE
+                EXIT(STRSUBSTNO('%1',WORKDATE));
+          END;
+      END;
+
+      ERROR(ErrorDateFilter,DateFilter);
+    END;
+
+    PROCEDURE MakeTermExpressionText@12(TermCode@1000 : Code[20];SectionCode@1001 : Code[10];TermNameTableNo@1002 : Integer;TermLineTableNo@1003 : Integer) ExpressionText : Text[250];
+    VAR
+      TermProfile@1004 : Record 17238;
+      TermLineRecordRef@1005 : RecordRef;
+      TermLineFieldRef@1006 : FieldRef;
+      Operation@1008 : Text[30];
+      ElementType@1009 : Text[30];
+      Property@1010 : Text[30];
+      ExpressionLength@1011 : Integer;
+      OperationCaption@1012 : ARRAY [10] OF Text[30];
+      ElementTypeCaption@1013 : Text[1024];
+      AmountTypeCaption@1014 : Text[1024];
+      AmountType@1015 : Integer;
+      LineOperation@1016 : Integer;
+      AccountType@1017 : 'Constant,GL Acc,Term,Net Change,Norm';
+      ExpressionType@1018 : 'Plus/Minus,Multiply/Divide,Compare';
+      AccountNo@1019 : Code[250];
+      BalAccountNo@1020 : Code[250];
+    BEGIN
+      ExpressionText := '';
+      TermProfile.GET(TermNameTableNo);
+      TermLineRecordRef.OPEN(TermLineTableNo);
+      TermLineFieldRef := TermLineRecordRef.FIELD(TermProfile."Section Code (Line)");
+      TermLineFieldRef.SETRANGE(SectionCode);
+      TermLineFieldRef := TermLineRecordRef.FIELD(TermProfile."Term Code (Line)");
+      TermLineFieldRef.SETRANGE(TermCode);
+      ExpressionLength := 0;
+      IF TermLineRecordRef.FINDSET THEN
+        REPEAT
+          OperationCaption[1] := '+';
+          OperationCaption[2] := '-';
+          OperationCaption[3] := '*';
+          OperationCaption[4] := '/';
+          OperationCaption[5] := Text17200;
+          OperationCaption[6] := Text17201;
+          OperationCaption[7] := Text17202;
+          ElementTypeCaption := Text17203;
+          AmountTypeCaption := Text17204;
+
+          TermLineFieldRef := TermLineRecordRef.FIELD(TermProfile."Operation (Line)");
+          LineOperation := GetStringNoInOptionString(FORMAT(TermLineFieldRef.VALUE),TermLineFieldRef.OPTIONSTRING);
+          Operation := OperationCaption[LineOperation + 1];
+
+          TermLineFieldRef := TermLineRecordRef.FIELD(TermProfile."Account Type (Line)");
+          EVALUATE(AccountType,FORMAT(TermLineFieldRef.VALUE));
+          ElementType := SELECTSTR(AccountType + 1,ElementTypeCaption);
+          TermLineFieldRef := TermLineRecordRef.FIELD(TermProfile."Amount Type (Line)");
+
+          AmountType := GetStringNoInOptionString(FORMAT(TermLineFieldRef.VALUE),TermLineFieldRef.OPTIONSTRING);
+          IF AmountType > 0 THEN
+            Property := SELECTSTR(AmountType,AmountTypeCaption);
+          FieldRefValue(TermLineFieldRef,TermLineRecordRef,TermProfile."Expression Type (Line)");
+          EVALUATE(ExpressionType,FORMAT(TermLineFieldRef.VALUE));
+          FieldRefValue(TermLineFieldRef,TermLineRecordRef,TermProfile."Account No. (Line)");
+          EVALUATE(AccountNo,FORMAT(TermLineFieldRef.VALUE));
+          FieldRefValue(TermLineFieldRef,TermLineRecordRef,TermProfile."Bal. Account No. (Line)");
+          EVALUATE(BalAccountNo,FORMAT(TermLineFieldRef.VALUE));
+          CASE AccountType OF
+            AccountType::Constant,
+            AccountType::Norm,
+            AccountType::Term:
+              IF NOT (ExpressionType = ExpressionType::Compare) THEN BEGIN
+                AddExprText(ExpressionText,STRSUBSTNO(Operation,AccountNo));
+                AddExprText(ExpressionText,ElementType);
+                AddExprText(ExpressionText,'(');
+                AddExprText(ExpressionText,BalAccountNo);
+                AddExprText(ExpressionText,')');
+              END ELSE BEGIN
+                AddExprText(ExpressionText,ElementType);
+                AddExprText(ExpressionText,'(');
+                AddExprText(ExpressionText,AccountNo);
+                AddExprText(ExpressionText,')');
+                AddExprText(ExpressionText,Operation);
+                AddExprText(ExpressionText,' ');
+                AddExprText(ExpressionText,Property);
+                AddExprText(ExpressionText,'(');
+                AddExprText(ExpressionText,BalAccountNo);
+                AddExprText(ExpressionText,')');
+              END;
+            AccountType::"GL Acc":
+              BEGIN
+                AddExprText(ExpressionText,Operation);
+                AddExprText(ExpressionText,ElementType);
+                AddExprText(ExpressionText,'(');
+                AddExprText(ExpressionText,AccountNo);
+                AddExprText(ExpressionText,',');
+                AddExprText(ExpressionText,Property);
+                AddExprText(ExpressionText,')');
+              END;
+            AccountType::"Net Change":
+              BEGIN
+                AddExprText(ExpressionText,Operation);
+                AddExprText(ExpressionText,ElementType);
+                AddExprText(ExpressionText,'(');
+                AddExprText(ExpressionText,AccountNo);
+                AddExprText(ExpressionText,',');
+                AddExprText(ExpressionText,BalAccountNo);
+                AddExprText(ExpressionText,')');
+              END;
+          END;
+        UNTIL (TermLineRecordRef.NEXT = 0) OR (ExpressionLength >= MAXSTRLEN(ExpressionText));
+    END;
+
+    LOCAL PROCEDURE FieldRefValue@13(VAR NewFieldRef@1000 : FieldRef;RecRef@1001 : RecordRef;FieldNo@1002 : Integer);
+    BEGIN
+      NewFieldRef := RecRef.FIELD(FieldNo);
+      EVALUATE(Field.Class,FORMAT(NewFieldRef.CLASS));
+      IF Field.Class = Field.Class::FlowField THEN
+        NewFieldRef.CALCFIELD;
+    END;
+
+    PROCEDURE SetDimFilters2GLEntry@14(VAR GLEntry@1000 : Record 17;VAR TempDimBuf@1001 : TEMPORARY Record 360) : Boolean;
+    VAR
+      GLSetup@1002 : Record 98;
+    BEGIN
+      TempDimBuf.RESET;
+      TempDimBuf.SETRANGE("Entry No.",0);
+      IF TempDimBuf.FINDSET THEN BEGIN
+        GLSetup.GET;
+        REPEAT
+          IF TempDimBuf."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+            GLEntry.SETFILTER("Global Dimension 1 Code",TempDimBuf."Dimension Value Code")
+          ELSE
+            IF TempDimBuf."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+              GLEntry.SETFILTER("Global Dimension 2 Code",TempDimBuf."Dimension Value Code");
+        UNTIL TempDimBuf.NEXT(1) = 0;
+      END;
+      TempDimBuf.SETRANGE("Entry No.",1);
+      EXIT(TempDimBuf.FINDFIRST);
+    END;
+
+    LOCAL PROCEDURE ValidateGLEntryDimFilters@15(DimSetID@1000 : Integer;VAR TempDimBuf@1001 : TEMPORARY Record 360) : Boolean;
+    VAR
+      DimensionValue@1002 : Record 349;
+      DimensionSetEntry@1210000 : Record 480;
+    BEGIN
+      TempDimBuf.RESET;
+      TempDimBuf.SETRANGE("Entry No.",1);
+      IF TempDimBuf.FINDSET THEN
+        REPEAT
+          IF DimensionSetEntry.GET(DimSetID,TempDimBuf."Dimension Code") THEN BEGIN
+            DimensionValue."Dimension Code" := TempDimBuf."Dimension Code";
+            DimensionValue.Code := DimensionSetEntry."Dimension Value Code";
+            DimensionValue.SETRANGE("Dimension Code",TempDimBuf."Dimension Code");
+            DimensionValue.SETFILTER(Code,TempDimBuf."Dimension Value Code");
+            IF NOT DimensionValue.FIND THEN
+              EXIT(FALSE);
+          END;
+        UNTIL TempDimBuf.NEXT(1) = 0;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CopyTemplateDimFilters@16(VAR TempDimBuf@1000 : TEMPORARY Record 360;SectionCode@1001 : Code[10];TemplateCode@1002 : Code[20];TemplateLineNo@1003 : Integer);
+    VAR
+      GLSetup@1004 : Record 98;
+      DimFilterRecordRef@1005 : RecordRef;
+      DimFilterFieldRef@1006 : FieldRef;
+      DimensionCode@1007 : Code[20];
+    BEGIN
+      TempDimBuf.RESET;
+      TempDimBuf.DELETEALL;
+      IF GenTemplateProfile."Dim. Filter Table No." = 0 THEN
+        EXIT;
+      DimFilterRecordRef.OPEN(GenTemplateProfile."Dim. Filter Table No.");
+      DimFilterFieldRef := DimFilterRecordRef.FIELD(GenTemplateProfile."Section Code (Dim)");
+      DimFilterFieldRef.SETRANGE(SectionCode);
+      DimFilterFieldRef := DimFilterRecordRef.FIELD(GenTemplateProfile."Tax Register No. (Dim)");
+      DimFilterFieldRef.SETRANGE(TemplateCode);
+      IF GenTemplateProfile."Define (Dim)" <> 0 THEN BEGIN
+        DimFilterFieldRef := DimFilterRecordRef.FIELD(GenTemplateProfile."Define (Dim)");
+        DimFilterFieldRef.SETRANGE(0);
+      END;
+      DimFilterFieldRef := DimFilterRecordRef.FIELD(GenTemplateProfile."Line No. (Dim)");
+      DimFilterFieldRef.SETRANGE(TemplateLineNo);
+      IF DimFilterRecordRef.FINDSET THEN BEGIN
+        GLSetup.GET;
+        REPEAT
+          FieldRefValue(DimFilterFieldRef,DimFilterRecordRef,GenTemplateProfile."Dimension Code (Dim)");
+          DimensionCode := DimFilterFieldRef.VALUE;
+          IF DimensionCode IN [GLSetup."Global Dimension 1 Code",GLSetup."Global Dimension 2 Code"] THEN
+            TempDimBuf."Entry No." := 0
+          ELSE
+            TempDimBuf."Entry No." := 1;
+          TempDimBuf."Dimension Code" := DimensionCode;
+          FieldRefValue(DimFilterFieldRef,DimFilterRecordRef,GenTemplateProfile."Dimension Value Filter (Dim)");
+          TempDimBuf."Dimension Value Code" := DimFilterFieldRef.VALUE;
+          TempDimBuf.INSERT;
+        UNTIL DimFilterRecordRef.NEXT(1) = 0;
+      END;
+    END;
+
+    PROCEDURE ValidateLineCode@17(LineCode@1000 : Code[10];ErrorLevel@1001 : 'Error,ReturnCode') : Boolean;
+    BEGIN
+      IF STRLEN(LineCode) <> STRLEN(DELCHR(LineCode,'=',InvalidSymbol)) THEN BEGIN
+        IF ErrorLevel = ErrorLevel::Error THEN
+          ERROR(ErrorMassage,InvalidSymbol);
+        EXIT(FALSE);
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetStringNoInOptionString@1210008(Element@1210000 : Text[30];OptionString@1210001 : Text[30]) ElementNo : Integer;
+    VAR
+      I@1210002 : Integer;
+    BEGIN
+      IF OptionString = '' THEN
+        EXIT(0);
+
+      IF Element = '' THEN
+        EXIT(0);
+
+      FOR I := 1 TO STRPOS(OptionString,Element) DO
+        IF OptionString[I] = ',' THEN
+          ElementNo += 1;
+
+      EXIT(ElementNo)
+    END;
+
+    LOCAL PROCEDURE AddExprText@20(VAR ExprText@1000 : Text[250];AddText@1001 : Text[250]);
+    BEGIN
+      ExprText := ExprText + COPYSTR(AddText,1,MAXSTRLEN(ExprText) - STRLEN(ExprText));
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

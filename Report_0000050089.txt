@@ -1,0 +1,700 @@
+OBJECT Report 50089 Loans - Write-off Reserve
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.08.17;
+    Time=11:22:10;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Loans - Recover Reserve;
+               RUS=Кредиты - Списание резерва];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   PostingDescription := Text003;
+                   PostingDate :=WORKDATE;
+                   RestorePrincipal := TRUE;
+                   RestoreInterest := TRUE;
+
+                   StandParameter.RESET;
+                   StandParameter.SETRANGE("Report ID",REPORT::"Loans - Write-off Reserve");
+                   IF StandParameter.FINDFIRST THEN BEGIN
+                     IF (StandParameter."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                       PostingDate:=CALCDATE(StandParameter."Posting Date",WORKDATE);
+                     IF StandParameter."Gen. Journal Template"<>'' THEN
+                       Template:=StandParameter."Gen. Journal Template";
+                     IF StandParameter."Gen. Journal Batch"<>'' THEN
+                       Batch:=StandParameter."Gen. Journal Batch";
+                     IF StandParameter."Prefix Numbers"<>'' THEN
+                       DocumentNo:=StandParameter."Prefix Numbers";
+                     IF PostingDate <> 0D THEN
+                       DocumentNo:=DocumentNo+FORMAT(PostingDate,0,'<Year><Month,2><Day,2>');
+                     IF StandParameter."Posting Description"<>'' THEN
+                       PostingDescription:=StandParameter."Posting Description";
+                     IsPost:=StandParameter.Post;
+                   END ELSE
+                     ERROR(Text007+StandParameter.TABLECAPTION + Text008);
+                 END;
+
+    OnPreReport=BEGIN
+                  IF NOT CurrReport.USEREQUESTPAGE THEN BEGIN
+                  PostingDate :=WORKDATE;
+                  StandParameter.RESET;
+                  StandParameter.SETRANGE("Report ID",REPORT::"Loans - Write-off Reserve");
+                  IF StandParameter.FINDFIRST THEN BEGIN
+                    IF (StandParameter."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                      PostingDate:=CALCDATE(StandParameter."Posting Date",WORKDATE);
+                    IF StandParameter."Gen. Journal Template"<>'' THEN
+                      Template:=StandParameter."Gen. Journal Template";
+                    IF StandParameter."Gen. Journal Batch"<>'' THEN
+                      Batch:=StandParameter."Gen. Journal Batch";
+                    IF StandParameter."Prefix Numbers"<>'' THEN
+                      DocumentNo:=StandParameter."Prefix Numbers";
+                    IF PostingDate <> 0D THEN
+                      DocumentNo:=DocumentNo+FORMAT(PostingDate,0,'<Year><Month,2><Day,2>');
+                    IF StandParameter."Posting Description"<>'' THEN
+                      PostingDescription:=StandParameter."Posting Description";
+                    IsPost:=StandParameter.Post;
+                  END ELSE
+                    ERROR(Text007+StandParameter.TABLECAPTION + Text008);
+
+                  END;
+
+                  LineMin := 0;
+                  LineMax := 0;
+                  tmpGenJnlLine.DELETEALL;
+                END;
+
+    OnPostReport=BEGIN
+                   NextLineNo :=0;
+                   GLSetup.GET;
+                   GenJnlLine.RESET;
+                   GenJnlLine.SETRANGE("Journal Template Name",Template);
+                   GenJnlLine.SETRANGE("Journal Batch Name",Batch);
+                   IF GenJnlLine.FINDLAST THEN
+                       NextLineNo := GenJnlLine."Line No.";
+
+                   LineMin :=NextLineNo;
+                   IF tmpGenJnlLine.FINDSET THEN
+                     REPEAT
+                       GenJnlLine.INIT;
+                       GenJnlLine.TRANSFERFIELDS(tmpGenJnlLine);
+                       NextLineNo := NextLineNo+10000;
+                       GenJnlLine."Line No." := NextLineNo;
+                       LineMax := GenJnlLine."Line No.";
+                       GenJnlLine.VALIDATE("Account No.");
+                       GenJnlLine.VALIDATE("Agreement No.");
+                       GenJnlLine."Posting Group" := tmpGenJnlLine."Posting Group";
+                       IF GenJnlLine."Amount Type" IN [GenJnlLine."Amount Type"::Principal,
+                                                       GenJnlLine."Amount Type"::Interest] THEN
+                       GenJnlLine.VALIDATE("Amount Type");
+                       GenJnlLine.VALIDATE(Amount);
+
+                       GenJnlLine.INSERT(TRUE);
+                       CopyDefDimToJnlLineDim(GenJnlLine);
+                     UNTIL tmpGenJnlLine.NEXT=0;
+
+                   //учет
+                   IF IsPost THEN BEGIN
+                     GenJnlLine.SETRANGE("Journal Template Name",Template);
+                     GenJnlLine.SETRANGE("Journal Batch Name",Batch);
+                     GenJnlLine.SETRANGE("Line No.",LineMin,LineMax);
+                     GenJnlLine.SETRANGE("Document No.", DocumentNo);
+                     IF NOT GenJnlLine.ISEMPTY THEN BEGIN
+                       GenJnlLinePost.SetNoMessage(TRUE);
+                       GenJnlLinePost.RUN(GenJnlLine);
+                     END;
+                   END ELSE BEGIN
+                     IF GUIALLOWED THEN
+
+                     MESSAGE(
+                     STRSUBSTNO(Text001,
+                             GenJnlLine.FIELDCAPTION(GenJnlLine."Journal Template Name"),
+                             Template,
+                             GenJnlLine.FIELDCAPTION("Journal Batch Name"),
+                             Batch));
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+    { 5935;    ;DataItem;CustAgreement       ;
+               DataItemTable=Table14902;
+               DataItemTableView=SORTING(Customer No.,No.)
+                                 ORDER(Ascending);
+               OnPreDataItem=BEGIN
+                               IF NOT IsCustReserve THEN
+                                 CurrReport.BREAK;
+                               CustAgreement.COPYFILTERS(CustAgreement2);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  ConditionNo := 0;
+                                  AgreementDetail.RESET;
+                                  AgreementDetail.SETRANGE("Source Type", AgreementDetail."Source Type"::Customer);
+                                  AgreementDetail.SETRANGE("Source No.", CustAgreement."Customer No.");
+                                  AgreementDetail.SETRANGE("Agreement No.",CustAgreement."No.");
+                                  AgreementDetail.SETRANGE("Condition Type",AgreementDetail."Condition Type"::New);
+                                  AgreementDetail.SETRANGE("Use Default",TRUE);
+                                  AgreementDetail.SETRANGE(Blocked,FALSE);
+                                  IF AgreementDetail.FINDFIRST THEN
+                                    ConditionNo := AgreementDetail."Condition No."
+                                  ELSE BEGIN
+                                    AgreementDetail.SETRANGE("Use Default");
+                                    IF AgreementDetail.FINDFIRST THEN
+                                      ConditionNo := AgreementDetail."Condition No."
+                                    ELSE BEGIN
+                                      AgreementDetail.SETRANGE(Blocked);
+                                      IF AgreementDetail.FINDFIRST THEN
+                                        ConditionNo := AgreementDetail."Condition No."
+                                    END;
+                                  END;
+
+                                  IF CustAgreement.Reserve AND CustPostingGroup.GET(CustAgreement."Reserve Posting Group") AND RestorePrincipal THEN BEGIN
+                                    DtldCustLedgerEntry.RESET;
+                                    DtldCustLedgerEntry.SETCURRENTKEY("Customer No.","Agreement No.","Agreement Condition No.",
+                                    "Amount Type","Entry Type","Interest Accrual","Posting Date");
+                                    DtldCustLedgerEntry.SETRANGE("Customer No.",CustAgreement."Customer No.");
+                                    DtldCustLedgerEntry.SETRANGE("Agreement No.",CustAgreement."No.");
+                                    DtldCustLedgerEntry.SETRANGE("Agreement Condition No.",ConditionNo);
+                                    DtldCustLedgerEntry.SETRANGE("Amount Type",DtldCustLedgerEntry."Amount Type"::Reserve);
+                                    DtldCustLedgerEntry.CALCSUMS(DtldCustLedgerEntry.Amount);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Customer;
+                                    tmpGenJnlLine."Account No." := CustAgreement."Customer No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Cust.GET(CustAgreement."Customer No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     CustAgreement."Customer No.",
+                                                                     Cust.Name,
+                                                                     CustAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         CustAgreement."Customer No.",
+                                                                         Cust.Name,
+                                                                         CustAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",CustAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := CustAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := CustAgreement."Reserve Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Reserve;
+                                    tmpGenJnlLine.VALIDATE(Amount, - DtldCustLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := CustAgreement."Salesperson Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Customer;
+                                    tmpGenJnlLine."Account No." := CustAgreement."Customer No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Cust.GET(CustAgreement."Customer No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     CustAgreement."Customer No.",
+                                                                     Cust.Name,
+                                                                     CustAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         CustAgreement."Customer No.",
+                                                                         Cust.Name,
+                                                                         CustAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",CustAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := CustAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := CustAgreement."Customer Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Principal;
+                                    tmpGenJnlLine.VALIDATE(Amount, DtldCustLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := CustAgreement."Salesperson Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+
+                                  END;
+                                  IF CustAgreement.Reserve AND CustPostingGroup.GET(CustAgreement."Reserve Posting Group") AND RestoreInterest THEN BEGIN
+                                    DtldCustLedgerEntry.RESET;
+                                    DtldCustLedgerEntry.SETCURRENTKEY("Customer No.","Agreement No.","Agreement Condition No.",
+                                    "Amount Type","Entry Type","Interest Accrual","Posting Date");
+                                    DtldCustLedgerEntry.SETRANGE("Customer No.",CustAgreement."Customer No.");
+                                    DtldCustLedgerEntry.SETRANGE("Agreement No.",CustAgreement."No.");
+                                    DtldCustLedgerEntry.SETRANGE("Agreement Condition No.",ConditionNo);
+                                    DtldCustLedgerEntry.SETRANGE("Amount Type",DtldCustLedgerEntry."Amount Type"::"Reserve%");
+                                    DtldCustLedgerEntry.CALCSUMS(DtldCustLedgerEntry.Amount);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Customer;
+                                    tmpGenJnlLine."Account No." := CustAgreement."Customer No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Cust.GET(CustAgreement."Customer No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     CustAgreement."Customer No.",
+                                                                     Cust.Name,
+                                                                     CustAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         CustAgreement."Customer No.",
+                                                                         Cust.Name,
+                                                                         CustAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",CustAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := CustAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := CustAgreement."Reserve Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::"Reserve%";
+                                    tmpGenJnlLine.VALIDATE(Amount, - DtldCustLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := CustAgreement."Salesperson Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Customer;
+                                    tmpGenJnlLine."Account No." := CustAgreement."Customer No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Cust.GET(CustAgreement."Customer No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     CustAgreement."Customer No.",
+                                                                     Cust.Name,
+                                                                     CustAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         CustAgreement."Customer No.",
+                                                                         Cust.Name,
+                                                                         CustAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",CustAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := CustAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := CustAgreement."Interest Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Interest;
+                                    tmpGenJnlLine.VALIDATE(Amount, DtldCustLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := CustAgreement."Salesperson Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+
+                                  END;
+                                END;
+                                 }
+
+    { 4287;    ;DataItem;VendAgreement       ;
+               DataItemTable=Table14901;
+               DataItemTableView=SORTING(Vendor No.,No.)
+                                 ORDER(Ascending);
+               OnPreDataItem=BEGIN
+                               IF NOT IsVendReserve THEN
+                                 CurrReport.BREAK;
+                               VendAgreement.COPYFILTERS(VendAgreement2);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  ConditionNo := 0;
+                                  AgreementDetail.RESET;
+                                  AgreementDetail.SETRANGE("Source Type", AgreementDetail."Source Type"::Vendor);
+                                  AgreementDetail.SETRANGE("Source No.", VendAgreement."Vendor No.");
+                                  AgreementDetail.SETRANGE("Agreement No.",VendAgreement."No.");
+                                  AgreementDetail.SETRANGE("Condition Type",AgreementDetail."Condition Type"::New);
+                                  AgreementDetail.SETRANGE("Use Default",TRUE);
+                                  AgreementDetail.SETRANGE(Blocked,FALSE);
+                                  IF AgreementDetail.FINDFIRST THEN
+                                    ConditionNo := AgreementDetail."Condition No."
+                                  ELSE BEGIN
+                                    AgreementDetail.SETRANGE("Use Default");
+                                    IF AgreementDetail.FINDFIRST THEN
+                                      ConditionNo := AgreementDetail."Condition No."
+                                    ELSE BEGIN
+                                      AgreementDetail.SETRANGE(Blocked);
+                                      IF AgreementDetail.FINDFIRST THEN
+                                        ConditionNo := AgreementDetail."Condition No."
+                                    END;
+                                  END;
+
+                                  IF VendAgreement.Reserve AND VendPostingGroup.GET(VendAgreement."Reserve Posting Group") AND RestorePrincipal THEN BEGIN
+                                    DtldVendLedgerEntry.RESET;
+                                    DtldVendLedgerEntry.SETCURRENTKEY("Vendor No.","Agreement No.","Agreement Condition No.",
+                                    "Amount Type","Entry Type","Interest Accrual","Posting Date");
+                                    DtldVendLedgerEntry.SETRANGE("Vendor No.",VendAgreement."Vendor No.");
+                                    DtldVendLedgerEntry.SETRANGE("Agreement No.",VendAgreement."No.");
+                                    DtldVendLedgerEntry.SETRANGE("Agreement Condition No.", ConditionNo);
+                                    DtldVendLedgerEntry.SETRANGE("Amount Type",DtldVendLedgerEntry."Amount Type"::Reserve);
+                                    DtldVendLedgerEntry.CALCSUMS(DtldVendLedgerEntry.Amount);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Vendor;
+                                    tmpGenJnlLine."Account No." := VendAgreement."Vendor No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Vend.GET(VendAgreement."Vendor No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     VendAgreement."Vendor No.",
+                                                                     Vend.Name,
+                                                                     VendAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         VendAgreement."Vendor No.",
+                                                                         Vend.Name,
+                                                                         VendAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",VendAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := VendAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := VendAgreement."Reserve Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Reserve;
+                                    tmpGenJnlLine.VALIDATE(Amount, - DtldVendLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := VendAgreement."Purchaser Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Vendor;
+                                    tmpGenJnlLine."Account No." := VendAgreement."Vendor No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Vend.GET(VendAgreement."Vendor No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     VendAgreement."Vendor No.",
+                                                                     Vend.Name,
+                                                                     VendAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         VendAgreement."Vendor No.",
+                                                                         Vend.Name,
+                                                                         VendAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",VendAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := VendAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := VendAgreement."Vendor Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Principal;
+                                    tmpGenJnlLine.VALIDATE(Amount, DtldVendLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := VendAgreement."Purchaser Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+
+                                  END;
+                                  IF VendAgreement.Reserve AND VendPostingGroup.GET(VendAgreement."Reserve Posting Group") AND RestoreInterest THEN BEGIN
+                                    DtldVendLedgerEntry.RESET;
+                                    DtldVendLedgerEntry.SETCURRENTKEY("Vendor No.","Agreement No.","Agreement Condition No.",
+                                    "Amount Type","Entry Type","Interest Accrual","Posting Date");
+                                    DtldVendLedgerEntry.SETRANGE("Vendor No.",VendAgreement."Vendor No.");
+                                    DtldVendLedgerEntry.SETRANGE("Agreement No.",VendAgreement."No.");
+                                    DtldVendLedgerEntry.SETRANGE("Agreement Condition No.", ConditionNo);
+                                    DtldVendLedgerEntry.SETRANGE("Amount Type",DtldVendLedgerEntry."Amount Type"::"Reserve%");
+                                    DtldVendLedgerEntry.CALCSUMS(DtldVendLedgerEntry.Amount);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Vendor;
+                                    tmpGenJnlLine."Account No." := VendAgreement."Vendor No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Vend.GET(VendAgreement."Vendor No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     VendAgreement."Vendor No.",
+                                                                     Vend.Name,
+                                                                     VendAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         VendAgreement."Vendor No.",
+                                                                         Vend.Name,
+                                                                         VendAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",VendAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := VendAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := VendAgreement."Reserve Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::"Reserve%";
+                                    tmpGenJnlLine.VALIDATE(Amount, - DtldVendLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := VendAgreement."Purchaser Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+                                    NextLineNo += 1000;
+                                    tmpGenJnlLine.INIT;
+                                    tmpGenJnlLine."Journal Template Name" := Template;
+                                    tmpGenJnlLine."Journal Batch Name" := Batch;
+                                    tmpGenJnlLine."Line No." := NextLineNo;
+                                    tmpGenJnlLine."Account Type" := tmpGenJnlLine."Account Type"::Vendor;
+                                    tmpGenJnlLine."Account No." := VendAgreement."Vendor No.";
+                                    tmpGenJnlLine."Posting Date" := PostingDate;
+                                    tmpGenJnlLine."Document Type" := 0;
+                                    tmpGenJnlLine."Document No." := DocumentNo;
+                                    tmpGenJnlLine."Document Date" := PostingDate;
+                                    tmpGenJnlLine."External Document No." := DocumentNo;
+                                    Vend.GET(VendAgreement."Vendor No.");
+                                    tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     VendAgreement."Vendor No.",
+                                                                     Vend.Name,
+                                                                     VendAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                    tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         VendAgreement."Vendor No.",
+                                                                         Vend.Name,
+                                                                         VendAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                    tmpGenJnlLine.VALIDATE("Currency Code",VendAgreement."Currency Code");
+                                    tmpGenJnlLine."Agreement No." := VendAgreement."No.";
+                                    tmpGenJnlLine."Agreement Condition No." := ConditionNo;
+                                    tmpGenJnlLine."Posting Group" := VendAgreement."Interest Posting Group";
+                                    tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Interest;
+                                    tmpGenJnlLine.VALIDATE(Amount, DtldVendLedgerEntry.Amount);
+                                    tmpGenJnlLine."Salespers./Purch. Code" := VendAgreement."Purchaser Code";
+                                    tmpGenJnlLine.Quantity := 0;
+                                    IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT(TRUE);
+                                  END;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Group  ;
+                  CaptionML=[ENU=Report options;
+                             RUS=Параметры отчета];
+                  GroupType=Group }
+
+      { 1101495002;2;Field  ;
+                  CaptionML=[ENU=Gen. Journal Template;
+                             RUS=Фин. Журнал Шаблон];
+                  SourceExpr=Template;
+                  TableRelation="Gen. Journal Template" }
+
+      { 1101495003;2;Field  ;
+                  CaptionML=[ENU=Gen. Journal Batch.;
+                             RUS=Фин. Журнал Раздел];
+                  SourceExpr=Batch;
+                  OnValidate=BEGIN
+                               //NC PIF001 > DP
+                               IF Batch <> '' THEN BEGIN
+                                 GenJnlBatch.GET(Template, Batch);
+                               END;
+                               //NC PIF001 < DP
+                             END;
+
+                  OnLookup=BEGIN
+                             //NC PIF001 > DP
+                             GenJnlBatch.SETRANGE("Journal Template Name", Template);
+                             IF PAGE.RUNMODAL(PAGE::"General Journal Batches", GenJnlBatch) = ACTION::LookupOK THEN BEGIN
+                               Batch := GenJnlBatch.Name;
+                             END;
+                             //NC PIF001 < DP
+                           END;
+                            }
+
+      { 1101495004;2;Field  ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата Учета];
+                  SourceExpr=PostingDate }
+
+      { 1101495005;2;Field  ;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Документ Но.];
+                  SourceExpr=DocumentNo }
+
+      { 1101495006;2;Field  ;
+                  CaptionML=[ENU=Posting Description;
+                             RUS=Описание Учета];
+                  SourceExpr=PostingDescription }
+
+      { 1101495007;2;Field  ;
+                  CaptionML=[ENU=Reserve for Loan;
+                             RUS=Резерв по Телу Кредита/Займа];
+                  SourceExpr=RestorePrincipal }
+
+      { 1101495008;2;Field  ;
+                  CaptionML=[ENU=Reserve for Intrest;
+                             RUS=Резерв по Процентам Кредита/Займа];
+                  SourceExpr=RestoreInterest }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      PostingDate@1101495012 : Date;
+      PostingDescription@1101495011 : Text[50];
+      DocumentNo@1101495010 : Code[20];
+      Template@1101495009 : Code[10];
+      Batch@1101495008 : Code[10];
+      GenJnlBatch@1101495007 : Record 232;
+      GenJnlTemplate@1101495006 : Record 80;
+      tmpGenJnlLine@1101495005 : TEMPORARY Record 81;
+      GenJnlLine@1101495004 : Record 81;
+      NextLineNo@1101495003 : Integer;
+      GLSetup@1101495002 : Record 98;
+      StandParameter@1101495001 : Record 50076;
+      IsPost@1101495000 : Boolean;
+      CustAgreement2@1101495016 : Record 14902;
+      VendAgreement2@1101495015 : Record 14901;
+      CustPostingGroup@1101495014 : Record 92;
+      VendPostingGroup@1101495013 : Record 93;
+      GenJnlLinePost@1101495020 : Codeunit 231;
+      LineMin@1101495019 : Integer;
+      LineMax@1101495018 : Integer;
+      PostingDescription2@1101495017 : Text[50];
+      Text007@1101495024 : TextConst 'ENU="You should setup ";RUS="Не заполнены настройки в "';
+      Text008@1101495023 : TextConst 'ENU=" for ''Loans - Write-off Reserve''";RUS=" для ''Кредиты/Займы - Списание резерва''"';
+      Text001@1101495022 : TextConst 'ENU=Operation have been completed. You should post G/L Journal %1 %2, %3 %4.;RUS=Операция завершена. Необходимо учесть строки Фин. Журнала %1 %2, %3 %4.';
+      Text003@1101495021 : TextConst 'ENU=Provision write-off %1 %2 %3;RUS=Provision write-off %1 %2 %3';
+      IsCustReserve@1101495026 : Boolean;
+      IsVendReserve@1101495027 : Boolean;
+      DtldCustLedgerEntry@1101495028 : Record 379;
+      DtldVendLedgerEntry@1101495029 : Record 380;
+      RestorePrincipal@1101495030 : Boolean;
+      RestoreInterest@1101495031 : Boolean;
+      Cust@1101495032 : Record 18;
+      Vend@1101495033 : Record 23;
+      AgreementDetail@1101495034 : Record 50096;
+      ConditionNo@1101495025 : Integer;
+      DimMgt@1101495035 : Codeunit 408;
+
+    PROCEDURE SetParameters@1101495000(IsCustReserve2@1101495000 : Boolean;IsVendReserve2@1101495001 : Boolean;VAR CAgreement@1101495002 : Record 14902;VAR VAgreement@1101495003 : Record 14901);
+    BEGIN
+      IsCustReserve := IsCustReserve2;
+      IsVendReserve := IsVendReserve2;
+      CustAgreement2.COPYFILTERS(CAgreement);
+      VendAgreement2.COPYFILTERS(VAgreement);
+    END;
+
+    PROCEDURE CopyDefDimToJnlLineDim@1000000000(VAR GenJnlLine@1210002 : Record 81);
+    VAR
+      DefDim@1000000000 : Record 352;
+      TempDimSetEntry@1101495001 : TEMPORARY Record 480;
+      DimSetEntry@1101495000 : Record 480;
+    BEGIN
+      DefDim.RESET;
+      DefDim.SETRANGE("Table ID",DATABASE::"Period. Activities Stand. Par.");
+      DefDim.SETRANGE("No.",StandParameter.Code);
+      IF DefDim.FINDFIRST THEN BEGIN
+        //NC NOS-26 > SPA
+        DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine."Dimension Set ID");
+        TempDimSetEntry.SetObject(GenJnlLine);
+        //NC NOS-26 < SPA
+        REPEAT
+          IF DefDim."Dimension Value Code"<>'' THEN BEGIN
+            //NC NOS-26 > SPA
+            TempDimSetEntry.VALIDATE("Dimension Code",DefDim."Dimension Code");
+            //варианты перезаписи измерений в зависимости от типа учета значения
+            CASE DefDim."Value Posting" OF
+              DefDim."Value Posting"::"Code Mandatory": BEGIN
+                IF TempDimSetEntry.FIND THEN
+                  TempDimSetEntry.DELETE;
+                TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                TempDimSetEntry.INSERT(TRUE);
+              END;
+
+              ELSE BEGIN
+                IF TempDimSetEntry.FIND THEN BEGIN
+                  IF TempDimSetEntry."Dimension Value Code" = '' THEN BEGIN
+                    TempDimSetEntry.DELETE;
+                    TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                    TempDimSetEntry.INSERT(TRUE);
+                  END;
+                END ELSE BEGIN
+                  TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                  TempDimSetEntry.INSERT(TRUE);
+                END;
+              END;
+            END;
+            {
+            JnlLineDim.INIT;
+            JnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+            JnlLineDim."Journal Template Name" := GenJnlLine."Journal Template Name";
+            JnlLineDim."Journal Batch Name" := GenJnlLine."Journal Batch Name";
+            JnlLineDim."Journal Line No." := GenJnlLine."Line No.";
+            JnlLineDim."Dimension Code" := DefDim."Dimension Code";
+            JnlLineDim.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+            IF NOT JnlLineDim.INSERT(TRUE) THEN
+              //варианты перезаписи измерений в зависимости от типа учета значения
+              CASE DefDim."Value Posting" OF
+                DefDim."Value Posting"::"Code Mandatory": JnlLineDim.MODIFY(TRUE);
+                ELSE
+                  IF JnlLineDim2.GET(JnlLineDim."Table ID",JnlLineDim."Journal Template Name",JnlLineDim."Journal Batch Name",
+                     JnlLineDim."Journal Line No.",JnlLineDim."Allocation Line No.",JnlLineDim."Dimension Code") THEN
+                    IF JnlLineDim2."Dimension Value Code"='' THEN
+                      JnlLineDim.MODIFY(TRUE);
+              END;
+            IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+              GenJnlLine."Shortcut Dimension 1 Code" := DefDim."Dimension Value Code";
+            IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+              GenJnlLine."Shortcut Dimension 2 Code" := DefDim."Dimension Value Code";
+            }
+          END;
+        UNTIL DefDim.NEXT = 0;
+
+        //NC NOS-26 > SPA
+        DimMgt.UpdateGenJnlLineDim(GenJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+        GenJnlLine.MODIFY;
+        //NC NOS-26 < SPA
+      END;
+    END;
+
+    BEGIN
+    {
+      NC NCS-1268 DP Создан отчет
+      ---------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,333 @@
+OBJECT Report 17300 Calculate Tax Diff. for FE
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Tax Diff. for FE;
+               RUS=Расчет налог. разниц по РБП];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF (TemplateName = '') OR (BatchName = '') THEN
+                    ERROR(Text1000);
+
+                  TaxDiffJnlLine."Journal Template Name" := TemplateName;
+                  TaxDiffJnlLine."Journal Batch Name" := BatchName;
+                  TaxDiffJnlLine.SETRANGE("Journal Template Name",TaxDiffJnlLine."Journal Template Name");
+                  TaxDiffJnlLine.SETRANGE("Journal Batch Name",TaxDiffJnlLine."Journal Batch Name");
+                  IF NOT TaxDiffJnlLine.FINDLAST THEN
+                    TaxDiffJnlLine."Line No." := 0;
+
+                  SetProperties;
+
+                  DisposalDate := 0D;
+                  IF CALCDATE('<CM>',PostingDate) = CALCDATE('<CY>',PostingDate) THEN
+                    DisposalDate := CALCDATE('<CM>',PostingDate);
+
+                  IF DisposalDate <> 0D THEN
+                    IF NOT CONFIRM(Text1002,TRUE,TaxDiffJnlLine.FIELDCAPTION("Posting Date")) THEN
+                      DisposalDate := 0D;
+
+                  FASetup.GET;
+                  FASetup.TESTFIELD("Future Depr. Book");
+                  TaxRegisterSetup.GET;
+                  TaxRegisterSetup.TESTFIELD("Future Exp. Depreciation Book");
+                END;
+
+  }
+  DATASET
+  {
+    { 6679;    ;DataItem;Future Expense      ;
+               DataItemTable=Table5600;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(FA Type=CONST(Future Expense),
+                                       Blocked=CONST(No),
+                                       Inactive=CONST(No));
+               OnPreDataItem=BEGIN
+                               Total := COUNT;
+                               Wnd.OPEN(Text1001);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  Processing += 1;
+                                  Wnd.UPDATE(1,"No.");
+                                  Wnd.UPDATE(2,ROUND((Processing / Total) * 10000,1));
+                                  IF NOT TaxDiff.GET("Tax Difference Code") THEN
+                                    CurrReport.SKIP;
+
+                                  IF NOT Choice[Choices::Fixed] AND (TaxDiff.Type = TaxDiff.Type::Constant) OR
+                                     NOT Choice[Choices::"Temporary"] AND (TaxDiff.Type = TaxDiff.Type::"Temporary")
+                                  THEN
+                                    CurrReport.SKIP;
+
+                                  AccAcquisCost := 0;
+                                  TaxAcquisCost := 0;
+                                  AccountDepreciation := 0;
+                                  TaxAccountDepreciation := 0;
+
+                                  IF FADepreciationBook.GET("No.",FASetup."Future Depr. Book") THEN BEGIN
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",DatePeriod."Period Start",NORMALDATE(DatePeriod."Period End"));
+                                    FADepreciationBook.CALCFIELDS(Depreciation,"Acquisition Cost");
+                                    AccountDepreciation := FADepreciationBook.Depreciation;
+                                    AccAcquisCost := FADepreciationBook."Acquisition Cost";
+                                  END;
+
+                                  IF FADepreciationBook.GET("No.",TaxRegisterSetup."Future Exp. Depreciation Book") THEN BEGIN
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",DatePeriod."Period Start",DatePeriod."Period End");
+                                    FADepreciationBook.CALCFIELDS(Depreciation,"Acquisition Cost");
+                                    TaxAccountDepreciation := FADepreciationBook.Depreciation;
+                                    TaxAcquisCost := FADepreciationBook."Acquisition Cost";
+                                  END;
+                                  IF NOT CalcTDAcquisCost THEN BEGIN
+                                    IF NOT (((DisposalDate = 0D) OR (TaxDiff."Tax Period Limited" = TaxDiff."Tax Period Limited"::" ")) AND
+                                            ((AccountDepreciation = 0) AND (TaxAccountDepreciation = 0)))
+                                    THEN BEGIN
+                                      xRecTaxDiffJnlLine := TaxDiffJnlLine;
+                                      TaxDiffJnlLine."Line No." += 10000;
+                                      TaxDiffJnlLine.INIT;
+                                      TaxDiffJnlLine.SetUpNewLine(xRecTaxDiffJnlLine);
+                                      TaxDiffJnlLine."Posting Date" := PostingDate;
+                                      IF TaxDiffJnlLine."Document No." = '' THEN
+                                        TaxDiffJnlLine."Document No." := DocumentNo;
+                                      TaxDiffJnlLine.Description := PostingDescription;
+                                      TaxDiffJnlLine."Source Type" := TaxDiffJnlLine."Source Type"::"Future Expense";
+                                      TaxDiffJnlLine.VALIDATE("Source No.","No.");
+                                      TaxDiffJnlLine."Amount (Base)" := ABS(AccountDepreciation);
+                                      TaxDiffJnlLine.VALIDATE("Amount (Tax)",ABS(TaxAccountDepreciation));
+                                      IF (TaxDiff."Tax Period Limited" <> TaxDiff."Tax Period Limited"::" ") AND (DisposalDate <> 0D) THEN BEGIN
+                                        TaxDiffJnlLine."Disposal Mode" := TaxDiffJnlLine."Disposal Mode"::Transform;
+                                        TaxDiffJnlLine."Disposal Date" := DisposalDate;
+                                      END;
+                                      TaxDiffJnlLine.INSERT;
+                                    END;
+                                  END ELSE
+                                    IF ((AccountDepreciation = 0) AND (TaxAccountDepreciation = 0)) AND
+                                       (((AccAcquisCost <> 0) AND (TaxAcquisCost = 0)) OR ((AccAcquisCost = 0) AND (TaxAcquisCost <> 0)))
+                                    THEN BEGIN
+                                      xRecTaxDiffJnlLine := TaxDiffJnlLine;
+                                      TaxDiffJnlLine."Line No." += 10000;
+                                      TaxDiffJnlLine.INIT;
+                                      TaxDiffJnlLine.SetUpNewLine(xRecTaxDiffJnlLine);
+                                      TaxDiffJnlLine."Posting Date" := PostingDate;
+                                      IF TaxDiffJnlLine."Document No." = '' THEN
+                                        TaxDiffJnlLine."Document No." := DocumentNo;
+                                      TaxDiffJnlLine.Description := STRSUBSTNO(Text1005,"No.");
+                                      TaxDiffJnlLine."Source Type" := TaxDiffJnlLine."Source Type"::"Future Expense";
+                                      TaxDiffJnlLine.VALIDATE("Source No.","No.");
+                                      TaxDiffJnlLine.VALIDATE("Tax Diff. Code","Tax Difference Code");
+                                      TaxDiffJnlLine."Amount (Base)" := ABS(TaxAcquisCost);
+                                      TaxDiffJnlLine.VALIDATE("Amount (Tax)",ABS(AccAcquisCost));
+                                      TaxDiffJnlLine.INSERT;
+                                    END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                Wnd.CLOSE;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+
+                   Choice[Choices::Fixed] := TRUE;
+                   Choice[Choices::"Temporary"] := TRUE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 21  ;2   ;Field     ;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                               AccountPeriodOnAfterValidate;
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,FALSE);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 18  ;2   ;Field     ;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE }
+
+      { 20  ;2   ;Field     ;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Fixed Tax Differences;
+                             RUS=Постоянные налоговые разницы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Choice[Choices::Fixed] }
+
+      { 11  ;2   ;Field     ;
+                  CaptionML=[ENU=Temporary Tax Differences;
+                             RUS=Временные налоговые разницы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Choice[Choices::"Temporary"] }
+
+      { 1000000000;2;Field  ;
+                  CaptionML=[ENU=Jnl. Template Name;
+                             RUS=Имя шаблона журнала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=TemplateName;
+                  TableRelation="Tax Diff. Journal Template" }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=[ENU=Jnl. Batch Name;
+                             RUS=Код раздела журнала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BatchName;
+                  OnLookup=BEGIN
+                             IF TemplateName <> '' THEN BEGIN
+                               TaxDiffJnlBatch.SETRANGE("Journal Template Name",TemplateName);
+                               TaxDiffJnlBatch.SETRANGE(Name,BatchName);
+                               IF TaxDiffJnlBatch.FINDFIRST THEN ;
+                               TaxDiffJnlBatch.SETRANGE(Name);
+                               IF ACTION::LookupOK = PAGE.RUNMODAL(0,TaxDiffJnlBatch) THEN BEGIN
+                                 TemplateName := TaxDiffJnlBatch."Journal Template Name";
+                                 BatchName := TaxDiffJnlBatch.Name;
+                               END;
+                             END;
+                           END;
+                            }
+
+      { 1000000006;2;Field  ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PostingDate }
+
+      { 1000000004;2;Field  ;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Номер документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocumentNo }
+
+      { 1000000009;2;Field  ;
+                  CaptionML=[ENU=Description;
+                             RUS=Описание];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PostingDescription }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Calc. TD for Acquis. Cost;
+                             RUS=Расчет нал. разн. для стоимости приобр.];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CalcTDAcquisCost }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FASetup@1210002 : Record 5603;
+      FADepreciationBook@1210001 : Record 5612;
+      TaxRegisterSetup@1210000 : Record 17236;
+      TaxDiffJnlBatch@1000 : Record 17304;
+      TaxDiffJnlLine@1001 : Record 17305;
+      xRecTaxDiffJnlLine@1029 : Record 17305;
+      TaxDiff@1002 : Record 17300;
+      CalendarPeriod@1003 : Record 2000000007;
+      DatePeriod@1004 : Record 2000000007;
+      PeriodReportManagement@1006 : Codeunit 12406;
+      Wnd@1009 : Dialog;
+      PostingDate@1010 : Date;
+      DisposalDate@1011 : Date;
+      Choices@1012 : ',Fixed,Temporary';
+      Choice@1013 : ARRAY [4] OF Boolean;
+      AccountPeriod@1015 : Text[30];
+      Text1000@1016 : TextConst 'ENU=You must specify Journal Template and Journal Batch.;RUS=Необходимо указать шаблон журнала и раздел журнала.';
+      DocumentNo@1017 : Code[20];
+      PostingDescription@1000000019 : Text[50];
+      Total@1019 : Integer;
+      Processing@1020 : Integer;
+      Text1001@1021 : TextConst 'ENU=Processing  #1########\@2@@@@@@@@@@@@@;RUS=Обработка   #1########\@2@@@@@@@@@@@@@';
+      TemplateName@1022 : Code[10];
+      BatchName@1023 : Code[10];
+      AccountDepreciation@1024 : Decimal;
+      TaxAccountDepreciation@1025 : Decimal;
+      Text1002@1026 : TextConst 'ENU=%1  is in the last month of the year. Temporary differences posted within accounting period should be transformed to constant differences. Perform required preparations for transformations?;RUS=%1 является последним месяцем года. Временные разницы, учтенные в учетном периоде, должны быть преобразованы в постоянные разницы. Выполнить необходимую для преобразования подготовку?';
+      Text1005@1210005 : TextConst 'ENU=DTD arising %1.;RUS=Рост DTD %1.';
+      Text12411@1030 : TextConst 'ENU=DT-;RUS=НР-';
+      Text12410@1031 : TextConst 'ENU=%1 %2 FE Tax Differences;RUS=%1 %2 РБП - налог. разн.';
+      AccAcquisCost@1210003 : Decimal;
+      TaxAcquisCost@1210004 : Decimal;
+      CalcTDAcquisCost@1210006 : Boolean;
+
+    PROCEDURE SetProperties@1();
+    BEGIN
+      PostingDate := DatePeriod."Period End";
+      PostingDescription :=
+        STRSUBSTNO(Text12410,
+          FORMAT(DatePeriod."Period Start",0,'<Month Text> '),
+          DATE2DMY(DatePeriod."Period Start",3));
+
+      IF DATE2DMY(DatePeriod."Period Start",2) > 9 THEN
+        DocumentNo := Text12411 + FORMAT(DatePeriod."Period Start",0,'<Year>-<Month>')
+      ELSE
+        DocumentNo := Text12411 + FORMAT(DatePeriod."Period Start",2,'<Year>') + '-0' + FORMAT(DatePeriod."Period Start",0,'<Month>');
+    END;
+
+    LOCAL PROCEDURE AccountPeriodOnAfterValidate@19032701();
+    BEGIN
+      SetProperties;
+    END;
+
+    PROCEDURE InitializeRequest@1210000(StartDate@1210000 : Date;EndDate@1210001 : Date;TaxDiffJnlTemplateName@1210002 : Code[10];TaxDiffJnlBatchName@1210003 : Code[10];FixedTaxDiff@1210004 : Boolean;TempTaxDiff@1210005 : Boolean);
+    BEGIN
+      DatePeriod."Period Start" := StartDate;
+      DatePeriod."Period End" := EndDate;
+      TemplateName := TaxDiffJnlTemplateName;
+      BatchName := TaxDiffJnlBatchName;
+      Choice[Choices::Fixed] := FixedTaxDiff;
+      Choice[Choices::"Temporary"] := TempTaxDiff;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

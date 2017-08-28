@@ -1,0 +1,505 @@
+OBJECT Table 50021 Financial Instrument
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.07.17;
+    Time=11:35:29;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    DataPerCompany=No;
+    OnInsert=VAR
+               ReasonCode@1000000000 : Code[20];
+               IncTaxCode@1000000001 : Code[20];
+             BEGIN
+               "Last Date Modified" := TODAY;
+
+               //NC MDB01 > PCH
+               MovingDataSetup.GET;
+               DimValue."Dimension Code" := MovingDataSetup."FI Dimension Code";
+               DimValue.Code := "No.";
+               //NC NOS-26 > SPA
+               IF DimValue.FIND THEN;
+               //NC NOS-26 < SPA
+               DimValue.Name := COPYSTR(Name,1,MAXSTRLEN(DimValue.Name));
+               DimValue."Name 2" := COPYSTR(Name,MAXSTRLEN(DimValue.Name)+1,MAXSTRLEN(DimValue."Name 2"));;
+               //NC S547 > PCH
+               DimValue."Rec ID" := "Rec ID";
+               //NC S547 < PCH
+               IF NOT DimValue.INSERT(TRUE) THEN
+                 DimValue.MODIFY(TRUE);
+               //NC MDB01 < PCH
+
+               //NC OFA21 > RD
+               IF ("Type FI" <> '') OR ("Underlying Asset" <> '') THEN BEGIN
+                 ReasonCode := '';
+                 IncTaxCode := '';
+                 DefDim.INIT;
+                 DefDim."Table ID" := DATABASE::"Financial Instrument";
+                 DefDim."No." := "No.";
+                 DefDim."Dimension Code" := MovingDataSetup."INC.TAX Dimension Code";
+                 DefDim."Value Posting" := DefDim."Value Posting"::"Code Mandatory";
+                 "IncTax Update"(Rec, ReasonCode, IncTaxCode);
+                 "Reason Code" := ReasonCode;
+                 DefDim."Dimension Value Code" := IncTaxCode;
+                 IF DefDim."Dimension Value Code" <> '' THEN
+                   IF NOT DefDim.INSERT(TRUE) THEN
+                     DefDim.MODIFY(TRUE);
+               END;
+               //NC OFA21 < RD
+             END;
+
+    OnModify=VAR
+               ReasonCode@1000000000 : Code[20];
+               IncTaxCode@1000000001 : Code[20];
+             BEGIN
+               "Last Date Modified" := TODAY;
+
+               //NC MDB01 > PCH
+               oldFI.GET("No.");
+               //NC S547 > PCH
+               //IF (Name <> oldFI.Name) THEN BEGIN
+               IF (Name <> oldFI.Name) OR
+                  (("Rec ID" <> '') AND ("Rec ID" <> oldFI."Rec ID")) THEN BEGIN
+               //NC S547 < PCH
+                 MovingDataSetup.GET;
+                 DimValue."Dimension Code" := MovingDataSetup."FI Dimension Code";
+                 DimValue.Code := "No.";
+                 //NC NOS-26 > SPA
+                 IF DimValue.FIND THEN;
+                 //NC NOS-26 < SPA
+                 DimValue.Name := COPYSTR(Name,1,MAXSTRLEN(DimValue.Name));
+                 DimValue."Name 2" := COPYSTR(Name,MAXSTRLEN(DimValue.Name)+1,MAXSTRLEN(DimValue."Name 2"));;
+                 //NC S547 > PCH
+                 DimValue."Rec ID" := "Rec ID";
+                 //NC S547 < PCH
+                 IF NOT DimValue.INSERT(TRUE) THEN
+                   DimValue.MODIFY(TRUE);
+               END;
+
+               FIHierarchyLevel.RESET;
+               FIHierarchyLevel.SETRANGE("No.","No.");
+               IF FIHierarchyLevel.ISEMPTY THEN BEGIN
+                 FIHierarchyLevel.INIT;
+                 FIHierarchyLevel."No." := "No.";
+                 FIHierarchyLevel."Start Date" := TODAY;
+                 IF "Quoted/Unquoted" = "Quoted/Unquoted"::Quoted THEN
+                   FIHierarchyLevel.Level := FIHierarchyLevel.Level::"Level I"
+                 ELSE
+                   FIHierarchyLevel.Level := FIHierarchyLevel.Level::"Level II";
+                 FIHierarchyLevel.INSERT(TRUE);
+               END;
+               //NC MDB01 < PCH
+
+               //NC OFA21 > RD
+
+               MovingDataSetup.GET;
+               IF FIType.GET("Type FI") OR ("Underlying Asset" <> '') THEN BEGIN
+                 "IncTax Update"(Rec, ReasonCode, IncTaxCode);
+                 IF IncTaxCode = '' THEN
+                   IF DefDim.GET(DATABASE::"Financial Instrument","No.", MovingDataSetup."INC.TAX Dimension Code") THEN
+                     DefDim.DELETE;
+                 IF IncTaxCode <> '' THEN BEGIN
+                   DefDim.INIT;
+                   DefDim."Table ID" := DATABASE::"Financial Instrument";
+                   DefDim."Dimension Code" := MovingDataSetup."INC.TAX Dimension Code";
+                   DefDim."Value Posting" := DefDim."Value Posting"::"Code Mandatory";
+                   DefDim."No." := "No.";
+                   DefDim."Dimension Value Code" := IncTaxCode;
+                   IF DefDim."Dimension Value Code" <> '' THEN
+                     IF NOT DefDim.INSERT THEN
+                       DefDim.MODIFY(TRUE);
+                   "Reason Code" := ReasonCode;
+                 END;
+               END;
+
+               //NC OFA21 < RD
+
+               SynchroniseIt(1); // NCS-2486 25.03.2017 BMN
+             END;
+
+    OnDelete=BEGIN
+               //NC MDB01 > PCH
+               MovingDataSetup.GET;
+               IF DimValue.GET(MovingDataSetup."FI Dimension Code","No.") THEN
+                 DimValue.DELETE(TRUE);
+
+               FIHierarchyLevel.RESET;
+               FIHierarchyLevel.SETRANGE("No.","No.");
+               FIHierarchyLevel.DELETEALL(TRUE);
+               //NC MDB01 < PCH
+
+               //NC > RD
+               IF DefDim.GET(DATABASE::"Financial Instrument","No.", MovingDataSetup."INC.TAX Dimension Code") THEN
+                 DefDim.DELETE;
+               //NC < RD
+             END;
+
+    OnRename=BEGIN
+               "Last Date Modified" := TODAY;
+               //NC MDB03 > PCH
+               //NC S547 > PCH
+               //IF NOT RenameRef.TestFI(xRec."No.","No.",ErrorCode,ErrorText,TRUE) THEN
+               IF NOT RenameRef.TestFI(xRec."No.",'',"No.",ErrorCode,ErrorText,TRUE) THEN
+               //NC S547 < PCH
+                 ERROR(ErrorText);
+               //NC MDB03 < PCH
+               //NC MDB01 > PCH
+               MovingDataSetup.GET;
+               DimValue.SetDoNotTestRename(TRUE);
+               IF DimValue.GET(MovingDataSetup."FI Dimension Code",xRec."No.") THEN
+                 DimValue.RENAME(MovingDataSetup."FI Dimension Code","No.");
+               //NC MDB01 < PCH
+
+               //NC > RD
+               IF DefDim.GET(DATABASE::"Financial Instrument", xRec."No.", MovingDataSetup."INC.TAX Dimension Code") THEN
+                 DefDim.RENAME(DATABASE::"Financial Instrument", "No.", MovingDataSetup."INC.TAX Dimension Code");
+               //NC < RD
+
+               SynchroniseIt(3); // NCS-2486 25.03.2017 BMN
+             END;
+
+    CaptionML=[ENU=Financial Instrument;
+               RUS=Финансовый Инструмент];
+    LookupPageID=Page50091;
+  }
+  FIELDS
+  {
+    { 50000;  ;No.                 ;Code20        ;CaptionML=[ENU=No.;
+                                                              RUS=Код];
+                                                   NotBlank=Yes }
+    { 50002;  ;Rec ID              ;Code40        ;CaptionML=[ENU=Rec ID;
+                                                              RUS=ID Записи];
+                                                   Description=NC S547 PCH }
+    { 50005;  ;Name                ;Text200       ;CaptionML=[ENU=Name;
+                                                              RUS=Название] }
+    { 50010;  ;Customer No.        ;Code20        ;TableRelation=Customer;
+                                                   CaptionML=[ENU=Customer No.;
+                                                              RUS=Клиент Но.] }
+    { 50015;  ;Security ISIN       ;Code20        ;CaptionML=[ENU=Security ISIN;
+                                                              RUS=Код ISIN] }
+    { 50020;  ;Type FI             ;Code20        ;TableRelation="FI Type";
+                                                   CaptionML=[ENU=Type FI;
+                                                              RUS=Вид Финансового Инструмента] }
+    { 50021;  ;Type FI Name        ;Text50        ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("FI Type".Name WHERE (Code=FIELD(Type FI)));
+                                                   CaptionML=[ENU=Type FI Name;
+                                                              RUS=Вид ФИ Наименование] }
+    { 50025;  ;Underlying Asset    ;Code20        ;TableRelation="Financial Instrument";
+                                                   CaptionML=[ENU=Underlying Asset;
+                                                              RUS=Базисный Актив] }
+    { 50030;  ;Placement Date      ;Date          ;CaptionML=[ENU=Placement Date;
+                                                              RUS=Дата Размещения] }
+    { 50035;  ;Contractual Coupon Rate;Decimal    ;CaptionML=[ENU=Contractual Coupon Rate;
+                                                              RUS=Ставка Купона] }
+    { 50040;  ;Issued Amount       ;Decimal       ;CaptionML=[ENU=Issued Amount;
+                                                              RUS=Объем Эмиссии] }
+    { 50045;  ;Nominal             ;Decimal       ;CaptionML=[ENU=Nominal;
+                                                              RUS=Номинал] }
+    { 50050;  ;Currency of Nominal ;Code10        ;TableRelation=Currency;
+                                                   CaptionML=[ENU=Currency of Nominal;
+                                                              RUS=Валюта Номинала] }
+    { 50055;  ;Quoted/Unquoted     ;Option        ;CaptionML=[ENU=Quoted/Unquoted;
+                                                              RUS=Котируемый/Некотируемый];
+                                                   OptionCaptionML=[ENU=Quoted,Unquoted;
+                                                                    RUS=Котируемый,Некотируемый];
+                                                   OptionString=Quoted,Unquoted }
+    { 50060;  ;Purpose of Derivative;Option       ;InitValue=Speculative Purposes;
+                                                   CaptionML=[ENU=Purpose of Derivative;
+                                                              RUS=Цель Дериватива];
+                                                   OptionCaptionML=[ENU=Hedge,Speculative Purposes,Customer Instrument;
+                                                                    RUS=Хеджирование,Спекулятивные цели,Клиентский инструмент];
+                                                   OptionString=Hedge,Speculative Purposes,Customer Instrument }
+    { 50065;  ;Embedded or Standalone;Boolean     ;InitValue=No;
+                                                   CaptionML=[ENU=Embedded or Standalone;
+                                                              RUS=Встроенный или Нет] }
+    { 50070;  ;Discount Amount     ;Decimal       ;CaptionML=[ENU=Discount Amount;
+                                                              RUS=Сумма Дисконта] }
+    { 50075;  ;Conversion Ratio    ;Decimal       ;CaptionML=[ENU=Conversion Ratio;
+                                                              RUS=Коэффициент Конвертации] }
+    { 50080;  ;Fungible            ;Boolean       ;CaptionML=[ENU=Fungible;
+                                                              RUS=Идентично Акции] }
+    { 50085;  ;Issuer Country      ;Code10        ;TableRelation=Country/Region;
+                                                   CaptionML=[ENU=Issuer Country;
+                                                              RUS=Страна Эмитента] }
+    { 50090;  ;Traded Broker       ;Boolean       ;CaptionML=[ENU=Traded through Broker;
+                                                              RUS=Торгуется через Брокера];
+                                                   Description=NC MNET03 AG }
+    { 50100;  ;Quantity            ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("FI Ledger Entry".Quantity WHERE (FI No.=FIELD(No.),
+                                                                                                     FI Posting Book=FIELD(FI Posting Book),
+                                                                                                     FI Portfolio=FIELD(FI Portfolio)));
+                                                   CaptionML=[ENU=Quantity;
+                                                              RUS=Количество];
+                                                   Description=NC MTF02;
+                                                   Editable=No }
+    { 50101;  ;FI Posting Book     ;Code10        ;FieldClass=FlowFilter;
+                                                   TableRelation="FI Posting Book";
+                                                   CaptionML=[ENU=FI Posting Book;
+                                                              RUS=ФИ Книга Учета Код];
+                                                   Description=NC MTF02 }
+    { 50102;  ;FI Portfolio        ;Code10        ;FieldClass=FlowFilter;
+                                                   TableRelation="FI Portfolio";
+                                                   CaptionML=[ENU=FI Portfolio;
+                                                              RUS=ФИ Портфель Код];
+                                                   Description=NC MTF02 }
+    { 50103;  ;Maturity Date       ;Date          ;CaptionML=[ENU=Maturity Date;
+                                                              RUS=Дата Погашения];
+                                                   Description=NCS-1011,1190 }
+    { 50110;  ;MIS USD Asset       ;Boolean       ;CaptionML=[ENU=MIS USD Asset;
+                                                              RUS=MIS USD Актив];
+                                                   Description=NCS-2564 }
+    { 55000;  ;Date Filter         ;Date          ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Date Filter;
+                                                              RUS=Дата Фильтр] }
+    { 55005;  ;Account Filter      ;Code10        ;FieldClass=FlowFilter;
+                                                   TableRelation="G/L Account";
+                                                   CaptionML=[ENU=Account Filter;
+                                                              RUS=Фин. Счет Фильтр] }
+    { 55010;  ;Account Start Date Filter;Date     ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Account Start Date Filter;
+                                                              RUS=Фин. Дата Начала Фильтр] }
+    { 55015;  ;Type Operation Filter;Date         ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Type Operation Filter;
+                                                              RUS=Тип Операции Фильтр] }
+    { 55017;  ;Business Unit Filter;Code20        ;FieldClass=FlowFilter;
+                                                   TableRelation="Business Unit";
+                                                   CaptionML=[ENU=Business Unit Filter;
+                                                              RUS=Филиал Фильтр] }
+    { 55020;  ;Fin Start Balance   ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Amount WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                             G/L Account No.=FIELD(Account Filter),
+                                                                                             Business Unit Code=FIELD(Business Unit Filter),
+                                                                                             Posting Date=FIELD(UPPERLIMIT(Account Start Date Filter))));
+                                                   CaptionML=[ENU=Fin Start Balance;
+                                                              RUS=Фин. Начальное Сальдо];
+                                                   Editable=No }
+    { 55025;  ;Fin Turnover        ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Amount WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                             G/L Account No.=FIELD(Account Filter),
+                                                                                             Business Unit Code=FIELD(Business Unit Filter),
+                                                                                             Posting Date=FIELD(Date Filter)));
+                                                   CaptionML=[ENU=Fin Turnover;
+                                                              RUS=Фин. Оборот];
+                                                   Editable=No }
+    { 55030;  ;Fin Debit Amount    ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry"."Debit Amount" WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                                     G/L Account No.=FIELD(Account Filter),
+                                                                                                     Business Unit Code=FIELD(Business Unit Filter),
+                                                                                                     Posting Date=FIELD(Date Filter)));
+                                                   CaptionML=[ENU=Fin Debit Amount;
+                                                              RUS=Фин. Дебет Сумма];
+                                                   Editable=No }
+    { 55035;  ;Fin Credit Amount   ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry"."Credit Amount" WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                                      G/L Account No.=FIELD(Account Filter),
+                                                                                                      Business Unit Code=FIELD(Business Unit Filter),
+                                                                                                      Posting Date=FIELD(Date Filter)));
+                                                   CaptionML=[ENU=Fin Credit Amount;
+                                                              RUS=Фин. Кредит Сумма];
+                                                   Editable=No }
+    { 55040;  ;Fin End Balance     ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Amount WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                             G/L Account No.=FIELD(Account Filter),
+                                                                                             Business Unit Code=FIELD(Business Unit Filter),
+                                                                                             Posting Date=FIELD(UPPERLIMIT(Date Filter))));
+                                                   CaptionML=[ENU=Fin End Balance;
+                                                              RUS=Фин. Конечное Сальдо];
+                                                   Editable=No }
+    { 55045;  ;Quantity at Date    ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Quantity WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                               G/L Account No.=FIELD(Account Filter),
+                                                                                               Business Unit Code=FIELD(Business Unit Filter),
+                                                                                               Posting Date=FIELD(UPPERLIMIT(Date Filter))));
+                                                   CaptionML=[ENU=Quantity at Date;
+                                                              RUS=Количество на Дату];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 55050;  ;Quantity at Turnover;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry".Quantity WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                               G/L Account No.=FIELD(Account Filter),
+                                                                                               Business Unit Code=FIELD(Business Unit Filter),
+                                                                                               Posting Date=FIELD(Date Filter)));
+                                                   CaptionML=[ENU=Quantity at Turnover;
+                                                              RUS=Количество Оборот];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=No }
+    { 55055;  ;Debit Quantity      ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry"."Debit Quantity" WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                                       G/L Account No.=FIELD(Account Filter),
+                                                                                                       Business Unit Code=FIELD(Business Unit Filter),
+                                                                                                       Posting Date=FIELD(Date Filter)));
+                                                   CaptionML=[ENU=Debit Quantity;
+                                                              RUS=Дебет Кол-во];
+                                                   Editable=No }
+    { 55060;  ;Credit Quantity     ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("G/L Entry"."Credit Quantity" WHERE (Financial Instrument No.=FIELD(No.),
+                                                                                                        G/L Account No.=FIELD(Account Filter),
+                                                                                                        Business Unit Code=FIELD(Business Unit Filter),
+                                                                                                        Posting Date=FIELD(Date Filter)));
+                                                   CaptionML=[ENU=Credit Quantity;
+                                                              RUS=Кредит Кол-во];
+                                                   Editable=No }
+    { 55065;  ;Last Date Modified  ;Date          ;CaptionML=[ENU=Last Date Modified;
+                                                              RUS=Дата Посл. Изменения];
+                                                   Editable=No }
+    { 55070;  ;Deliverable         ;Boolean       ;CaptionML=[ENU=Deliverable;
+                                                              RUS=Поставочный ФИ] }
+    { 55075;  ;Reason Code         ;Code20        ;CaptionML=[ENU=Reason Code;
+                                                              RUS=Код Причины];
+                                                   Description=NC RD }
+    { 55080;  ;Related Counterparty Type Code;Code10;
+                                                   TableRelation="Related Party Type"."Related Party Type Code";
+                                                   CaptionML=[ENU=Related Counterparty Code;
+                                                              RUS=Тип Контрагента Код];
+                                                   Description=NC NCS-837 RD }
+  }
+  KEYS
+  {
+    {    ;No.                                     ;Clustered=Yes }
+    {    ;Rec ID                                   }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      MovingDataSetup@1101495000 : Record 50064;
+      DimValue@1101495001 : Record 349;
+      oldFI@1101495002 : Record 50021;
+      FIHierarchyLevel@1101495003 : Record 50050;
+      RenameRef@1000000000 : Codeunit 50029;
+      ErrorCode@1000000001 : Code[10];
+      ErrorText@1000000002 : Text[250];
+      DefDim@1000000003 : Record 352;
+      FIType@1000000004 : Record 50051;
+
+    PROCEDURE "IncTax Update"@1000000000(FinIstr@1000000000 : Record 50021;VAR ReasonCode@1000000004 : Code[20];VAR IncTaxCode@1000000005 : Code[20]);
+    VAR
+      FIType@1000000001 : Record 50051;
+      DefaultDimension@1000000003 : Record 352;
+      CheckFI@1000000002 : Record 50021;
+    BEGIN
+      MovingDataSetup.GET;
+      IncTaxCode := '';
+      ReasonCode := '';
+
+      IF NOT (FinIstr."Type FI" = '') THEN BEGIN
+        IF FIType.GET(FinIstr."Type FI") THEN BEGIN
+          IncTaxCode := FIType.GetIncTax;
+          IF NOT (IncTaxCode = '') AND NOT (IncTaxCode = 'MIXED') THEN
+          ReasonCode := '1';
+        END;
+      END;
+
+      IF (IncTaxCode = '') OR (IncTaxCode = 'MIXED') THEN
+        IF NOT (FinIstr."Underlying Asset" = '') AND NOT (FinIstr."Underlying Asset" = FinIstr."No.") THEN
+          IF CheckFI.GET(FinIstr."Underlying Asset") THEN BEGIN
+            "IncTax Update"(CheckFI, ReasonCode, IncTaxCode);
+            IF NOT (IncTaxCode = '') AND NOT (IncTaxCode = 'MIXED') THEN
+              ReasonCode := '2'
+            ELSE
+              IncTaxCode := '';
+            END;
+
+      IF (IncTaxCode = '') OR (IncTaxCode = 'MIXED') THEN
+        IF FinIstr."Security ISIN" <> '' THEN IncTaxCode := 'NON TAXABLE';
+    END;
+
+    PROCEDURE "IncTax Update2"@1000000002(FinIstr@1000000000 : Record 50021) IncTaxCode : Code[20];
+    VAR
+      FIType@1000000001 : Record 50051;
+      DefaultDimension@1000000003 : Record 352;
+      CheckFI@1000000002 : Record 50021;
+    BEGIN
+      //NC OFA21 > RD
+      {
+      MovingDataSetup.GET;
+      IncTaxCode := '';
+      IF NOT (FinIstr."Type FI" = '') THEN
+        IF FIType.GET(FinIstr."Type FI") THEN BEGIN
+          IF NOT FIType."Underlying Asset INC.TAX" THEN BEGIN
+            IF FinIstr.Deliverable THEN BEGIN
+              IF NOT (FIType."INC.TAX Deliverable" = 'MIXED') THEN
+                IncTaxCode := FIType."INC.TAX Deliverable";
+              IF FIType."INC.TAX Deliverable" = 'MIXED' THEN
+                IF DefaultDimension.GET(DATABASE::"Financial Instrument", FinIstr."No.", MovingDataSetup."INC.TAX Dimension Code") THEN
+                  IncTaxCode := DefaultDimension."Dimension Value Code";
+            END;
+            IF NOT FinIstr.Deliverable THEN BEGIN
+              IF NOT (FIType."INC.TAX Product Level" = 'MIXED') THEN
+                IncTaxCode := FIType."INC.TAX Product Level";
+              IF FIType."INC.TAX Product Level" = 'MIXED' THEN
+                IF DefaultDimension.GET(DATABASE::"Financial Instrument", FinIstr."No.", MovingDataSetup."INC.TAX Dimension Code") THEN
+                  IncTaxCode := DefaultDimension."Dimension Value Code";
+            END;
+          END;
+          IF FIType."Underlying Asset INC.TAX" THEN BEGIN
+            IF NOT (FinIstr."Underlying Asset" = '') THEN
+              IF CheckFI.GET(FinIstr."Underlying Asset") THEN
+                IncTaxCode := "IncTax Update"(CheckFI);
+            IF (FinIstr."Underlying Asset" = '') THEN
+              IF DefaultDimension.GET(DATABASE::"Financial Instrument", FinIstr."No.", MovingDataSetup."INC.TAX Dimension Code") THEN
+                IncTaxCode := DefaultDimension."Dimension Value Code";
+          END;
+        END;
+       }
+      //NC OFA21 < RD
+    END;
+
+    PROCEDURE GetIncTaxDimCode@1101495001() : Code[20];
+    VAR
+      MovingDataSetup@1101495000 : Record 50064;
+      DefaultDimension@1101495001 : Record 352;
+    BEGIN
+      // NC NC-973 SKV
+      MovingDataSetup.GET;
+      // Table ID,No.,Dimension Code
+      IF DefaultDimension.GET(DATABASE::"Financial Instrument",
+                              "No.",
+                              MovingDataSetup."INC.TAX Dimension Code") THEN
+        EXIT(DefaultDimension."Dimension Value Code")
+      ELSE
+        EXIT('');
+    END;
+
+    PROCEDURE SynchroniseIt@1000000001(Mode@1000000000 : 'Insert,Modify,Delete,Rename');
+    VAR
+      SyncLog@1000000005 : Record 50121;
+      Recref@1000000006 : RecordRef;
+      xRecref@1000000004 : RecordRef;
+    BEGIN
+      //NCS-2486 BMN 25.03.2017
+
+      xRecref.GETTABLE(xRec);
+      xRecref.SETRECFILTER;
+      Recref.GETTABLE(Rec);
+      Recref.SETRECFILTER;
+
+      SyncLog.Synchronise(Mode, xRecref, Recref);
+    END;
+
+    BEGIN
+    {
+      NC MDB01 PCH Редизайн всей таблицы
+      NC MDB01 PCH Работа с измернием CUSTOMER
+      NC MNET03 AG Добавлено поле 50090  Traded Broker
+      NC MTF02 II Новые поля 50100-50102
+      NC OFA21 RD Автоматическое проставление INC.TAX
+      NC S547 PCH добавлено поле "Rec ID"
+      NC NCS-837 Добавлено поле Related Counterparty Type Code
+      NC NCS-973 SKV
+        add function IncTaxDimCode
+      TD BMN 29.05.2013 NCS-1011 "В таблицу фин. инструмент добавить поле "maturity date"
+      TDRANCS-1190>
+        Modified "Maturity Date" -> ENU=Maturity Date;RUS=Дата Погашения
+      NCS-2486 BMN 25.03.2017 SynchroniseIt() created, OnModify() changed, OnRename() changed
+      TDRANCS-2564 added field MIS USD Asset
+    }
+    END.
+  }
+}
+

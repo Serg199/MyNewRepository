@@ -1,0 +1,272 @@
+OBJECT Codeunit 50081 FI Cost Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13.01.17;
+    Time=18:27:18;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FIJnlPostLine@1170000006 : Codeunit 50077;
+
+    PROCEDURE ApplyFILedgerEntry@1170000000(VAR FILedgerEntryToApply@1170000001 : Record 50216);
+    VAR
+      FILedgerEntry@1170000007 : Record 50216;
+      QtyToApply@1170000004 : Decimal;
+      RemainingQtyToApply@1170000003 : Decimal;
+      ShortPosition@1170000008 : Boolean;
+    BEGIN
+      QtyToApply := FILedgerEntryToApply.Quantity;
+      RemainingQtyToApply := QtyToApply;
+
+      //NC NCS-2394 AA v2 >>
+      //FILedgerEntry.SETCURRENTKEY("FI No.","Posting Date");
+      FILedgerEntry.SETCURRENTKEY("FI No.",Open,Reversed,Positive,"Posting Date");
+      //NC NCS-2394 AA v2 <<
+      FILedgerEntry.SETRANGE("FI No.",FILedgerEntryToApply."FI No.");
+      FILedgerEntry.SETRANGE(Reversed,FALSE);
+      FILedgerEntry.SETRANGE(Positive,TRUE);
+      FILedgerEntry.SETRANGE(Open,TRUE);
+      //NC NCS-2392 AA >>
+      //IF FILedgerEntry.FINDSET(TRUE) THEN
+      //NC NCS-2394 AA >>
+      WHILE FILedgerEntry.FINDFIRST AND (RemainingQtyToApply <> 0) DO
+      //NC NCS-2394 AA <<
+      //NC NCS-2392 AA <<
+
+      //NC NCS-2394 AA >>
+      //REPEAT
+        BEGIN
+      //NC NCS-2394 AA <<
+          FILedgerEntry.CALCFIELDS("Remaining Quantity");
+          IF FILedgerEntry."Entry No." <> FILedgerEntryToApply."Entry No." THEN BEGIN
+            IF ABS(FILedgerEntry."Remaining Quantity") < ABS(QtyToApply) THEN
+              QtyToApply := -FILedgerEntry."Remaining Quantity";
+
+            ShortPosition := IsShortPosition(FILedgerEntry,FILedgerEntryToApply);
+
+            PostApplFILedgerEntry(
+              FILedgerEntry,
+              FILedgerEntryToApply."Entry No.",
+              QtyToApply,
+              ShortPosition,
+              GetMaxDate(
+                FILedgerEntryToApply."Posting Date",FILedgerEntry."Posting Date"));
+
+            PostApplFILedgerEntry(
+              FILedgerEntryToApply,
+              FILedgerEntry."Entry No.",
+              -QtyToApply,
+              ShortPosition,
+              GetMaxDate(
+                FILedgerEntryToApply."Posting Date",FILedgerEntry."Posting Date"));
+
+            RemainingQtyToApply -= QtyToApply;
+            QtyToApply := RemainingQtyToApply;
+          END;
+      //NC NCS-2394 AA >>
+      //UNTIL (FILedgerEntry.NEXT = 0) OR (RemainingQtyToApply = 0);
+        END;
+      //NC NCS-2394 AA <<
+    END;
+
+    LOCAL PROCEDURE PostApplFILedgerEntry@1170000019(VAR FILedgerEntry@1170000000 : Record 50216;AppliedFIEntryNo@1170000001 : Integer;QtyToApply@1170000002 : Decimal;ShortPosition@1170000003 : Boolean;PostingDate@1170000004 : Date);
+    VAR
+      InitialDetailedFILedgerEntry@1170000009 : Record 50217;
+      UnitCost@1170000008 : Decimal;
+      UnitCostLCY@1170000010 : Decimal;
+      Amount@1170000007 : Decimal;
+      AmountLCY@1170000006 : Decimal;
+      AmountACY@1170000005 : Decimal;
+    BEGIN
+      FindInitialDtldFILedgerEntry(FILedgerEntry,InitialDetailedFILedgerEntry);
+      //AA 08.12.16 >>
+      //UnitCost := InitialDetailedFILedgerEntry."Unit Cost";
+      UnitCost := GetUnitCostByFIFO(FILedgerEntry,InitialDetailedFILedgerEntry);
+      //AA 08.12.16 <<
+      UnitCostLCY := GetUnitCostLCYByFIFO(FILedgerEntry,InitialDetailedFILedgerEntry);
+
+      Amount := ROUND(UnitCost * QtyToApply);
+      AmountLCY := ROUND(UnitCostLCY * QtyToApply);
+      AmountACY := FIJnlPostLine.CalcACYAmountFromLCY(AmountLCY,PostingDate);
+
+      FIJnlPostLine.InsertApplFILedgerEntry(FILedgerEntry,AppliedFIEntryNo,QtyToApply,ShortPosition,PostingDate,
+        UnitCost,Amount,AmountLCY,AmountACY);
+
+      FILedgerEntry.CALCFIELDS("Remaining Quantity");
+      IF FILedgerEntry."Remaining Quantity" = 0 THEN BEGIN
+        FILedgerEntry.Open := FALSE;
+        FILedgerEntry."Max Revaluation Date" := CalcMaxRevaluationDate(FILedgerEntry,PostingDate);
+        FILedgerEntry.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CalcMaxRevaluationDate@1170000008(FILedgerEntry@1170000000 : Record 50216;PostingDate@1170000001 : Date) : Date;
+    VAR
+      MaxMTMDate@1170000003 : Date;
+    BEGIN
+      IF FindMaxMTMDate(FILedgerEntry."Entry No.",MaxMTMDate) THEN
+        IF MaxMTMDate > PostingDate THEN
+          EXIT(MaxMTMDate);
+
+      EXIT(PostingDate);
+    END;
+
+    PROCEDURE FindMaxMTMDate@1170000009(FIEntryNo@1170000000 : Integer;VAR MaxMTMDate@1170000001 : Date) : Boolean;
+    VAR
+      DetailedFILedgerEntry@1170000002 : Record 50217;
+    BEGIN
+      DetailedFILedgerEntry.SETCURRENTKEY("FI Entry No.","Entry Type","Posting Date");
+      DetailedFILedgerEntry.SETRANGE("FI Entry No.",FIEntryNo);
+      DetailedFILedgerEntry.SETRANGE("Entry Type",DetailedFILedgerEntry."Entry Type"::"Reval. MTM");
+      IF DetailedFILedgerEntry.FINDLAST THEN BEGIN
+        MaxMTMDate := DetailedFILedgerEntry."Posting Date";
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetMaxDate@1170000007(PostingDate1@1170000000 : Date;PostingDate2@1170000001 : Date) : Date;
+    BEGIN
+      IF PostingDate1 > PostingDate2 THEN
+        EXIT(PostingDate1);
+
+      EXIT(PostingDate2);
+    END;
+
+    PROCEDURE GetUnitCostByFIFO@1101495000(FILedgerEntry@1101495001 : Record 50216;InitialDetailedFILedgerEntry@1101495000 : Record 50217) : Decimal;
+    BEGIN
+      //AA 08.12.16 >>
+      IF InitialDetailedFILedgerEntry.Quantity <> 0 THEN
+        CASE FILedgerEntry."FI Entry Type" OF
+          FILedgerEntry."FI Entry Type"::Purchase,
+          FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+            EXIT(InitialDetailedFILedgerEntry."Cost Amount" / InitialDetailedFILedgerEntry.Quantity);
+          FILedgerEntry."FI Entry Type"::Sale,
+          FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+            EXIT(InitialDetailedFILedgerEntry."Sales Amount" / InitialDetailedFILedgerEntry.Quantity);
+        END;
+    END;
+
+    PROCEDURE GetUnitCostLCYByFIFO@1170000002(FILedgerEntry@1170000001 : Record 50216;InitialDetailedFILedgerEntry@1170000000 : Record 50217) : Decimal;
+    BEGIN
+      IF InitialDetailedFILedgerEntry.Quantity <> 0 THEN
+        CASE FILedgerEntry."FI Entry Type" OF
+          FILedgerEntry."FI Entry Type"::Purchase,
+          FILedgerEntry."FI Entry Type"::"Positive Adjmt.":
+            EXIT(InitialDetailedFILedgerEntry."Cost Amount (LCY)" / InitialDetailedFILedgerEntry.Quantity);
+          FILedgerEntry."FI Entry Type"::Sale,
+          FILedgerEntry."FI Entry Type"::"Negative Adjmt.":
+            EXIT(InitialDetailedFILedgerEntry."Sales Amount (LCY)" / InitialDetailedFILedgerEntry.Quantity);
+        END;
+    END;
+
+    PROCEDURE IsShortPosition@1170000003(SalesFILedgerEntry@1170000000 : Record 50216;PurchFILedgerEntry@1170000001 : Record 50216) : Boolean;
+    VAR
+      SalesDateTime@1170000002 : DateTime;
+      PurchDateTime@1170000003 : DateTime;
+    BEGIN
+      SalesDateTime := CREATEDATETIME(SalesFILedgerEntry."Posting Date",SalesFILedgerEntry."Deal Time");
+      PurchDateTime := CREATEDATETIME(PurchFILedgerEntry."Posting Date",PurchFILedgerEntry."Deal Time");
+      IF SalesDateTime = PurchDateTime THEN
+        EXIT(PurchFILedgerEntry."Entry No." > SalesFILedgerEntry."Entry No.");
+
+      EXIT(PurchDateTime < SalesDateTime);
+    END;
+
+    PROCEDURE ReverseApplication@1170000005(VAR FILedgerEntry@1170000000 : Record 50216);
+    VAR
+      DetailedFILedgerEntry@1170000001 : Record 50217;
+      AppliedDetailedFILedgerEntry@1170000003 : Record 50217;
+      AppliedFILedgerEntry@1170000002 : Record 50216;
+    BEGIN
+      FILedgerEntry."Last Revaluation Date" := FILedgerEntry."Posting Date";
+      FILedgerEntry.Open := TRUE;
+      FILedgerEntry."Max Revaluation Date" := 0D;
+      FILedgerEntry.MODIFY;
+
+      DetailedFILedgerEntry.SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+      DetailedFILedgerEntry.SETRANGE("Entry Type",DetailedFILedgerEntry."Entry Type"::Application);
+      DetailedFILedgerEntry.SETRANGE(Reversed,FALSE);
+      IF DetailedFILedgerEntry.FINDSET(TRUE) THEN
+        REPEAT
+          FIJnlPostLine.ReverseDtldFILedgEntry(DetailedFILedgerEntry,DetailedFILedgerEntry."FI Entry No.");
+
+          IF FindAppliedFIDtldEntryNo(AppliedDetailedFILedgerEntry,DetailedFILedgerEntry."Applied FI Ledger Entry No.") THEN BEGIN
+            FIJnlPostLine.ReverseDtldFILedgEntry(AppliedDetailedFILedgerEntry,AppliedDetailedFILedgerEntry."FI Entry No.");
+            AppliedFILedgerEntry.GET(AppliedDetailedFILedgerEntry."FI Entry No.");
+            AppliedFILedgerEntry."Last Revaluation Date" := AppliedFILedgerEntry."Posting Date";
+            AppliedFILedgerEntry.Open := TRUE;
+            AppliedFILedgerEntry."Max Revaluation Date" := 0D;
+            AppliedFILedgerEntry.MODIFY;
+          END;
+        UNTIL DetailedFILedgerEntry.NEXT = 0;
+    END;
+
+    PROCEDURE FindAppliedFIDtldEntryNo@1170000006(VAR AppliedDetailedFILedgerEntry@1170000001 : Record 50217;FIEntryNo@1170000000 : Integer) : Boolean;
+    BEGIN
+      WITH AppliedDetailedFILedgerEntry DO BEGIN
+        SETRANGE("FI Entry No.",FIEntryNo);
+        SETRANGE("Entry Type","Entry Type"::Application);
+        SETRANGE(Reversed,FALSE);
+        EXIT(FINDFIRST);
+      END;
+    END;
+
+    PROCEDURE FindInitialDtldFILedgerEntry@1170000001(FILedgerEntry@1170000001 : Record 50216;VAR InitialDetailedFILedgerEntry@1170000000 : Record 50217);
+    BEGIN
+      WITH InitialDetailedFILedgerEntry DO BEGIN
+        SETCURRENTKEY("FI Entry No.","Entry Type");
+        SETRANGE("FI Entry No.",FILedgerEntry."Entry No.");
+        SETRANGE("Entry Type","Entry Type"::"Initial Entry");
+        FINDFIRST;
+      END;
+    END;
+
+    PROCEDURE PostReversedFIEntryApplication@1170000022(FILedgerEntry@1170000000 : Record 50216);
+    VAR
+      ReversedByFILedgerEntry@1170000001 : Record 50216;
+    BEGIN
+      FILedgerEntry.TESTFIELD(Reversed,TRUE);
+      FILedgerEntry.TESTFIELD("Reversed By Entry No.");
+      ReversedByFILedgerEntry.GET(FILedgerEntry."Reversed By Entry No.");
+
+      PostApplFILedgerEntry(
+        FILedgerEntry,
+        ReversedByFILedgerEntry."Entry No.",
+        -FILedgerEntry.Quantity,
+        FALSE,
+        FILedgerEntry."Posting Date");
+
+      PostApplFILedgerEntry(
+        ReversedByFILedgerEntry,
+        FILedgerEntry."Entry No.",
+        FILedgerEntry.Quantity,
+        FALSE,
+        FILedgerEntry."Posting Date");
+    END;
+
+    BEGIN
+    {
+      NC NCS-2360 ORM - Created
+                  AA 08.12.16 - UnitCost calculation changed
+
+      NC NCS-2392 AA 12.01.17 - Function ApplyFILedgerEntry changed
+      NC NCS-2394 AA 12.01.17 - Function ApplyFILedgerEntry changed
+                  AA 13.01.17 - REPEAT..UNTIL changed on DO WHILE
+                  AA 13.01.17 v2 - SETCURRENTKEY changed
+    }
+    END.
+  }
+}
+

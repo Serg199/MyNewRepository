@@ -1,0 +1,983 @@
+OBJECT Codeunit 50024 SQL Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17.07.17;
+    Time=10:32:38;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      MovingDataSetup@1101495000 : Record 50064;
+      MovingDataSetupRead@1101495001 : Boolean;
+      ServerConnectionFailErr@1101495002 : TextConst 'ENU=Server connection is failed.;RUS=Подключение к серверу не выполнено.';
+      QueryInvalidErr@1101495003 : TextConst 'ENU=The query''s body is not defined.;RUS=Не задан текст запроса.';
+
+    LOCAL PROCEDURE "// Commom functions"@1101495007();
+    BEGIN
+    END;
+
+    PROCEDURE GetConnectionString@1101495000() : Text[1024];
+    BEGIN
+      GetDataMoveSetup;
+
+      IF MovingDataSetup."Windows Autentification" THEN
+        EXIT(
+          'Data Source=' + GetServerName + ';' +
+          'Initial Catalog=' + GetDBName + ';' +
+          'Integrated Security=SSPI;')
+      ELSE BEGIN
+        IF MovingDataSetup."Login ADO Connection" = '' THEN
+          ERROR('Не заполнено поле %1 в %2',
+            MovingDataSetup.FIELDCAPTION("Login ADO Connection"),
+            MovingDataSetup.TABLECAPTION);
+        EXIT(
+          'Data Source=' + GetServerName + ';' +
+          'Initial Catalog=' + GetDBName + ';' +
+          'Trusted_Connection = True;' +
+          'User ID=' + MovingDataSetup."Login ADO Connection"+';'+
+          'Password=' + MovingDataSetup."Password ADO Connection"+';');
+      END;
+    END;
+
+    PROCEDURE GetServerName@1101495002() DatabaseServerName : Text[1024];
+    VAR
+      ActiveSession@1101495000 : Record 2000000110;
+      ServerFile@1101495001 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      XMLDoc@1101495002 : DotNet "'System.Xml, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlDocument";
+      XMLNode@1101495003 : DotNet "'System.Xml, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Xml.XmlNode";
+      DatabaseServer@1101495004 : Text[1024];
+      DatabaseInstance@1101495005 : Text[1024];
+    BEGIN
+      ActiveSession.GET(SERVICEINSTANCEID, SESSIONID);
+
+      // Путь к настроечному файлу на сервере: "C:\Program Files\Microsoft Dynamics NAV\100\Service\CustomSettings.config"
+      XMLDoc := XMLDoc.XmlDocument;
+      IF ServerFile.Exists(APPLICATIONPATH + 'Instances\' + ActiveSession."Server Instance Name" + '\CustomSettings.config') THEN
+        XMLDoc.Load(APPLICATIONPATH + 'Instances\' + ActiveSession."Server Instance Name" + '\CustomSettings.config')
+      ELSE
+        XMLDoc.Load(APPLICATIONPATH + 'CustomSettings.config');
+
+      XMLNode := XMLDoc.SelectSingleNode('//appSettings/add[@key=''DatabaseServer'']');
+      DatabaseServer := XMLNode.Attributes.Item(1).InnerText;
+
+      XMLNode := XMLDoc.SelectSingleNode('//appSettings/add[@key=''DatabaseInstance'']');
+      DatabaseInstance := XMLNode.Attributes.Item(1).InnerText;
+      CLEAR(XMLDoc);
+
+      IF DatabaseInstance = '' THEN
+        DatabaseServerName := DatabaseServer
+      ELSE
+        DatabaseServerName := DatabaseServer + '\' + DatabaseInstance;
+    END;
+
+    PROCEDURE GetDBName@3() : Text[250];
+    VAR
+      ActiveSession@1101495000 : Record 2000000110;
+    BEGIN
+      //NC NOS-26 > SPA
+      ActiveSession.GET(SERVICEINSTANCEID, SESSIONID);
+      EXIT(ActiveSession."Database Name");
+
+      // SessionEvent.SETRANGE("Session ID",SESSIONID);
+      // SessionEvent.FINDLAST;
+      // EXIT(SessionEvent."Database Name");
+      //NC NOS-26 < SPA
+    END;
+
+    LOCAL PROCEDURE GetDataMoveSetup@1101495012();
+    BEGIN
+      IF MovingDataSetupRead THEN
+        EXIT;
+
+      MovingDataSetup.GET;
+      MovingDataSetupRead := TRUE;
+    END;
+
+    PROCEDURE OpenSqlConnection@1101495017(ConnectionString@1101495000 : Text[1024];VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection");
+    BEGIN
+      IF ConnectionString = '' THEN
+        ConnectionString := GetConnectionString;
+
+      SqlConnection := SqlConnection.SqlConnection(ConnectionString);
+      SqlConnection.Open;
+
+      IF SqlConnection.State <> 1 THEN
+        ERROR(ServerConnectionFailErr);
+    END;
+
+    PROCEDURE CloseSqlConnection@1101495008(VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection");
+    BEGIN
+      SqlConnection.Close;
+    END;
+
+    LOCAL PROCEDURE ExecuteSqlRecordset@1101495019(ConnectionString@1101495000 : Text[1024];CommandText@1101495001 : Text;VAR SqlConnection@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlCommand@1101495004 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+    BEGIN
+      IF CommandText = '' THEN
+        ERROR(QueryInvalidErr);
+
+      IF ISNULL(SqlConnection) THEN
+        OpenSqlConnection(ConnectionString, SqlConnection);
+
+      IF NOT ISNULL(SqlRecordset) THEN
+        SqlRecordset.Close;
+
+      SqlCommand := SqlCommand.SqlCommand(CommandText, SqlConnection);
+      GetDataMoveSetup;
+      SqlCommand.CommandTimeout(MovingDataSetup."Timeout Stored Proc. (sec)");
+      SqlRecordset := SqlCommand.ExecuteReader;
+    END;
+
+    LOCAL PROCEDURE "// Execute queries"@1101495009();
+    BEGIN
+    END;
+
+    PROCEDURE GetAdo@1101495010(pComp@1101495003 : Text[30];pAcc@1101495002 : Code[20];pDate@1101495001 : Date;pCur@1101495000 : Code[20];VAR SqlRecordset@1101495005 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495014 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495013 : Text[500];
+      lScript@1101495012 : Text[500];
+      ls@1101495011 : Text[500];
+      lret@1101495010 : Boolean;
+      li@1101495009 : Integer;
+      lcount@1101495008 : Integer;
+      ld@1101495007 : Dialog;
+      lDimVal@1101495006 : Code[20];
+      lDateTxt@1101495004 : Text[30];
+    BEGIN
+      //Переоценка FX
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate,0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccFxBalance ''%2'',''%3'',''%4'',''%5''', GetDBName, pComp, pAcc, lDateTxt, pCur);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoRefBal@1101495014(pComp@1101495004 : Text[30];pAcc@1101495003 : Code[20];pDate@1101495002 : Date;pDate2@1101495001 : Date;pCons@1101495000 : Text[1];VAR SqlRecordset@1101495005 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495016 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495015 : Text[500];
+      lScript@1101495014 : Text[500];
+      ls@1101495013 : Text[500];
+      lret@1101495012 : Boolean;
+      li@1101495011 : Integer;
+      lcount@1101495010 : Integer;
+      ld@1101495009 : Dialog;
+      lDimVal@1101495008 : Code[20];
+      lDateTxt@1101495007 : Text[30];
+      lDate2Txt@1101495006 : Text[30];
+    BEGIN
+      //Реформация баланса
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      lDate2Txt := FORMAT(pDate2,0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccRefBalance ''%2'',''%3'',''%4'',''%5'',''%6''',
+                 GetDBName, pComp, pAcc, lDateTxt, lDate2Txt, pCons);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoNettingBaseQTY@1101495018(pComp@1101495002 : Text[30];pDate@1101495001 : Date;pScheme@1101495000 : Code[20];VAR SqlRecordset@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495014 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495013 : Text[500];
+      lScript@1101495012 : Text[500];
+      ls@1101495011 : Text[500];
+      lret@1101495010 : Boolean;
+      li@1101495009 : Integer;
+      lcount@1101495008 : Integer;
+      ld@1101495007 : Dialog;
+      lDimVal@1101495006 : Code[20];
+      lDateTxt@1101495005 : Text[30];
+      lDate2Txt@1101495004 : Text[30];
+    BEGIN
+      //Неттинг IFRS: NettingBaseQty
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt :=FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.NettingBaseQty1 ''%2'',''%3'',''%4''',
+                 GetDBName, pComp, lDateTxt, pScheme);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoNettingBaseQTYmis@1101495021(pComp@1101495002 : Text[30];pDate@1101495001 : Date;pScheme@1101495000 : Code[20];VAR SqlRecordset@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495014 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495013 : Text[500];
+      lScript@1101495012 : Text[500];
+      ls@1101495011 : Text[500];
+      lret@1101495010 : Boolean;
+      li@1101495009 : Integer;
+      lcount@1101495008 : Integer;
+      ld@1101495007 : Dialog;
+      lDimVal@1101495006 : Code[20];
+      lDateTxt@1101495005 : Text[30];
+      lDate2Txt@1101495004 : Text[30];
+    BEGIN
+      //Неттинг MIS:  NettingBaseQtyMIS
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.NettingBaseQtyMIS ''%2'',''%3'',''%4''',
+                 GetDBName, pComp, lDateTxt, pScheme);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoRevalMTM@1101495024(pComp@1101495001 : Text[30];pDate@1101495000 : Date;VAR SqlRecordset@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495013 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495012 : Text[500];
+      lScript@1101495011 : Text[500];
+      ls@1101495010 : Text[500];
+      lret@1101495009 : Boolean;
+      li@1101495008 : Integer;
+      lcount@1101495007 : Integer;
+      ld@1101495006 : Dialog;
+      lDimVal@1101495005 : Code[20];
+      lDateTxt@1101495004 : Text[30];
+      lDate2Txt@1101495003 : Text[30];
+    BEGIN
+      //Переоценка ФИ MTMRevalQty
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.MTMRevalQty_TestFuture_2 ''%2'',''%3''',
+                 GetDBName, pComp, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoFuturesRealized_1@1101495026(pComp@1101495001 : Text[30];pDate@1101495000 : Date;VAR SqlRecordset@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495013 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495012 : Text[500];
+      lScript@1101495011 : Text[500];
+      ls@1101495010 : Text[500];
+      lret@1101495009 : Boolean;
+      li@1101495008 : Integer;
+      lcount@1101495007 : Integer;
+      ld@1101495006 : Dialog;
+      lDimVal@1101495005 : Code[20];
+      lDateTxt@1101495004 : Text[30];
+      lDate2Txt@1101495003 : Text[30];
+    BEGIN
+      //Реализация прибыли для фьючерсов часть 1
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.FuturesRealized_1 ''%2'',''%3''',
+                 GetDBName, pComp, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoFuturesRealized_2@1101495028(pComp@1101495015 : Text[30];pDate@1101495014 : Date;pFI@1101495002 : Code[20];pAcc@1101495001 : Code[20];VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495013 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495012 : Text[500];
+      lScript@1101495011 : Text[500];
+      ls@1101495010 : Text[500];
+      lret@1101495009 : Boolean;
+      li@1101495008 : Integer;
+      lcount@1101495007 : Integer;
+      ld@1101495006 : Dialog;
+      lDimVal@1101495005 : Code[20];
+      lDateTxt@1101495004 : Text[30];
+      lDate2Txt@1101495003 : Text[30];
+    BEGIN
+      //Реализация прибыли для фьючерсов часть 2
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.FuturesRealized_2 ''%2'',''%3'',''%4'',''%5''',
+                 GetDBName, pComp, lDateTxt, pFI, pAcc);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoNettingFutures@1101495031(pComp@1101495001 : Text[30];pDate@1101495000 : Date;VAR SqlRecordset@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495013 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495012 : Text[500];
+      lScript@1101495011 : Text[500];
+      ls@1101495010 : Text[500];
+      lret@1101495009 : Boolean;
+      li@1101495008 : Integer;
+      lcount@1101495007 : Integer;
+      ld@1101495006 : Dialog;
+      lDimVal@1101495005 : Code[20];
+      lDateTxt@1101495004 : Text[30];
+      lDate2Txt@1101495003 : Text[30];
+    BEGIN
+      //Суммовой неттинг фьючерсов NettingFutures
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.NettingFutures ''%2'',''%3''',
+                 GetDBName, pComp, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoCardFX@1101495033(pComp@1101495001 : Text[30];pType@1101495000 : Integer;VAR SqlRecordset@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495012 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495011 : Text[500];
+      lScript@1101495010 : Text[500];
+    BEGIN
+      //Переоценка FX карточек Банковских Счетов/Клиентов/Поставщиков
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.GetFXRevalCombinations ''%2'',''%3''', GetDBName, pComp, pType);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoACY@1101495036(pComp@1101495002 : Text[30];pAcc@1101495001 : Code[20];pDate@1101495000 : Date;VAR SqlRecordset@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495006 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495005 : Text[500];
+      lScript@1101495004 : Text[500];
+      lDateTxt@1101495007 : Text[30];
+    BEGIN
+      //Переоценка ДОВ
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt :=FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccBalance ''%2'',''%3'',''%4''', GetDBName, pComp, pAcc, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE ExportBalanceReversMTM@1101495038(pComp@1101495002 : Text[30];pAcc@1101495001 : Code[20];pDate@1101495000 : Date;VAR SqlRecordset@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495007 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495006 : Text[500];
+      lScript@1101495005 : Text[500];
+      lDateTxt@1101495004 : Text[30];
+    BEGIN
+      //выгрузка остатков
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt :=FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.ExportBalanceReversMTM ''%2'',''%3'',''%4''','CONS-MIS', pComp, pAcc, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAppCard@1101495040(pComp@1101495006 : Text[30];pType@1101495005 : Integer;ApplnBetweenCurr@1101495004 : Integer;ApplnBetweenPG@1101495003 : Integer;StartingDate@1101495002 : Date;EndingDate@1101495001 : Date;CVFilter@1101495000 : Text[150];VAR SqlRecordset@1101495007 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495019 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495018 : Text[500];
+      lScript@1101495017 : Text[500];
+      ls@1101495016 : Text[500];
+      lret@1101495015 : Boolean;
+      li@1101495014 : Integer;
+      lcount@1101495013 : Integer;
+      ld@1101495012 : Dialog;
+      lDimVal@1101495011 : Code[20];
+      lDateTxt@1101495010 : Text[30];
+      tStartingDate@1101495009 : Text[30];
+      tEndingDate@1101495008 : Text[30];
+    BEGIN
+      //Карточки кклиентов для применения
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      tStartingDate := FORMAT(StartingDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      tEndingDate := FORMAT(EndingDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      IF (STRPOS(CVFilter,'.') > 0) OR
+        (STRPOS(CVFilter,'|') > 0) OR
+        (STRPOS(CVFilter,'<') > 0) OR
+        (STRPOS(CVFilter,'>') > 0) OR
+        (STRPOS(CVFilter,'=') > 0) OR
+        (STRPOS(CVFilter,'?') > 0) OR
+        (STRPOS(CVFilter,'%') > 0) OR
+        (STRPOS(CVFilter,'&') > 0)
+      THEN
+        CVFilter := '';
+
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.GetAppContr ''%2'',''%3'',''%4'',''%5'',''%6'',''%7'',''%8''', GetDBName, pComp, pType,
+                             ApplnBetweenCurr, ApplnBetweenPG, tStartingDate, tEndingDate, CVFilter);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAppCardEntryNo@1101495006(pComp@1000000004 : Text[30];pType@1000000000 : Integer;ApplnBetweenCurr@1101495002 : Integer;ApplnBetweenPG@1101495003 : Integer;Contr@1101495006 : Code[20];StartingDate@1101495000 : Date;EndingDate@1101495001 : Date;VAR SqlRecordset@1101495007 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495008 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+      tStartingDate@1101495005 : Text[30];
+      tEndingDate@1101495004 : Text[30];
+    BEGIN
+      //Карточки кклиентов для применения
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      tStartingDate := FORMAT(StartingDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      tEndingDate := FORMAT(EndingDate, 0,'<Year4>-<Month,2>-<Day,2>');
+
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.GetAppContrEntryNo ''%2'',''%3'',''%4'',''%5'',''%6'',''%7'',''%8''',
+                             GetDBName, pComp, pType,
+                             ApplnBetweenCurr, ApplnBetweenPG, Contr, tStartingDate, tEndingDate);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdo2@1101495053(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;pCur@1000000000 : Code[20];VAR SqlConnection@1101495004 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";pGroupByBU@1101495002 : Boolean);
+    VAR
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+      lGroupByBU2@1101495003 : Integer;
+    BEGIN
+      //Переоценка FX
+      IF pGroupByBU THEN
+        lGroupByBU2 := 1
+      ELSE
+        lGroupByBU2 := 0;
+      lDateTxt:= FORMAT(pDate,0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccFxBalance ''%2'',''%3'',''%4'',''%5'', %6',
+        GetDBName, pComp, pAcc, lDateTxt, pCur, lGroupByBU2);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoACY2@1101495052(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;VAR SqlConnection@1101495004 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";pGroupByBU@1101495002 : Boolean;l_codeCostFilter@1000000000 : Code[1024]);
+    VAR
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+      lGroupByBU2@1101495003 : Integer;
+    BEGIN
+      //Переоценка ДОВ
+      IF pGroupByBU THEN
+        lGroupByBU2 := 1
+      ELSE
+        lGroupByBU2 := 0;
+
+      lDateTxt := FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccBalance ''%2'',''%3'',''%4'',''%5'',''%6''',
+                                GetDBName, pComp, pAcc, lDateTxt, lGroupByBU2, l_codeCostFilter);
+      ExecuteSqlRecordset('', lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoACY5@1101495022(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";pGroupByBU@1101495002 : Boolean;l_codeCostFilter@1000000000 : Code[1024]);
+    VAR
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+      lGroupByBU2@1101495003 : Integer;
+    BEGIN
+      //NCS-2417 > AAP Переоценка ДОВ
+
+      IF pGroupByBU THEN
+        lGroupByBU2 := 1
+      ELSE
+        lGroupByBU2 := 0;
+
+      lDateTxt :=FORMAT(pDate, 0,'<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccBalance_tuning ''%2'',''%3'',''%4'',''%5'',''%6''',
+                                GetDBName,pComp,pAcc,lDateTxt,lGroupByBU2,l_codeCostFilter);
+      ExecuteSqlRecordset('', lScript, SqlConnection, SqlRecordset);
+      //NCS-2417 < AAP
+    END;
+
+    PROCEDURE ExportBalance@1000000000(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+    BEGIN
+      //выгрузка остатков
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.ExportBalance ''%2'',''%3'',''%4''','CONS-MIS', pComp, pAcc, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE ExportCapital@1101495001(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+    BEGIN
+      //выгрузка остатков
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.ExportCapital ''%2'',''%3'',''%4''','NAV-Offshores', pComp, pAcc, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE ExportBalanceForPosition@1000000019(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+    BEGIN
+      // Копия процедуры ExportBalance для загрузки начальных остатков по счетам позиции
+      // без группировки по Local G/L Account
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lDateTxt := FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.ExportBalanceForPosition ''%2'',''%3'',''%4''','NAV-Offshores', pComp, pAcc, lDateTxt);
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_CostClose@1000000022(p_txtComp@1000000006 : Text[30];p_codeAcc@1000000005 : Code[20];p_Date@1000000004 : Date;p_codeCost@1000000002 : Code[20];VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDate@1000000003 : Text[30];
+    BEGIN
+      l_txtDate := FORMAT(p_Date, 0, 9);
+      l_txtScript := STRSUBSTNO('EXECUTE [%1].dbo.td_CostClose ''%2'',''%3'',''%4'',''%5''',
+                            GetDBName,
+                            p_codeAcc,
+                            p_txtComp,
+                            l_txtDate,
+                            p_codeCost);
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoFADetailed@1101495013(pCompanyName@1101495000 : Text[50];pFAType@1101495001 : Integer;pDeprBook@1101495002 : Code[10];pStartDate@1101495003 : Date;pEndDate@1101495004 : Date;VAR SqlRecordset@1101495009 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495005 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495007 : Text[500];
+      lScript@1101495006 : Text[500];
+    BEGIN
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lScript := STRSUBSTNO('EXECUTE dbo.[FA_Detailed] ''%1'',''%2'',''%3'',''%4'',''%5''',
+                            pCompanyName,
+                            FORMAT(pFAType),
+                            pDeprBook,
+                            FORMAT(pStartDate, 0,'<Year4>-<Month,2>-<Day,2>'),
+                            FORMAT(pEndDate, 0,'<Year4>-<Month,2>-<Day,2>'));
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoOriginalMaturity@1101495050(pReportDate@1101495001 : Date;pCompanyName@1101495000 : Text[50];pCurrType@1101495002 : Code[3];VAR SqlRecordset@1101495007 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495005 : Text[500];
+      lScript@1101495004 : Text[500];
+    BEGIN
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lScript := STRSUBSTNO('EXECUTE [dbo].[Original_Maturity] ''%1'',''%2'',''%3''',
+                            FORMAT(pReportDate, 0, '<Year4>-<Month,2>-<Day,2>'),
+                            pCompanyName,
+                            pCurrType
+                            );
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetAdoRemainigMaturity@1101495049(pReportDate@1101495001 : Date;pCompanyName@1101495000 : Text[50];pCurrType@1101495002 : Code[3];VAR SqlRecordset@1101495007 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1101495005 : Text[500];
+      lScript@1101495004 : Text[500];
+    BEGIN
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      lScript := STRSUBSTNO('EXECUTE [dbo].[Remaining_Maturity]''%1'',''%2'',''%3''',
+                            FORMAT(pReportDate, 0,'<Year4>-<Month,2>-<Day,2>'),
+                            pCompanyName,
+                            pCurrType
+                            );
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_GetAdo3@1000000020(p_txtComp@1000000006 : Text[30];p_codeAcc@1000000005 : Code[20];p_Date@1000000004 : Date;p_codeCur@1000000002 : Code[20];VAR SqlConnection@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";p_GroupByBU@1101495001 : Boolean);
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDate@1000000003 : Text[30];
+      l_intGroupByBU2@1101495002 : Integer;
+    BEGIN
+      //Переоценка FX по курсу ЦБ
+      IF p_GroupByBU THEN
+        l_intGroupByBU2 := 1
+      ELSE
+        l_intGroupByBU2 := 0;
+
+      l_txtDate := FORMAT(p_Date, 0, 9);
+      l_txtScript := STRSUBSTNO('EXECUTE [%1].dbo.td_AccFxBalance_CB ''%2'',''%3'',''%4'',''%5'', %6',
+                            GetDBName,
+                            p_txtComp,
+                            p_codeAcc,
+                            l_txtDate,
+                            p_codeCur,
+                            l_intGroupByBU2);
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_GetAdoACY3@1101495048(p_txtComp@1000000004 : Text[30];p_codeAcc@1000000005 : Code[20];p_Date@1000000006 : Date;VAR SqlConnection@1101495004 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";p_GroupByBU@1101495002 : Boolean);
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDate@1000000003 : Text[30];
+      l_intGroupByBU2@1101495003 : Integer;
+    BEGIN
+      //Переоценка ДОВ по курсу ЦБ
+      IF p_GroupByBU THEN
+        l_intGroupByBU2 := 1
+      ELSE
+        l_intGroupByBU2 := 0;
+
+      l_txtDate :=FORMAT(p_Date, 0, 9);
+      l_txtScript := STRSUBSTNO('EXECUTE [%1].dbo.td_AccBalance_CB ''%2'',''%3'',''%4'',''%5''',
+                          GetDBName,
+                          p_txtComp,
+                          p_codeAcc,
+                          l_txtDate,
+                          l_intGroupByBU2);
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetDataSet4repCreditRegister@1101495047(pComp@1000000004 : Text[30];PBalanceDate@1101495001 : Date;VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+    BEGIN
+      // получение датасета под отчет CreditRegister
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      IF PBalanceDate = 0D THEN
+        PBalanceDate := WORKDATE;
+      lScript:= STRSUBSTNO('EXECUTE [%1].dbo.GetDataSet4repCreditRegister ''%2'', ''%3'' ',
+                          GetDBName,
+                          pComp,
+                          GetDateText(PBalanceDate)
+                          );
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetDataSet4repDepositRegister@1101495046(pComp@1000000004 : Text[30];PBalanceDate@1101495001 : Date;VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      lConnectionString@1000000011 : Text[500];
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+    BEGIN
+      // получение датасета под отчет CreditRegister
+      lConnectionString := GetConnectionString;
+      OpenSqlConnection(lConnectionString, SqlConnection);
+
+      IF PBalanceDate = 0D THEN
+        PBalanceDate := WORKDATE;
+
+      lScript:= STRSUBSTNO('EXECUTE [%1].dbo.GetDataSet4repDepositRegister ''%2'', ''%3'' ',
+                          GetDBName,
+                          pComp,
+                          GetDateText(PBalanceDate)
+                          );
+      ExecuteSqlRecordset(lConnectionString, lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE GetDateText@1101495016(PDate@1101495000 : Date) : Text[10];
+    BEGIN
+      // NC NCS-1115 > DP
+      EXIT(FORMAT(PDate, 0,'<Year4>-<Month,2>-<Day,2>'));
+      // NC NCS-1115 < DP
+    END;
+
+    PROCEDURE GetFiReDataset@1101495011(CompName@1101495003 : Text[30];ExportDate@1101495001 : Date;SessionId@1101495002 : Code[30];VAR SqlRecordset@1101495008 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      ConnectionString@1101495005 : Text[500];
+      Script@1101495004 : Text[500];
+      DateTxt@1101495007 : Text[30];
+    BEGIN
+      ConnectionString := GetConnectionString;
+      OpenSqlConnection(ConnectionString, SqlConnection);
+
+      DateTxt := FORMAT(ExportDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      Script := STRSUBSTNO('EXECUTE [%1].dbo.FiRe_CollectData ''%2'',''%3'',''%4''',
+                 GetDBName, CompName, DateTxt, SessionId);
+      ExecuteSqlRecordset(ConnectionString, Script, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_AccNetting@1000000021(p_txtComp@1000000006 : Text[30];p_codeAcc1@1000000005 : Code[20];p_Date@1000000004 : Date;VAR SqlConnection@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495002 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";pGroupByBU@1101495001 : Boolean);
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDate@1000000003 : Text[30];
+      lGroupByBU@1101495000 : Integer;
+    BEGIN
+      l_txtDate := FORMAT(p_Date, 0, 9);
+      IF pGroupByBU THEN
+        lGroupByBU := 1
+      ELSE
+        lGroupByBU := 0;
+
+      l_txtScript := STRSUBSTNO('EXECUTE [%1].dbo.AccountNetting ''%2'',''%3'',''%4'',''%5''',
+                          GetDBName,
+                          p_codeAcc1,
+                          p_txtComp,
+                          l_txtDate,
+                          lGroupByBU
+                          );
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_RunJobOlapOFSInc@1000000023(VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection");
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      SqlCommand@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+    BEGIN
+      l_txtScript := STRSUBSTNO('EXECUTE [%1].dbo.td_run_olap_INC_Offshores', GetDBName);
+      SqlCommand := SqlCommand.SqlCommand(l_txtScript, SqlConnection);
+      SqlCommand.CommandTimeout(0);
+      SqlCommand.ExecuteScalar;
+    END;
+
+    PROCEDURE fn_DimClose@1000000026(p_txtComp@1000000006 : Text[30];p_codeAcc@1000000005 : Code[20];p_intAccType@1000000011 : Integer;p_DateFrom@1000000004 : Date;p_DateTo@1000000007 : Date;p_codeDim@1000000002 : Code[20];p_codeDimValue@1000000009 : Code[20];p_codeNewDimValue@1000000012 : Code[20];VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";p_intRdOnly@1000000013 : Integer;p_boolwoLCY@1000000014 : Boolean;p_boolwoLocAcc@1000000015 : Boolean;p_boolPrintOnly@1000000016 : Boolean);
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDateFrom@1000000003 : Text[30];
+      l_txtDateTo@1000000008 : Text[30];
+    BEGIN
+      l_txtDateFrom := FORMAT(p_DateFrom, 0, 9);
+      l_txtDateTo := FORMAT(p_DateTo, 0, 9);
+
+      l_txtScript :=
+        STRSUBSTNO(
+          'EXECUTE [%1].dbo.td_DimClose ''%2'',''%3'',''%4'',''%5'',''%6'',''%7'',''%8'',''%9'',''%10'',''%11'',''%12'',''%13''',
+            GetDBName,
+            p_codeAcc,
+            p_intAccType,
+            p_txtComp,
+            l_txtDateFrom,
+            l_txtDateTo,
+            p_codeDim,
+            p_codeDimValue,
+            p_codeNewDimValue,
+            p_intRdOnly
+            ,FORMAT(p_boolwoLCY, 0, 2)
+            ,FORMAT(p_boolwoLocAcc, 0, 2)
+            ,FORMAT(p_boolPrintOnly, 0, 2)
+            );
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_DisorderCorr@1000000025(p_txtComp@1000000006 : Text[30];p_codeAcc@1000000005 : Code[20];p_DateFrom@1000000004 : Date;p_DateTo@1000000007 : Date;p_codeBU@1000000002 : Code[10];p_boolLCY@1000000009 : Boolean;VAR SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDateFrom@1000000003 : Text[30];
+      l_txtDateTo@1000000008 : Text[30];
+      l_int@1000000011 : Integer;
+    BEGIN
+      l_txtDateFrom := FORMAT(p_DateFrom, 0, 9);
+      l_txtDateTo := FORMAT(p_DateTo, 0, 9);
+
+      l_txtScript :=
+        STRSUBSTNO('EXECUTE [%1].dbo.td_DisorderCorrection ''%2'',''%3'',''%4'',''%5'',''%6'',''%7''',
+          GetDBName,
+          p_codeAcc,
+          p_txtComp,
+          l_txtDateFrom,
+          l_txtDateTo,
+          p_codeBU
+          ,FORMAT(p_boolLCY, 0, 2)
+          );
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_AccNetting2@1101495045(p_txtComp@1000000006 : Text[30];p_NettingCode@1000000005 : Code[20];p_NettingLine@1101495002 : Integer;p_Date@1000000004 : Date;p_JnlTemp@1101495003 : Code[20];p_JnlBatch@1101495004 : Code[20];p_JnlLine@1101495005 : Integer;p_GroupByBU@1101495006 : Boolean;VAR SqlConnection@1101495007 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      l_txtDate@1000000003 : Text[30];
+      lGroupByBU@1101495000 : Integer;
+    BEGIN
+      l_txtDate := FORMAT(p_Date, 0, 9);
+      IF p_GroupByBU THEN
+        lGroupByBU := 1
+      ELSE
+        lGroupByBU := 0;
+      l_txtScript :=
+        STRSUBSTNO('EXECUTE [%1].dbo.AccountNetting2 ''%2'',%3,''%4'',''%5'',%6,''%7'',''%8'',%9',
+          GetDBName,
+          p_NettingCode,
+          p_NettingLine,
+          p_txtComp,
+          l_txtDate,
+          lGroupByBU,
+          p_JnlTemp,
+          p_JnlBatch,
+          p_JnlLine
+          );
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_GetAdoACY4@1101495044(pComp@1000000004 : Text[30];pAcc@1000000005 : Code[20];pDate@1000000006 : Date;VAR SqlConnection@1101495004 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";pGroupByBU@1101495002 : Boolean;l_codeCostFilter@1000000000 : Code[1024]);
+    VAR
+      lScript@1000000010 : Text[500];
+      ls@1000000009 : Text[500];
+      lret@1000000008 : Boolean;
+      li@1000000007 : Integer;
+      lcount@1210004 : Integer;
+      ld@1210005 : Dialog;
+      lDimVal@1210002 : Code[20];
+      lDateTxt@1000000003 : Text[30];
+      lGroupByBU2@1101495003 : Integer;
+    BEGIN
+      //Переоценка ДОВ ЦБ
+      IF pGroupByBU THEN
+        lGroupByBU2 := 1
+      ELSE
+        lGroupByBU2 := 0;
+      lDateTxt :=FORMAT(pDate, 0, '<Year4>-<Month,2>-<Day,2>');
+      lScript := STRSUBSTNO('EXECUTE [%1].dbo.AccBalance_CB ''%2'',''%3'',''%4'',''%5'',''%6''',
+                                GetDBName,pComp,pAcc,lDateTxt,lGroupByBU2,l_codeCostFilter);
+      ExecuteSqlRecordset('', lScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_AccNetting_Intrabook@1101495020(p_txtComp@1101495012 : Text[30];p_NettingCode@1101495011 : Code[20];p_NettingLine@1101495010 : Integer;p_Date@1101495009 : Date;p_JnlTemp@1101495008 : Code[20];p_JnlBatch@1101495007 : Code[20];p_JnlLine@1101495006 : Integer;p_GroupByBU@1101495005 : Boolean;VAR SqlConnection@1101495003 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";VAR SqlRecordset@1101495013 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      l_txtScript@1101495002 : Text[500];
+      l_txtDate@1101495001 : Text[30];
+      lGroupByBU@1101495000 : Integer;
+    BEGIN
+      l_txtDate := FORMAT(p_Date, 0, 9);
+      IF p_GroupByBU THEN
+        lGroupByBU := 1
+      ELSE
+        lGroupByBU := 0;
+      l_txtScript :=
+        STRSUBSTNO('EXECUTE [%1].dbo.AccountNetting_Intrabook ''%2'',%3,''%4'',''%5'',%6,''%7'',''%8'',%9',
+          GetDBName,
+          p_NettingCode,
+          p_NettingLine,
+          p_txtComp,
+          l_txtDate,
+          lGroupByBU,
+          p_JnlTemp,
+          p_JnlBatch,
+          p_JnlLine
+          );
+      ExecuteSqlRecordset('', l_txtScript, SqlConnection, SqlRecordset);
+    END;
+
+    PROCEDURE fn_RunJob@1000000024(VAR SqlConnection@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";p_txtJobName@1000000000 : Text[250];p_txtServerName@1000000001 : Text[50]);
+    VAR
+      l_txtScript@1000000010 : Text[500];
+      SqlCommand@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+    BEGIN
+      //TDRANCS-2428>
+      l_txtScript := STRSUBSTNO('EXECUTE [%1].dbo.td_RunJob ''%2'',''%3''',
+                            GetDBName,
+                            p_txtJobName,
+                            p_txtServerName);
+      SqlCommand := SqlCommand.SqlCommand(l_txtScript,SqlConnection);
+      SqlCommand.CommandTimeout(0); // Timeout set to indefinitely
+      SqlCommand.ExecuteScalar;
+      //NC NOS026 < SPA
+      //TDRANCS-2428<
+    END;
+
+    PROCEDURE GetGFODuplicates@1000000027(VAR SqlRecordset@1101495000 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      SqlConnection@1101495001 : DotNet "'System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      ConnectionString@1101495005 : Text[500];
+      Script@1101495004 : Text[500];
+    BEGIN
+      //NCS-2489 > AA
+      ConnectionString := GetConnectionString;
+      OpenSqlConnection(ConnectionString,SqlConnection);
+
+      Script := STRSUBSTNO('EXECUTE [%1].dbo.p_check_GFO_settings',GetDBName);
+      ExecuteSqlRecordset(ConnectionString, Script, SqlConnection, SqlRecordset);
+      //NCS-2489 < AA
+    END;
+
+    BEGIN
+    {
+      NC NOS-26 SPA Миграция на NAV2017, изменено название объекта
+      ---------------------------
+      TDRANCS-2428 added fn_RunJob
+      NCS-2417 AAP Создана GetAdoACY5 на базе GetAdoACY2
+      NC NCS-2489 AA Created function GetGFODuplicates
+      NC NOS-26 SPA Changed func GetServerName,GetDBName -> Local = No
+                    Changed func GetDBName -> ActiveSession record added
+    }
+    END.
+  }
+}
+

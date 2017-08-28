@@ -1,0 +1,214 @@
+OBJECT Report 12470 Copy Item Document
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Copy Item Document;
+               RUS=Копирование товарного документа];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CopyItemDocMgt.SetProperties(IncludeHeader,RecalculateLines,FALSE,FALSE,AutoFillAppliesFields);
+                  CopyItemDocMgt.CopyItemDoc(DocType,DocNo,ItemDocHeader)
+                END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   IF DocNo <> '' THEN BEGIN
+                     CASE DocType OF
+                       DocType::Receipt:
+                         IF FromItemDocHeader.GET(FromItemDocHeader."Document Type"::Receipt,DocNo) THEN;
+                       DocType::Shipment:
+                         IF FromItemDocHeader.GET(FromItemDocHeader."Document Type"::Shipment,DocNo) THEN;
+                       DocType::"Posted Receipt":
+                         IF FromItemRcptHeader.GET(DocNo) THEN
+                           FromItemDocHeader.TRANSFERFIELDS(FromItemRcptHeader);
+                       DocType::"Posted Shipment":
+                         IF FromItemShptHeader.GET(DocNo) THEN
+                           FromItemDocHeader.TRANSFERFIELDS(FromItemShptHeader);
+                     END;
+                     IF FromItemDocHeader."No." = '' THEN
+                       DocNo := '';
+                   END;
+                   ValidateDocNo;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Document Type;
+                             RUS=Тип документа];
+                  OptionCaptionML=[ENU=Receipt,Shipment,Posted Receipt,Posted Shipment;
+                                   RUS=Прих. накладная,Расх. накладная,Учт. прих. накладная,Учт. расх. накладная];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocType;
+                  OnValidate=BEGIN
+                               DocNo := '';
+                               ValidateDocNo;
+                             END;
+                              }
+
+      { 8   ;2   ;Field     ;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Номер документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocNo;
+                  OnValidate=BEGIN
+                               ValidateDocNo;
+                             END;
+
+                  OnLookup=BEGIN
+                             LookupDocNo;
+                           END;
+                            }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Include Header;
+                             RUS=Включать заголовок];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=IncludeHeader;
+                  OnValidate=BEGIN
+                               ValidateIncludeHeader;
+                             END;
+                              }
+
+      { 4   ;2   ;Field     ;
+                  CaptionML=[ENU=Recalculate Lines;
+                             RUS=Пересчитать строки];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=RecalculateLines;
+                  OnValidate=BEGIN
+                               RecalculateLines := TRUE;
+                             END;
+                              }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Specify appl. entries;
+                             RUS=Указание примененных операций];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AutoFillAppliesFields }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ItemDocHeader@1007 : Record 12450;
+      FromItemDocHeader@1010 : Record 12450;
+      FromItemRcptHeader@1012 : Record 12451;
+      FromItemShptHeader@1014 : Record 12454;
+      CopyItemDocMgt@1008 : Codeunit 12458;
+      DocType@1026 : 'Receipt,Shipment,Posted Receipt,Posted Shipment';
+      DocNo@1027 : Code[20];
+      IncludeHeader@1028 : Boolean;
+      RecalculateLines@1029 : Boolean;
+      AutoFillAppliesFields@1210000 : Boolean;
+
+    PROCEDURE SetItemDocHeader@2(VAR NewItemDocHeader@1000 : Record 12450);
+    BEGIN
+      ItemDocHeader := NewItemDocHeader;
+    END;
+
+    LOCAL PROCEDURE ValidateDocNo@10();
+    BEGIN
+      IF DocNo = '' THEN
+        FromItemDocHeader.INIT
+      ELSE
+        IF FromItemDocHeader."No." = '' THEN BEGIN
+          FromItemDocHeader.INIT;
+          CASE DocType OF
+            DocType::Receipt,
+            DocType::Shipment:
+              FromItemDocHeader.GET(DocType,DocNo);
+            DocType::"Posted Receipt":
+              BEGIN
+                FromItemRcptHeader.GET(DocNo);
+                FromItemDocHeader.TRANSFERFIELDS(FromItemRcptHeader);
+              END;
+            DocType::"Posted Shipment":
+              BEGIN
+                FromItemShptHeader.GET(DocNo);
+                FromItemDocHeader.TRANSFERFIELDS(FromItemShptHeader);
+              END;
+          END;
+        END;
+      FromItemDocHeader."No." := '';
+
+      IncludeHeader := TRUE;
+      ValidateIncludeHeader;
+    END;
+
+    LOCAL PROCEDURE LookupDocNo@3();
+    BEGIN
+      CASE DocType OF
+        DocType::Receipt,
+        DocType::Shipment:
+          BEGIN
+            FromItemDocHeader.FILTERGROUP := 2;
+            FromItemDocHeader.SETRANGE("Document Type",DocType);
+            IF ItemDocHeader."Document Type" = DocType THEN
+              FromItemDocHeader.SETFILTER("No.",'<>%1',ItemDocHeader."No.");
+            FromItemDocHeader.FILTERGROUP := 0;
+            FromItemDocHeader."Document Type" := DocType;
+            FromItemDocHeader."No." := DocNo;
+            IF DocType = DocType::Receipt THEN BEGIN
+              IF PAGE.RUNMODAL(PAGE::"Item Receipts",FromItemDocHeader,FromItemDocHeader."No.") = ACTION::LookupOK THEN
+                DocNo := FromItemDocHeader."No.";
+            END ELSE BEGIN
+              IF PAGE.RUNMODAL(PAGE::"Item Shipments",FromItemDocHeader,FromItemDocHeader."No.") = ACTION::LookupOK THEN
+                DocNo := FromItemDocHeader."No.";
+            END;
+          END;
+        DocType::"Posted Receipt":
+          BEGIN
+            FromItemRcptHeader."No." := DocNo;
+            IF PAGE.RUNMODAL(0,FromItemRcptHeader) = ACTION::LookupOK THEN
+              DocNo := FromItemRcptHeader."No.";
+          END;
+        DocType::"Posted Shipment":
+          BEGIN
+            FromItemShptHeader."No." := DocNo;
+            IF PAGE.RUNMODAL(0,FromItemShptHeader) = ACTION::LookupOK THEN
+              DocNo := FromItemShptHeader."No.";
+          END;
+      END;
+      ValidateDocNo;
+    END;
+
+    LOCAL PROCEDURE ValidateIncludeHeader@4();
+    BEGIN
+      RecalculateLines :=
+        NOT IncludeHeader;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

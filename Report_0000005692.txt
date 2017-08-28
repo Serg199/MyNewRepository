@@ -1,0 +1,848 @@
+OBJECT Report 5692 Calculate Depreciation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28.06.17;
+    Time=11:58:39;
+    Modified=Yes;
+    Version List=NAVW110.00,NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Depreciation;
+               RUS=Расчет амортизации];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   //NС TR059 > EB
+                   PostingDescription := Text700;
+                   //NС TR059 < EB
+                 END;
+
+    OnPreReport=BEGIN
+                  DeprBook.GET(DeprBookCode);
+                  IF DeprUntilDate = 0D THEN
+                    ERROR(Text000,FAJnlLine.FIELDCAPTION("FA Posting Date"));
+                  IF PostingDate = 0D THEN
+                    PostingDate := DeprUntilDate;
+                  IF UseForceNoOfDays AND (DaysInPeriod = 0) THEN
+                    ERROR(Text001);
+
+                  IF DeprBook."Use Same FA+G/L Posting Dates" AND (DeprUntilDate <> PostingDate) THEN
+                    ERROR(
+                      Text002,
+                      FAJnlLine.FIELDCAPTION("FA Posting Date"),
+                      FAJnlLine.FIELDCAPTION("Posting Date"),
+                      DeprBook.FIELDCAPTION("Use Same FA+G/L Posting Dates"),
+                      FALSE,
+                      DeprBook.TABLECAPTION,
+                      DeprBook.FIELDCAPTION(Code),
+                      DeprBook.Code);
+
+                  Window.OPEN(
+                    Text003 +
+                    Text004 +
+                    Text005);
+                END;
+
+    OnPostReport=VAR
+                   PageGenJnlLine@1000 : Record 81;
+                   PageFAJnlLine@1001 : Record 5621;
+                 BEGIN
+                   IF (FAJnlLineCreatedCount = 0) AND (GenJnlLineCreatedCount = 0) THEN BEGIN
+                     MESSAGE(CompletionStatsMsg);
+                     EXIT;
+                   END;
+
+                   //NC NOS-26 > SPA
+                   IF CurrReport.USEREQUESTPAGE THEN BEGIN
+                   //NC NOS-26 < SPA
+                     IF FAJnlLineCreatedCount > 0 THEN
+                       IF CONFIRM(CompletionStatsFAJnlQst,TRUE,FAJnlLineCreatedCount)
+                       THEN BEGIN
+                         PageFAJnlLine.SETRANGE("Journal Template Name",FAJnlLine."Journal Template Name");
+                         PageFAJnlLine.SETRANGE("Journal Batch Name",FAJnlLine."Journal Batch Name");
+                         PageFAJnlLine.FINDFIRST;
+                         PAGE.RUN(PAGE::"Fixed Asset Journal",PageFAJnlLine);
+                       END;
+
+                     IF GenJnlLineCreatedCount > 0 THEN
+                       IF CONFIRM(CompletionStatsGenJnlQst,TRUE,GenJnlLineCreatedCount)
+                       THEN BEGIN
+                         PageGenJnlLine.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                         PageGenJnlLine.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                         PageGenJnlLine.FINDFIRST;
+                         PAGE.RUN(PAGE::"Fixed Asset G/L Journal",PageGenJnlLine);
+                       END;
+                   //NC NOS-26 > SPA
+                   END;
+                   //NC NOS-26 < SPA
+                 END;
+
+  }
+  DATASET
+  {
+    { 3794;    ;DataItem;                    ;
+               DataItemTable=Table5600;
+               OnPreDataItem=BEGIN
+                               DeprBook.GET(DeprBookCode);
+                               IF NOT (DeprBook."No. of Days in Fiscal Year" IN [0,360]) THEN
+                                 IF NOT CONFIRM(Text12412,FALSE,DeprBookCode,DeprBook."No. of Days in Fiscal Year") THEN
+                                   CurrReport.BREAK;
+
+                               //NC >
+                               IF FACodeFilter<>'' THEN
+                                 SETFILTER("Fixed Asset"."No.",FACodeFilter);
+                               //NC <
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Inactive OR Blocked OR "Undepreciable FA" THEN
+                                    CurrReport.SKIP;
+
+                                  CalculateDepr.DepreciationBonus(DeprBonus);
+
+                                  //NC T#4651 > DP
+                                  CalculateDepr.SetForce30DaysPeriod(FALSE);
+                                  //NC T#4651 < DP
+
+                                  CalculateDepr.Calculate(
+                                    DeprAmount,Custom1Amount,NumberOfDays,Custom1NumberOfDays,
+                                    "No.",DeprBookCode,DeprUntilDate,EntryAmounts,0D,DaysInPeriod);
+                                  IF (DeprAmount <> 0) OR (Custom1Amount <> 0) THEN
+                                    Window.UPDATE(1,"No.")
+                                  ELSE
+                                    Window.UPDATE(2,"No.");
+
+                                  IF Custom1Amount <> 0 THEN
+                                    IF NOT DeprBook."G/L Integration - Custom 1" OR "Budgeted Asset" THEN BEGIN
+                                      FAJnlLineTmp."FA No." := "No.";
+                                      FAJnlLineTmp."FA Posting Type" := FAJnlLineTmp."FA Posting Type"::"Custom 1";
+                                      FAJnlLineTmp.Amount := Custom1Amount;
+                                      FAJnlLineTmp."No. of Depreciation Days" := Custom1NumberOfDays;
+                                      FAJnlLineTmp."FA Error Entry No." := Custom1ErrorNo;
+                                      FAJnlLineTmp."Line No." := FAJnlLineTmp."Line No." + 1;
+                                      FAJnlLineTmp."Location Code" := "Fixed Asset"."FA Location Code";
+                                      FAJnlLineTmp."Employee No." := "Fixed Asset"."Responsible Employee";
+                                      FAJnlLineTmp."Depr. Period Starting Date" := Period;
+                                      FAJnlLineTmp."Tax Difference Code" := "Tax Difference Code";
+                                      FAJnlLineTmp.INSERT;
+                                    END ELSE BEGIN
+                                      GenJnlLineTmp."Account No." := "No.";
+                                      GenJnlLineTmp."FA Posting Type" := GenJnlLineTmp."FA Posting Type"::"Custom 1";
+                                      GenJnlLineTmp.Amount := Custom1Amount;
+                                      GenJnlLineTmp."No. of Depreciation Days" := Custom1NumberOfDays;
+                                      GenJnlLineTmp."FA Error Entry No." := Custom1ErrorNo;
+                                      GenJnlLineTmp."Line No." := GenJnlLineTmp."Line No." + 1;
+                                      GenJnlLineTmp."FA Location Code" := "Fixed Asset"."FA Location Code";
+                                      GenJnlLineTmp."Employee No." := "Fixed Asset"."Responsible Employee";
+                                      GenJnlLineTmp."Depr. Period Starting Date" := Period;
+                                      GenJnlLineTmp."Tax Difference Code" := "Tax Difference Code";
+                                      GenJnlLineTmp.INSERT;
+                                    END;
+
+                                  IF DeprAmount <> 0 THEN
+                                    IF NOT DeprBook."G/L Integration - Depreciation" OR "Budgeted Asset" THEN BEGIN
+                                      FAJnlLineTmp."FA No." := "No.";
+                                      FAJnlLineTmp."FA Posting Type" := FAJnlLineTmp."FA Posting Type"::Depreciation;
+                                      FAJnlLineTmp.Amount := DeprAmount;
+                                      FAJnlLineTmp."No. of Depreciation Days" := NumberOfDays;
+                                      FAJnlLineTmp."FA Error Entry No." := ErrorNo;
+                                      FAJnlLineTmp."Line No." := FAJnlLineTmp."Line No." + 1;
+                                      FAJnlLineTmp."Depr. Period Starting Date" := Period;
+                                      FAJnlLineTmp."Location Code" := "Fixed Asset"."FA Location Code";
+                                      FAJnlLineTmp."Employee No." := "Fixed Asset"."Responsible Employee";
+                                      FAJnlLineTmp."Depr. Bonus" := DeprBonus;
+                                      FAJnlLineTmp."Tax Difference Code" := "Tax Difference Code";
+                                      FAJnlLineTmp.INSERT;
+                                    END ELSE BEGIN
+                                      GenJnlLineTmp."Account No." := "No.";
+                                      GenJnlLineTmp."FA Posting Type" := GenJnlLineTmp."FA Posting Type"::Depreciation;
+                                      GenJnlLineTmp.Amount := DeprAmount;
+                                      GenJnlLineTmp."No. of Depreciation Days" := NumberOfDays;
+                                      GenJnlLineTmp."FA Error Entry No." := ErrorNo;
+                                      GenJnlLineTmp."Line No." := GenJnlLineTmp."Line No." + 1;
+                                      GenJnlLineTmp."FA Location Code" := "Fixed Asset"."FA Location Code";
+                                      GenJnlLineTmp."Employee No." := "Fixed Asset"."Responsible Employee";
+                                      GenJnlLineTmp."Depr. Period Starting Date" := Period;
+                                      GenJnlLineTmp."Depr. Bonus" := DeprBonus;
+                                      GenJnlLineTmp."Tax Difference Code" := "Tax Difference Code";
+                                      GenJnlLineTmp.INSERT;
+                                    END;
+                                END;
+
+               OnPostDataItem=VAR
+                                "NCV >"@1101495004 : Integer;
+                                ConsolSetup@1101495003 : Record 50000;
+                                ConsolSource@1101495002 : Record 50001;
+                                GenJnlLine1@1101495001 : Record 81;
+                                FACard@1101495000 : Record 5600;
+                              BEGIN
+                                //NC PIF054 > DP
+                                Company.GET(COMPANYNAME);
+                                //IF Company.Type IN [Company.Type::"2", Company.Type::"3"] THEN BEGIN
+                                //NC NCS-1649 > USE
+                                {
+                                IF Company."Posting Type" IN [Company."Posting Type"::IFRS, Company."Posting Type"::MIS] THEN BEGIN
+                                }
+                                IF Company."Posting Type" IN [Company."Posting Type"::IFRS, Company."Posting Type"::MIS, Company."Posting Type"::GAAP] THEN BEGIN
+                                //NC NCS-1649 < USE
+                                  ConsolSetup.GET;
+                                  ConsolSetup.TESTFIELD("FA Import FA Jnl Template");
+                                  ConsolSetup.TESTFIELD("FA Import Journal Template");
+                                  //ConsolSource.SETRANGE(ConsolSource."FA Import Company Name",COMPANYNAME);
+                                  ConsolSource.SETRANGE("FA Source",TRUE);
+                                  IF ConsolSource.FINDLAST THEN BEGIN
+                                    ConsolSource.TESTFIELD("Depreciation FA Batch Name");
+                                    ConsolSource.TESTFIELD(ConsolSource."Depreciation Gen. Batch Name");
+                                  END;
+
+                                  GenJnlLine.SETRANGE("Journal Template Name",ConsolSetup."FA Import Journal Template");
+                                  GenJnlLine.SETRANGE("Journal Batch Name",ConsolSource."Depreciation Gen. Batch Name");
+                                  GenJnlLine."Journal Template Name" := ConsolSetup."FA Import Journal Template";
+                                  GenJnlLine."Journal Batch Name" := ConsolSource."Depreciation Gen. Batch Name";
+                                  GenJnlLine1.RESET;
+                                  GenJnlLine1.SETRANGE("Journal Template Name",ConsolSetup."FA Import Journal Template");
+                                  GenJnlLine1.SETRANGE("Journal Batch Name",ConsolSource."Depreciation Gen. Batch Name");
+                                  IF GenJnlLine1.FINDLAST THEN
+                                    GenJnlNextLineNo := GenJnlLine1."Line No." + 1000
+                                  ELSE
+                                    GenJnlNextLineNo := 1000;
+                                END;
+                                //NC PIF054 < DP
+
+                                WITH FAJnlLine DO BEGIN
+                                  IF FAJnlLineTmp.FIND('-') THEN BEGIN
+                                    LOCKTABLE;
+                                    FAJnlSetup.FAJnlName(DeprBook,FAJnlLine,FAJnlNextLineNo);
+                                    NoSeries := FAJnlSetup.GetFANoSeries(FAJnlLine);
+                                    IF DocumentNo = '' THEN
+                                      DocumentNo2 := FAJnlSetup.GetFAJnlDocumentNo(FAJnlLine,DeprUntilDate,TRUE)
+                                    ELSE
+                                      DocumentNo2 := DocumentNo;
+                                  END;
+                                  IF FAJnlLineTmp.FIND('-') THEN
+                                    REPEAT
+                                      INIT;
+                                      "Line No." := 0;
+                                      FAJnlSetup.SetFAJnlTrailCodes(FAJnlLine);
+                                      LineNo := LineNo + 1;
+                                      Window.UPDATE(3,LineNo);
+                                      "Posting Date" := PostingDate;
+                                      "FA Posting Date" := DeprUntilDate;
+
+                                      //NC T#4651 > DP
+                                      IF FADeprBook.GET(FAJnlLineTmp."FA No.",DeprBookCode) THEN
+                                        IF (FADeprBook."Disposal Date" <> 0D) AND
+                                          (FADeprBook."Disposal Date" <= DeprUntilDate) AND
+                                          (FADeprBook."Disposal Date" >= CALCDATE('<-CM>',DeprUntilDate))
+                                        THEN BEGIN
+                                          "Posting Date" := FADeprBook."Disposal Date";
+                                          "FA Posting Date" := FADeprBook."Disposal Date";
+                                        END;
+                                      //NC T#4651 < DP
+
+                                      IF "Posting Date" = "FA Posting Date" THEN
+                                        "Posting Date" := 0D;
+                                      "FA Posting Type" := FAJnlLineTmp."FA Posting Type";
+                                      VALIDATE("FA No.",FAJnlLineTmp."FA No.");
+                                      "Document No." := DocumentNo2;
+                                      "Posting No. Series" := NoSeries;
+                                      Description := PostingDescription;
+                                      VALIDATE("Depreciation Book Code",DeprBookCode);
+                                      VALIDATE(Amount,FAJnlLineTmp.Amount);
+                                      "No. of Depreciation Days" := FAJnlLineTmp."No. of Depreciation Days";
+                                      "FA Error Entry No." := FAJnlLineTmp."FA Error Entry No.";
+                                      FAJnlNextLineNo := FAJnlNextLineNo + 10000;
+                                      "Line No." := FAJnlNextLineNo;
+
+                                      //NC TR059 > EB
+                                      FACard.GET("FA No.");
+                                      IF FACard."FA Type"=FACard."FA Type"::"Future Expense" THEN
+                                        Description := COPYSTR(
+                                          STRSUBSTNO(PostingDescription,
+                                          FORMAT("Posting Date",0,'<Month,2>/<Year4>'),
+                                          FACard."Vendor No.",
+                                          "FA No.",
+                                          FACard.Description,
+                                          FORMAT(FACard."FA Type")
+                                          ), 1, 50)
+                                      ELSE
+                                        Description := COPYSTR(
+                                        STRSUBSTNO(PostingDescription,
+                                          FORMAT("Posting Date",0,'<Month,2>/<Year4>'),
+                                          "FA No.",
+                                          FACard.Description,
+                                          FORMAT(FACard."FA Type")
+                                          ), 1, 50);
+                                      //NC TR059 < EB
+
+                                      FAJnlLine."Location Code" := FAJnlLineTmp."Location Code";
+                                      FAJnlLine."Employee No." := FAJnlLineTmp."Employee No.";
+                                      FAJnlLine."Depr. Period Starting Date" := FAJnlLineTmp."Depr. Period Starting Date";
+                                      "Depr. Bonus" := FAJnlLineTmp."Depr. Bonus";
+                                      "Tax Difference Code" := FAJnlLineTmp."Tax Difference Code";
+                                      INSERT(TRUE);
+                                      FAJnlLineCreatedCount += 1;
+                                    UNTIL FAJnlLineTmp.NEXT = 0;
+                                END;
+
+                                WITH GenJnlLine DO BEGIN
+                                  IF GenJnlLineTmp.FIND('-') THEN BEGIN
+                                    LOCKTABLE;
+                                    //NC PIF054 > DP
+                                    //IF Company.Type = Company.Type::"1" THEN
+                                    IF Company."Posting Type" = Company."Posting Type"::"Local" THEN
+                                    //NC PIF054 < DP
+                                      FAJnlSetup.GenJnlName(DeprBook,GenJnlLine,GenJnlNextLineNo);
+                                    NoSeries := FAJnlSetup.GetGenNoSeries(GenJnlLine);
+                                    IF DocumentNo = '' THEN
+                                      DocumentNo2 := FAJnlSetup.GetGenJnlDocumentNo(GenJnlLine,DeprUntilDate,TRUE)
+                                    ELSE
+                                      DocumentNo2 := DocumentNo;
+                                  END;
+                                  IF GenJnlLineTmp.FIND('-') THEN
+                                    REPEAT
+                                      INIT;
+                                      //NC PIF054 > DP
+                                      //IF Company.Type = Company.Type::"1" THEN
+                                      IF Company."Posting Type" = Company."Posting Type"::"Local" THEN
+                                      //NC PIF054 < DP
+                                        "Line No." := 0
+                                      //NC PIF054 > DP
+                                      ELSE BEGIN
+                                        GenJnlNextLineNo := GenJnlNextLineNo + 1000;
+                                        "Line No." := GenJnlNextLineNo;
+                                      END;
+                                      //NC PIF054 < DP
+                                      FAJnlSetup.SetGenJnlTrailCodes(GenJnlLine);
+                                      LineNo := LineNo + 1;
+                                      Window.UPDATE(3,LineNo);
+                                      "Posting Date" := PostingDate;
+                                      "FA Posting Date" := DeprUntilDate;
+
+                                      //NC T#4651 > DP
+                                      IF FADeprBook.GET(GenJnlLineTmp."Account No.",DeprBookCode) THEN
+                                        IF (FADeprBook."Disposal Date"<>0D) AND
+                                          (FADeprBook."Disposal Date"<=DeprUntilDate) AND
+                                          (FADeprBook."Disposal Date">=CALCDATE('<-CM>',DeprUntilDate)) THEN BEGIN
+                                        "Posting Date" := FADeprBook."Disposal Date";
+                                        "FA Posting Date" := FADeprBook."Disposal Date";
+                                      END;
+                                      //NC T#4651 < DP
+
+                                      IF "Posting Date" = "FA Posting Date" THEN
+                                        "FA Posting Date" := 0D;
+                                      "FA Posting Type" := GenJnlLineTmp."FA Posting Type";
+                                      "Account Type" := "Account Type"::"Fixed Asset";
+                                      VALIDATE("Account No.",GenJnlLineTmp."Account No.");
+                                      Description := PostingDescription;
+                                      "Document No." := DocumentNo2;
+
+                                      //NC TR059 > EB
+                                      FACard.GET("Account No.");
+                                      IF FACard."FA Type"=FACard."FA Type"::"Future Expense" THEN
+                                        Description := COPYSTR(
+                                          STRSUBSTNO(PostingDescription,
+                                          FORMAT("Posting Date",0,'<Month,2>/<Year4>'),
+                                          FACard."Vendor No.",
+                                          "Account No.",
+                                          FACard.Description,
+                                          FORMAT(FACard."FA Type")
+                                          ), 1, 50)
+                                      ELSE
+                                        Description := COPYSTR(
+                                        STRSUBSTNO(PostingDescription,
+                                          FORMAT("Posting Date",0,'<Month,2>/<Year4>'),
+                                          "Account No.",
+                                          FACard.Description,
+                                          FORMAT(FACard."FA Type")
+                                          ), 1, 50);
+                                      //NC TR059 < EB
+
+                                      "Posting No. Series" := NoSeries;
+                                      VALIDATE("Depreciation Book Code",DeprBookCode);
+                                      VALIDATE(Amount,GenJnlLineTmp.Amount);
+                                      "No. of Depreciation Days" := GenJnlLineTmp."No. of Depreciation Days";
+                                      "FA Error Entry No." := GenJnlLineTmp."FA Error Entry No.";
+
+                                      //NC PIF054 > DP
+                                      //IF Company.Type = Company.Type::"1" THEN BEGIN
+                                      IF Company."Posting Type" = Company."Posting Type"::"Local" THEN BEGIN
+                                      //NC PIF054 < DP
+
+                                        GenJnlNextLineNo := GenJnlNextLineNo + 1000;
+                                        "Line No." := GenJnlNextLineNo;
+
+                                      //NC PIF054 > DP
+                                      END;
+                                      //NC PIF054 < DP
+
+                                      "Employee No." := GenJnlLineTmp."Employee No.";
+                                      "FA Location Code" := GenJnlLineTmp."FA Location Code";
+                                      "Depr. Period Starting Date" := GenJnlLineTmp."Depr. Period Starting Date";
+                                      "Depr. Bonus" := GenJnlLineTmp."Depr. Bonus";
+                                      "Tax Difference Code" := GenJnlLineTmp."Tax Difference Code";
+                                      INSERT(TRUE);
+
+                                      //NC M1 > DP
+                                      VALIDATE("FA Posting Type");
+                                      //NC M1 < DP
+
+                                      GenJnlLineCreatedCount += 1;
+                                      IF BalAccount THEN
+                                        FAInsertGLAcc.GetBalAcc2(GenJnlLine,GenJnlNextLineNo);
+
+                                      //NC PIF054.1 > DP
+                                      CopyDimFromPostGr("Account No.", DeprBookCode, GenJnlLine); // NC NOS-26 SPA Изменены параметры функции
+                                      //NC PIF054.1 > DP
+                                    UNTIL GenJnlLineTmp.NEXT = 0;
+                                END;
+                              END;
+
+               ReqFilterFields=No.,FA Class Code,FA Subclass Code,Budgeted Asset }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,ProgressiveTotal);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+
+                   BalAccount := TRUE;
+                   PostingDate := WORKDATE;
+                   DeprUntilDate := WORKDATE;
+                   IF DeprBookCode = '' THEN BEGIN
+                     FASetup.GET;
+                     DeprBookCode := GetDeprBookCode;
+                   END;
+
+                   Period := DatePeriod."Period Start";
+                   SetProperties;
+
+                   UseForceNoOfDays := TRUE;
+                   DaysInPeriod := 30;
+                   Details := FALSE;
+
+                   IF NOT UseForceNoOfDays THEN
+                     DaysInPeriod := 0;
+
+                   DeprBonus := FALSE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 15  ;2   ;Field     ;
+                  Name=DepreciationBook;
+                  CaptionML=[ENU=Depreciation Book;
+                             RUS=Книга амортизации];
+                  ToolTipML=[ENU=Specifies the code for the depreciation book to be included in the report or batch job.;
+                             RUS=Определяет код книги амортизации, включаемой в отчет или в пакетное задание.];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DeprBookCode;
+                  TableRelation="Depreciation Book" }
+
+      { 1210001;2;Field     ;
+                  Name=AccountPeriod;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               IF NOT PeriodReportManagement.ParseCaptionPeriodName(AccountPeriod,CalendarPeriod,ProgressiveTotal) THEN
+                               BEGIN
+                                 PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                                 PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,ProgressiveTotal);
+                               END;
+
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+
+                               Period := DatePeriod."Period Start";
+                               SetProperties;
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,ProgressiveTotal);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 1210002;2;Field     ;
+                  Name=From;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DatePeriod."Period Start" }
+
+      { 1210003;2;Field     ;
+                  Name=To;
+                  CaptionML=[ENU=To;
+                             RUS=Кому];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DatePeriod."Period End" }
+
+      { 1210004;2;Field     ;
+                  Name=Details;
+                  CaptionML=[ENU=Change Details;
+                             RUS=Изменить сведения];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=Details }
+
+      { 9   ;2   ;Field     ;
+                  Name=FAPostingDate;
+                  CaptionML=[ENU=FA Posting Date;
+                             RUS=Дата учета ОС];
+                  ToolTipML=[ENU=Specifies the fixed asset posting date to be used by the batch job. The batch job includes ledger entries up to this date. This date appears in the FA Posting Date field in the resulting journal lines. If the Use Same FA+G/L Posting Dates field has been activated in the depreciation book that is used in the batch job, then this date must be the same as the posting date entered in the Posting Date field.;
+                             RUS=Определяет дату учета основных средств, которая должна использоваться в пакетном задании. Пакетное задание включает операции книги до этой даты. Эта дата появится в сформированных строках журнала в поле "Дата учета ОС". Если поле "Использ. одинак. даты учета ОС и ГК" было активизировано в книге амортизации, использовавшейся в пакетном задании, то эта дата должна быть такой же, как дата, введенная в поле "Дата учета".];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DeprUntilDate;
+                  Importance=Additional;
+                  Editable=Details;
+                  OnValidate=BEGIN
+                               DeprUntilDateModified := TRUE;
+                             END;
+                              }
+
+      { 8   ;2   ;Field     ;
+                  Name=UseForceNoOfDays;
+                  CaptionML=[ENU=Use Force No. of Days;
+                             RUS=Исп. "Число дней обязательно"];
+                  ToolTipML=[ENU=Specifies if you want the program to use the number of days, as specified in the field below, in the depreciation calculation.;
+                             RUS=Указывает, должно ли число дней, указанное в поле, расположенном ниже, использоваться при расчете амортизации.];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=UseForceNoOfDays;
+                  Importance=Additional;
+                  Editable=Details;
+                  OnValidate=BEGIN
+                               IF NOT UseForceNoOfDays THEN
+                                 DaysInPeriod := 0;
+                             END;
+                              }
+
+      { 5   ;2   ;Field     ;
+                  Name=ForceNoOfDays;
+                  CaptionML=[ENU=Force No. of Days;
+                             RUS=Число дней обязательно];
+                  ToolTipML=[ENU=Specifies if you want the program to use the number of days, as specified in the field below, in the depreciation calculation.;
+                             RUS=Указывает, должно ли число дней, указанное в поле, расположенном ниже, использоваться при расчете амортизации.];
+                  ApplicationArea=#FixedAssets;
+                  BlankZero=Yes;
+                  SourceExpr=DaysInPeriod;
+                  MinValue=0;
+                  Importance=Additional;
+                  Editable=Details;
+                  OnValidate=BEGIN
+                               IF NOT UseForceNoOfDays AND (DaysInPeriod <> 0) THEN
+                                 ERROR(Text006);
+                             END;
+                              }
+
+      { 11  ;2   ;Field     ;
+                  Name=PostingDate;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата учета];
+                  ToolTipML=[ENU=Specifies the posting date to be used by the batch job.;
+                             RUS=Определяет дату учета, которая должна использоваться пакетным заданием.];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=PostingDate;
+                  Editable=Details;
+                  OnValidate=BEGIN
+                               IF NOT DeprUntilDateModified THEN
+                                 DeprUntilDate := PostingDate;
+                             END;
+                              }
+
+      { 1   ;2   ;Field     ;
+                  Name=DocumentNo;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Номер документа];
+                  ToolTipML=[ENU=Specifies, if you leave the field empty, the next available number on the resulting journal line. If a number series is not set up, enter the document number that you want assigned to the resulting journal line.;
+                             RUS=Определяет следующий доступный номер результирующей строки журнала, если поле оставлено пустым. Если серия номеров не настроена, введите номер документа, который следует присвоить результирующей строке журнала.];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DocumentNo;
+                  Editable=Details }
+
+      { 13  ;2   ;Field     ;
+                  CaptionML=[ENU=Posting Description;
+                             RUS=Описание учета];
+                  ToolTipML=[ENU=Specifies the posting date to be used by the batch job as a filter.;
+                             RUS=Определяет дату учета, которая должна использоваться пакетным заданием в качестве фильтра.];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=PostingDescription;
+                  Editable=Details }
+
+      { 3   ;2   ;Field     ;
+                  Name=InsertBalAccount;
+                  CaptionML=[ENU=Insert Bal. Account;
+                             RUS=Вставить баланс. счет];
+                  ToolTipML=[ENU=Specifies if you want the batch job to automatically insert fixed asset entries with balancing accounts.;
+                             RUS=Указывает, должно ли пакетное задание автоматически вставлять операции ОС с балансирующими счетами.];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=BalAccount;
+                  Importance=Additional;
+                  Editable=Details }
+
+      { 1210000;2;Field     ;
+                  Name=DeprBonus;
+                  CaptionML=[ENU=Calc. Depr. Bonus;
+                             RUS=Расч. аморт. премии];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DeprBonus }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=You must specify %1.;RUS=Необходимо указать %1.';
+      Text001@1001 : TextConst 'ENU=Force No. of Days must be activated.;RUS=Параметр "Число дней обязательно" должен быть активирован.';
+      Text002@1002 : TextConst 'ENU="%1 and %2 must be identical. %3 must be %4 in %5 %6 = %7.";RUS="%1 и %2 должны быть равны. %3 должно быть %4 в %5 %6 = %7."';
+      Text003@1003 : TextConst 'ENU=Depreciating fixed asset      #1##########\;RUS=Амортизация ОС           #1##########\';
+      Text004@1004 : TextConst 'ENU=Not depreciating fixed asset  #2##########\;RUS=Без амортизации ОС       #2##########\';
+      Text005@1005 : TextConst 'ENU=Inserting journal lines       #3##########;RUS=Вставка строк журнала    #3##########';
+      Text006@1006 : TextConst 'ENU=Use Force No. of Days must be activated.;RUS=Исп. "Число дней обязательно"  должно быть активировано';
+      GenJnlLine@1007 : Record 81;
+      GenJnlLineTmp@1008 : TEMPORARY Record 81;
+      FASetup@1009 : Record 5603;
+      FAJnlLine@1010 : Record 5621;
+      FAJnlLineTmp@1011 : TEMPORARY Record 5621;
+      DeprBook@1012 : Record 5611;
+      FAJnlSetup@1013 : Record 5605;
+      GLSetup@1210003 : Record 98;
+      CalculateDepr@1014 : Codeunit 5610;
+      FAInsertGLAcc@1015 : Codeunit 5601;
+      Window@1016 : Dialog;
+      DeprAmount@1017 : Decimal;
+      Custom1Amount@1018 : Decimal;
+      NumberOfDays@1019 : Integer;
+      Custom1NumberOfDays@1020 : Integer;
+      DeprUntilDate@1021 : Date;
+      UseForceNoOfDays@1022 : Boolean;
+      DaysInPeriod@1023 : Integer;
+      PostingDate@1024 : Date;
+      DocumentNo@1025 : Code[20];
+      DocumentNo2@1026 : Code[20];
+      NoSeries@1027 : Code[10];
+      PostingDescription@1028 : Text[50];
+      DeprBookCode@1029 : Code[10];
+      BalAccount@1030 : Boolean;
+      ErrorNo@1031 : Integer;
+      Custom1ErrorNo@1032 : Integer;
+      FAJnlNextLineNo@1033 : Integer;
+      GenJnlNextLineNo@1034 : Integer;
+      EntryAmounts@1035 : ARRAY [4] OF Decimal;
+      LineNo@1036 : Integer;
+      Period@1210000 : Date;
+      Text12407@1210001 : TextConst 'ENU=FA Posting Date must be into Accounting Period;RUS=Дата учета ОС должна входить в учетный период';
+      CalendarPeriod@1210007 : Record 2000000007;
+      DatePeriod@1210006 : Record 2000000007;
+      ChangeDate@1210005 : Page 12445;
+      PeriodReportManagement@1210004 : Codeunit 12406;
+      StdRepManagement@1210002 : Codeunit 12400;
+      AccountPeriod@1210008 : Text[30];
+      ProgressiveTotal@1210009 : Boolean;
+      Text12408@1210010 : TextConst 'ENU="You must create Accounting Period when Starting Date is %1 ";RUS="Необходимо создать учетный период с датой начала %1 "';
+      Text12409@1210011 : TextConst 'ENU=Posting Date must be into Accounting Period;RUS=Дата учета должна входить в учетный период';
+      Details@1210012 : Boolean;
+      Text12411@1210013 : TextConst 'ENU=DP-;RUS=AM-';
+      Text12410@1210014 : TextConst 'ENU=" FA Depreciation";RUS=" Амортизация ОС"';
+      Text12412@1210015 : TextConst 'ENU="No. of Days in Fiscal Year for Depr. Book %1 = %2 will calculate incorrect depreciation amounts. Continue?";RUS="Число дней в фин. году для книги амортизации %1 = %2 приведет к некорректному расчету сумм амортизации. Продолжить?"';
+      DeprBonus@1470000 : Boolean;
+      CompletionStatsMsg@1037 : TextConst 'ENU=The depreciation has been calculated.\\No journal lines were created.;RUS=Амортизация рассчитана.\\Строки журнала не созданы.';
+      FAJnlLineCreatedCount@1038 : Integer;
+      GenJnlLineCreatedCount@1039 : Integer;
+      CompletionStatsFAJnlQst@1042 : TextConst '@@@=The depreciation has been calculated.\\5 fixed asset journal lines were created.\\Do you want to open the Fixed Asset Journal window?;ENU=The depreciation has been calculated.\\%1 fixed asset journal lines were created.\\Do you want to open the Fixed Asset Journal window?;RUS=Амортизация рассчитана.\\Создано строк журнала основных средств: %1.\\Открыть окно "Журнал ОС"?';
+      CompletionStatsGenJnlQst@1043 : TextConst '@@@=The depreciation has been calculated.\\2 fixed asset G/L  journal lines were created.\\Do you want to open the Fixed Asset G/L Journal window?;ENU=The depreciation has been calculated.\\%1 fixed asset G/L journal lines were created.\\Do you want to open the Fixed Asset G/L Journal window?;RUS=Амортизация рассчитана.\\Создано строк журнала ГК основных средств: %1.\\Открыть окно "Журнал ГК основных средств"?';
+      DeprUntilDateModified@1040 : Boolean;
+      Company@1101495006 : Record 2000000006;
+      "NCV>"@1101495005 : Integer;
+      FACodeFilter@1101495004 : Text[255];
+      UseNormalDate@1101495003 : Boolean;
+      FACard@1101495002 : Record 5600;
+      FADeprBook@1101495001 : Record 5612;
+      "NCV<"@1101495000 : Integer;
+      "NCT>"@1101495009 : TextConst;
+      Text55001@1101495008 : TextConst 'ENU=The periodical activity does not post Depreciation Batch of General Journal automatically. You should post Depreciation Batch of General Journal  manually.;RUS=Задание автоматически не учитывает ОС Фин. Журнал. Необходимо учесть ОС Фин. Журнал вручную.';
+      Text700@1101495007 : TextConst 'ENU=Depr. %1 %2 %3 %4;RUS=Аморт. %1 %2 %3 %4';
+
+    PROCEDURE SetProperties@1210001();
+    BEGIN
+      //NC M1 > DP
+      IF UseNormalDate THEN BEGIN
+        PostingDate := NORMALDATE(DatePeriod."Period End");
+        DeprUntilDate := NORMALDATE(DatePeriod."Period End");
+      END ELSE BEGIN
+        PostingDate := DatePeriod."Period End";
+        DeprUntilDate := DatePeriod."Period End";
+      END;
+      //NC M1 > DP
+      {NC TR059 > EB
+      PostingDescription :=
+        FORMAT(DatePeriod."Period Start",0,'<Month Text> ') +
+        FORMAT(DATE2DMY(DatePeriod."Period Start",3)) +
+        Text12410;
+      NC TR059 < EB}
+      IF DATE2DMY(DatePeriod."Period Start",2) > 9 THEN
+        DocumentNo := Text12411 + FORMAT(DatePeriod."Period Start",0,'<Year>-<Month>')
+      ELSE
+        DocumentNo := Text12411 + FORMAT(DatePeriod."Period Start",2,'<Year>')+'-0'+FORMAT(DatePeriod."Period Start",0,'<Month>');
+    END;
+
+    PROCEDURE InitializeRequest@1(DeprBookCodeFrom@1007 : Code[10];DeprUntilDateFrom@1000 : Date;UseForceNoOfDaysFrom@1001 : Boolean;DaysInPeriodFrom@1002 : Integer;PostingDateFrom@1003 : Date;DocumentNoFrom@1004 : Code[20];PostingDescriptionFrom@1005 : Text[50];BalAccountFrom@1006 : Boolean);
+    BEGIN
+      DeprBookCode := DeprBookCodeFrom;
+      DeprUntilDate := DeprUntilDateFrom;
+      UseForceNoOfDays := UseForceNoOfDaysFrom;
+      DaysInPeriod := DaysInPeriodFrom;
+      PostingDate := PostingDateFrom;
+      DocumentNo := DocumentNoFrom;
+      PostingDescription := PostingDescriptionFrom;
+      BalAccount := BalAccountFrom;
+    END;
+
+    PROCEDURE InitializeRequest2@1470000(NewDeprBookCode@1470000 : Code[10];NewPostingDate@1470001 : Date;NewDeprUntilDate@1470002 : Date;NewDocumentNo@1470003 : Code[20];NewPostingDescription@1470004 : Text[250];NewUseForceNoOfDays@1470005 : Boolean;NewDaysInPeriod@1470006 : Integer;NewBalAccount@1470007 : Boolean;ChangeDetails@1470008 : Boolean;NewDeprBonus@1470009 : Boolean);
+    BEGIN
+      CLEARALL;
+      DeprBookCode := NewDeprBookCode;
+      PostingDate := NewPostingDate;
+      DocumentNo := NewDocumentNo;
+      PostingDescription := NewPostingDescription;
+      DeprBonus := NewDeprBonus;
+
+      IF ChangeDetails THEN BEGIN
+        DeprUntilDate := NewDeprUntilDate;
+        UseForceNoOfDays := NewUseForceNoOfDays;
+        DaysInPeriod := NewDaysInPeriod;
+        BalAccount := NewBalAccount;
+      END ELSE BEGIN
+        DeprUntilDate := NewPostingDate;
+        UseForceNoOfDays := TRUE;
+        DaysInPeriod := 30;
+        BalAccount := TRUE;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetDeprBookCode@1210000() : Code[10];
+    BEGIN
+      GLSetup.GET;
+      IF GLSetup."Enable Russian Accounting" THEN
+        EXIT(FASetup."Release Depr. Book");
+      EXIT(FASetup."Default Depr. Book");
+    END;
+
+    LOCAL PROCEDURE "//NCF"@1101495012();
+    BEGIN
+    END;
+
+    PROCEDURE CopyDimFromPostGr@1210002(FANo@1210001 : Code[20];FADeprBookCode@1210002 : Code[10];VAR GenJournalLine@1101495000 : Record 81);
+    VAR
+      FADeprBook@1210000 : Record 5612;
+      FAPostGr@1210003 : Record 5606;
+      GLAccount@1210004 : Record 15;
+      DefDimension@1210005 : Record 352;
+      DefDimensionFA@1210011 : Record 352;
+      DimValue@1210012 : Record 349;
+      TempDimSetEntry@1101495001 : TEMPORARY Record 480;
+      DimMgt@1101495002 : Codeunit 408;
+    BEGIN
+      //NC PIF054.1 > DP
+      //если такое измерение существует, то меняем значение, если нет, то добавляем строку
+      //если для фин счета значение измерения не заполнено, то берем значение из карточки ОС
+
+      IF FADeprBook.GET(FANo, FADeprBookCode) THEN
+        IF FAPostGr.GET(FADeprBook."FA Posting Group") THEN BEGIN
+          DefDimension.RESET;
+          DefDimension.SETRANGE("Table ID", 5600);
+          DefDimension.SETRANGE("No.", FANo);
+          //DefDimension.SETRANGE("Value Posting", DefDimension."Value Posting"::"Same Code");
+          IF DefDimension.FIND('-') THEN BEGIN
+            //NC NOS-26 > SPA
+            DimMgt.GetDimensionSet(TempDimSetEntry,GenJournalLine."Dimension Set ID");
+            TempDimSetEntry.SetObject(GenJournalLine);
+            //NC NOS-26 < SPA
+            REPEAT
+              DefDimension.TESTFIELD("Dimension Value Code");
+              IF TempDimSetEntry.GET(TempDimSetEntry."Dimension Set ID",DefDimension."Dimension Code") THEN BEGIN
+                IF (TempDimSetEntry."Dimension Value Code" <> DefDimension."Dimension Value Code") AND
+                   (DefDimension."Dimension Value Code" <> '')
+                THEN BEGIN
+                  TempDimSetEntry."Dimension Value Code" := DefDimension."Dimension Value Code";
+                  TempDimSetEntry.MODIFY(TRUE);
+                END;
+              END ELSE BEGIN
+                TempDimSetEntry."Dimension Code" := DefDimension."Dimension Code";
+                IF DefDimension."Dimension Value Code" <> '' THEN
+                  TempDimSetEntry."Dimension Value Code" := DefDimension."Dimension Value Code"
+                ELSE
+                  IF DefDimensionFA.GET(DATABASE::"Fixed Asset", "Fixed Asset"."No.", DefDimension."Dimension Code") THEN BEGIN
+                    IF DefDimensionFA."Dimension Value Code" <> '' THEN
+                      TempDimSetEntry."Dimension Value Code" := DefDimensionFA."Dimension Value Code";
+                  END;
+                IF TempDimSetEntry."Dimension Value Code" <> '' THEN
+                  TempDimSetEntry.INSERT(TRUE)
+                ELSE
+                  TempDimSetEntry.INSERT;
+              END;
+            UNTIL DefDimension.NEXT = 0;
+          END;
+        END;
+      //NC PIF054.1 > DP
+    END;
+
+    PROCEDURE SetPeriodParameters@1000000000(NewDeprBookCode@1000000000 : Code[20];NewFACodeFilter@1000000001 : Text[255];NewDatePeriod@1000000002 : Record 2000000007);
+    BEGIN
+      //NC MFA18 > DP
+      DatePeriod := NewDatePeriod;
+      DeprBookCode := NewDeprBookCode;
+      FACodeFilter := NewFACodeFilter;
+      UseNormalDate := TRUE;
+      Period := DatePeriod."Period Start";
+      SetProperties;
+
+      UseForceNoOfDays := FALSE;
+      DaysInPeriod := 0;
+      BalAccount := TRUE;
+      Details := FALSE;
+      //ShowDetails(Details); // NC NOS-26 SPA
+      DeprBonus := FALSE;
+      //NC MFA18 > DP
+    END;
+
+    BEGIN
+    {
+      NC PIF054 DP Раздел Журнала для формирования строк определяется из источника консолидации
+      NC TR059 EB изменено формирвоание Description
+      NC T#4651 DP Периодический расчет амортизации
+      NC NCS-1118 DP Добавлена англоязычная метка для Text55001
+      ----------------------------
+      NC BLD001 USE Создан билд, включающий модификации NCPIF001,PIF054.1,TR059,APCOC93,NCS-1118
+      NC NCS-1649 USE Изменен триггер Fixed Asset - OnPostDataItem
+      ---------------------------
+      NC NOS-26 SPA Изменения при работе с измерениями в функции CopyDimFromPostGr
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

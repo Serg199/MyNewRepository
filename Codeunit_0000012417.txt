@@ -1,0 +1,948 @@
+OBJECT Codeunit 12417 VAT Allocation-Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 38=r,
+                TableData 39=r,
+                TableData 121=r,
+                TableData 5805=imd,
+                TableData 6651=r;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchInvHeader@1210007 : Record 122;
+      PurchInvLine@1210006 : Record 123;
+      PurchCrMemoHeader@1210028 : Record 124;
+      PurchCrMemoLine@12100029 : Record 125;
+      SalesInvHeader@1210019 : Record 112;
+      SalesInvLine@1210020 : Record 113;
+      SalesCrMemoHeader@1210022 : Record 114;
+      SalesCrMemoLine@1210021 : Record 115;
+      VATPostingSetup@1210001 : Record 325;
+      TempItemChargeAssgntPurch@1210000 : TEMPORARY Record 5805;
+      TempItemChargeAssgntSales@1210023 : TEMPORARY Record 5809;
+      GLSetup@1210002 : Record 98;
+      Text000@1210003 : TextConst 'ENU=Related item ledger entries cannot be found.;RUS=Связанные операции книги товаров не найдены.';
+      TempValueEntry@1210017 : TEMPORARY Record 5802;
+      SourceCodeSetup@1210012 : Record 242;
+      ItemReg@1210018 : Record 46;
+      TotalChargeAmt@1210004 : Decimal;
+      TotalChargeAmtLCY@1210005 : Decimal;
+      Text001@1210011 : TextConst 'ENU=Fixed Asset %1 should be on inventory or released.;RUS=Основное средство %1 должно быть на складе или выпущено.';
+      Text005@1210014 : TextConst 'ENU=You cannot reverse the transaction, because it has already been reversed.;RUS=Нельзя сторнировать эту транзакцию, так как она уже сторнирована.';
+      Text006@1210013 : TextConst 'ENU=The combination of dimensions used in %1 %2 is blocked. %3;RUS=Комбинация измерений, использованная в %1 %2, заблокирована. %3';
+      NextReverseEntryNo@1210016 : Integer;
+      RoundingPrecision@1210008 : Decimal;
+
+    PROCEDURE PostItem@3(GenJnlLine@1000 : Record 81;VATAllocLine@1210000 : Record 14925);
+    VAR
+      TotalAmount@1210004 : Decimal;
+      QtyRemainder@1210007 : Decimal;
+      AmountRemainder@1210009 : Decimal;
+      NextLineNo@1003 : Integer;
+    BEGIN
+      GLSetup.GET;
+      NextLineNo := 0;
+
+      SourceCodeSetup.GET;
+
+      VATPostingSetup.GET(VATAllocLine."VAT Bus. Posting Group",VATAllocLine."VAT Prod. Posting Group");
+
+      InitiItemChargeAssgntBuffer(TempItemChargeAssgntPurch,TempItemChargeAssgntSales);
+      RoundingPrecision := GLSetup."Amount Rounding Precision";
+
+      // initialize
+      TotalAmount := 0;
+      CASE GenJnlLine."Account Type" OF
+        GenJnlLine."Account Type"::Vendor:
+          BEGIN
+            FillItemChargeAssgntPurch(GenJnlLine,VATAllocLine,TotalAmount,NextLineNo);
+            AllocateItemChargeAssgntPurch(VATAllocLine,TotalAmount,QtyRemainder,AmountRemainder);
+            PostItemChargeAssgntPurch(GenJnlLine);
+          END;
+        GenJnlLine."Account Type"::Customer:
+          BEGIN
+            FillItemChargeAssgntSales(GenJnlLine,VATAllocLine,TotalAmount,NextLineNo);
+            AllocateItemChargeAssgntSales(VATAllocLine,TotalAmount,QtyRemainder,AmountRemainder);
+            PostItemChargeAssgntSales(GenJnlLine);
+          END;
+        ELSE
+          GenJnlLine.FIELDERROR("Account Type");
+      END;
+    END;
+
+    LOCAL PROCEDURE PostItemChargePerPurchInvLine@5807(GenJnlLine@1210000 : Record 81;PurchInvHeader@1210001 : Record 122;PurchInvLine@1000 : Record 123);
+    VAR
+      TempItemLedgEntry@1003 : TEMPORARY Record 32;
+      ItemTrackingMgt@1005 : Codeunit 6500;
+      Factor@1004 : Decimal;
+      NonDistrQuantity@1010 : Decimal;
+      NonDistrQtyToAssign@1009 : Decimal;
+      NonDistrAmountToAssign@1008 : Decimal;
+      QtyToAssign@1007 : Decimal;
+      AmountToAssign@1006 : Decimal;
+      Sign@1011 : Decimal;
+      DistributeCharge@1001 : Boolean;
+    BEGIN
+      PurchInvLine.TESTFIELD("Job No.",'');
+      Sign := GetEntrySign(PurchInvLine."Quantity (Base)");
+
+      DistributeCharge := FALSE;
+      PurchInvLine.GetItemLedgEntries(TempItemLedgEntry,FALSE);
+      IF TempItemLedgEntry.COUNT > 1 THEN BEGIN
+        DistributeCharge := TRUE;
+        ItemTrackingMgt.CollectItemEntryRelation(TempItemLedgEntry,
+          DATABASE::"Purch. Inv. Line",0,PurchInvLine."Document No.",
+          '',0,PurchInvLine."Line No.",PurchInvLine."Quantity (Base)");
+      END ELSE
+        TempItemLedgEntry.FINDSET;
+
+      IF DistributeCharge THEN
+        IF TempItemLedgEntry.FINDSET THEN BEGIN
+          NonDistrQuantity := PurchInvLine."Quantity (Base)";
+          NonDistrQtyToAssign := TempItemChargeAssgntPurch."Qty. to Assign";
+          NonDistrAmountToAssign := TempItemChargeAssgntPurch."Amount to Assign";
+          REPEAT
+            Factor := TempItemLedgEntry.Quantity / NonDistrQuantity;
+            QtyToAssign := NonDistrQtyToAssign * Factor;
+            AmountToAssign := ROUND(NonDistrAmountToAssign * Factor,GLSetup."Amount Rounding Precision");
+            IF Factor < 1 THEN BEGIN
+              PostPurchInvItemCharge(GenJnlLine,PurchInvHeader,PurchInvLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                AmountToAssign * Sign,QtyToAssign,PurchInvLine."Indirect Cost %",
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+              NonDistrQuantity := NonDistrQuantity - TempItemLedgEntry.Quantity;
+              NonDistrQtyToAssign := NonDistrQtyToAssign - QtyToAssign;
+              NonDistrAmountToAssign := NonDistrAmountToAssign - AmountToAssign;
+            END ELSE // the last time
+              PostPurchInvItemCharge(GenJnlLine,PurchInvHeader,PurchInvLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                NonDistrAmountToAssign * Sign,NonDistrQtyToAssign,PurchInvLine."Indirect Cost %",
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+          UNTIL TempItemLedgEntry.NEXT = 0;
+        END ELSE
+          ERROR(Text000)
+      ELSE
+        PostPurchInvItemCharge(GenJnlLine,PurchInvHeader,PurchInvLine,
+          TempItemLedgEntry."Entry No.",PurchInvLine."Quantity (Base)",
+          TempItemChargeAssgntPurch."Amount to Assign" * Sign,
+          TempItemChargeAssgntPurch."Qty. to Assign",
+          PurchInvLine."Indirect Cost %",
+          TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+    END;
+
+    LOCAL PROCEDURE PostItemChargePerPurchCrMLine@1210009(GenJnlLine@1210000 : Record 81;PurchCrMemoHeader@1210001 : Record 124;PurchCrMemoLine@1000 : Record 125);
+    VAR
+      TempItemLedgEntry@1003 : TEMPORARY Record 32;
+      ItemTrackingMgt@1005 : Codeunit 6500;
+      Factor@1004 : Decimal;
+      NonDistrQuantity@1010 : Decimal;
+      NonDistrQtyToAssign@1009 : Decimal;
+      NonDistrAmountToAssign@1008 : Decimal;
+      QtyToAssign@1007 : Decimal;
+      AmountToAssign@1006 : Decimal;
+      Sign@1011 : Decimal;
+      DistributeCharge@1001 : Boolean;
+    BEGIN
+      PurchCrMemoLine.TESTFIELD("Job No.",'');
+      Sign := GetEntrySign(PurchCrMemoLine."Quantity (Base)");
+
+      DistributeCharge := FALSE;
+      PurchCrMemoLine.GetItemLedgEntries(TempItemLedgEntry,FALSE);
+      IF TempItemLedgEntry.COUNT > 1 THEN BEGIN
+        DistributeCharge := TRUE;
+        ItemTrackingMgt.CollectItemEntryRelation(TempItemLedgEntry,
+          DATABASE::"Purch. Inv. Line",0,PurchCrMemoLine."Document No.",
+          '',0,PurchCrMemoLine."Line No.",PurchInvLine."Quantity (Base)");
+      END ELSE
+        TempItemLedgEntry.FINDSET;
+
+      IF DistributeCharge THEN
+        IF TempItemLedgEntry.FINDSET THEN BEGIN
+          NonDistrQuantity := PurchCrMemoLine."Quantity (Base)";
+          NonDistrQtyToAssign := TempItemChargeAssgntPurch."Qty. to Assign";
+          NonDistrAmountToAssign := TempItemChargeAssgntPurch."Amount to Assign";
+          REPEAT
+            Factor := TempItemLedgEntry.Quantity / NonDistrQuantity;
+            QtyToAssign := NonDistrQtyToAssign * Factor;
+            AmountToAssign := ROUND(NonDistrAmountToAssign * Factor,GLSetup."Amount Rounding Precision");
+            IF Factor < 1 THEN BEGIN
+              PostPurchCrMemoItemCharge(GenJnlLine,PurchCrMemoHeader,PurchCrMemoLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                AmountToAssign * Sign,QtyToAssign,PurchCrMemoLine."Indirect Cost %",
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+              NonDistrQuantity := NonDistrQuantity - TempItemLedgEntry.Quantity;
+              NonDistrQtyToAssign := NonDistrQtyToAssign - QtyToAssign;
+              NonDistrAmountToAssign := NonDistrAmountToAssign - AmountToAssign;
+            END ELSE // the last time
+              PostPurchCrMemoItemCharge(GenJnlLine,PurchCrMemoHeader,PurchCrMemoLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                NonDistrAmountToAssign * Sign,NonDistrQtyToAssign,PurchCrMemoLine."Indirect Cost %",
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+          UNTIL TempItemLedgEntry.NEXT = 0;
+        END ELSE
+          ERROR(Text000)
+      ELSE
+        PostPurchCrMemoItemCharge(GenJnlLine,PurchCrMemoHeader,PurchCrMemoLine,
+          TempItemLedgEntry."Entry No.",PurchCrMemoLine."Quantity (Base)",
+          TempItemChargeAssgntPurch."Amount to Assign" * Sign,
+          TempItemChargeAssgntPurch."Qty. to Assign",
+          PurchCrMemoLine."Indirect Cost %",
+          TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+    END;
+
+    LOCAL PROCEDURE PostItemChargePerSalesInvLine@1210006(GenJnlLine@1210000 : Record 81;SalesInvHeader@1210001 : Record 112;SalesInvLine@1000 : Record 113);
+    VAR
+      TempItemLedgEntry@1003 : TEMPORARY Record 32;
+      ItemTrackingMgt@1005 : Codeunit 6500;
+      Factor@1004 : Decimal;
+      NonDistrQuantity@1010 : Decimal;
+      NonDistrQtyToAssign@1009 : Decimal;
+      NonDistrAmountToAssign@1008 : Decimal;
+      QtyToAssign@1007 : Decimal;
+      AmountToAssign@1006 : Decimal;
+      Sign@1011 : Decimal;
+      DistributeCharge@1001 : Boolean;
+    BEGIN
+      SalesInvLine.TESTFIELD("Job No.",'');
+      Sign := GetEntrySign(SalesInvLine."Quantity (Base)");
+
+      DistributeCharge := FALSE;
+      SalesInvLine.GetItemLedgEntries(TempItemLedgEntry,FALSE);
+      IF TempItemLedgEntry.COUNT > 1 THEN BEGIN
+        DistributeCharge := TRUE;
+        ItemTrackingMgt.CollectItemEntryRelation(TempItemLedgEntry,
+          DATABASE::"Sales Invoice Line",0,SalesInvLine."Document No.",
+          '',0,SalesInvLine."Line No.",SalesInvLine."Quantity (Base)");
+      END ELSE
+        TempItemLedgEntry.FINDSET;
+
+      IF DistributeCharge THEN
+        IF TempItemLedgEntry.FINDSET THEN BEGIN
+          NonDistrQuantity := SalesInvLine."Quantity (Base)";
+          NonDistrQtyToAssign := TempItemChargeAssgntSales."Qty. to Assign";
+          NonDistrAmountToAssign := TempItemChargeAssgntSales."Amount to Assign";
+          REPEAT
+            Factor := TempItemLedgEntry.Quantity / NonDistrQuantity;
+            QtyToAssign := NonDistrQtyToAssign * Factor;
+            AmountToAssign := ROUND(NonDistrAmountToAssign * Factor,GLSetup."Amount Rounding Precision");
+            IF Factor < 1 THEN BEGIN
+              PostSalesInvItemCharge(GenJnlLine,SalesInvHeader,SalesInvLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                AmountToAssign * Sign,QtyToAssign,
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+              NonDistrQuantity := NonDistrQuantity - TempItemLedgEntry.Quantity;
+              NonDistrQtyToAssign := NonDistrQtyToAssign - QtyToAssign;
+              NonDistrAmountToAssign := NonDistrAmountToAssign - AmountToAssign;
+            END ELSE // the last time
+              PostSalesInvItemCharge(GenJnlLine,SalesInvHeader,SalesInvLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                NonDistrAmountToAssign * Sign,NonDistrQtyToAssign,
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+          UNTIL TempItemLedgEntry.NEXT = 0;
+        END ELSE
+          ERROR(Text000)
+      ELSE
+        PostSalesInvItemCharge(GenJnlLine,SalesInvHeader,SalesInvLine,
+          TempItemLedgEntry."Entry No.",SalesInvLine."Quantity (Base)",
+          TempItemChargeAssgntSales."Amount to Assign" * Sign,
+          TempItemChargeAssgntSales."Qty. to Assign",
+          TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+    END;
+
+    LOCAL PROCEDURE PostItemChargePerSalesCrMLine@1210005(GenJnlLine@1210000 : Record 81;SalesCrMemoHeader@1210001 : Record 114;SalesCrMemoLine@1000 : Record 115);
+    VAR
+      TempItemLedgEntry@1003 : TEMPORARY Record 32;
+      ItemTrackingMgt@1005 : Codeunit 6500;
+      Factor@1004 : Decimal;
+      NonDistrQuantity@1010 : Decimal;
+      NonDistrQtyToAssign@1009 : Decimal;
+      NonDistrAmountToAssign@1008 : Decimal;
+      QtyToAssign@1007 : Decimal;
+      AmountToAssign@1006 : Decimal;
+      Sign@1011 : Decimal;
+      DistributeCharge@1001 : Boolean;
+    BEGIN
+      SalesCrMemoLine.TESTFIELD("Job No.",'');
+      Sign := GetEntrySign(SalesCrMemoLine."Quantity (Base)");
+
+      DistributeCharge := FALSE;
+      SalesCrMemoLine.GetItemLedgEntries(TempItemLedgEntry,FALSE);
+      IF TempItemLedgEntry.COUNT > 1 THEN BEGIN
+        DistributeCharge := TRUE;
+        ItemTrackingMgt.CollectItemEntryRelation(TempItemLedgEntry,
+          DATABASE::"Purch. Inv. Line",0,SalesCrMemoLine."Document No.",
+          '',0,SalesCrMemoLine."Line No.",SalesInvLine."Quantity (Base)");
+      END ELSE
+        TempItemLedgEntry.FINDSET;
+
+      IF DistributeCharge THEN
+        IF TempItemLedgEntry.FINDSET THEN BEGIN
+          NonDistrQuantity := SalesCrMemoLine."Quantity (Base)";
+          NonDistrQtyToAssign := TempItemChargeAssgntSales."Qty. to Assign";
+          NonDistrAmountToAssign := TempItemChargeAssgntSales."Amount to Assign";
+          REPEAT
+            Factor := TempItemLedgEntry.Quantity / NonDistrQuantity;
+            QtyToAssign := NonDistrQtyToAssign * Factor;
+            AmountToAssign := ROUND(NonDistrAmountToAssign * Factor,GLSetup."Amount Rounding Precision");
+            IF Factor < 1 THEN BEGIN
+              PostSalesCrMemoItemCharge(GenJnlLine,SalesCrMemoHeader,SalesCrMemoLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                AmountToAssign * Sign,QtyToAssign,
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+              NonDistrQuantity := NonDistrQuantity - TempItemLedgEntry.Quantity;
+              NonDistrQtyToAssign := NonDistrQtyToAssign - QtyToAssign;
+              NonDistrAmountToAssign := NonDistrAmountToAssign - AmountToAssign;
+            END ELSE // the last time
+              PostSalesCrMemoItemCharge(GenJnlLine,SalesCrMemoHeader,SalesCrMemoLine,
+                TempItemLedgEntry."Entry No.",TempItemLedgEntry.Quantity,
+                NonDistrAmountToAssign * Sign,NonDistrQtyToAssign,
+                TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+          UNTIL TempItemLedgEntry.NEXT = 0;
+        END ELSE
+          ERROR(Text000)
+      ELSE
+        PostSalesCrMemoItemCharge(GenJnlLine,SalesCrMemoHeader,SalesCrMemoLine,
+          TempItemLedgEntry."Entry No.",SalesCrMemoLine."Quantity (Base)",
+          TempItemChargeAssgntSales."Amount to Assign" * Sign,
+          TempItemChargeAssgntSales."Qty. to Assign",
+          TempItemLedgEntry."Serial No.",TempItemLedgEntry."Lot No.");
+    END;
+
+    LOCAL PROCEDURE PostPurchInvItemCharge@42(GenJnlLine@1210001 : Record 81;PurchInvHeader@1210002 : Record 122;PurchInvLine@1000 : Record 123;ItemEntryNo@1004 : Integer;QuantityBase@1005 : Decimal;AmountToAssign@1006 : Decimal;QtyToAssign@1007 : Decimal;IndirectCostPct@1008 : Decimal;SerialNo@1210010 : Code[20];LotNo@1210011 : Code[20]);
+    VAR
+      ItemJnlLine@1210000 : Record 83;
+      Currency@1210003 : Record 4;
+      CurrExchRate@1210004 : Record 330;
+      ItemJnlPostLine@1210006 : Codeunit 22;
+      Usedate@1210005 : Date;
+    BEGIN
+      WITH TempItemChargeAssgntPurch DO BEGIN
+        PrepareGenJnlLinePurch(ItemJnlLine,GenJnlLine,SerialNo,LotNo,AmountToAssign,ItemEntryNo,
+          IndirectCostPct,ItemJnlLine."Document Type"::"Purchase Invoice");
+
+        ItemJnlLine.CopyFromPurchInvHeader(PurchInvHeader);
+        ItemJnlLine.CopyFromPurchInvLine(PurchInvLine);
+        ItemJnlLine.Quantity := 0;
+        ItemJnlLine."Quantity (Base)" := 0;
+
+        IF PurchInvHeader."Currency Code" <> '' THEN BEGIN
+          Currency.GET(PurchInvHeader."Currency Code");
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,Currency."Unit-Amount Rounding Precision");
+          TotalChargeAmt := TotalChargeAmt + ItemJnlLine.Amount;
+          IF PurchInvHeader."Currency Code" <> '' THEN
+            ItemJnlLine.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                Usedate,PurchInvHeader."Currency Code",TotalChargeAmt,PurchInvHeader."Currency Factor");
+        END ELSE
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,GLSetup."Unit-Amount Rounding Precision");
+
+        ItemJnlLine.Amount := ROUND(ItemJnlLine.Amount,GLSetup."Amount Rounding Precision") - TotalChargeAmtLCY;
+        IF PurchInvHeader."Currency Code" <> '' THEN
+          TotalChargeAmtLCY := TotalChargeAmtLCY + ItemJnlLine.Amount;
+
+        ItemJnlPostLine.RunWithCheck(ItemJnlLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE PostPurchCrMemoItemCharge@12100010(GenJnlLine@1210001 : Record 81;PurchCrMemoHeader@1210002 : Record 124;PurchCrMemoLine@1000 : Record 125;ItemEntryNo@1004 : Integer;QuantityBase@1005 : Decimal;AmountToAssign@1006 : Decimal;QtyToAssign@1007 : Decimal;IndirectCostPct@1008 : Decimal;SerialNo@1210010 : Code[20];LotNo@1210011 : Code[20]);
+    VAR
+      ItemJnlLine@1210000 : Record 83;
+      Currency@1210003 : Record 4;
+      CurrExchRate@1210004 : Record 330;
+      ItemJnlPostLine@1210006 : Codeunit 22;
+      Usedate@1210005 : Date;
+    BEGIN
+      WITH TempItemChargeAssgntPurch DO BEGIN
+        PrepareGenJnlLinePurch(ItemJnlLine,GenJnlLine,SerialNo,LotNo,AmountToAssign,ItemEntryNo,
+          IndirectCostPct,ItemJnlLine."Document Type"::"Purchase Credit Memo");
+
+        ItemJnlLine.CopyFromPurchCrMemoHeader(PurchCrMemoHeader);
+        ItemJnlLine.CopyFromPurchCrMemoLine(PurchCrMemoLine);
+        ItemJnlLine.Quantity := 0;
+        ItemJnlLine."Quantity (Base)" := 0;
+
+        IF PurchCrMemoHeader."Currency Code" <> '' THEN BEGIN
+          Currency.GET(PurchCrMemoHeader."Currency Code");
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,Currency."Unit-Amount Rounding Precision");
+          TotalChargeAmt := TotalChargeAmt + ItemJnlLine.Amount;
+          IF PurchCrMemoHeader."Currency Code" <> '' THEN
+            ItemJnlLine.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                Usedate,PurchCrMemoHeader."Currency Code",TotalChargeAmt,PurchCrMemoHeader."Currency Factor");
+        END ELSE
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,GLSetup."Unit-Amount Rounding Precision");
+
+        ItemJnlLine.Amount := ROUND(ItemJnlLine.Amount,GLSetup."Amount Rounding Precision") - TotalChargeAmtLCY;
+        IF PurchCrMemoHeader."Currency Code" <> '' THEN
+          TotalChargeAmtLCY := TotalChargeAmtLCY + ItemJnlLine.Amount;
+
+        ItemJnlPostLine.RunWithCheck(ItemJnlLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE PostSalesInvItemCharge@1210010(GenJnlLine@1210001 : Record 81;SalesInvHeader@1210002 : Record 112;SalesInvLine@1000 : Record 113;ItemEntryNo@1004 : Integer;QuantityBase@1005 : Decimal;AmountToAssign@1006 : Decimal;QtyToAssign@1007 : Decimal;SerialNo@1210010 : Code[20];LotNo@1210011 : Code[20]);
+    VAR
+      ItemJnlLine@1210000 : Record 83;
+      Currency@1210003 : Record 4;
+      CurrExchRate@1210004 : Record 330;
+      ItemJnlPostLine@1210006 : Codeunit 22;
+      Usedate@1210005 : Date;
+    BEGIN
+      WITH TempItemChargeAssgntSales DO BEGIN
+        PrepareGenJnlLineSales(ItemJnlLine,GenJnlLine,SerialNo,LotNo,AmountToAssign,ItemEntryNo,
+          ItemJnlLine."Document Type"::"Sales Invoice");
+
+        ItemJnlLine.CopyFromSalesInvHeader(SalesInvHeader);
+        ItemJnlLine.CopyFromSalesInvLine(SalesInvLine);
+        ItemJnlLine.Quantity := 0;
+        ItemJnlLine."Quantity (Base)" := 0;
+
+        IF SalesInvHeader."Currency Code" <> '' THEN BEGIN
+          Currency.GET(SalesInvHeader."Currency Code");
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,Currency."Unit-Amount Rounding Precision");
+          TotalChargeAmt := TotalChargeAmt + ItemJnlLine.Amount;
+          IF SalesInvHeader."Currency Code" <> '' THEN
+            ItemJnlLine.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                Usedate,SalesInvHeader."Currency Code",TotalChargeAmt,SalesInvHeader."Currency Factor");
+        END ELSE
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,GLSetup."Unit-Amount Rounding Precision");
+
+        ItemJnlLine.Amount := ROUND(ItemJnlLine.Amount,GLSetup."Amount Rounding Precision") - TotalChargeAmtLCY;
+        IF SalesInvHeader."Currency Code" <> '' THEN
+          TotalChargeAmtLCY := TotalChargeAmtLCY + ItemJnlLine.Amount;
+
+        ItemJnlPostLine.RunWithCheck(ItemJnlLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE PostSalesCrMemoItemCharge@1210008(GenJnlLine@1210001 : Record 81;SalesCrMemoHeader@1210002 : Record 114;SalesCrMemoLine@1000 : Record 115;ItemEntryNo@1004 : Integer;QuantityBase@1005 : Decimal;AmountToAssign@1006 : Decimal;QtyToAssign@1007 : Decimal;SerialNo@1210010 : Code[20];LotNo@1210011 : Code[20]);
+    VAR
+      ItemJnlLine@1210000 : Record 83;
+      Currency@1210003 : Record 4;
+      CurrExchRate@1210004 : Record 330;
+      ItemJnlPostLine@1210006 : Codeunit 22;
+      Usedate@1210005 : Date;
+    BEGIN
+      WITH TempItemChargeAssgntSales DO BEGIN
+        PrepareGenJnlLineSales(ItemJnlLine,GenJnlLine,SerialNo,LotNo,AmountToAssign,ItemEntryNo,
+          ItemJnlLine."Document Type"::"Sales Credit Memo");
+
+        ItemJnlLine.CopyFromSalesCrMemoHeader(SalesCrMemoHeader);
+        ItemJnlLine.CopyFromSalesCrMemoLine(SalesCrMemoLine);
+        ItemJnlLine.Quantity := 0;
+        ItemJnlLine."Quantity (Base)" := 0;
+
+        IF SalesCrMemoHeader."Currency Code" <> '' THEN BEGIN
+          Currency.GET(SalesCrMemoHeader."Currency Code");
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,Currency."Unit-Amount Rounding Precision");
+          TotalChargeAmt := TotalChargeAmt + ItemJnlLine.Amount;
+          IF SalesCrMemoHeader."Currency Code" <> '' THEN
+            ItemJnlLine.Amount := CurrExchRate.ExchangeAmtFCYToLCY(
+                Usedate,SalesCrMemoHeader."Currency Code",TotalChargeAmt,SalesCrMemoHeader."Currency Factor");
+        END ELSE
+          ItemJnlLine."Unit Cost" := ROUND(
+              ItemJnlLine.Amount / QuantityBase,GLSetup."Unit-Amount Rounding Precision");
+
+        ItemJnlLine.Amount := ROUND(ItemJnlLine.Amount,GLSetup."Amount Rounding Precision") - TotalChargeAmtLCY;
+        IF PurchCrMemoHeader."Currency Code" <> '' THEN
+          TotalChargeAmtLCY := TotalChargeAmtLCY + ItemJnlLine.Amount;
+
+        ItemJnlPostLine.RunWithCheck(ItemJnlLine);
+      END;
+    END;
+
+    PROCEDURE PostFAAllocation@1210001(GenJnlLine@1210001 : Record 81;VATAllocation@1210000 : Record 14925;VAR DeprAmount@1210010 : Decimal;VAR DeprBookCode@1210011 : Code[10]);
+    VAR
+      FA@1210009 : Record 5600;
+      FASetup@1210008 : Record 5603;
+      FADeprBook@1210007 : Record 5612;
+      FAJnlLine@1210006 : Record 5621;
+      FALedgEntry@1210003 : Record 5601;
+      FAJnlPostLine@1210004 : Codeunit 5632;
+    BEGIN
+      FASetup.GET;
+      FASetup.TESTFIELD("Default Depr. Book");
+      FASetup.TESTFIELD("Release Depr. Book");
+
+      SourceCodeSetup.GET;
+
+      GenJnlLine.TESTFIELD("Object Type",GenJnlLine."Object Type"::"Fixed Asset");
+
+      PurchInvLine.RESET;
+      PurchInvLine.SETRANGE("Document No.",GenJnlLine."Document No.");
+      PurchInvLine.SETRANGE(Type,PurchInvLine.Type::"Fixed Asset");
+      PurchInvLine.SETRANGE("No.",GenJnlLine."Object No.");
+      PurchInvLine.SETRANGE("VAT Bus. Posting Group",VATAllocation."VAT Bus. Posting Group");
+      PurchInvLine.SETRANGE("VAT Prod. Posting Group",VATAllocation."VAT Prod. Posting Group");
+      IF PurchInvLine.FINDFIRST THEN BEGIN
+        FA.GET(PurchInvLine."No.");
+        FADeprBook.GET(FA."No.",FA.GetDefDeprBook);
+        FADeprBook.CALCFIELDS("Book Value");
+        IF FADeprBook."Book Value" <> 0 THEN // not released to operation
+          DeprBookCode := FA.GetDefDeprBook
+        ELSE BEGIN
+          FADeprBook.GET(FA."No.",FASetup."Release Depr. Book");
+          FADeprBook.CALCFIELDS("Book Value");
+          IF (FADeprBook."Book Value" <> 0) OR FA."Undepreciable FA" THEN // in operation
+            DeprBookCode := FASetup."Release Depr. Book"
+          ELSE
+            ERROR(Text001,FA."No.");
+        END;
+
+        FAJnlLine.INIT;
+        FAJnlLine.VALIDATE("Depreciation Book Code",DeprBookCode);
+        FAJnlLine.VALIDATE("FA Posting Type",FAJnlLine."FA Posting Type"::"Acquisition Cost");
+        FAJnlLine.VALIDATE("FA No.",FA."No.");
+        FAJnlLine."Posting Date" := GenJnlLine."Posting Date";
+        IF FADeprBook."Last Depreciation Date" <> 0D THEN BEGIN
+          FAJnlLine."FA Posting Date" := FADeprBook."Last Depreciation Date";
+          FAJnlLine."Depr. Acquisition Cost" := TRUE;
+          FAJnlLine."Depr. until FA Posting Date" := TRUE;
+        END ELSE
+          FAJnlLine."FA Posting Date" := FAJnlLine."Posting Date";
+        FAJnlLine."Document Type" := GenJnlLine."Document Type";
+        FAJnlLine."Document No." := GenJnlLine."Document No.";
+        FAJnlLine.Description := PurchInvLine.Description;
+        FAJnlLine.Quantity := 0;
+        FAJnlLine.VALIDATE(Amount,VATAllocation.Amount);
+        FAJnlLine."Shortcut Dimension 1 Code" := PurchInvLine."Shortcut Dimension 1 Code";
+        FAJnlLine."Shortcut Dimension 2 Code" := PurchInvLine."Shortcut Dimension 2 Code";
+        FAJnlLine."Dimension Set ID" := PurchInvLine."Dimension Set ID";
+        FAJnlLine."Source Code" := SourceCodeSetup."VAT Allocation on Cost";
+        FAJnlLine."Reason Code" := GenJnlLine."Reason Code";
+        FAJnlPostLine.FAJnlPostLine(FAJnlLine,FALSE);
+
+        FALedgEntry.RESET;
+        FALedgEntry.SETCURRENTKEY("FA No.","Depreciation Book Code","FA Posting Date");
+        FALedgEntry.SETRANGE("FA No.",FA."No.");
+        FALedgEntry.SETRANGE("Depreciation Book Code",DeprBookCode);
+        FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::Depreciation);
+        IF FALedgEntry.FINDLAST THEN
+          DeprAmount := FALedgEntry.Amount;
+      END;
+    END;
+
+    PROCEDURE InsertItemReverseEntry@1210007(ValueEntryNo@1005 : Integer;VAR ReversalEntry@1009 : Record 179) : Integer;
+    VAR
+      SourceCodeSetup@1008 : Record 242;
+      ValueEntry@1210001 : Record 5802;
+      ValueEntry3@1003 : Record 5802;
+      InvtSetup@1210000 : Record 313;
+      DimMgt@1012 : Codeunit 408;
+      TableID@1014 : ARRAY [10] OF Integer;
+      AccNo@1013 : ARRAY [10] OF Code[20];
+    BEGIN
+      ValueEntry3.GET(ValueEntryNo);
+      ValueEntry3.TESTFIELD("Reversed by Entry No.",0);
+
+      IF NOT DimMgt.CheckDimIDComb(ValueEntry3."Dimension Set ID") THEN
+        ERROR(Text006,ValueEntry3.TABLECAPTION,ValueEntry3."Entry No.",DimMgt.GetDimCombErr);
+      CLEAR(TableID);
+      CLEAR(AccNo);
+      TableID[1] := DATABASE::Item;
+      AccNo[1] := ValueEntry3."Item No.";
+      IF NOT DimMgt.CheckDimValuePosting(TableID,AccNo,ValueEntry3."Dimension Set ID") THEN
+        ERROR(DimMgt.GetDimValuePostingErr);
+      IF NextReverseEntryNo = 0 THEN BEGIN
+        ValueEntry.LOCKTABLE;
+        IF ValueEntry.FINDLAST THEN
+          NextReverseEntryNo := ValueEntry."Entry No.";
+        SourceCodeSetup.GET;
+        InvtSetup.GET;
+      END;
+      NextReverseEntryNo := NextReverseEntryNo + 1;
+      TempValueEntry := ValueEntry3;
+      TempValueEntry.INSERT;
+      SetItemReversalMark(ReversalEntry,ValueEntry3,NextReverseEntryNo);
+      ValueEntry3."Entry No." := NextReverseEntryNo;
+      ValueEntry3."Cost Amount (Actual)" := -ValueEntry3."Cost Amount (Actual)";
+      ValueEntry3."Cost Posted to G/L" := -ValueEntry3."Cost Posted to G/L";
+      ValueEntry3."Cost Amount (Actual) (ACY)" := -ValueEntry3."Cost Amount (Actual) (ACY)";
+      ValueEntry3."Cost Posted to G/L (ACY)" := -ValueEntry3."Cost Posted to G/L (ACY)";
+      ValueEntry3."Valued Quantity" := -ValueEntry3."Valued Quantity";
+      ValueEntry3."User ID" := USERID;
+      ValueEntry3."Source Code" := SourceCodeSetup.Reversal;
+      ValueEntry3."Journal Batch Name" := '';
+      ValueEntry3."Red Storno" := InvtSetup."Enable Red Storno";
+      ValueEntry3."Dimension Set ID" := TempValueEntry."Dimension Set ID";
+      ValueEntry3.INSERT;
+      InsertItemReg(NextReverseEntryNo,ValueEntry3."Source Code");
+      EXIT(NextReverseEntryNo);
+    END;
+
+    LOCAL PROCEDURE SetItemReversalMark@1210003(VAR ReversalEntry@1002 : Record 179;VAR ValueEntry@1000 : Record 5802;NextEntryNo@1001 : Integer);
+    VAR
+      ValueEntry2@1003 : Record 5601;
+      CloseReversal@1004 : Boolean;
+    BEGIN
+      IF ValueEntry."Reversed Entry No." <> 0 THEN BEGIN
+        ValueEntry2.GET(ValueEntry."Reversed Entry No.");
+        IF ValueEntry2."Reversed Entry No." <> 0 THEN
+          ERROR(Text005);
+        CloseReversal := TRUE;
+        ValueEntry2."Reversed by Entry No." := 0;
+        ValueEntry2.Reversed := FALSE;
+        ValueEntry2.MODIFY;
+      END;
+      ValueEntry."Reversed by Entry No." := NextEntryNo;
+      IF CloseReversal THEN
+        ValueEntry."Reversed Entry No." := NextEntryNo;
+      ValueEntry.Reversed := TRUE;
+      ValueEntry.MODIFY;
+      ValueEntry."Reversed by Entry No." := 0;
+      ValueEntry."Reversed Entry No." := ValueEntry."Entry No.";
+      IF CloseReversal THEN
+        ValueEntry."Reversed by Entry No." := ValueEntry."Entry No.";
+      ReversalEntry.SETCURRENTKEY("Entry Type");
+      ReversalEntry.SETRANGE("Entry Type",ReversalEntry."Entry Type"::"Fixed Asset");
+      IF ReversalEntry.FINDFIRST THEN
+        REPEAT
+          IF ReversalEntry."Entry No." = ValueEntry."Entry No." THEN
+            ValueEntry.Description := ReversalEntry.Description;
+        UNTIL ReversalEntry.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE InsertItemReg@7(ValueEntryNo@1002 : Integer;SourceCode@1210000 : Code[10]);
+    BEGIN
+      IF ItemReg."No." = 0 THEN BEGIN
+        ItemReg.LOCKTABLE;
+        IF ItemReg.FINDLAST THEN
+          ItemReg."No." := ItemReg."No." + 1
+        ELSE
+          ItemReg."No." := 1;
+        ItemReg.INIT;
+        ItemReg."From Value Entry No." := ValueEntryNo;
+        ItemReg."To Value Entry No." := ValueEntryNo;
+        ItemReg."Creation Date" := TODAY;
+        ItemReg."Source Code" := SourceCode;
+        ItemReg."User ID" := USERID;
+        ItemReg.INSERT;
+      END ELSE BEGIN
+        IF ((ValueEntryNo < ItemReg."From Value Entry No.") AND (ValueEntryNo <> 0)) OR
+           ((ItemReg."From Value Entry No." = 0) AND (ValueEntryNo > 0))
+        THEN
+          ItemReg."From Value Entry No." := ValueEntryNo;
+        IF ValueEntryNo > ItemReg."To Value Entry No." THEN
+          ItemReg."To Value Entry No." := ValueEntryNo;
+
+        ItemReg.MODIFY;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertItemChargeAssgntPurch@1210011(VAR NextLineNo@1210001 : Integer;VAR TotalAmount@1210002 : Decimal;DocumentNo@1210003 : Code[20];LineNo@1210004 : Integer;ItemNo@1210005 : Code[20];Description@1210006 : Text[50];UnitCostLCY@1210007 : Decimal;LineAmount@1210008 : Decimal) : Decimal;
+    BEGIN
+      WITH TempItemChargeAssgntPurch DO BEGIN
+        INIT;
+        "Line No." := NextLineNo;
+        NextLineNo := NextLineNo + 10000;
+        VATPostingSetup.TESTFIELD("VAT Charge No.");
+        "Item Charge No." := VATPostingSetup."VAT Charge No.";
+        "Applies-to Doc. Type" := "Applies-to Doc. Type"::Invoice;
+        "Applies-to Doc. No." := DocumentNo;
+        "Applies-to Doc. Line No." := LineNo;
+        "Item No." := ItemNo;
+        Description := Description;
+        "Unit Cost" := UnitCostLCY;
+        "Applies-to Doc. Line Amount" := LineAmount;
+        INSERT;
+        EXIT("Applies-to Doc. Line Amount");
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertItemChargeAssgntSales@1210012(NextLineNo@1210001 : Integer;VAR TotalAmount@1210002 : Decimal;DocumentNo@1210003 : Code[20];LineNo@1210004 : Integer;ItemNo@1210005 : Code[20];Description@1210006 : Text[50];UnitCostLCY@1210007 : Decimal;LineAmount@1210008 : Decimal) : Decimal;
+    BEGIN
+      WITH TempItemChargeAssgntSales DO BEGIN
+        INIT;
+        "Document Line No." := LineNo;
+        "Line No." := NextLineNo;
+        NextLineNo := NextLineNo + 10000;
+        VATPostingSetup.TESTFIELD("VAT Charge No.");
+        "Item Charge No." := VATPostingSetup."VAT Charge No.";
+        "Applies-to Doc. Type" := "Applies-to Doc. Type"::Invoice;
+        "Applies-to Doc. No." := DocumentNo;
+        "Applies-to Doc. Line No." := LineNo;
+        "Item No." := ItemNo;
+        Description := Description;
+        "Unit Cost" := UnitCostLCY;
+        "Applies-to Doc. Line Amount" := LineAmount;
+        INSERT;
+        EXIT("Applies-to Doc. Line Amount");
+      END;
+    END;
+
+    LOCAL PROCEDURE PrepareGenJnlLinePurch@12100011(VAR ItemJnlLine@1210001 : Record 83;GenJnlLine@1210002 : Record 81;SerialNo@1210003 : Code[20];LotNo@1210004 : Code[20];AmountToAssign@1210005 : Decimal;ItemEntryNo@1210006 : Integer;IndirectCostPct@1210007 : Decimal;DocumentType@1210008 : Option);
+    BEGIN
+      WITH ItemJnlLine DO BEGIN
+        INIT;
+        "Posting Date" := GenJnlLine."Posting Date";
+        "Document Date" := GenJnlLine."Document Date";
+        Description := TempItemChargeAssgntPurch.Description;
+        "Item No." := TempItemChargeAssgntPurch."Item No.";
+        "Serial No." := SerialNo;
+        "Lot No." := LotNo;
+        "Job Purchase" := "Job No." <> '';
+        "Drop Shipment" := FALSE;
+        "Entry Type" := "Entry Type"::Purchase;
+        "Document Type" := DocumentType;
+        "Invoice No." := GenJnlLine."Document No.";
+        "External Document No." := GenJnlLine."External Document No.";
+        "Invoiced Quantity" := TempItemChargeAssgntPurch."Qty. to Assign";
+        "Invoiced Qty. (Base)" := TempItemChargeAssgntPurch."Qty. to Assign";
+        "Value Entry Type" := "Value Entry Type"::"Direct Cost";
+        "Item Charge No." := TempItemChargeAssgntPurch."Item Charge No.";
+        Amount := AmountToAssign;
+        "Source Type" := "Source Type"::Vendor;
+        "Source Code" := SourceCodeSetup."VAT Allocation on Cost";
+        "Applies-to Entry" := ItemEntryNo;
+        "Item Shpt. Entry No." := ItemEntryNo;
+        "Indirect Cost %" := IndirectCostPct;
+      END;
+    END;
+
+    PROCEDURE PrepareGenJnlLineSales@12100024(VAR ItemJnlLine@1210001 : Record 83;GenJnlLine@1210002 : Record 81;SerialNo@1210003 : Code[20];LotNo@1210004 : Code[20];AmountToAssign@1210005 : Decimal;ItemEntryNo@1210006 : Integer;DocumentType@1210007 : Option);
+    BEGIN
+      WITH ItemJnlLine DO BEGIN
+        INIT;
+        "Posting Date" := GenJnlLine."Posting Date";
+        "Document Date" := GenJnlLine."Document Date";
+        Description := TempItemChargeAssgntSales.Description;
+        "Item No." := TempItemChargeAssgntSales."Item No.";
+        "Serial No." := SerialNo;
+        "Lot No." := LotNo;
+        "Job Purchase" := "Job No." <> '';
+        "Drop Shipment" := FALSE;
+        "Entry Type" := "Entry Type"::Purchase;
+        "Document Type" := DocumentType;
+        "Invoice No." := GenJnlLine."Document No.";
+        "External Document No." := GenJnlLine."External Document No.";
+        "Invoiced Quantity" := TempItemChargeAssgntSales."Qty. to Assign";
+        "Invoiced Qty. (Base)" := TempItemChargeAssgntSales."Qty. to Assign";
+        "Value Entry Type" := "Value Entry Type"::"Direct Cost";
+        "Item Charge No." := TempItemChargeAssgntSales."Item Charge No.";
+        Amount := AmountToAssign;
+        "Source Type" := "Source Type"::Vendor;
+        "Source Code" := SourceCodeSetup."VAT Allocation on Cost";
+        "Applies-to Entry" := ItemEntryNo;
+        "Item Shpt. Entry No." := ItemEntryNo;
+      END;
+    END;
+
+    PROCEDURE InitiItemChargeAssgntBuffer@1210000(VAR TempItemChargeAssgntPurch@1210000 : Record 5805;VAR TempItemChargeAssgntSales@1210001 : Record 5809);
+    BEGIN
+      TempItemChargeAssgntPurch.RESET;
+      TempItemChargeAssgntPurch.DELETEALL;
+      TempItemChargeAssgntSales.RESET;
+      TempItemChargeAssgntSales.DELETEALL;
+    END;
+
+    PROCEDURE GetEntrySign@1210014(Quantity@1210000 : Decimal) : Integer;
+    BEGIN
+      IF Quantity > 0 THEN
+        EXIT(1);
+      EXIT(-1);
+    END;
+
+    PROCEDURE FillItemChargeAssgntPurch@1210015(GenJnlLine@1210000 : Record 81;VATAllocLine@1210003 : Record 14925;VAR TotalAmount@1210002 : Decimal;VAR NextLineNo@1210001 : Integer);
+    BEGIN
+      CASE GenJnlLine."Document Type" OF
+        GenJnlLine."Document Type"::Invoice:
+          WITH PurchInvLine DO BEGIN
+            RESET;
+            SETRANGE("Document No.",GenJnlLine."Document No.");
+            SETRANGE(Type,Type::Item);
+            SETRANGE("VAT Bus. Posting Group",VATAllocLine."VAT Bus. Posting Group");
+            SETRANGE("VAT Prod. Posting Group",VATAllocLine."VAT Prod. Posting Group");
+            IF FINDSET THEN
+              REPEAT
+                TotalAmount := TotalAmount + InsertItemChargeAssgntPurch(NextLineNo,TotalAmount,"Document No.","Line No.",
+                    "No.",Description,"Unit Cost (LCY)","Line Amount");
+              UNTIL NEXT = 0;
+          END;
+        GenJnlLine."Document Type"::"Credit Memo":
+          WITH PurchCrMemoLine DO BEGIN
+            RESET;
+            SETRANGE("Document No.",GenJnlLine."Document No.");
+            SETRANGE(Type,Type::Item);
+            SETRANGE("VAT Bus. Posting Group",VATAllocLine."VAT Bus. Posting Group");
+            SETRANGE("VAT Prod. Posting Group",VATAllocLine."VAT Prod. Posting Group");
+            IF FINDSET THEN
+              REPEAT
+                TotalAmount := TotalAmount + InsertItemChargeAssgntPurch(NextLineNo,TotalAmount,"Document No.","Line No.",
+                    "No.",Description,"Unit Cost (LCY)","Line Amount");
+              UNTIL NEXT = 0;
+          END;
+        ELSE
+          GenJnlLine.FIELDERROR("Document Type");
+      END;
+    END;
+
+    PROCEDURE AllocateItemChargeAssgntPurch@1210013(VATAllocLine@1210003 : Record 14925;TotalAmount@1210002 : Decimal;QtyRemainder@1210001 : Decimal;AmountRemainder@1210000 : Decimal);
+    VAR
+      TempItemChargeAssgntPurch2@1210004 : TEMPORARY Record 5805;
+    BEGIN
+      TempItemChargeAssgntPurch.RESET;
+      IF TempItemChargeAssgntPurch.FINDSET THEN
+        REPEAT
+          IF TempItemChargeAssgntPurch."Applies-to Doc. Line Amount" <> 0 THEN
+            TempItemChargeAssgntPurch2."Qty. to Assign" :=
+              TempItemChargeAssgntPurch."Applies-to Doc. Line Amount" / TotalAmount + QtyRemainder
+          ELSE
+            TempItemChargeAssgntPurch2."Qty. to Assign" := 0;
+
+          TempItemChargeAssgntPurch."Qty. to Assign" :=
+            ROUND(TempItemChargeAssgntPurch2."Qty. to Assign",0.00001);
+          TempItemChargeAssgntPurch."Amount to Assign" :=
+            TempItemChargeAssgntPurch."Qty. to Assign" * VATAllocLine.Amount + AmountRemainder;
+          AmountRemainder :=
+            TempItemChargeAssgntPurch."Amount to Assign" -
+            ROUND(TempItemChargeAssgntPurch."Amount to Assign",RoundingPrecision);
+          QtyRemainder :=
+            TempItemChargeAssgntPurch."Qty. to Assign" - TempItemChargeAssgntPurch2."Qty. to Assign";
+          TempItemChargeAssgntPurch."Amount to Assign" :=
+            ROUND(TempItemChargeAssgntPurch."Amount to Assign",RoundingPrecision);
+          TempItemChargeAssgntPurch.MODIFY;
+        UNTIL TempItemChargeAssgntPurch.NEXT = 0;
+    END;
+
+    PROCEDURE PostItemChargeAssgntPurch@1210002(GenJnlLine@1210000 : Record 81);
+    BEGIN
+      CASE GenJnlLine."Document Type" OF
+        GenJnlLine."Document Type"::Invoice:
+          BEGIN
+            PurchInvHeader.GET(GenJnlLine."Document No.");
+            TempItemChargeAssgntPurch.RESET;
+            IF TempItemChargeAssgntPurch.FINDSET THEN
+              REPEAT
+                PurchInvLine.GET(
+                  TempItemChargeAssgntPurch."Applies-to Doc. No.",TempItemChargeAssgntPurch."Applies-to Doc. Line No.");
+                PostItemChargePerPurchInvLine(GenJnlLine,PurchInvHeader,PurchInvLine);
+              UNTIL TempItemChargeAssgntPurch.NEXT = 0;
+          END;
+        GenJnlLine."Document Type"::"Credit Memo":
+          BEGIN
+            PurchCrMemoHeader.GET(GenJnlLine."Document No.");
+            TempItemChargeAssgntPurch.RESET;
+            IF TempItemChargeAssgntPurch.FINDSET THEN
+              REPEAT
+                PurchCrMemoLine.GET(
+                  TempItemChargeAssgntPurch."Applies-to Doc. No.",TempItemChargeAssgntPurch."Applies-to Doc. Line No.");
+                PostItemChargePerPurchCrMLine(GenJnlLine,PurchCrMemoHeader,PurchCrMemoLine);
+              UNTIL TempItemChargeAssgntPurch.NEXT = 0;
+          END;
+      END;
+    END;
+
+    PROCEDURE FillItemChargeAssgntSales@1210018(GenJnlLine@1210003 : Record 81;VATAllocLine@1210002 : Record 14925;VAR TotalAmount@1210001 : Decimal;NextLineNo@1210000 : Integer);
+    BEGIN
+      CASE GenJnlLine."Document Type" OF
+        GenJnlLine."Document Type"::Invoice:
+          WITH SalesInvLine DO BEGIN
+            RESET;
+            SETRANGE("Document No.",GenJnlLine."Document No.");
+            SETRANGE(Type,Type::Item);
+            SETRANGE("VAT Bus. Posting Group",VATAllocLine."VAT Bus. Posting Group");
+            SETRANGE("VAT Prod. Posting Group",VATAllocLine."VAT Prod. Posting Group");
+            IF FINDSET THEN
+              REPEAT
+                TotalAmount :=
+                  TotalAmount +
+                  InsertItemChargeAssgntSales(
+                    NextLineNo,TotalAmount,"Document No.","Line No.",
+                    "No.",Description,"Unit Cost (LCY)","Line Amount");
+              UNTIL NEXT = 0;
+          END;
+        GenJnlLine."Document Type"::"Credit Memo":
+          WITH SalesCrMemoLine DO BEGIN
+            RESET;
+            SETRANGE("Document No.",GenJnlLine."Document No.");
+            SETRANGE(Type,Type::Item);
+            SETRANGE("VAT Bus. Posting Group",VATAllocLine."VAT Bus. Posting Group");
+            SETRANGE("VAT Prod. Posting Group",VATAllocLine."VAT Prod. Posting Group");
+            IF FINDSET THEN
+              REPEAT
+                TotalAmount := TotalAmount + InsertItemChargeAssgntSales(NextLineNo,TotalAmount,"Document No.","Line No.",
+                    "No.",Description,"Unit Cost (LCY)","Line Amount");
+              UNTIL NEXT = 0;
+          END;
+        ELSE
+          GenJnlLine.FIELDERROR("Document Type");
+      END;
+    END;
+
+    PROCEDURE AllocateItemChargeAssgntSales@1210017(VATAllocLine@1210003 : Record 14925;TotalAmount@1210002 : Decimal;QtyRemainder@1210001 : Decimal;AmountRemainder@1210000 : Decimal);
+    VAR
+      TempItemChargeAssgntSales2@1210004 : TEMPORARY Record 5809;
+    BEGIN
+      TempItemChargeAssgntSales.RESET;
+      IF TempItemChargeAssgntSales.FINDSET THEN
+        REPEAT
+          IF TempItemChargeAssgntSales."Applies-to Doc. Line Amount" <> 0 THEN
+            TempItemChargeAssgntSales2."Qty. to Assign" :=
+              TempItemChargeAssgntSales."Applies-to Doc. Line Amount" / TotalAmount + QtyRemainder
+          ELSE
+            TempItemChargeAssgntSales2."Qty. to Assign" := 0;
+
+          TempItemChargeAssgntSales."Qty. to Assign" :=
+            ROUND(TempItemChargeAssgntSales2."Qty. to Assign",0.00001);
+          TempItemChargeAssgntSales."Amount to Assign" :=
+            TempItemChargeAssgntSales."Qty. to Assign" * VATAllocLine.Amount + AmountRemainder;
+          AmountRemainder :=
+            TempItemChargeAssgntSales."Amount to Assign" -
+            ROUND(TempItemChargeAssgntSales."Amount to Assign",RoundingPrecision);
+          QtyRemainder :=
+            TempItemChargeAssgntSales."Qty. to Assign" - TempItemChargeAssgntSales2."Qty. to Assign";
+          TempItemChargeAssgntSales."Amount to Assign" :=
+            ROUND(TempItemChargeAssgntSales."Amount to Assign",RoundingPrecision);
+          TempItemChargeAssgntSales.MODIFY;
+        UNTIL TempItemChargeAssgntSales.NEXT = 0;
+    END;
+
+    PROCEDURE PostItemChargeAssgntSales@1210016(GenJnlLine@1210000 : Record 81);
+    BEGIN
+      CASE GenJnlLine."Document Type" OF
+        GenJnlLine."Document Type"::Invoice:
+          BEGIN
+            SalesInvHeader.GET(GenJnlLine."Document No.");
+            TempItemChargeAssgntSales.RESET;
+            IF TempItemChargeAssgntSales.FINDSET THEN
+              REPEAT
+                SalesInvLine.GET(
+                  TempItemChargeAssgntSales."Applies-to Doc. No.",TempItemChargeAssgntSales."Applies-to Doc. Line No.");
+                PostItemChargePerSalesInvLine(GenJnlLine,SalesInvHeader,SalesInvLine);
+              UNTIL TempItemChargeAssgntSales.NEXT = 0;
+          END;
+        GenJnlLine."Document Type"::"Credit Memo":
+          BEGIN
+            SalesCrMemoHeader.GET(GenJnlLine."Document No.");
+            TempItemChargeAssgntPurch.RESET;
+            IF TempItemChargeAssgntSales.FINDSET THEN
+              REPEAT
+                SalesCrMemoLine.GET(
+                  TempItemChargeAssgntSales."Applies-to Doc. No.",TempItemChargeAssgntSales."Applies-to Doc. Line No.");
+                PostItemChargePerSalesCrMLine(GenJnlLine,SalesCrMemoHeader,SalesCrMemoLine);
+              UNTIL TempItemChargeAssgntSales.NEXT = 0;
+          END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

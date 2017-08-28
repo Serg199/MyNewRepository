@@ -1,0 +1,1196 @@
+OBJECT Codeunit 17372 HR Order - Print
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210000 : Record 79;
+      HumanResSetup@1210001 : Record 5218;
+      Director@1210006 : Record 5200;
+      Accountant@1210012 : Record 5200;
+      Employee@1210010 : Record 5200;
+      EmplJobEntry@1210004 : Record 17363;
+      Contract@1210007 : Record 17360;
+      Position@1210008 : Record 17370;
+      OrgUnit@1210005 : Record 12422;
+      ExcelMgt@1210009 : Codeunit 12416;
+      LocMgt@1210002 : Codeunit 12400;
+      Text000@1210011 : TextConst 'ENU=Previous contract line does not exist.;RUS=Предыдущая строка договора не существует';
+      Text001@1210003 : TextConst 'ENU=Employer;RUS=Работодатель';
+      LocalRepMgt@1210015 : Codeunit 12401;
+      WholeAmountText@1210014 : Text[250];
+      HundredAmount@1210013 : Decimal;
+
+    PROCEDURE PrintFormT1@1210000(ContractLine@1210000 : Record 17361);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+    BEGIN
+      CompanyInfo.GET;
+      CompanyInfo.TESTFIELD("Director No.");
+      Director.GET(CompanyInfo."Director No.");
+
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-1 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-1 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      WITH ContractLine DO BEGIN
+        Contract.GET("Contract No.");
+        Employee.GET(Contract."Employee No.");
+        Position.GET("Position No.");
+
+        ExcelMgt.FillCell('A8',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AS7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AI13',"Order No.");
+        ExcelMgt.FillCell('AV13',FORMAT("Order Date"));
+        ExcelMgt.FillCell('AU19',FORMAT("Starting Date"));
+        ExcelMgt.FillCell('AU20',FORMAT("Ending Date"));
+        ExcelMgt.FillCell('AU23',Contract."Employee No.");
+        ExcelMgt.FillCell('A23',Employee.GetFullNameOnDate("Order Date"));
+        ExcelMgt.FillCell('B25',Employee."Org. Unit Name");
+        ExcelMgt.FillCell('A27',Employee."Job Title");
+        ExcelMgt.FillCell('A30',
+          STRSUBSTNO('%1 - %2, %3 - %4, %5 - %6',
+            Position.FIELDCAPTION("Kind of Work"),Position."Kind of Work",
+            Contract.FIELDCAPTION("Work Mode"),FORMAT(Contract."Work Mode"),
+            Position.FIELDCAPTION("Conditions of Work"),Position."Conditions of Work"));
+        ExcelMgt.FillCell('R34',FORMAT(Position."Base Salary Amount" DIV 1));
+        ExcelMgt.FillCell('R36',FORMAT(Position."Additional Salary Amount" DIV 1));
+        ExcelMgt.FillCell('AN34',FORMAT((Position."Base Salary Amount" MOD 1) * 100));
+        ExcelMgt.FillCell('AN36',FORMAT((Position."Additional Salary Amount" MOD 1) * 100));
+        ExcelMgt.FillCell('N39',"Trial Period Description");
+        ExcelMgt.FillCell('AP43',FORMAT("Contract No."));
+        ExcelMgt.FillCell('N43',FORMAT(DATE2DMY("Starting Date",1)));
+        ExcelMgt.FillCell('R43',LocMgt.GetMonthName("Starting Date",TRUE));
+        ExcelMgt.FillCell('AH43',COPYSTR(FORMAT(DATE2DMY("Starting Date",3)),3,2));
+        ExcelMgt.FillCell('J48',Director.GetJobTitleName);
+        ExcelMgt.FillCell('AP48',Director.GetNameInitials);
+
+        ExcelMgt.GiveUserControl;
+      END;
+    END;
+
+    PROCEDURE PrintFormT1a@1210009(GroupOrderHeader@1210000 : Record 17366);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+      Employee@1210002 : Record 5200;
+    BEGIN
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-1a Template Code");
+      CompanyInfo.GET;
+
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-1a Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+      ExcelMgt.FillCell('CF7',FORMAT(CompanyInfo."OKPO Code"));
+
+      IF Employee.GET(CompanyInfo."Director No.") THEN BEGIN
+        ExcelMgt.FillCell('R27',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('BC27',Employee.GetFullNameOnDate(GroupOrderHeader."Posting Date"));
+      END;
+
+      ExcelMgt.FillCell('BC11',GroupOrderHeader."No.");
+      ExcelMgt.FillCell('BQ11',FORMAT(GroupOrderHeader."Posting Date"));
+
+      PrintFormT1aLines(GroupOrderHeader."No.",GroupOrderHeader."Document Type");
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT1aLines@1210014(DocNo@1210002 : Code[20];DocType@1210001 : Option);
+    VAR
+      GroupOrderLine@1210000 : Record 17367;
+      LaborContractLine@1210004 : Record 17361;
+      RowNo@1210003 : Integer;
+    BEGIN
+      RowNo := 24;
+
+      WITH GroupOrderLine DO BEGIN
+        SETRANGE("Document No.",DocNo);
+        SETRANGE("Document Type",DocType);
+
+        IF FINDSET THEN
+          REPEAT
+            ExcelMgt.CopyRow(RowNo);
+
+            ExcelMgt.FillCell('A' + FORMAT(RowNo),"Employee Name");
+            ExcelMgt.FillCell('U' + FORMAT(RowNo),"Employee No.");
+
+            Employee.GET("Employee No.");
+            ExcelMgt.FillCell('AA' + FORMAT(RowNo),Employee."Org. Unit Name");
+            ExcelMgt.FillCell('AJ' + FORMAT(RowNo),Employee.GetJobTitleName);
+
+            FillLaborContractInfoForT1a(Employee."Contract No.",RowNo);
+
+            LaborContractLine.SETRANGE("Contract No.",Employee."Contract No.");
+            LaborContractLine.SETRANGE("Operation Type",LaborContractLine."Operation Type"::Hire);
+            LaborContractLine.FINDFIRST;
+            Position.GET(LaborContractLine."Position No.");
+            ExcelMgt.FillCell('AS' + FORMAT(RowNo),FORMAT(Position."Monthly Salary Amount"));
+
+            RowNo += 1;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FillLaborContractInfoForT1a@1210020(ContractNo@1210000 : Code[20];RowNo@1210003 : Integer);
+    VAR
+      LaborContract@1210001 : Record 17360;
+      LaborContractLine@1210002 : Record 17361;
+    BEGIN
+      IF LaborContract.GET(ContractNo) THEN BEGIN
+        ExcelMgt.FillCell('BB' + FORMAT(RowNo),LaborContract."No.");
+        ExcelMgt.FillCell('BH' + FORMAT(RowNo),FORMAT(LaborContract."Starting Date"));
+
+        LaborContractLine.SETRANGE("Contract No.",ContractNo);
+        IF LaborContractLine.FINDFIRST THEN BEGIN
+          ExcelMgt.FillCell('BP' + FORMAT(RowNo),FORMAT(LaborContractLine."Starting Date"));
+          ExcelMgt.FillCell('BX' + FORMAT(RowNo),FORMAT(LaborContractLine."Ending Date"));
+
+          IF (LaborContractLine."Trial Period End Date" <> 0D) AND
+             (LaborContractLine."Trial Period Start Date" <> 0D)
+          THEN
+            ExcelMgt.FillCell('CF' + FORMAT(RowNo),
+              FORMAT(DATE2DMY(LaborContractLine."Trial Period End Date",2) -
+                DATE2DMY(LaborContractLine."Trial Period Start Date",2)));
+        END;
+      END;
+    END;
+
+    PROCEDURE PrintFormT5@1210001(ContractLine@1210000 : Record 17361);
+    VAR
+      PrevContractLine@1210001 : Record 17361;
+      ExcelTemplate@1210002 : Record 14919;
+    BEGIN
+      CompanyInfo.GET;
+      CompanyInfo.TESTFIELD("Director No.");
+      Director.GET(CompanyInfo."Director No.");
+
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-5 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-5 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      WITH ContractLine DO BEGIN
+        Contract.GET("Contract No.");
+        Employee.GET(Contract."Employee No.");
+
+        PrevContractLine := ContractLine;
+        IF PrevContractLine.NEXT(-1) = 0 THEN
+          ERROR(Text000);
+
+        ExcelMgt.FillCell('A8',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AS7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AI13',"Order No.");
+        ExcelMgt.FillCell('AV13',FORMAT("Order Date"));
+        ExcelMgt.FillCell('AU19',FORMAT("Starting Date"));
+        ExcelMgt.FillCell('AU20',FORMAT("Ending Date"));
+        ExcelMgt.FillCell('A23',Employee.GetFullNameOnDate("Order Date"));
+        ExcelMgt.FillCell('AU23',Contract."Employee No.");
+
+        Position.GET(PrevContractLine."Position No.");
+        ExcelMgt.FillCell('H27',Position."Org. Unit Name");
+        ExcelMgt.FillCell('H29',Position."Job Title Name");
+
+        Position.GET("Position No.");
+        ExcelMgt.FillCell('H34',Position."Org. Unit Name");
+        ExcelMgt.FillCell('H36',Position."Job Title Name");
+
+        ExcelMgt.FillCell('V38',FORMAT(Position."Base Salary Amount" DIV 1));
+        ExcelMgt.FillCell('AN38',FORMAT((Position."Base Salary Amount" MOD 1) * 100));
+        ExcelMgt.FillCell('V40',FORMAT(Position."Additional Salary Amount" DIV 1));
+        ExcelMgt.FillCell('AN40',FORMAT((Position."Additional Salary Amount" MOD 1) * 100));
+        ExcelMgt.FillCell('AV46',"Supplement No.");
+        ExcelMgt.FillCell('V46',FORMAT(DATE2DMY(Contract."Starting Date",1)));
+        ExcelMgt.FillCell('Z46',LocMgt.GetMonthName("Order Date",TRUE));
+        ExcelMgt.FillCell('AN46',COPYSTR(FORMAT(DATE2DMY(Contract."Starting Date",3)),3,2));
+
+        ExcelMgt.FillCell('J52',Director.GetJobTitleName);
+        ExcelMgt.FillCell('AP52',Director.GetNameInitials);
+
+        ExcelMgt.GiveUserControl;
+      END;
+    END;
+
+    PROCEDURE PrintFormT5a@1210012(GroupOrderHeader@1210000 : Record 17366);
+    VAR
+      ExcelTemplate@1210002 : Record 14919;
+      Employee@1210001 : Record 5200;
+    BEGIN
+      CompanyInfo.GET;
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-5a Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-5a Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+      ExcelMgt.FillCell('CF7',FORMAT(CompanyInfo."OKPO Code"));
+
+      IF Employee.GET(CompanyInfo."Director No.") THEN BEGIN
+        ExcelMgt.FillCell('R28',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('BC28',Employee.GetFullNameOnDate(GroupOrderHeader."Posting Date"));
+      END;
+
+      ExcelMgt.FillCell('BC11',GroupOrderHeader."No.");
+      ExcelMgt.FillCell('BQ11',FORMAT(GroupOrderHeader."Posting Date"));
+
+      PrintFormT5aLines(GroupOrderHeader."No.",GroupOrderHeader."Document Type");
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT5aLines@1210016(DocNo@1210002 : Code[20];DocType@1210001 : Option);
+    VAR
+      GroupOrderLine@1210000 : Record 17367;
+      LaborContractLine@1210004 : Record 17361;
+      RowNo@1210003 : Integer;
+    BEGIN
+      RowNo := 25;
+
+      WITH GroupOrderLine DO BEGIN
+        SETRANGE("Document No.",DocNo);
+        SETRANGE("Document Type",DocType);
+
+        IF FINDSET THEN
+          REPEAT
+            ExcelMgt.CopyRow(RowNo);
+
+            ExcelMgt.FillCell('A' + FORMAT(RowNo),"Employee Name");
+            ExcelMgt.FillCell('U' + FORMAT(RowNo),"Employee No.");
+
+            Employee.GET("Employee No.");
+
+            FillLaborContractInfoForT5a(Employee."Contract No.","Supplement No.",RowNo);
+
+            LaborContractLine.SETRANGE("Contract No.","Contract No.");
+            LaborContractLine.SETRANGE("Supplement No.","Supplement No.");
+            LaborContractLine.SETRANGE("Operation Type",LaborContractLine."Operation Type"::Transfer);
+            IF LaborContractLine.FINDFIRST THEN
+              IF Position.GET(LaborContractLine."Position No.") THEN
+                ExcelMgt.FillCell('AY' + FORMAT(RowNo),FORMAT(Position."Monthly Salary Amount"));
+
+            RowNo += 1;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FillLaborContractInfoForT5a@1210017(ContractNo@1210000 : Code[20];AmendmentNo@1210004 : Code[10];RowNo@1210003 : Integer);
+    VAR
+      LaborContract@1210001 : Record 17360;
+      LaborContractLine@1210002 : Record 17361;
+      Position@1210005 : Record 17370;
+    BEGIN
+      IF LaborContract.GET(ContractNo) THEN BEGIN
+        LaborContractLine.SETRANGE("Contract No.",ContractNo);
+        LaborContractLine.SETFILTER("Supplement No.",'<=%1',AmendmentNo);
+
+        IF LaborContractLine.FINDLAST THEN BEGIN
+          // new position info
+          IF Position.GET(LaborContractLine."Position No.") THEN BEGIN
+            ExcelMgt.FillCell('AG' + FORMAT(RowNo),Position."Org. Unit Name");
+            ExcelMgt.FillCell('AS' + FORMAT(RowNo),Position."Job Title Name");
+          END;
+
+          ExcelMgt.FillCell('BH' + FORMAT(RowNo),FORMAT(LaborContractLine."Starting Date"));
+          ExcelMgt.FillCell('BN' + FORMAT(RowNo),FORMAT(LaborContractLine."Ending Date"));
+
+          IF LaborContractLine."Supplement No." <> '' THEN
+            ExcelMgt.FillCell('BV' + FORMAT(RowNo),LaborContractLine."Order No." + ' ' +
+              LaborContractLine."Supplement No.")
+          ELSE
+            ExcelMgt.FillCell('BV' + FORMAT(RowNo),LaborContractLine."Order No.");
+          ExcelMgt.FillCell('CD' + FORMAT(RowNo),FORMAT(LaborContractLine."Order Date"));
+
+          // prev position info
+          IF LaborContractLine.FIND('<') THEN
+            IF Position.GET(LaborContractLine."Position No.") THEN BEGIN
+              ExcelMgt.FillCell('AA' + FORMAT(RowNo),Position."Org. Unit Name");
+              ExcelMgt.FillCell('AM' + FORMAT(RowNo),Position."Job Title Name");
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE PrintFormT6@1210006(AbsenceHeader@1210000 : Record 17385;Posted@1210003 : Boolean);
+    VAR
+      AbsenceLine@1210001 : Record 17386;
+      PostedAbsenceLine@1210004 : Record 17388;
+      EmplAbsenceEntry@1210005 : Record 17389;
+      ExcelTemplate@1210002 : Record 14919;
+      TotalDays@1210006 : Decimal;
+      OverallVacationStartDate@1210007 : Date;
+      OverallVacationEndDate@1210008 : Date;
+    BEGIN
+      AbsenceHeader.TESTFIELD("HR Order Date");
+
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-6 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-6 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      CompanyInfo.GET;
+
+      WITH AbsenceHeader DO BEGIN
+        ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AS7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AI13',"HR Order No.");
+        ExcelMgt.FillCell('AV13',FORMAT("HR Order Date"));
+        ExcelMgt.FillCell('AU19',"Employee No.");
+
+        Employee.GET("Employee No.");
+        ExcelMgt.FillCell('A19',Employee.GetFullNameOnDate("HR Order Date"));
+        Employee.GetJobEntry("Employee No.","HR Order Date",EmplJobEntry);
+        OrgUnit.GET(EmplJobEntry."Org. Unit Code");
+        ExcelMgt.FillCell('A21',OrgUnit.Name);
+        ExcelMgt.FillCell('A23',Employee.GetJobTitleName);
+
+        EmplAbsenceEntry.RESET;
+        EmplAbsenceEntry.SETCURRENTKEY("Employee No.");
+        EmplAbsenceEntry.SETRANGE("Employee No.","Employee No.");
+        EmplAbsenceEntry.SETRANGE("Entry Type",EmplAbsenceEntry."Entry Type"::Usage);
+        EmplAbsenceEntry.SETRANGE("Document Type","Document Type" + 1);
+        EmplAbsenceEntry.SETRANGE("Document No.","No.");
+        IF EmplAbsenceEntry.FINDFIRST THEN
+          IF EmplAbsenceEntry.GET(EmplAbsenceEntry."Accrual Entry No.") THEN BEGIN
+            ExcelMgt.FillCell('M26',LocMgt.Date2Text(EmplAbsenceEntry."Start Date"));
+            ExcelMgt.FillCell('AN26',LocMgt.Date2Text(EmplAbsenceEntry."End Date"));
+          END;
+
+        Employee.GET(CompanyInfo."Director No.");
+        ExcelMgt.FillCell('J47',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('AP47',Employee.GetNameInitials);
+
+        IF Posted THEN BEGIN
+          PostedAbsenceLine.SETRANGE("Document Type","Document Type");
+          PostedAbsenceLine.SETRANGE("Document No.","No.");
+          IF PostedAbsenceLine.FINDSET THEN
+            REPEAT
+              IF PostedAbsenceLine."Vacation Type" < PostedAbsenceLine."Vacation Type"::Additional THEN BEGIN // A case
+                ExcelMgt.FillCell('AC28',FORMAT(PostedAbsenceLine."Payment Days"));
+                ExcelMgt.FillCell('C30',LocMgt.Date2Text(PostedAbsenceLine."Start Date"));
+                ExcelMgt.FillCell('AD30',LocMgt.Date2Text(PostedAbsenceLine."End Date"));
+              END ELSE BEGIN // B case
+                ExcelMgt.FillCell('C34',FORMAT(PostedAbsenceLine."Vacation Type"));
+                ExcelMgt.FillCell('Q37',FORMAT(PostedAbsenceLine."Payment Days"));
+                ExcelMgt.FillCell('C39',LocMgt.Date2Text(PostedAbsenceLine."Start Date"));
+                ExcelMgt.FillCell('AD39',LocMgt.Date2Text(PostedAbsenceLine."End Date"));
+              END;
+              TotalDays += PostedAbsenceLine."Payment Days";
+              OverallVacationStartDate := GetMinDate(PostedAbsenceLine."Start Date",OverallVacationStartDate);
+              OverallVacationEndDate := GetMaxDate(PostedAbsenceLine."End Date",OverallVacationEndDate);
+            UNTIL PostedAbsenceLine.NEXT = 0;
+          ExcelMgt.FillCell('Q41',FORMAT(TotalDays));
+          ExcelMgt.FillCell('C43',LocMgt.Date2Text(OverallVacationStartDate));
+          ExcelMgt.FillCell('AD43',LocMgt.Date2Text(OverallVacationEndDate));
+        END ELSE BEGIN
+          AbsenceLine.SETRANGE("Document Type","Document Type");
+          AbsenceLine.SETRANGE("Document No.","No.");
+          IF AbsenceLine.FINDSET THEN
+            REPEAT
+              IF AbsenceLine."Vacation Type" < AbsenceLine."Vacation Type"::Additional THEN BEGIN // A case
+                TotalDays += AbsenceLine."Payment Days";
+                ExcelMgt.FillCell('AC28',FORMAT(AbsenceLine."Payment Days"));
+                ExcelMgt.FillCell('C30',LocMgt.Date2Text(AbsenceLine."Start Date"));
+                ExcelMgt.FillCell('AD30',LocMgt.Date2Text(AbsenceLine."End Date"));
+              END ELSE BEGIN // B case
+                TotalDays += AbsenceLine."Calendar Days";
+                ExcelMgt.FillCell('C34',FORMAT(AbsenceLine."Vacation Type"));
+                ExcelMgt.FillCell('Q37',FORMAT(AbsenceLine."Calendar Days"));
+                ExcelMgt.FillCell('C39',LocMgt.Date2Text(AbsenceLine."Start Date"));
+                ExcelMgt.FillCell('AD39',LocMgt.Date2Text(AbsenceLine."End Date"));
+              END;
+            UNTIL AbsenceLine.NEXT = 0;
+          ExcelMgt.FillCell('Q41',FORMAT(TotalDays));
+          ExcelMgt.FillCell('C43',LocMgt.Date2Text(OverallVacationStartDate));
+          ExcelMgt.FillCell('AD43',LocMgt.Date2Text(OverallVacationEndDate));
+        END;
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT8@1210002(ContractLine@1210000 : Record 17361);
+    VAR
+      PrevContractLine@1210001 : Record 17361;
+      GroundsForTermination@1210002 : Record 5217;
+      ExcelTemplate@1210003 : Record 14919;
+      LaborContract@1210004 : Record 17360;
+    BEGIN
+      HumanResSetup.GET;
+      CompanyInfo.GET;
+      HumanResSetup.TESTFIELD("T-8 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-8 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      WITH ContractLine DO BEGIN
+        Contract.GET("Contract No.");
+        GroundsForTermination.GET("Dismissal Reason");
+        Employee.GET(Contract."Employee No.");
+
+        PrevContractLine.SETRANGE("Contract No.","Contract No.");
+        PrevContractLine.SETFILTER("Operation Type",'<>%1',"Operation Type");
+        PrevContractLine.FINDLAST;
+        Position.GET(PrevContractLine."Position No.");
+
+        ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AS7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AI14',"Order No.");
+        ExcelMgt.FillCell('AV14',FORMAT("Order Date"));
+        IF LaborContract.GET("Contract No.") THEN BEGIN
+          ExcelMgt.FillCell('AE18',FORMAT(DATE2DMY(LaborContract."Starting Date",1)));
+          ExcelMgt.FillCell('AH18',LocMgt.GetMonthName(LaborContract."Starting Date",TRUE));
+          ExcelMgt.FillCell('AS18',COPYSTR(FORMAT(DATE2DMY(LaborContract."Starting Date",3)),3,2));
+        END;
+        ExcelMgt.FillCell('AY18',FORMAT("Contract No."));
+        ExcelMgt.FillCell('A25',Employee.GetFullNameOnDate("Order Date"));
+        ExcelMgt.FillCell('AU25',Contract."Employee No.");
+        ExcelMgt.FillCell('A27',Employee."Org. Unit Name");
+        ExcelMgt.FillCell('A29',Employee."Job Title");
+        ExcelMgt.FillCell('A34',"Dismissal Reason" + ' ' + GroundsForTermination.Description);
+        ExcelMgt.FillCell('O39',"Dismissal Document");
+
+        IF Director.GET(CompanyInfo."Director No.") THEN BEGIN
+          ExcelMgt.FillCell('J45',Director.GetJobTitleName);
+          ExcelMgt.FillCell('AP45',Director.GetNameInitials);
+        END;
+
+        ExcelMgt.GiveUserControl;
+      END;
+    END;
+
+    PROCEDURE PrintFormT8a@1210025(GroupOrderHeader@1210000 : Record 17366);
+    VAR
+      ExcelTemplate@1210002 : Record 14919;
+      Employee@1210001 : Record 5200;
+    BEGIN
+      CompanyInfo.GET;
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-8a Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-8a Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+      ExcelMgt.FillCell('CF7',FORMAT(CompanyInfo."OKPO Code"));
+
+      IF Employee.GET(CompanyInfo."Director No.") THEN BEGIN
+        ExcelMgt.FillCell('R27',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('BC27',Employee.GetFullNameOnDate(GroupOrderHeader."Posting Date"));
+      END;
+
+      ExcelMgt.FillCell('BC11',GroupOrderHeader."No.");
+      ExcelMgt.FillCell('BQ11',FORMAT(GroupOrderHeader."Posting Date"));
+
+      PrintFormT8aLines(GroupOrderHeader."No.",GroupOrderHeader."Document Type");
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT8aLines@1210024(DocNo@1210002 : Code[20];DocType@1210001 : Option);
+    VAR
+      GroupOrderLine@1210000 : Record 17367;
+      RowNo@1210003 : Integer;
+    BEGIN
+      RowNo := 24;
+
+      WITH GroupOrderLine DO BEGIN
+        SETRANGE("Document No.",DocNo);
+        SETRANGE("Document Type",DocType);
+
+        IF FINDSET THEN
+          REPEAT
+            ExcelMgt.CopyRow(RowNo);
+
+            ExcelMgt.FillCell('A' + FORMAT(RowNo),"Employee Name");
+            ExcelMgt.FillCell('W' + FORMAT(RowNo),"Employee No.");
+
+            Employee.GET("Employee No.");
+            ExcelMgt.FillCell('AC' + FORMAT(RowNo),Employee."Org. Unit Name");
+            ExcelMgt.FillCell('AM' + FORMAT(RowNo),Employee.GetJobTitleName);
+
+            FillLaborContractInfoForT8a(Employee."Contract No.",RowNo);
+
+            RowNo += 1;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FillLaborContractInfoForT8a@1210023(ContractNo@1210000 : Code[20];RowNo@1210003 : Integer);
+    VAR
+      LaborContract@1210001 : Record 17360;
+      LaborContractLine@1210002 : Record 17361;
+    BEGIN
+      IF LaborContract.GET(ContractNo) THEN BEGIN
+        ExcelMgt.FillCell('AW' + FORMAT(RowNo),LaborContract."No.");
+        ExcelMgt.FillCell('BC' + FORMAT(RowNo),FORMAT(LaborContract."Starting Date"));
+
+        LaborContractLine.SETRANGE("Contract No.",ContractNo);
+        IF LaborContractLine.FINDLAST THEN BEGIN
+          ExcelMgt.FillCell('BK' + FORMAT(RowNo),FORMAT(LaborContractLine."Ending Date"));
+          ExcelMgt.FillCell('BT' + FORMAT(RowNo),LaborContractLine."Dismissal Reason");
+          ExcelMgt.FillCell('CD' + FORMAT(RowNo),LaborContractLine."Dismissal Document");
+        END;
+      END;
+    END;
+
+    PROCEDURE PrintFormT9@1210005(AbsenseOrder@1210000 : Record 17385;CalendarDays@1210009 : Decimal;StartDate@1210008 : Date;EndDate@1210007 : Date);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+      Employee@1210003 : Record 5200;
+      OrgUnit@1210002 : Record 12422;
+      Cust@1210006 : Record 18;
+      Vend@1210005 : Record 23;
+    BEGIN
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-9 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-9 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      CompanyInfo.GET;
+
+      ExcelMgt.FillCell('H31',FORMAT(CalendarDays));
+      ExcelMgt.FillCell('B33',LocMgt.Date2Text(StartDate));
+      ExcelMgt.FillCell('AC33',LocMgt.Date2Text(EndDate));
+
+      WITH AbsenseOrder DO BEGIN
+        ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AS7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AI13',"HR Order No.");
+        ExcelMgt.FillCell('AV13',FORMAT("HR Order Date"));
+        ExcelMgt.FillCell('AU18',"Employee No.");
+
+        Employee.GET("Employee No.");
+        ExcelMgt.FillCell('A18',Employee.GetFullNameOnDate("HR Order Date"));
+        Employee.GetJobEntry("Employee No.","HR Order Date",EmplJobEntry);
+        IF OrgUnit.GET(EmplJobEntry."Org. Unit Code") THEN
+          ExcelMgt.FillCell('A20',OrgUnit.Name);
+        ExcelMgt.FillCell('A22',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('A24',"Travel Destination");
+        ExcelMgt.FillCell('F35',"Travel Purpose");
+        CASE "Travel Paid By Type" OF
+          "Travel Paid By Type"::Company:
+            ExcelMgt.FillCell('R38',Text001);
+          "Travel Paid By Type"::Customer:
+            IF Cust.GET("Travel Paid by No.") THEN
+              ExcelMgt.FillCell('R38',Cust.Name + ' ' + Cust."Name 2");
+          "Travel Paid By Type"::Vendor:
+            IF Vend.GET("Travel Paid by No.") THEN
+              ExcelMgt.FillCell('R38',Vend.Name + ' ' + Vend."Name 2");
+        END;
+        ExcelMgt.FillCell('O42',"Travel Reason Document");
+
+        Employee.GET(CompanyInfo."Director No.");
+        ExcelMgt.FillCell('J47',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('AP47',Employee.GetNameInitials);
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT10@1210004(AbsenceHeader@1210000 : Record 17385;CalendarDays@1210006 : Decimal;StartDate@1210005 : Date;EndDate@1210004 : Date);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+      Employee@1210003 : Record 5200;
+      OrgUnit@1210002 : Record 12422;
+    BEGIN
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-10 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-10 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      CompanyInfo.GET;
+
+      WITH AbsenceHeader DO BEGIN
+        ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AW7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AJ10',"HR Order No.");
+        ExcelMgt.FillCell('AV10',FORMAT("HR Order Date"));
+        ExcelMgt.FillCell('AW13',"Employee No.");
+
+        Employee.GET("Employee No.");
+        ExcelMgt.FillCell('G13',Employee.GetFullNameOnDate("HR Order Date"));
+        Employee.GetJobEntry("Employee No.","HR Order Date",EmplJobEntry);
+        IF OrgUnit.GET(EmplJobEntry."Org. Unit Code") THEN
+          ExcelMgt.FillCell('A15',OrgUnit.Name);
+        ExcelMgt.FillCell('A17',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('K19',"Travel Destination");
+        ExcelMgt.FillCell('D23',"Travel Purpose");
+
+        FillDocumentInfoForT10(Employee."Person No.","HR Order Date");
+
+        ExcelMgt.FillCell('C27',FORMAT(CalendarDays));
+
+        Employee.GET(CompanyInfo."Director No.");
+        ExcelMgt.FillCell('J35',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('AP35',Employee.GetNameInitials);
+
+        ExcelMgt.FillCell('C29',LocMgt.Date2Text(StartDate));
+        ExcelMgt.FillCell('AD29',LocMgt.Date2Text(EndDate));
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    LOCAL PROCEDURE FillDocumentInfoForT10@1210007(PersonNo@1210003 : Code[20];OrderDate@1210004 : Date);
+    VAR
+      PersonalDocument@1210002 : Record 17352;
+      Person@1210001 : Record 17350;
+      TaxpayerDocumentType@1210000 : Record 12429;
+    BEGIN
+      IF Person.GET(PersonNo) THEN BEGIN
+        PersonalDocument.SETRANGE("Document Type",Person."Identity Document Type");
+        PersonalDocument.SETRANGE("Person No.",PersonNo);
+        PersonalDocument.SETFILTER("Valid to Date",'%1|>%2',0D,OrderDate);
+        IF PersonalDocument.FINDFIRST THEN BEGIN
+          TaxpayerDocumentType.GET(PersonalDocument."Document Type");
+          ExcelMgt.FillCell('S32',
+            TaxpayerDocumentType."Document Name" + ' ' +
+            PersonalDocument."Document Series" + ' ' +
+            PersonalDocument."Document No.");
+        END;
+      END;
+    END;
+
+    PROCEDURE PrintFormT10a@1210108(AbsenseOrder@1210000 : Record 17385;CalendarDays@1210007 : Decimal;StartDate@1210006 : Date;EndDate@1210005 : Date);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+      Employee@1210003 : Record 5200;
+      OrgUnit@1210002 : Record 12422;
+    BEGIN
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-10a Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-10a Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      CompanyInfo.GET;
+
+      WITH AbsenseOrder DO BEGIN
+        ExcelMgt.FillCell('A6',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AQ6',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AC10',"HR Order No.");
+        ExcelMgt.FillCell('AI10',FORMAT("HR Order Date"));
+
+        Employee.GET("Employee No.");
+        ExcelMgt.FillCell('A13',Employee.GetFullNameOnDate("HR Order Date"));
+        ExcelMgt.FillCell('AP13',"Employee No.");
+
+        ExcelMgt.FillCell('H20',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('R20',"Travel Destination");
+
+        ExcelMgt.FillCell('AB20',FORMAT(StartDate));
+        ExcelMgt.FillCell('AE20',FORMAT(EndDate));
+        ExcelMgt.FillCell('AH20',FORMAT(CalendarDays));
+
+        ExcelMgt.FillCell('AR20',FORMAT("Travel Reason Document"));
+
+        ExcelMgt.FillCell('A27',"Travel Purpose");
+
+        IF OrgUnit.GET(Employee."Org. Unit Code") THEN BEGIN
+          ExcelMgt.FillCell('A20',OrgUnit.Name);
+
+          IF Employee.GET(OrgUnit."Manager No.") THEN BEGIN
+            ExcelMgt.FillCell('I30',Employee.GetJobTitleName);
+            ExcelMgt.FillCell('S30',Employee.GetNameInitials);
+            ExcelMgt.FillCell('AG34',Employee.GetJobTitleName);
+            ExcelMgt.FillCell('AQ34',Employee.GetNameInitials);
+          END;
+        END;
+
+        IF Employee.GET(CompanyInfo."Director No.") THEN BEGIN
+          ExcelMgt.FillCell('I34',Employee.GetJobTitleName);
+          ExcelMgt.FillCell('S34',Employee.GetNameInitials);
+        END;
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT11@1210003(EmployeeJournalLine@1210000 : Record 17382);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+      Employee@1210003 : Record 5200;
+      OrgUnit@1210002 : Record 12422;
+      ReasonCode@1210005 : Record 231;
+    BEGIN
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-11 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-11 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      CompanyInfo.GET;
+
+      WITH EmployeeJournalLine DO BEGIN
+        ExcelMgt.FillCell('A6',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AB6',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('Q10',"HR Order No.");
+        ExcelMgt.FillCell('W10',FORMAT("HR Order Date"));
+        ExcelMgt.FillCell('AA15',"Employee No.");
+
+        Employee.GET("Employee No.");
+        ExcelMgt.FillCell('A15',Employee.GetFullNameOnDate("HR Order Date"));
+        OrgUnit.GET(Employee."Org. Unit Code");
+        ExcelMgt.FillCell('A17',OrgUnit.Name);
+        ExcelMgt.FillCell('A19',Employee.GetJobTitleName);
+
+        IF ReasonCode.GET("Reason Code") THEN
+          ExcelMgt.FillCell('A21',ReasonCode.Description);
+
+        LocMgt.Amount2Text2('',Amount,WholeAmountText,HundredAmount);
+        ExcelMgt.FillCell('G32',WholeAmountText);
+        ExcelMgt.FillCell('AB34',FORMAT(HundredAmount));
+        ExcelMgt.FillCell('V36',FORMAT(Amount,0,'<Integer>'));
+        ExcelMgt.FillCell('AC36',FORMAT(HundredAmount));
+
+        Employee.GET(CompanyInfo."Director No.");
+        ExcelMgt.FillCell('J44',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('V44',Employee.GetNameInitials);
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT73@1210008(LaborContract@1210000 : Record 17360);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+    BEGIN
+      CompanyInfo.GET;
+      CompanyInfo.TESTFIELD("Director No.");
+      Director.GET(CompanyInfo."Director No.");
+
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-73 Template Code");
+
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-73 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      WITH LaborContract DO BEGIN
+        Employee.GET("Employee No.");
+
+        ExcelMgt.FillCell('A6',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('AA6',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('AB16',Director.GetJobTitleName);
+        ExcelMgt.FillCell('AA18',Director.GetNameInitials);
+
+        IF Accountant.GET(CompanyInfo."Accountant No.") THEN
+          ExcelMgt.FillCell('Q62',Accountant.GetNameInitials);
+        Employee.GetJobEntry("Employee No.",WORKDATE,EmplJobEntry);
+        OrgUnit.GET(EmplJobEntry."Org. Unit Code");
+        ExcelMgt.FillCell('A8',OrgUnit.Name);
+        ExcelMgt.FillCell('AA10',"No.");
+        ExcelMgt.FillCell('D24',Employee.GetFullNameOnDate("Starting Date"));
+
+        ExcelMgt.FillCell('AA11',FORMAT("Starting Date"));
+        ExcelMgt.FillCell('AA12',FORMAT("Starting Date"));
+        ExcelMgt.FillCell('AA13',FORMAT("Ending Date"));
+        ExcelMgt.FillCell('L19',"Employee No.");
+        ExcelMgt.FillCell('O19',FORMAT("Starting Date"));
+        ExcelMgt.FillCell('S19',FORMAT("Starting Date"));
+        ExcelMgt.FillCell('U19',FORMAT("Ending Date"));
+        ExcelMgt.FillCell('N23',"No.");
+        ExcelMgt.FillCell('V23',FORMAT(DATE2DMY("Starting Date",1)));
+        ExcelMgt.FillCell('Y23',LocMgt.GetMonthName("Starting Date",TRUE));
+        ExcelMgt.FillCell('AD23',COPYSTR(FORMAT(DATE2DMY("Starting Date",3)),3,2));
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT3a@1210010(StaffListOrderHeader@1210000 : Record 17373;Posted@1210003 : Boolean);
+    VAR
+      ExcelTemplate@1210002 : Record 14919;
+      Employee@1210001 : Record 5200;
+      StaffListOrderLine@1210005 : Record 17374;
+      PostedStaffListOrderLine@1210006 : Record 17378;
+      RowNo@1210004 : Integer;
+    BEGIN
+      CompanyInfo.GET;
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-3a Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-3a Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      ExcelMgt.FillCell('A1',LocalRepMgt.GetCompanyName);
+
+      IF Employee.GET(CompanyInfo."Director No.") THEN BEGIN
+        ExcelMgt.FillCell('J16',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('AP16',Employee.GetFullNameOnDate(StaffListOrderHeader."Posting Date"));
+      END;
+
+      IF Employee.GET(CompanyInfo."Accountant No.") THEN BEGIN
+        ExcelMgt.FillCell('J20',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('AP20',Employee.GetFullNameOnDate(StaffListOrderHeader."Posting Date"));
+      END;
+
+      IF Employee.GET(CompanyInfo."HR Manager No.") THEN BEGIN
+        ExcelMgt.FillCell('J22',Employee.GetJobTitleName);
+        ExcelMgt.FillCell('AP23',Employee.GetFullNameOnDate(StaffListOrderHeader."Posting Date"));
+      END;
+
+      ExcelMgt.FillCell('AK6',StaffListOrderHeader."HR Order No.");
+      ExcelMgt.FillCell('AX6',FORMAT(StaffListOrderHeader."HR Order Date"));
+      ExcelMgt.FillCell('I8',FORMAT(StaffListOrderHeader.Description));
+      ExcelMgt.FillCell('P10',FORMAT(StaffListOrderHeader."Posting Date"));
+
+      RowNo := 13;
+      IF NOT Posted THEN BEGIN
+        StaffListOrderLine.SETRANGE("Document No.",StaffListOrderHeader."No.");
+        IF StaffListOrderLine.FINDSET THEN
+          REPEAT
+            PrintFormT3aLines(StaffListOrderLine,RowNo);
+            RowNo += 1;
+          UNTIL StaffListOrderLine.NEXT = 0;
+      END ELSE BEGIN
+        PostedStaffListOrderLine.SETRANGE("Document No.",StaffListOrderHeader."No.");
+        IF PostedStaffListOrderLine.FINDSET THEN
+          REPEAT
+            StaffListOrderLine.TRANSFERFIELDS(PostedStaffListOrderLine);
+            PrintFormT3aLines(StaffListOrderLine,RowNo);
+            RowNo += 1;
+          UNTIL PostedStaffListOrderLine.NEXT = 0;
+      END;
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE PrintFormT3aLines@1210013(VAR StaffListOrderLine@1210000 : Record 17374;RowNo@1210001 : Integer);
+    VAR
+      Text001@1210002 : TextConst 'ENU=Create new Org. Unit %1;RUS=Создать новое подразделение %1';
+      Text003@1210003 : TextConst 'ENU=Remove Org. Unit %1 from Staff List;RUS=Удалить подразделение %1 из штатного расписания';
+      Text004@1210004 : TextConst 'ENU=Rename Org. Unit %1 to %2;RUS=Переименовать подразделение %1 в %2';
+      Text005@1210005 : TextConst 'ENU=Create new Position %1 with salary %2 in Org. Unit %3;RUS=Создать новую позицию %1 с окладом %2 в подразделении %3';
+      Text007@1210006 : TextConst 'ENU=Remove Position %1 with salary %2 from Org. Unit %3;RUS=Удалить позицию %1 с окладом %2 в подразделении %3';
+      Text008@1210007 : TextConst 'ENU=Rename Position %1 to %2 without changing salary and its duties;RUS=Переименовать позицию %1 в %2 без изменения оклада и обязанностей';
+      Position@1210008 : Record 17370;
+    BEGIN
+      WITH StaffListOrderLine DO BEGIN
+        ExcelMgt.CopyRow(RowNo);
+
+        CASE Type OF
+          Type::"Org. Unit":
+            CASE Action OF
+              Action::Approve:
+                ExcelMgt.FillCell('C' + FORMAT(RowNo),STRSUBSTNO(Text001,Name));
+              Action::Close:
+                ExcelMgt.FillCell('C' + FORMAT(RowNo),STRSUBSTNO(Text003,Name));
+              Action::Rename:
+                ExcelMgt.FillCell('C' + FORMAT(RowNo),STRSUBSTNO(Text004,Name,"New Name"));
+            END;
+          Type::Position:
+            BEGIN
+              Position.GET(Code);
+              CASE Action OF
+                Action::Approve:
+                  ExcelMgt.FillCell('C' + FORMAT(RowNo),STRSUBSTNO(Text005,
+                      Position."Job Title Name",Position."Monthly Salary Amount",Position."Org. Unit Name"));
+                Action::Close:
+                  ExcelMgt.FillCell('C' + FORMAT(RowNo),STRSUBSTNO(Text007,
+                      Position."Job Title Name",Position."Monthly Salary Amount",Position."Org. Unit Name"));
+                Action::Rename:
+                  ExcelMgt.FillCell('C' + FORMAT(RowNo),STRSUBSTNO(Text008,Name,"New Name"));
+              END;
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE PrintFormT61@1210011(LaborContract@1210000 : Record 17360);
+    VAR
+      ExcelTemplate@1210001 : Record 14919;
+      PostedPayrollDocLine@1210002 : Record 17417;
+      PostedPayrollPeriodAE@1210004 : Record 17456;
+      ContractLine@1210005 : Record 17361;
+      EmplLedgEntry@1210006 : Record 17413;
+      RowNo@1210003 : Integer;
+      TotalAmount@1210008 : Decimal;
+      AEInfoFound@1210009 : Boolean;
+    BEGIN
+      CompanyInfo.GET;
+      CompanyInfo.TESTFIELD("Director No.");
+      Director.GET(CompanyInfo."Director No.");
+
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("T-61 Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."T-61 Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      ContractLine.SETRANGE("Contract No.",LaborContract."No.");
+      ContractLine.SETRANGE("Operation Type",ContractLine."Operation Type"::Dismissal);
+      ContractLine.FINDLAST;
+
+      WITH ContractLine DO BEGIN
+        Employee.GET(LaborContract."Employee No.");
+        Position.GET("Position No.");
+
+        ExcelMgt.FillCell('A7',LocalRepMgt.GetCompanyName);
+        ExcelMgt.FillCell('DA7',CompanyInfo."OKPO Code");
+        ExcelMgt.FillCell('DA8',LaborContract."No.");
+        ExcelMgt.FillCell('DA9',FORMAT(LaborContract."Starting Date"));
+        ExcelMgt.FillCell('BO13',"Order No.");
+        ExcelMgt.FillCell('CE13',FORMAT("Order Date"));
+        ExcelMgt.FillCell('A17',Employee.GetFullNameOnDate("Order Date"));
+        ExcelMgt.FillCell('CV17',LaborContract."Employee No.");
+        ExcelMgt.FillCell('A19',Employee."Org. Unit Name");
+        ExcelMgt.FillCell('A21',
+          STRSUBSTNO('%1 - %2, %3 - %4, %5 - %6, %7 - %8',
+            Employee.FIELDCAPTION("Job Title"),Employee."Job Title",
+            Position.FIELDCAPTION("Kind of Work"),Position."Kind of Work",
+            LaborContract.FIELDCAPTION("Work Mode"),FORMAT(LaborContract."Work Mode"),
+            Position.FIELDCAPTION("Conditions of Work"),Position."Conditions of Work"));
+        ExcelMgt.FillCell('CE23',FORMAT(LaborContract."Ending Date"));
+        ExcelMgt.FillCell('AM26',FORMAT("Order Date"));
+        ExcelMgt.FillCell('CM26',FORMAT("Order No."));
+        // vacation data
+        ExcelMgt.FillCell('AH32',FORMAT(DATE2DMY("Order Date",1)));
+        ExcelMgt.FillCell('AO32',LocMgt.GetMonthName("Order Date",TRUE));
+        ExcelMgt.FillCell('BK32',COPYSTR(FORMAT(DATE2DMY("Order Date",3)),3,2));
+        ExcelMgt.FillCell('AF30',Director.GetJobTitleName);
+        ExcelMgt.FillCell('CI30',Director.GetNameInitials);
+
+        // AE data
+        AEInfoFound := FALSE;
+        EmplLedgEntry.RESET;
+        EmplLedgEntry.SETCURRENTKEY("Employee No.");
+        EmplLedgEntry.SETRANGE("Employee No.",Employee."No.");
+        EmplLedgEntry.SETRANGE("Contract No.","Contract No.");
+        EmplLedgEntry.SETRANGE("HR Order No.","Order No.");
+        EmplLedgEntry.SETRANGE("HR Order Date","Order Date");
+        EmplLedgEntry.SETRANGE("Action Ending Date","Ending Date");
+        IF EmplLedgEntry.FINDSET THEN
+          REPEAT
+            PostedPayrollDocLine.RESET;
+            PostedPayrollDocLine.SETCURRENTKEY("Document Type","HR Order No.");
+            PostedPayrollDocLine.SETRANGE("HR Order No.","Order No.");
+            PostedPayrollDocLine.SETRANGE("Employee No.",LaborContract."Employee No.");
+            PostedPayrollDocLine.SETRANGE("Element Code",EmplLedgEntry."Element Code");
+            IF PostedPayrollDocLine.FINDFIRST THEN BEGIN
+              PostedPayrollDocLine.CALCFIELDS("AE Total Days","AE Total Earnings");
+              IF (PostedPayrollDocLine."AE Total Earnings" <> 0) AND (NOT AEInfoFound) THEN BEGIN
+                // кол-во календарных дней расчетного периода
+                ExcelMgt.FillCell('BL41',FORMAT(PostedPayrollDocLine."AE Total Days"));
+                // средний дневной заработок
+                ExcelMgt.FillCell('CY41',FORMAT(PostedPayrollDocLine."AE Daily Earnings"));
+                // итого
+                ExcelMgt.FillCell('AF53',FORMAT(PostedPayrollDocLine."AE Total Earnings"));
+
+                RowNo := 41;
+                PostedPayrollPeriodAE.SETRANGE("Document No.",PostedPayrollDocLine."Document No.");
+                PostedPayrollPeriodAE.SETRANGE("Line No.",PostedPayrollDocLine."Line No.");
+                IF PostedPayrollPeriodAE.FINDSET THEN
+                  REPEAT
+                    ExcelMgt.FillCell('A' + FORMAT(RowNo),FORMAT(PostedPayrollPeriodAE.Year));
+                    ExcelMgt.FillCell('O' + FORMAT(RowNo),FORMAT(PostedPayrollPeriodAE.Month));
+                    ExcelMgt.FillCell('AF' + FORMAT(RowNo),
+                      FORMAT(PostedPayrollPeriodAE."Salary Amount" + PostedPayrollPeriodAE."Bonus Amount"));
+                    RowNo += 1;
+                  UNTIL PostedPayrollPeriodAE.NEXT = 0;
+              END;
+              TotalAmount += PostedPayrollDocLine."Payroll Amount";
+            END;
+          UNTIL (EmplLedgEntry.NEXT = 0);
+
+        // Всего начислено
+        ExcelMgt.FillCell('AE59',FORMAT(TotalAmount));
+
+        // Сумма к выплате
+        ExcelMgt.FillCell('DA59',FORMAT(TotalAmount));
+        ExcelMgt.FillCell('S61',LocMgt.Amount2Text('',TotalAmount));
+
+        ExcelMgt.GiveUserControl;
+      END;
+    END;
+
+    PROCEDURE PrintSickLeaveAbsence@1000000000(PostedPayrollDocument@1000000000 : Record 17416;PostedPayrollDocumentLine@1000000006 : Record 17417);
+    VAR
+      CompanyInfo@1000000004 : Record 79;
+      HumanResSetup@1000000002 : Record 5218;
+      ExcelTemplate@1000000003 : Record 14919;
+      Employee@1000000005 : Record 5200;
+      ExcelMgt@1000000001 : Codeunit 12416;
+      RecordOfService@1000000010 : Codeunit 17350;
+      InsQty@1000000011 : ARRAY [3] OF Integer;
+      InitialAbsenceLine@1210000 : Record 17388;
+      InitialAbsenceHeader@1210002 : Record 17387;
+      PayrollPeriod@1210004 : Record 17426;
+      TotalAmount@1210001 : Decimal;
+    BEGIN
+      CompanyInfo.GET;
+      // CompanyInfo.TESTFIELD("Director No.");
+      // Director.GET(CompanyInfo."Director No.");
+
+      IF InitialAbsenceHeader.GET(
+           InitialAbsenceLine."Document Type"::"Sick Leave",PostedPayrollDocumentLine."HR Order No.")
+      THEN
+        InitialAbsenceLine.SETRANGE("Document Type",InitialAbsenceLine."Document Type"::"Sick Leave");
+      InitialAbsenceLine.SETRANGE("Document No.",PostedPayrollDocumentLine."HR Order No.");
+      IF InitialAbsenceLine.FINDFIRST THEN;
+
+      HumanResSetup.GET;
+      HumanResSetup.TESTFIELD("Sick Leave Abs. Template Code");
+      ExcelMgt.OpenBook(ExcelTemplate.OpenTemplate(HumanResSetup."Sick Leave Abs. Template Code"));
+      ExcelMgt.OpenSheet('Sheet1');
+
+      WITH PostedPayrollDocument DO BEGIN
+        ExcelMgt.FillCell('P2',InitialAbsenceHeader."Sick Certificate Series");
+        ExcelMgt.FillCell('W2',InitialAbsenceHeader."Sick Certificate No.");
+        ExcelMgt.FillCell('G4',CompanyInfo.Name);
+        Employee.GET("Employee No.");
+        ExcelMgt.FillCell('G5',Employee.GetFullName);
+        ExcelMgt.FillCell('G6',Employee."Org. Unit Name");
+        ExcelMgt.FillCell('V6',Employee."Job Title");
+        ExcelMgt.FillCell('G7',Employee."No.");
+        ExcelMgt.FillCell('I8',FORMAT(InitialAbsenceLine."Start Date"));
+        ExcelMgt.FillCell('S8',FORMAT(InitialAbsenceLine."End Date"));
+        ExcelMgt.FillCell('Q9',FORMAT(InitialAbsenceLine."Calendar Days" - InitialAbsenceLine."Working Days"));
+        RecordOfService.CalcEmplInsuredService(Employee,InitialAbsenceLine."Start Date",InsQty);
+        ExcelMgt.FillCell('U12',
+          GetPeriodPart(InsQty[1],3) + ' ' +
+          GetPeriodPart(InsQty[2],2) + ' ' +
+          GetPeriodPart(InsQty[3],1));
+        ExcelMgt.FillCell('B14',FORMAT(PostedPayrollDocumentLine."Payment Percent"));
+
+        FillAEPeriodInfo(PostedPayrollDocumentLine."Document No.",PostedPayrollDocumentLine."Line No.",ExcelMgt);
+        PostedPayrollDocumentLine.CALCFIELDS("AE Total Days","AE Total FSI Earnings");
+        ExcelMgt.FillCell('P19',FORMAT(PostedPayrollDocumentLine."AE Total Days"));
+        ExcelMgt.FillCell('Y19',FORMAT(PostedPayrollDocumentLine."AE Daily Earnings"));
+
+        IF PayrollPeriod.GET("Period Code") THEN
+          ExcelMgt.FillCell('P28',PayrollPeriod.Name);
+      END;
+
+      TotalAmount := FillBonusAmounts(PostedPayrollDocumentLine."HR Order No.",
+          PostedPayrollDocumentLine."Document Type",ExcelMgt);
+
+      ExcelMgt.FillCell('I27',FORMAT(TotalAmount));
+
+      FillBonus(InitialAbsenceLine,PostedPayrollDocumentLine,TotalAmount,ExcelMgt);
+
+      ExcelMgt.GiveUserControl;
+    END;
+
+    PROCEDURE FillBonusAmounts@1210022(HROrderNo@1210001 : Code[20];DocType@1210003 : Integer;ExcelMgt@1210004 : Codeunit 12416) Amount : Decimal;
+    VAR
+      RowNo@1210000 : Integer;
+      PostedPayrollDocumentLine@1210002 : Record 17417;
+    BEGIN
+      RowNo := 38;
+      Amount := 0;
+
+      PostedPayrollDocumentLine.SETRANGE("HR Order No.",HROrderNo);
+      PostedPayrollDocumentLine.SETRANGE("Document Type",DocType);
+
+      IF PostedPayrollDocumentLine.FINDSET THEN
+        REPEAT
+          ExcelMgt.CopyRow(RowNo);
+          ExcelMgt.FillCell('D' + FORMAT(RowNo),FORMAT(PostedPayrollDocumentLine."Action Starting Date"));
+          ExcelMgt.FillCell('G' + FORMAT(RowNo),FORMAT(PostedPayrollDocumentLine."Action Ending Date"));
+          ExcelMgt.FillCell('K' + FORMAT(RowNo),FORMAT(PostedPayrollDocumentLine."Payment Days"));
+          ExcelMgt.FillCell('N' + FORMAT(RowNo),FORMAT(PostedPayrollDocumentLine."Payroll Amount"));
+          ExcelMgt.FillCell('T' + FORMAT(RowNo),FORMAT(PostedPayrollDocumentLine."Payment Source"));
+
+          Amount += PostedPayrollDocumentLine."Payroll Amount";
+
+          RowNo += 1;
+        UNTIL PostedPayrollDocumentLine.NEXT = 0;
+    END;
+
+    PROCEDURE FillBonus@1210026(PostedAbsenceLine@1210000 : Record 17388;PostedPayrollDocumentLine@1210004 : Record 17417;TotalAmount@1210001 : Decimal;ExcelMgt@1210005 : Codeunit 12416);
+    VAR
+      SickLeaveSetup@1210003 : Record 17390;
+      PayrollDocumentLine@1210002 : Record 17415;
+    BEGIN
+      WITH PostedAbsenceLine DO BEGIN
+        ExcelMgt.FillCell('D25',FORMAT("Start Date"));
+        ExcelMgt.FillCell('F25',FORMAT("End Date"));
+        ExcelMgt.FillCell('K25',FORMAT("Calendar Days"));
+        ExcelMgt.FillCell('M25',FORMAT("Payment Percent"));
+        ExcelMgt.FillCell('S25',FORMAT(PostedPayrollDocumentLine."AE Daily Earnings"));
+
+        PayrollDocumentLine.TRANSFERFIELDS(PostedPayrollDocumentLine);
+        ExcelMgt.FillCell('X25',FORMAT(SickLeaveSetup.GetMaxDailyPayment(PayrollDocumentLine)));
+
+        ExcelMgt.FillCell('AB25',FORMAT(TotalAmount));
+      END;
+    END;
+
+    PROCEDURE GetPeriodPart@1210015(Qty@1210000 : Integer;Type@1210001 : Integer) : Text[30];
+    VAR
+      LocMgt@1210002 : Codeunit 12400;
+    BEGIN
+      IF Qty <> 0 THEN
+        EXIT(FORMAT(Qty) + ' ' + LocMgt.GetPeriodText(Type));
+
+      EXIT('');
+    END;
+
+    PROCEDURE FillAEPeriodInfo@1000000001(DocumentNo@1000000001 : Code[20];LineNo@1000000002 : Integer;ExcelMgt@1000000003 : Codeunit 12416);
+    VAR
+      PostedPayrollPeriodAE@1000000000 : Record 17456;
+    BEGIN
+      WITH PostedPayrollPeriodAE DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Line No.",LineNo);
+
+        IF FINDFIRST THEN BEGIN
+          ExcelMgt.FillCell('D19',FORMAT(DATE2DMY("Period Start Date",3) - 1));
+          ExcelMgt.FillCell('K19',FORMAT(GetFSIEarnings(DocumentNo,LineNo,DATE2DMY("Period Start Date",3) - 1)));
+
+          ExcelMgt.FillCell('D20',FORMAT(DATE2DMY("Period Start Date",3)));
+          ExcelMgt.FillCell('K20',FORMAT(GetFSIEarnings(DocumentNo,LineNo,DATE2DMY("Period Start Date",3))));
+        END;
+      END;
+    END;
+
+    PROCEDURE GetFSIEarnings@1000000011(DocumentNo@1000000003 : Code[20];LineNo@1000000002 : Integer;PeriodYear@1000000000 : Integer) TotalFSIAmount : Decimal;
+    VAR
+      PostedPayrollPeriodAE@1000000001 : Record 17456;
+    BEGIN
+      WITH PostedPayrollPeriodAE DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        SETRANGE("Line No.",LineNo);
+        SETRANGE("Period Start Date",DMY2DATE(1,1,PeriodYear),DMY2DATE(31,12,PeriodYear));
+
+        IF FINDSET THEN
+          REPEAT
+            TotalFSIAmount += "Amount for FSI";
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetMinDate@1210018(Date1@1210000 : Date;Date2@1210001 : Date) : Date;
+    BEGIN
+      IF Date1 = 0D THEN
+        EXIT(Date2);
+
+      IF Date2 = 0D THEN
+        EXIT(Date1);
+
+      IF Date1 > Date2 THEN
+        EXIT(Date2);
+
+      EXIT(Date1);
+    END;
+
+    PROCEDURE GetMaxDate@1210019(Date1@1210000 : Date;Date2@1210001 : Date) : Date;
+    BEGIN
+      IF Date1 > Date2 THEN
+        EXIT(Date1);
+
+      EXIT(Date2);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

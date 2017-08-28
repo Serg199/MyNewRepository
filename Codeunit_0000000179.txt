@@ -1,0 +1,142 @@
+OBJECT Codeunit 179 Reversal-Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.05.17;
+    Time=16:43:52;
+    Modified=Yes;
+    Version List=NAVW110.00,NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    TableNo=179;
+    OnRun=VAR
+            GLReg@1003 : Record 45;
+            GenJnlTemplate@1002 : Record 80;
+            GenJnlPostReverse@1001 : Codeunit 17;
+            Txt@1004 : Text[1024];
+            WarningText@1000 : Text[1024];
+            Number@1005 : Integer;
+            VATAllocOnCost@1210000 : Boolean;
+          BEGIN
+            RESET;
+            SETRANGE("Entry Type","Entry Type"::"Fixed Asset");
+            IF FINDFIRST THEN
+              WarningText := Text007;
+            SETRANGE("Entry Type");
+            IF PrintRegister THEN
+              Txt := Text004 + WarningText + '\' + Text005
+            ELSE
+              Txt := Text004 + WarningText + '\' + Text002;
+            IF NOT FINDFIRST THEN
+              ERROR(Text006);
+
+            IF NOT HideDialog THEN
+              IF NOT CONFIRM(Txt,FALSE) THEN
+                EXIT;
+
+            IF "Reversal Type" = "Reversal Type"::Register THEN BEGIN
+              TempGLReg.DELETEALL;
+              FromRegNo := 0;
+              REPEAT
+                TempGLReg."No." := "G/L Register No.";
+                IF TempGLReg.INSERT THEN;
+                IF FromRegNo = 0 THEN
+                  FromRegNo := TempGLReg."No."
+                ELSE
+                  IF FromRegNo > TempGLReg."No." THEN
+                  FromRegNo := TempGLReg."No.";
+                IF ToRegNo = 0 THEN
+                  ToRegNo := TempGLReg."No."
+                ELSE
+                  IF ToRegNo < TempGLReg."No." THEN
+                ToRegNo := TempGLReg."No.";
+              UNTIL NEXT = 0;
+
+              IF TempGLReg.FINDSET THEN
+                REPEAT
+                  SETRANGE("G/L Register No.",TempGLReg."No.");
+                  SETRANGE("VAT Allocation",TRUE);
+                  VATAllocOnCost := NOT ISEMPTY;
+                  ReversalEntry := Rec;
+                  ReversalEntry.SetReverseFilter(TempGLReg."No.","Reversal Type");
+                  ReversalEntry.CheckEntries(VATAllocOnCost);
+                  GET(1);
+                  IF "Reversal Type" = "Reversal Type"::Register THEN
+                    Number := TempGLReg."No."
+                  ELSE
+                    Number := "Transaction No.";
+                  IF FromRegNo = ToRegNo THEN
+                    IF NOT ReversalEntry.VerifyReversalEntries(Rec,Number,"Reversal Type") THEN
+                      ERROR(Text008);
+                  GenJnlPostReverse.Reverse(ReversalEntry,Rec);
+                UNTIL TempGLReg.NEXT = 0;
+            END ELSE BEGIN
+              SETRANGE("G/L Register No.",TempGLReg."No.");
+              SETRANGE("VAT Allocation",TRUE);
+              VATAllocOnCost := NOT ISEMPTY;
+              ReversalEntry := Rec;
+              IF "Reversal Type" = "Reversal Type"::Transaction THEN
+                ReversalEntry.SetReverseFilter("Transaction No.","Reversal Type")
+              ELSE
+                ReversalEntry.SetReverseFilter("G/L Register No.","Reversal Type");
+              ReversalEntry.CheckEntries(VATAllocOnCost);
+              GET(1);
+              IF "Reversal Type" = "Reversal Type"::Register THEN
+                Number := "G/L Register No."
+              ELSE
+                Number := "Transaction No.";
+              IF NOT ReversalEntry.VerifyReversalEntries(Rec,Number,"Reversal Type") THEN
+                ERROR(Text008);
+              GenJnlPostReverse.Reverse(ReversalEntry,Rec);
+              IF PrintRegister THEN BEGIN
+                GenJnlTemplate.VALIDATE(Type);
+                IF GenJnlTemplate."Posting Report ID" <> 0 THEN BEGIN
+                  IF GLReg.FINDLAST THEN BEGIN
+                    GLReg.SETRECFILTER;
+                    REPORT.RUN(GenJnlTemplate."Posting Report ID",FALSE,FALSE,GLReg);
+                  END;
+                END;
+              END;
+            END;
+            DELETEALL;
+            IF NOT HideDialog THEN
+              MESSAGE(Text003);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text002@1007 : TextConst 'ENU=Do you want to reverse the entries?;RUS=Сторнировать операции?';
+      Text003@1005 : TextConst 'ENU=The entries were successfully reversed.;RUS=Операции успешно сторнированы.';
+      Text004@1012 : TextConst 'ENU=To reverse these entries, correcting entries will be posted.;RUS=Чтобы отменить эти записи, будут разнесены корректирующие записи.';
+      Text005@1000 : TextConst 'ENU=Do you want to reverse the entries and print the report?;RUS=Сторнировать операции и распечатать отчет?';
+      Text006@1001 : TextConst 'ENU=There is nothing to reverse.;RUS=Нет ничего для сторнирования.';
+      Text007@1004 : TextConst 'ENU=\There are one or more FA Ledger Entries. You should consider using the fixed asset function Cancel Entries.;RUS=\В книге операций по ОС существует одна или несколько операций. При необходимости воспользуйтесь функцией основных средств "Отменить операции".';
+      Text008@1003 : TextConst 'ENU=Changes have been made to posted entries after the window was opened.\Close and reopen the window to continue.;RUS=В учтенные операции после открытия окна были внесены изменения.\Для продолжения закройте окно и откройте повторно.';
+      ReversalEntry@1002 : Record 179;
+      TempGLReg@1210004 : TEMPORARY Record 45;
+      FromRegNo@1210003 : Integer;
+      ToRegNo@1210005 : Integer;
+      PrintRegister@1009 : Boolean;
+      HideDialog@1006 : Boolean;
+
+    PROCEDURE SetPrint@1000(NewPrintRegister@1001 : Boolean);
+    BEGIN
+      PrintRegister := NewPrintRegister;
+    END;
+
+    PROCEDURE SetHideDialog@1(NewHideDialog@1000 : Boolean);
+    BEGIN
+      HideDialog := NewHideDialog;
+    END;
+
+    BEGIN
+    {
+      //NC PIF001 MP Локальные переменные в функции OnRun Txt, WarningText: 250 -> 1024
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,491 @@
+OBJECT Table 14925 VAT Allocation Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22.05.17;
+    Time=12:05:36;
+    Modified=Yes;
+    Version List=NAVRU9.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    OnInsert=VAR
+               CommonBase@1210000 : Option;
+             BEGIN
+               LOCKTABLE;
+               TESTFIELD("VAT Entry No.");
+               VATEntry.GET("VAT Entry No.");
+               VATEntry.TESTFIELD("Unrealized Base");
+
+               FindCommonBase(CommonBase);
+               VALIDATE(Base,CommonBase);
+
+               ValidateShortcutDimCode(1,"Shortcut Dimension 1 Code");
+               ValidateShortcutDimCode(2,"Shortcut Dimension 2 Code");
+             END;
+
+    CaptionML=[ENU=VAT Allocation Line;
+               RUS=Строка распределения НДС];
+    LookupPageID=Page14926;
+    DrillDownPageID=Page14926;
+  }
+  FIELDS
+  {
+    { 1   ;   ;CV Ledger Entry No. ;Integer       ;CaptionML=[ENU=CV Ledger Entry No.;
+                                                              RUS=Номер операции книги КП];
+                                                   Editable=No }
+    { 2   ;   ;VAT Entry No.       ;Integer       ;OnValidate=VAR
+                                                                VATPostingSetup@1470000 : Record 325;
+                                                              BEGIN
+                                                                VATEntry.GET("VAT Entry No.");
+                                                                IF VATEntry."VAT Calculation Type" = VATEntry."VAT Calculation Type"::"Full VAT" THEN
+                                                                  VATEntry.TESTFIELD("Unrealized Amount")
+                                                                ELSE
+                                                                  VATEntry.TESTFIELD("Unrealized Base");
+                                                                "CV Ledger Entry No." := VATEntry."CV Ledg. Entry No.";
+                                                                IF VATEntry."Object Type" = VATEntry."Object Type"::"Fixed Asset" THEN
+                                                                  "VAT Settlement Type" := VATEntry."VAT Settlement Type";
+                                                                VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group");
+                                                                VATPostingSetup.TESTFIELD("Unrealized VAT Type");
+                                                                "VAT Bus. Posting Group" := VATEntry."VAT Bus. Posting Group";
+                                                                "VAT Prod. Posting Group" := VATEntry."VAT Prod. Posting Group";
+                                                                CASE VATEntry.Type OF
+                                                                  VATEntry.Type::Purchase:
+                                                                    BEGIN
+                                                                      VATPostingSetup.TESTFIELD("Purch. VAT Unreal. Account");
+                                                                      "VAT Unreal. Account No." := VATPostingSetup."Purch. VAT Unreal. Account";
+                                                                    END;
+                                                                  VATEntry.Type::Sale:
+                                                                    BEGIN
+                                                                      VATPostingSetup.TESTFIELD("Sales VAT Unreal. Account");
+                                                                      "VAT Unreal. Account No." := VATPostingSetup."Sales VAT Unreal. Account";
+                                                                    END;
+                                                                END;
+                                                                VALIDATE(Type);
+                                                              END;
+
+                                                   CaptionML=[ENU=VAT Entry No.;
+                                                              RUS=Номер операции НДС] }
+    { 3   ;   ;Line No.            ;Integer       ;CaptionML=[ENU=Line No.;
+                                                              RUS=Номер строки] }
+    { 4   ;   ;Type                ;Option        ;OnValidate=VAR
+                                                                VATPostingSetup@1210000 : Record 325;
+                                                                GenPostingSetup@1210001 : Record 252;
+                                                                FA@1210002 : Record 5600;
+                                                                FASetup@1210003 : Record 5603;
+                                                                FADeprBook@1210004 : Record 5612;
+                                                                FAPostingGr@1210005 : Record 5606;
+                                                              BEGIN
+                                                                HandleType;
+                                                                VATEntry.GET("VAT Entry No.");
+                                                                VATPostingSetup.GET(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group");
+                                                                CASE Type OF
+                                                                  Type::VAT:
+                                                                    IF VATEntry.Type = VATEntry.Type::Purchase THEN BEGIN
+                                                                      VATPostingSetup.TESTFIELD("Purchase VAT Account");
+                                                                      VALIDATE("Account No.",VATPostingSetup."Purchase VAT Account");
+                                                                    END ELSE
+                                                                      IF VATEntry.Type = VATEntry.Type::Sale THEN BEGIN
+                                                                        VATPostingSetup.TESTFIELD("Sales VAT Account");
+                                                                        VALIDATE("Account No.",VATPostingSetup."Sales VAT Account");
+                                                                      END;
+                                                                  Type::WriteOff:
+                                                                    BEGIN
+                                                                      VATPostingSetup.TESTFIELD("Write-Off VAT Account");
+                                                                      VALIDATE("Account No.",VATPostingSetup."Write-Off VAT Account")
+                                                                    END;
+                                                                  Type::Charge:
+                                                                    CASE VATEntry."Object Type" OF
+                                                                      VATEntry."Object Type"::"G/L Account":
+                                                                        VALIDATE("Account No.",VATEntry."Object No.");
+                                                                      VATEntry."Object Type"::"Fixed Asset":
+                                                                        BEGIN
+                                                                          FASetup.GET;
+                                                                          FA.GET(VATEntry."Object No.");
+                                                                          IF FA."Initial Release Date" <> 0D THEN BEGIN // Released
+                                                                            FASetup.TESTFIELD("Release Depr. Book");
+                                                                            FADeprBook.GET(FA."No.",FASetup."Release Depr. Book");
+                                                                            FAPostingGr.GET(FADeprBook."FA Posting Group");
+                                                                            VALIDATE("Account No.",FAPostingGr."Acquisition Cost Account");
+                                                                          END ELSE BEGIN // Aquisition
+                                                                            FASetup.TESTFIELD("Default Depr. Book");
+                                                                            FADeprBook.GET(FA."No.",FA.GetDefDeprBook);
+                                                                            FAPostingGr.GET(FADeprBook."FA Posting Group");
+                                                                            VALIDATE("Account No.",FAPostingGr."Acquisition Cost Account");
+                                                                          END;
+                                                                          "FA No." := FA."No.";
+                                                                        END;
+                                                                      VATEntry."Object Type"::Vendor:
+                                                                        BEGIN
+                                                                          GenPostingSetup.GET(VATEntry."Gen. Bus. Posting Group",VATEntry."Gen. Prod. Posting Group");
+                                                                          IF VATEntry.Type = VATEntry.Type::Purchase THEN BEGIN
+                                                                            GenPostingSetup.TESTFIELD("Purch. Account");
+                                                                            VALIDATE("Account No.",GenPostingSetup."Purch. Account");
+                                                                          END;
+                                                                        END;
+                                                                      VATEntry."Object Type"::Customer:
+                                                                        BEGIN
+                                                                          GenPostingSetup.GET(VATEntry."Gen. Bus. Posting Group",VATEntry."Gen. Prod. Posting Group");
+                                                                          IF VATEntry.Type = VATEntry.Type::Sale THEN BEGIN
+                                                                            GenPostingSetup.TESTFIELD("Sales Account");
+                                                                            VALIDATE("Account No.",GenPostingSetup."Sales Account");
+                                                                          END;
+                                                                        END;
+                                                                    END;
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Type;
+                                                              RUS=Тип];
+                                                   OptionCaptionML=[ENU=VAT,Write-Off,Charge;
+                                                                    RUS=НДС,Списание,Расходы];
+                                                   OptionString=VAT,WriteOff,Charge }
+    { 5   ;   ;Account No.         ;Code20        ;TableRelation="G/L Account";
+                                                   OnValidate=BEGIN
+                                                                IF "Account No." = '' THEN
+                                                                  GLAcc.INIT
+                                                                ELSE BEGIN
+                                                                  GLAcc.GET("Account No.");
+                                                                  GLAcc.CheckGLAcc;
+                                                                END;
+                                                                Description := GLAcc.Name;
+
+                                                                CreateDim(DATABASE::"G/L Account","Account No.");
+                                                              END;
+
+                                                   CaptionML=[ENU=Account No.;
+                                                              RUS=Номер счета];
+                                                   NotBlank=Yes }
+    { 6   ;   ;VAT Amount          ;Decimal       ;CaptionML=[ENU=VAT Amount;
+                                                              RUS=Сумма НДС];
+                                                   Editable=No }
+    { 7   ;   ;Allocation %        ;Decimal       ;OnValidate=BEGIN
+                                                                Amount := CalcRoundedAmount("Allocation %","VAT Amount")
+                                                              END;
+
+                                                   CaptionML=[ENU=Allocation %;
+                                                              RUS=Распределение (%)];
+                                                   MinValue=0;
+                                                   MaxValue=100 }
+    { 8   ;   ;Amount              ;Decimal       ;OnValidate=VAR
+                                                                PostingDate@1210001 : Date;
+                                                                CommonBase@1210000 : Option;
+                                                              BEGIN
+                                                                IF FindCommonBase(CommonBase) THEN
+                                                                  TESTFIELD(Base,CommonBase);
+                                                                IF Base = Base::Depreciation THEN
+                                                                  "VAT Amount" := GetFPEDeprAmount(PostingDate,"VAT Base Amount")
+                                                                ELSE
+                                                                  "VAT Amount" := GetUnrealizedVATAmount(Base = Base::Remaining,"VAT Base Amount");
+
+                                                                "Allocation %" := 0;
+                                                                IF ABS(Amount) > ABS("VAT Amount") THEN
+                                                                  Amount := "VAT Amount";
+
+                                                                IF ("VAT Amount" * Amount) < 0 THEN BEGIN
+                                                                  IF Amount < 0 THEN
+                                                                    ERROR(STRSUBSTNO(Text001,FIELDCAPTION(Amount)));
+                                                                  ERROR(STRSUBSTNO(Text002,FIELDCAPTION(Amount)));
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Amount;
+                                                              RUS=Сумма] }
+    { 9   ;   ;VAT Unreal. Account No.;Code20     ;CaptionML=[ENU=VAT Unreal. Account No.;
+                                                              RUS=Номер счета по нереализ. НДС];
+                                                   Editable=No }
+    { 10  ;   ;Base                ;Option        ;OnValidate=VAR
+                                                                PostingDate@1210001 : Date;
+                                                                CommonBase@1210000 : Option;
+                                                              BEGIN
+                                                                IF FindCommonBase(CommonBase) THEN
+                                                                  TESTFIELD(Base,CommonBase);
+                                                                IF Base = Base::Depreciation THEN
+                                                                  "VAT Amount" := GetFPEDeprAmount(PostingDate,"VAT Base Amount")
+                                                                ELSE
+                                                                  "VAT Amount" := GetUnrealizedVATAmount(Base = Base::Remaining,"VAT Base Amount");
+
+                                                                IF "Allocation %" <> 0 THEN
+                                                                  VALIDATE("Allocation %")
+                                                                ELSE
+                                                                  VALIDATE(Amount);
+                                                                CheckVATAllocation;
+                                                              END;
+
+                                                   CaptionML=[ENU=Base;
+                                                              RUS=База];
+                                                   OptionCaptionML=[ENU=Remaining,Full,Depreciation;
+                                                                    RUS=Остаток,Полная,Амортизация];
+                                                   OptionString=Remaining,Full,Depreciation }
+    { 11  ;   ;Shortcut Dimension 1 Code;Code20   ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(1));
+                                                   OnValidate=BEGIN
+                                                                ValidateShortcutDimCode(1,"Shortcut Dimension 1 Code");
+                                                                MODIFY;
+                                                              END;
+
+                                                   CaptionML=[ENU=Shortcut Dimension 1 Code;
+                                                              RUS=Код ярлыка измерения 1];
+                                                   CaptionClass='1,2,1' }
+    { 12  ;   ;Shortcut Dimension 2 Code;Code20   ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(2));
+                                                   OnValidate=BEGIN
+                                                                ValidateShortcutDimCode(2,"Shortcut Dimension 2 Code");
+                                                                MODIFY;
+                                                              END;
+
+                                                   CaptionML=[ENU=Shortcut Dimension 2 Code;
+                                                              RUS=Код ярлыка измерения 2];
+                                                   CaptionClass='1,2,2' }
+    { 13  ;   ;Description         ;Text50        ;CaptionML=[ENU=Description;
+                                                              RUS=Описание] }
+    { 14  ;   ;Recurring Frequency ;DateFormula   ;OnValidate=BEGIN
+                                                                IF WORKDATE > CALCDATE("Recurring Frequency",WORKDATE) THEN
+                                                                  FIELDERROR("Recurring Frequency");
+                                                              END;
+
+                                                   CaptionML=[ENU=Recurring Frequency;
+                                                              RUS=Частота повторения] }
+    { 15  ;   ;VAT Settlement Type ;Option        ;CaptionML=[ENU=VAT Settlement Type;
+                                                              RUS=Тип зачета НДС];
+                                                   OptionCaptionML=[ENU=" ,by Act,Future Expenses";
+                                                                    RUS=" ,По акту,Расходы будущих периодов"];
+                                                   OptionString=[ ,by Act,Future Expenses] }
+    { 16  ;   ;Posting Date Filter ;Date          ;FieldClass=FlowFilter;
+                                                   CaptionML=[ENU=Posting Date Filter;
+                                                              RUS=Фильтр по дате учета] }
+    { 17  ;   ;VAT Base Amount     ;Decimal       ;CaptionML=[ENU=VAT Base Amount;
+                                                              RUS=База расчета НДС] }
+    { 18  ;   ;VAT Bus. Posting Group;Code10      ;TableRelation="VAT Business Posting Group";
+                                                   CaptionML=[ENU=VAT Bus. Posting Group;
+                                                              RUS=НДС бизнес-группа] }
+    { 19  ;   ;VAT Prod. Posting Group;Code10     ;TableRelation="VAT Product Posting Group";
+                                                   CaptionML=[ENU=VAT Prod. Posting Group;
+                                                              RUS=НДС товарная группа] }
+    { 20  ;   ;FA No.              ;Code20        ;TableRelation="Fixed Asset";
+                                                   CaptionML=[ENU=FA No.;
+                                                              RUS=Номер ОС] }
+    { 480 ;   ;Dimension Set ID    ;Integer       ;TableRelation="Dimension Set Entry";
+                                                   OnLookup=BEGIN
+                                                              ShowDimensions;
+                                                            END;
+
+                                                   CaptionML=[ENU=Dimension Set ID;
+                                                              RUS=Код набора измерений];
+                                                   Editable=No }
+    { 50001;  ;Not Use Def. Dimension;Boolean     ;CaptionML=[ENU=Not Use Def. Dimension;
+                                                              RUS=Не использовать Станд. Измерения];
+                                                   Description=NC OFA010 DP }
+  }
+  KEYS
+  {
+    {    ;VAT Entry No.,Line No.                  ;SumIndexFields=Amount;
+                                                   Clustered=Yes }
+    {    ;CV Ledger Entry No.,VAT Settlement Type,VAT Bus. Posting Group,VAT Prod. Posting Group;
+                                                   SumIndexFields=Amount }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      GLAcc@1470001 : Record 15;
+      Text001@1210000 : TextConst 'ENU=%1 must be positive.;RUS=%1: требуется положительное значение.';
+      Text002@1210001 : TextConst 'ENU=%1 must be negative.;RUS=%1: требуется отрицательное значение.';
+      VATEntry@1210002 : Record 254;
+      Text003@1210003 : TextConst 'ENU=Sum of Amount must not be greater than %1 in VAT Allocation line field VAT Amount.;RUS=Сумма не может превышать сумму НДС %1 в поле строки распределения НДС.';
+      DimMgt@1210005 : Codeunit 408;
+      SkipChecking@1210004 : Boolean;
+      Text004@1210006 : TextConst 'ENU=Sum of Amount must not be greater than Remaining Unrealized Amount in VAT Entry No. %1.;RUS=Сумма не может превышать сумму остаток нереализованной суммы в операции НДС номер %1.';
+
+    PROCEDURE UpdateAllocations@1470001(VAR GenJnlLine@1470000 : Record 81;ManualAmount@1210000 : Boolean);
+    VAR
+      VATSettlementMgt@1210001 : Codeunit 12411;
+      FromAllocations@1470004 : Boolean;
+    BEGIN
+      IF GenJnlLine."Unrealized VAT Entry No." = 0 THEN
+        EXIT;
+
+      IF "Line No." <> 0 THEN BEGIN
+        FromAllocations := TRUE;
+        MODIFY;
+      END;
+
+      VATSettlementMgt.CreateAllocation(GenJnlLine."Unrealized VAT Entry No.");
+      IF ManualAmount THEN
+        VATSettlementMgt.CalculateAllocation(GenJnlLine."Unrealized VAT Entry No.",GenJnlLine.Amount,GenJnlLine."Posting Date")
+      ELSE
+        VATSettlementMgt.RecalculateAllocation(GenJnlLine."Unrealized VAT Entry No.",GenJnlLine."Posting Date");
+
+      IF FromAllocations THEN
+        FIND;
+    END;
+
+    PROCEDURE CreateDim@26(Type1@1000 : Integer;No1@1001 : Code[20]);
+    VAR
+      SourceCodeSetup@1006 : Record 242;
+      TableID@1007 : ARRAY [10] OF Integer;
+      No@1008 : ARRAY [10] OF Code[20];
+    BEGIN
+      SourceCodeSetup.GET;
+      TableID[1] := Type1;
+      No[1] := No1;
+      "Shortcut Dimension 1 Code" := '';
+      "Shortcut Dimension 2 Code" := '';
+      "Dimension Set ID" :=
+        DimMgt.GetDefaultDimID(
+          TableID,No,SourceCodeSetup."VAT Settlement",
+          "Shortcut Dimension 1 Code","Shortcut Dimension 2 Code",0,0);
+    END;
+
+    PROCEDURE ValidateShortcutDimCode@29(FieldNumber@1000 : Integer;VAR ShortcutDimCode@1001 : Code[20]);
+    BEGIN
+      DimMgt.ValidateShortcutDimValues(FieldNumber,ShortcutDimCode,"Dimension Set ID");
+    END;
+
+    PROCEDURE LookupShortcutDimCode@28(FieldNumber@1000 : Integer;VAR ShortcutDimCode@1001 : Code[20]);
+    BEGIN
+      DimMgt.LookupDimValueCode(FieldNumber,ShortcutDimCode);
+      ValidateShortcutDimCode(FieldNumber,ShortcutDimCode);
+    END;
+
+    PROCEDURE ShowShortcutDimCode@27(VAR ShortcutDimCode@1000 : ARRAY [20] OF Code[20]);
+    BEGIN
+      DimMgt.GetShortcutDimensions("Dimension Set ID",ShortcutDimCode);
+    END;
+
+    PROCEDURE ShowDimensions@25();
+    BEGIN
+      DimMgt.SetObjectFrom(Rec); // NC NOS-26 SPA
+      "Dimension Set ID" :=
+        DimMgt.EditDimensionSet("Dimension Set ID",STRSUBSTNO('%1 %2 %3',TABLECAPTION,"VAT Entry No.","Line No."));
+      DimMgt.UpdateGlobalDimFromDimSetID("Dimension Set ID","Shortcut Dimension 1 Code","Shortcut Dimension 2 Code");
+    END;
+
+    PROCEDURE GetUnrealizedVATAmount@1210002(Remaining@1210000 : Boolean;VAR VATBaseAmount@1210001 : Decimal) Result : Decimal;
+    BEGIN
+      IF VATEntry.GET("VAT Entry No.") THEN
+        IF Remaining THEN BEGIN
+          Result := VATEntry."Remaining Unrealized Amount";
+          VATBaseAmount := VATEntry."Remaining Unrealized Base";
+        END ELSE BEGIN
+          Result := VATEntry."Unrealized Amount";
+          VATBaseAmount := VATEntry."Unrealized Base";
+        END;
+    END;
+
+    PROCEDURE GetFPEDeprAmount@1210003(PostingDate@1210002 : Date;VAR VATBaseAmount@1210006 : Decimal) Result : Decimal;
+    VAR
+      FA@1210000 : Record 5600;
+      FALedgEntry@1210001 : Record 5601;
+      FAInsertLedgEntry@1210003 : Codeunit 5600;
+      FALedgEntryNo@1210004 : Integer;
+    BEGIN
+      Result := 0;
+      VATEntry.GET("VAT Entry No.");
+      VATEntry.TESTFIELD("VAT Settlement Type",VATEntry."VAT Settlement Type"::"Future Expenses");
+      FA.GET(VATEntry."Object No.");
+      FA.SETFILTER("Date Filter",GETFILTER("Posting Date Filter"));
+      FALedgEntryNo := FAInsertLedgEntry.GetDeprEntryForVATSettlement(FA,PostingDate,"VAT Entry No.");
+      IF FALedgEntryNo <> 0 THEN BEGIN
+        FALedgEntry.GET(FALedgEntryNo);
+        VATBaseAmount := -FALedgEntry.GetAmountToRealize("VAT Entry No.");
+        Result := VATEntry.GetAmountOnBase(VATBaseAmount);
+      END;
+    END;
+
+    PROCEDURE CheckVATAllocation@1210000();
+    VAR
+      VATAllocLine@1210001 : Record 14925;
+      VATBaseAmount@1210005 : Decimal;
+      RemAmount@1210000 : Decimal;
+    BEGIN
+      IF SkipChecking THEN
+        EXIT;
+
+      VATAllocLine.SETRANGE("VAT Entry No.","VAT Entry No.");
+      VATAllocLine.SETFILTER("Line No.",'<>%1',"Line No.");
+      VATAllocLine.CALCSUMS(Amount);
+      IF ABS(VATAllocLine.Amount + Amount) > ABS("VAT Amount") THEN
+        ERROR(Text003,"VAT Amount");
+      RemAmount := GetUnrealizedVATAmount(Base = Base::Remaining,VATBaseAmount);
+      IF ABS(VATAllocLine.Amount + Amount) > ABS(RemAmount) THEN
+        ERROR(Text004,"VAT Entry No.");
+    END;
+
+    PROCEDURE SetTotalCheck@1210001(Value@1210000 : Boolean);
+    BEGIN
+      SkipChecking := NOT Value;
+    END;
+
+    PROCEDURE HandleType@1210004();
+    VAR
+      VATAllocLine@1210000 : Record 14925;
+    BEGIN
+      IF Type = Type::VAT THEN BEGIN
+        VATAllocLine.SETRANGE("VAT Entry No.","VAT Entry No.");
+        VATAllocLine.SETFILTER("Line No.",'<>%1',"Line No.");
+        VATAllocLine.SETRANGE(Type,Type::VAT);
+        IF NOT VATAllocLine.ISEMPTY THEN
+          Type := Type::WriteOff;
+      END;
+    END;
+
+    PROCEDURE CalcRoundedAmount@1210005(NewAllocPercent@1210004 : Decimal;NewVATAmount@1210005 : Decimal) : Decimal;
+    VAR
+      VATAllocLine@1210000 : Record 14925;
+      TotalAmount@1210001 : Decimal;
+      TotalAmountRnded@1210002 : Decimal;
+    BEGIN
+      VATAllocLine.SETRANGE("VAT Entry No.","VAT Entry No.");
+      IF VATAllocLine.FINDSET THEN
+        REPEAT
+          IF VATAllocLine."Line No." = "Line No." THEN BEGIN
+            VATAllocLine."Allocation %" := NewAllocPercent;
+            VATAllocLine."VAT Amount" := NewVATAmount;
+          END;
+          IF VATAllocLine."Allocation %" <> 0 THEN BEGIN
+            TotalAmount := TotalAmount + VATAllocLine."VAT Amount" * VATAllocLine."Allocation %" / 100;
+            VATAllocLine.Amount := ROUND(TotalAmount) - TotalAmountRnded;
+            TotalAmountRnded := TotalAmountRnded + VATAllocLine.Amount;
+            IF VATAllocLine."Line No." = "Line No." THEN
+              EXIT(VATAllocLine.Amount);
+          END;
+        UNTIL VATAllocLine.NEXT = 0;
+    END;
+
+    PROCEDURE FindCommonBase@1210008(VAR NewBase@1210001 : Option) : Boolean;
+    VAR
+      VATAllocLine@1210000 : Record 14925;
+    BEGIN
+      VATAllocLine.SETRANGE("VAT Entry No.","VAT Entry No.");
+      VATAllocLine.SETFILTER("Line No.",'<>%1',"Line No.");
+      IF VATAllocLine.FINDFIRST THEN BEGIN
+        NewBase := VATAllocLine.Base;
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE ShowAllocationLines@1210006();
+    VAR
+      PurchInvLine@1210000 : Record 123;
+    BEGIN
+      TESTFIELD(Type,Type::Charge);
+      VATEntry.GET("VAT Entry No.");
+
+      PurchInvLine.SETRANGE("Document No.",VATEntry."Document No.");
+      PurchInvLine.SETRANGE("VAT Bus. Posting Group",VATEntry."VAT Bus. Posting Group");
+      PurchInvLine.SETRANGE("VAT Prod. Posting Group",VATEntry."VAT Prod. Posting Group");
+      PAGE.RUN(0,PurchInvLine);
+    END;
+
+    BEGIN
+    {
+      NC OFA010 DP Исключение вставки стандартных измерений с плана счетов
+      NC NCS-2356 AAP Changed dimension of array ShortcutDimCode 8->10, function ShowShortcutDimCode
+      NC NOS-26 SPA
+    }
+    END.
+  }
+}
+

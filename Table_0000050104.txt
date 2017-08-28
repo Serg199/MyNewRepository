@@ -1,0 +1,255 @@
+OBJECT Table 50104 FI Avg Cost Adjmt. Entry Point
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.02.11;
+    Time=13:52:49;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnInsert=BEGIN
+               //UpdateItem;
+             END;
+
+    OnModify=BEGIN
+               //UpdateItem;
+             END;
+
+    OnDelete=BEGIN
+               //UpdateItem;
+             END;
+
+    CaptionML=[ENU=Fi Avg. Cost Adjmt. Entry Point;
+               RUS=Момент ввода Коррекции Средней Себест. для ФИ];
+  }
+  FIELDS
+  {
+    { 1   ;   ;FI No.              ;Code20        ;TableRelation="Financial Instrument";
+                                                   CaptionML=[ENU=FI No.;
+                                                              RUS=ФИ Но.] }
+    { 2   ;   ;FI Portfolio        ;Code10        ;TableRelation="FI Portfolio";
+                                                   CaptionML=[ENU=FI Portfolio;
+                                                              RUS=ФИ Портфель] }
+    { 3   ;   ;FI Posting Book     ;Code10        ;TableRelation="FI Posting Book";
+                                                   CaptionML=[ENU=FI Posting Book;
+                                                              RUS=ФИ Книга Учета] }
+    { 4   ;   ;Valuation Date      ;Date          ;CaptionML=[ENU=Valuation Date;
+                                                              RUS=Дата Переоценки] }
+    { 5   ;   ;Cost Is Adjusted    ;Boolean       ;CaptionML=[ENU=Cost Is Adjusted;
+                                                              RUS=Себестоимость скорректирована] }
+    { 6   ;   ;ACI Is Adjusted     ;Boolean       ;CaptionML=RUS=НКД Скорректирован;
+                                                   Description=NC MTF02.1 AKU }
+  }
+  KEYS
+  {
+    {    ;Valuation Date,FI No.,FI Portfolio,FI Posting Book;
+                                                   Clustered=Yes }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      Item@1000 : Record 27;
+      FiscalYearAccPeriod@1003 : Record 50;
+
+    LOCAL PROCEDURE UpdateItem_@3();
+    BEGIN
+      {
+      GetItem(Code);
+      IF Item."Cost is Adjusted" THEN BEGIN
+        Item.LOCKTABLE;
+        Item."Cost is Adjusted" := FALSE;
+        Item.MODIFY;
+      END;
+      }
+    END;
+
+    PROCEDURE ValuationExists_@8(ValueEntry@1000 : Record 5802) : Boolean;
+    VAR
+      CalendarPeriod@1001 : Record 2000000007;
+    BEGIN
+      {
+      RESET;
+      Code := ValueEntry."Item No.";
+      "Valuation Date" := ValueEntry."Valuation Date";
+      GetItem(ValueEntry."Item No.");
+      IF Item."Costing Method" = Item."Costing Method"::Average THEN BEGIN
+        CalendarPeriod."Period Start" := "Valuation Date";
+        GetValuationPeriod(CalendarPeriod);
+        "Valuation Date" := CalendarPeriod."Period End";
+      END;
+      IF (Item."Costing Method" = Item."Costing Method"::Average) AND
+         IsAvgCostCalcTypeItem("Valuation Date")
+      THEN BEGIN
+        "FI Posting Book" := '';
+        Description := '';
+      END ELSE BEGIN
+        Description := ValueEntry."Variant Code";
+        "FI Posting Book" := ValueEntry."Location Code";
+      END;
+
+      EXIT(FIND);
+      }
+    END;
+
+    PROCEDURE PrevValuationAdjusted_@9(ValueEntry@1001 : Record 5802) ValuationAdjusted : Boolean;
+    VAR
+      CopyOfAvgCostAdjmtPoint@1000 : Record 5804;
+    BEGIN
+      {
+      CopyOfAvgCostAdjmtPoint.COPY(Rec);
+      RESET;
+      SETCURRENTKEY(Code,"Cost Is Adjusted");
+      SETRANGE(Code,ValueEntry."Item No.");
+      SETRANGE("Cost Is Adjusted",FALSE);
+      SETRANGE("Valuation Date",0D,CALCDATE('<-1D>',ValueEntry."Valuation Date"));
+      ValuationAdjusted := ISEMPTY;
+      COPY(CopyOfAvgCostAdjmtPoint);
+      EXIT(ValuationAdjusted);
+      }
+    END;
+
+    PROCEDURE UpdateValuationDate_@7(ValueEntry@1000 : Record 5802);
+    BEGIN
+      {
+      IF ValuationExists(ValueEntry) THEN BEGIN
+        IF NOT "Cost Is Adjusted" THEN
+          EXIT;
+        "Cost Is Adjusted" := FALSE;
+        MODIFY;
+      END ELSE BEGIN
+        INIT;
+        INSERT;
+      END;
+
+      UpdateNextValuations;
+      }
+    END;
+
+    PROCEDURE UpdateNextValuations_@1();
+    VAR
+      CopyOfAvgCostAdjmtPoint@1000 : Record 5804;
+    BEGIN
+      {
+      CopyOfAvgCostAdjmtPoint.COPY(Rec);
+      SETCURRENTKEY(Code,"Cost Is Adjusted");
+      SETRANGE(Code,Code);
+      SETRANGE("Cost Is Adjusted",TRUE);
+      IF TRUE IN [Item."Costing Method" <> Item."Costing Method"::Average,
+                  NOT (IsAvgCostCalcTypeItem("Valuation Date") OR
+                       AvgCostCalcTypeIsChanged("Valuation Date"))]
+      THEN BEGIN
+        SETRANGE("FI Posting Book","FI Posting Book");
+        SETRANGE(Description,Description);
+      END;
+      SETFILTER("Valuation Date",'>%1',"Valuation Date");
+      MODIFYALL("Cost Is Adjusted",FALSE);
+      COPY(CopyOfAvgCostAdjmtPoint);
+      }
+    END;
+
+    PROCEDURE AvgCostCalcTypeIsChanged_@6(FromDate@1001 : Date) : Boolean;
+    VAR
+      NextFiscalYearAccPeriod@1000 : Record 50;
+    BEGIN
+      {
+      GetAvgCostCalcTypeIsChgPeriod(NextFiscalYearAccPeriod,FromDate);
+      EXIT(NextFiscalYearAccPeriod."Starting Date" > FromDate);
+      }
+    END;
+
+    PROCEDURE GetAvgCostCalcTypeIsChgPeriod_@12(VAR NextFiscalYearAccPeriod@1001 : Record 50;FromDate@1000 : Date);
+    BEGIN
+      {
+      NextFiscalYearAccPeriod.SETRANGE("New Fiscal Year",TRUE);
+      NextFiscalYearAccPeriod.SETFILTER("Starting Date",'>%1',FromDate);
+      NextFiscalYearAccPeriod.SETFILTER("Average Cost Calc. Type",'<>%1',FiscalYearAccPeriod."Average Cost Calc. Type");
+      }
+    END;
+
+    PROCEDURE GetValuationPeriod_@2(VAR CalendarPeriod@1000 : Record 2000000007);
+    VAR
+      PeriodMgt@1001 : Codeunit 359;
+    BEGIN
+      {
+      GetFiscalYearAccPeriod("Valuation Date");
+
+      IF FiscalYearAccPeriod."Average Cost Period" = FiscalYearAccPeriod."Average Cost Period"::" " THEN
+        FiscalYearAccPeriod.FIELDERROR("Average Cost Period");
+
+      IF NOT PeriodMgt.FindDate('',CalendarPeriod,FiscalYearAccPeriod."Average Cost Period" - 1) THEN
+        FiscalYearAccPeriod.GET(CalendarPeriod."Period Start");
+
+      IF FiscalYearAccPeriod."Average Cost Period" IN
+         [FiscalYearAccPeriod."Average Cost Period"::Day,
+          FiscalYearAccPeriod."Average Cost Period"::"Accounting Period"]
+      THEN
+        EXIT;
+
+      GetFiscalYearAccPeriod(CalendarPeriod."Period End");
+      IF FiscalYearAccPeriod."Starting Date" IN [CalendarPeriod."Period Start"..CalendarPeriod."Period End"] THEN
+        IF "Valuation Date" < FiscalYearAccPeriod."Starting Date" THEN
+          CalendarPeriod."Period End" := CALCDATE('<-1D>',FiscalYearAccPeriod."Starting Date")
+        ELSE
+          CalendarPeriod."Period Start" := FiscalYearAccPeriod."Starting Date";
+      }
+    END;
+
+    PROCEDURE IsAvgCostCalcTypeItem_@4(ValuationDate@1000 : Date) : Boolean;
+    BEGIN
+      {
+      GetFiscalYearAccPeriod(ValuationDate);
+      EXIT(FiscalYearAccPeriod."Average Cost Calc. Type" = FiscalYearAccPeriod."Average Cost Calc. Type"::Item);
+      }
+    END;
+
+    LOCAL PROCEDURE GetFiscalYearAccPeriod_@13(ValuationDate@1000 : Date);
+    BEGIN
+      {
+      FiscalYearAccPeriod.SETRANGE("New Fiscal Year",TRUE);
+      FiscalYearAccPeriod.SETRANGE("Starting Date",0D,ValuationDate);
+      IF NOT FiscalYearAccPeriod.FIND('+') THEN BEGIN
+        FiscalYearAccPeriod.SETRANGE("Starting Date");
+        FiscalYearAccPeriod.FIND('-');
+      END;
+      }
+    END;
+
+    PROCEDURE SetAvgCostAjmtFilter_@10(VAR AvgCostAdjmtPoint@1000 : Record 5804);
+    VAR
+      NextFiscalYearAccPeriod@1001 : Record 50;
+    BEGIN
+      {
+      AvgCostAdjmtPoint.RESET;
+      AvgCostAdjmtPoint.SETRANGE("Item No.",Code);
+      AvgCostAdjmtPoint.SETRANGE("Variant Code",Description);
+      AvgCostAdjmtPoint.SETRANGE("Location Code","FI Posting Book");
+      IF AvgCostCalcTypeIsChanged("Valuation Date") THEN BEGIN
+        GetAvgCostCalcTypeIsChgPeriod(NextFiscalYearAccPeriod,"Valuation Date");
+        AvgCostAdjmtPoint.SETRANGE("Valuation Date","Valuation Date",CALCDATE('<1D>',NextFiscalYearAccPeriod."Starting Date"));
+      END ELSE
+        AvgCostAdjmtPoint.SETRANGE("Valuation Date","Valuation Date",12129999D);
+      }
+    END;
+
+    LOCAL PROCEDURE GetItem_@5(ItemNo@1000 : Code[20]);
+    BEGIN
+      {
+      IF ItemNo <> Item."No." THEN
+        Item.GET(ItemNo);
+      }
+    END;
+
+    BEGIN
+    {
+      NC MTF02 II Учет ФИ
+      NC MTF02.1 AKU Поле "ACI Is Adjusted". Используется пакетным заданием начисления / погашения НКД
+    }
+    END.
+  }
+}
+

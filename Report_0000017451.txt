@@ -1,0 +1,326 @@
+OBJECT Report 17451 Spreadsheet Employee
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Spreadsheet Employee;
+               RUS=Платежная ведомость - сотрудник];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  HumanResSetup.GET;
+                  CompanyInfo.GET;
+
+                  IF PreviewMode THEN
+                    DocNo := 'XXXXXXXXXX'
+                  ELSE BEGIN
+                    HumanResSetup.TESTFIELD("Paysheet Nos.");
+                    DocNo := NoSeriesMgt.GetNextNo(HumanResSetup."Paysheet Nos.",WORKDATE,TRUE);
+                  END;
+
+                  ExcelMgt.CreateBook;
+                  FillCell('A1','Организация: ' + LocalRepMgt.GetCompanyName,TRUE,0,0);
+                  FillCell('A2','Расчетная ведомость по зарплате сотрудников № ' + DocNo,TRUE,0,0);
+                  FillCell('A3','Учетный период с ' +
+                    FORMAT(PayrollPeriod."Starting Date") + ' по ' +
+                    FORMAT(PayrollPeriod."Ending Date"),TRUE,0,0);
+                END;
+
+    OnPostReport=BEGIN
+                   ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7528;    ;DataItem;                    ;
+               DataItemTable=Table5200;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               FilterText := Employee.GETFILTERS;
+
+                               CompanyInfo.GET;
+
+                               HumanResSetup.TESTFIELD("Work Time Group Code");
+                               HumanResSetup.TESTFIELD("Tariff Work Group Code");
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  PayrollLedgerEntry.RESET;
+                                  PayrollLedgerEntry.SETCURRENTKEY("Employee No.","Period Code","Element Code");
+                                  PayrollLedgerEntry.SETRANGE("Employee No.","No.");
+                                  PayrollLedgerEntry.SETRANGE("Period Code",PeriodCode);
+                                  IF PayrollLedgerEntry.FINDSET THEN
+                                    REPEAT
+                                      IF PayrollLedgerEntry."Payroll Amount" <> 0 THEN
+                                        IF PayrollLedgerEntry."Print Priority" <> 0 THEN
+                                          IF PayrollLedgerEntry."Element Type" <> PayrollLedgerEntry."Element Type"::"Income Tax" THEN BEGIN
+                                            PayrollCalcBuffer."No." := PayrollLedgerEntry."Employee No.";
+                                            PayrollCalcBuffer."Element Code" := PayrollLedgerEntry."Element Code";
+
+                                            CASE PayrollLedgerEntry."Element Type" OF
+                                              PayrollLedgerEntry."Element Type"::"Tax Deduction",
+                                              PayrollLedgerEntry."Element Type"::Deduction:
+                                                PayrollCalcBuffer.Amount := -PayrollLedgerEntry."Payroll Amount";
+                                              ELSE
+                                                PayrollCalcBuffer.Amount := PayrollLedgerEntry."Payroll Amount";
+                                            END;
+
+                                            PayrollCalcBuffer."Print Priority" := PayrollLedgerEntry."Print Priority";
+                                            PayrollCalcBuffer."Line No." := PayrollCalcBuffer."Line No." + 10000;
+                                            PayrollCalcBuffer.INSERT;
+                                          END;
+                                    UNTIL PayrollLedgerEntry.NEXT = 0;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                PayrollCalcBuffer.SETCURRENTKEY("Element Code","No.");
+                                IF PayrollCalcBuffer.FINDSET THEN
+                                  REPEAT
+                                    IF NOT ColumnBuffer.GET(PayrollCalcBuffer."Element Code") THEN BEGIN
+                                      ColumnBuffer."Element Code" := PayrollCalcBuffer."Element Code";
+                                      PayrollElement.GET(ColumnBuffer."Element Code");
+                                      ColumnBuffer."Element Description" := PayrollElement.Description;
+                                      ColumnBuffer."Print Priority" := PayrollCalcBuffer."Print Priority";
+                                      ColumnBuffer.INSERT;
+                                    END;
+                                  UNTIL PayrollCalcBuffer.NEXT = 0;
+
+                                PayrollCalcBuffer.SETCURRENTKEY("No.","Print Priority","Element Code");
+                                IF PayrollCalcBuffer.FINDSET THEN
+                                  REPEAT
+                                    IF EmployeeBuffer."No." <> PayrollCalcBuffer."No." THEN BEGIN
+                                      Employee.GET(PayrollCalcBuffer."No.");
+                                      EmployeeBuffer."No." := PayrollCalcBuffer."No.";
+                                      EmployeeBuffer."Last Name & Initials" := Employee."Last Name" + ' ' + Employee.Initials;
+                                      EmployeeBuffer."Appointment Name" := Employee.GetJobTitleName;
+                                      EmployeeBuffer.INSERT;
+                                    END;
+                                  UNTIL PayrollCalcBuffer.NEXT = 0;
+
+                                EmployeeBuffer.Days :=
+                                  TimesheetMgt.GetTimesheetInfo(
+                                    "No.",HumanResSetup."Work Time Group Code",
+                                    PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",2);
+                                EmployeeBuffer.Hours :=
+                                  TimesheetMgt.GetTimesheetInfo(
+                                    "No.",HumanResSetup."Work Time Group Code",
+                                    PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",3);
+                                EmployeeBuffer."Hours Tariff" :=
+                                  TimesheetMgt.GetTimesheetInfo(
+                                    "No.",HumanResSetup."Tariff Work Group Code",
+                                    PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",2);
+                              END;
+
+               ReqFilterFields=No.,Global Dimension 1 Code,Statistics Group Code }
+
+    { 8814;    ;DataItem;Line                ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=VAR
+                               FirstCellToMergeName@1210000 : Text[30];
+                               LastCellToMergeName@1210001 : Text[30];
+                             BEGIN
+                               SETRANGE(Number,1,EmployeeBuffer.COUNT);
+
+                               RowNo := 5;
+
+                               FillCell('A' + FORMAT(RowNo),'№ п/п',TRUE,1,0);
+                               FillCell('B' + FORMAT(RowNo),'Табельный №',TRUE,1,0);
+                               FillCell('C' + FORMAT(RowNo),'Фамилия И.О.',TRUE,1,0);
+                               FillCell('D' + FORMAT(RowNo),'Занимаемая должность',TRUE,1,0);
+                               FillCell('E' + FORMAT(RowNo),'Кол-во отраб. дней',TRUE,1,0);
+                               FillCell('F' + FORMAT(RowNo),'Кол-во отраб. часов',TRUE,1,0);
+                               FillCell('G' + FORMAT(RowNo),'Кол-во отраб. часов по тарифу',TRUE,1,0);
+                               FillCell('H' + FORMAT(RowNo),'Виды доходов, льгот и удержаний',TRUE,1,0);
+                               ExcelMgt.FormatCell_WrapText(STRSUBSTNO('A%1:H%1',RowNo),TRUE);
+
+                               ExcelMgt.SetColumnSize('A' + FORMAT(RowNo),3);
+                               ExcelMgt.SetColumnSize('B' + FORMAT(RowNo),11);
+                               ExcelMgt.SetColumnSize('C' + FORMAT(RowNo),20);
+                               ExcelMgt.SetColumnSize('D' + FORMAT(RowNo),15);
+                               ExcelMgt.SetColumnSize('E' + FORMAT(RowNo),8);
+                               ExcelMgt.SetColumnSize('F' + FORMAT(RowNo),8);
+                               ExcelMgt.SetColumnSize('G' + FORMAT(RowNo),8);
+                               ExcelMgt.SetColumnSize('H' + FORMAT(RowNo),11);
+
+                               ExcelMgt.MergeCells('A' + FORMAT(RowNo),'A' + FORMAT(RowNo + 1));
+                               ExcelMgt.MergeCells('B' + FORMAT(RowNo),'B' + FORMAT(RowNo + 1));
+                               ExcelMgt.MergeCells('C' + FORMAT(RowNo),'C' + FORMAT(RowNo + 1));
+                               ExcelMgt.MergeCells('D' + FORMAT(RowNo),'D' + FORMAT(RowNo + 1));
+                               ExcelMgt.MergeCells('E' + FORMAT(RowNo),'E' + FORMAT(RowNo + 1));
+                               ExcelMgt.MergeCells('F' + FORMAT(RowNo),'F' + FORMAT(RowNo + 1));
+                               ExcelMgt.MergeCells('G' + FORMAT(RowNo),'G' + FORMAT(RowNo + 1));
+
+                               FirstColumnNo := 7;
+
+                               IF ColumnBuffer.COUNT > 1 THEN BEGIN
+                                 FirstCellToMergeName := ExcelMgt.ColumnNo2Name(FirstColumnNo + 1) + FORMAT(RowNo);
+                                 LastCellToMergeName := ExcelMgt.ColumnNo2Name(FirstColumnNo + ColumnBuffer.COUNT) + FORMAT(RowNo);
+                                 ExcelMgt.MergeCells(FirstCellToMergeName,LastCellToMergeName);
+                                 ExcelMgt.FormatCellBorder(FirstCellToMergeName + ':' + LastCellToMergeName,2,1);
+                                 ExcelMgt.FormatCellBorder(LastCellToMergeName,1,1);
+                               END;
+
+                               RowNo += 1;
+
+                               IF ColumnBuffer.FINDSET THEN
+                                 REPEAT
+                                   Counter += 1;
+                                   ColumnName := ExcelMgt.ColumnNo2Name(FirstColumnNo + Counter);
+                                   FillCell(ColumnName + FORMAT(RowNo),ColumnBuffer."Element Description",TRUE,1,0);
+                                   ExcelMgt.SetColumnSize(ColumnName + FORMAT(RowNo),11);
+                                 UNTIL ColumnBuffer.NEXT = 0;
+
+                               RowNo += 1;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    EmployeeBuffer.FINDSET
+                                  ELSE
+                                    EmployeeBuffer.NEXT;
+
+                                  FillCell('A' + FORMAT(RowNo),FORMAT(Number),FALSE,1,0);
+                                  FillCell('B' + FORMAT(RowNo),EmployeeBuffer."No.",FALSE,1,0);
+                                  FillCell('C' + FORMAT(RowNo),EmployeeBuffer."Last Name & Initials",FALSE,1,0);
+                                  FillCell('D' + FORMAT(RowNo),EmployeeBuffer."Appointment Name",FALSE,1,0);
+                                  FillCell('E' + FORMAT(RowNo),FormatAmount(EmployeeBuffer.Days),FALSE,1,1);
+                                  FillCell('F' + FORMAT(RowNo),FormatAmount(EmployeeBuffer.Hours),FALSE,1,1);
+                                  FillCell('G' + FORMAT(RowNo),FormatAmount(EmployeeBuffer."Hours Tariff"),FALSE,1,1);
+                                END;
+                                 }
+
+    { 4591;1   ;DataItem;Column              ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               ColumnBuffer.SETCURRENTKEY("Print Priority");
+                               SETRANGE(Number,1,ColumnBuffer.COUNT);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    ColumnBuffer.FINDSET
+                                  ELSE
+                                    ColumnBuffer.NEXT;
+
+                                  PayrollCalcBuffer.SETRANGE("No.",EmployeeBuffer."No.");
+                                  PayrollCalcBuffer.SETRANGE("Element Code",ColumnBuffer."Element Code");
+                                  PayrollCalcBuffer.CALCSUMS(Amount);
+
+                                  FillCell(ExcelMgt.ColumnNo2Name(FirstColumnNo + Number) + FORMAT(RowNo),FormatAmount(PayrollCalcBuffer.Amount),FALSE,1,1);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                RowNo += 1;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodCode := PayrollPeriod.PeriodByDate(WORKDATE);
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Pay Period;
+                             RUS=Платежный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PeriodCode;
+                  TableRelation="Payroll Period";
+                  OnValidate=BEGIN
+                               PeriodCodeOnAfterValidate;
+                             END;
+                              }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PreviewMode }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      PayrollElement@1210002 : Record 17400;
+      HumanResSetup@1210001 : Record 5218;
+      CompanyInfo@1210003 : Record 79;
+      PayrollCalcBuffer@1210004 : TEMPORARY Record 17450;
+      PayrollLedgerEntry@1210005 : Record 17418;
+      EmployeeBuffer@1210006 : TEMPORARY Record 17452;
+      ColumnBuffer@1210007 : TEMPORARY Record 17451;
+      PayrollPeriod@1210009 : Record 17426;
+      LocalRepMgt@1210010 : Codeunit 12401;
+      ExcelMgt@1210016 : Codeunit 12416;
+      TimesheetMgt@1210012 : Codeunit 17440;
+      NoSeriesMgt@1210013 : Codeunit 396;
+      PeriodCode@1210008 : Code[10];
+      FirstColumnNo@1210019 : Integer;
+      RowNo@1210018 : Integer;
+      Counter@1210014 : Integer;
+      DocNo@1210017 : Code[10];
+      FilterText@1210035 : Text[200];
+      ColumnName@1210011 : Text[30];
+      PreviewMode@1210015 : Boolean;
+
+    PROCEDURE FormatAmount@1210031(Amount@1210000 : Decimal) : Text[50];
+    BEGIN
+      IF Amount = 0 THEN
+        EXIT('');
+
+      EXIT(FORMAT(Amount,0,'<Precision,2:2><Standard Format,1>'));
+    END;
+
+    PROCEDURE FillCell@1210008(CellName@1210000 : Text[30];CellValue@1210001 : Text[250];Bold@1210003 : Boolean;Borders@1210002 : 'None,Thin,Medium';CellFormat@1210004 : 'Text,Decimal');
+    BEGIN
+      ExcelMgt.FillCell(CellName,CellValue);
+      CASE Borders OF
+        Borders::Thin:
+          ExcelMgt.FormatCellOutsideBorders(CellName,1);
+        Borders::Medium:
+          ExcelMgt.FormatCellOutsideBorders(CellName,2);
+      END;
+      IF Bold THEN
+        ExcelMgt.FormatCell_Bold(CellName,TRUE);
+
+      IF CellFormat = CellFormat::Decimal THEN
+        ExcelMgt.SetCellNumberFormat(CellName,'0,00');
+    END;
+
+    LOCAL PROCEDURE PeriodCodeOnAfterValidate@19067385();
+    BEGIN
+      PayrollPeriod.GET(PeriodCode);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

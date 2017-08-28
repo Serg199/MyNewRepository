@@ -1,0 +1,174 @@
+OBJECT Table 17426 Payroll Period
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnInsert=BEGIN
+               TESTFIELD("Ending Date");
+               TESTFIELD("Starting Date");
+
+               Employee.RESET;
+               IF Employee.FINDSET THEN
+                 REPEAT
+                   TimesheetMgt.CreateTimesheet(Employee,Rec);
+                 UNTIL Employee.NEXT = 0;
+             END;
+
+    OnDelete=BEGIN
+               TESTFIELD(Closed,FALSE);
+
+               TimesheetStatus.RESET;
+               TimesheetStatus.SETRANGE("Period Code",Code);
+               TimesheetStatus.SETRANGE(Status,TimesheetStatus.Status::Released);
+               IF NOT TimesheetStatus.ISEMPTY THEN
+                 ERROR(Text004,TABLECAPTION,TimesheetStatus.TABLECAPTION);
+               TimesheetStatus.SETRANGE(Status,TimesheetStatus.Status::Open);
+               TimesheetStatus.DELETEALL(TRUE);
+
+               PayrollStatus.RESET;
+               PayrollStatus.SETRANGE("Period Code",Code);
+               PayrollStatus.SETFILTER("Payroll Status",'<>%1',PayrollStatus."Payroll Status"::" ");
+             END;
+
+    OnRename=BEGIN
+               ERROR(Text001,TABLECAPTION);
+             END;
+
+    CaptionML=[ENU=Payroll Period;
+               RUS=Зарплатный период];
+    LookupPageID=Page17425;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Ending Date         ;Date          ;OnValidate=BEGIN
+                                                                "Starting Date" := CALCDATE('<-CM>',"Ending Date");
+                                                              END;
+
+                                                   CaptionML=[ENU=Ending Date;
+                                                              RUS=Дата окончания] }
+    { 2   ;   ;Name                ;Text50        ;CaptionML=[ENU=Name;
+                                                              RUS=Название] }
+    { 3   ;   ;Closed              ;Boolean       ;CaptionML=[ENU=Closed;
+                                                              RUS=Закрыто] }
+    { 5   ;   ;Starting Date       ;Date          ;CaptionML=[ENU=Starting Date;
+                                                              RUS=Дата начала] }
+    { 6   ;   ;Period Duration     ;Option        ;CaptionML=[ENU=Period Duration;
+                                                              RUS=Длительность периода];
+                                                   OptionCaptionML=[ENU=Month,Quarter,Year,User-Defined;
+                                                                    RUS=Месяц,Квартал,Год,Период пользователя];
+                                                   OptionString=Month,Quarter,Year,User-Defined }
+    { 7   ;   ;Employees           ;Integer       ;FieldClass=FlowField;
+                                                   CalcFormula=Count("Timesheet Status" WHERE (Period Code=FIELD(Code)));
+                                                   CaptionML=[ENU=Employees;
+                                                              RUS=Сотрудники];
+                                                   Editable=No }
+    { 8   ;   ;Advance Date        ;Date          ;CaptionML=[ENU=Advance Date;
+                                                              RUS=Дата аванса] }
+    { 9   ;   ;Code                ;Code10        ;CaptionML=[ENU=Code;
+                                                              RUS=Код] }
+    { 10  ;   ;New Payroll Year    ;Boolean       ;CaptionML=[ENU=New Payroll Year;
+                                                              RUS=Новый зарплатный год] }
+  }
+  KEYS
+  {
+    {    ;Code                                    ;Clustered=Yes }
+    {    ;Starting Date                            }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      Employee@1210006 : Record 5200;
+      TimesheetStatus@1210007 : Record 17440;
+      PayrollStatus@1210009 : Record 17457;
+      TimesheetMgt@1210000 : Codeunit 17440;
+      Text001@1210004 : TextConst 'ENU=You cannot rename the %1.;RUS=Невозможно переименовать %1.';
+      Text003@1210002 : TextConst 'ENU=You cannot post before %1 because the %2 is already closed. You must re-open the period first.;RUS=Невозможно выполнить учет до %1, поскольку %2 уже закрыт. Сначала необходимо открыть период.';
+      Text004@1210008 : TextConst 'ENU=You cannot delete the %1 because there is at least one released %2 in this period.;RUS=Невозможно удалить %1, т.к. в этом периоде существует по крайней мере один отпущенный %2.';
+
+    PROCEDURE ShowError@2(PostingDate@1001 : Date);
+    BEGIN
+      ERROR(Text003,CALCDATE('<+1D>',PostingDate),TABLECAPTION);
+    END;
+
+    PROCEDURE PeriodByDate@1210001(Date@1210000 : Date) : Code[10];
+    VAR
+      PayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      PayrollPeriod.RESET;
+      PayrollPeriod.SETFILTER("Ending Date",'%1..',Date);
+      IF NOT PayrollPeriod.FINDFIRST THEN
+        EXIT('');
+      IF PayrollPeriod."Starting Date" <= Date THEN
+        EXIT(PayrollPeriod.Code);
+
+      EXIT('');
+    END;
+
+    PROCEDURE GetMinDate@1210002(PayrollPeriod@1210000 : Record 17426;StartDate@1210001 : Date) : Date;
+    BEGIN
+      IF PayrollPeriod."Starting Date" > StartDate THEN
+        EXIT(PayrollPeriod."Starting Date");
+
+      EXIT(StartDate);
+    END;
+
+    PROCEDURE GetMaxDate@1210003(PayrollPeriod@1210001 : Record 17426;EndDate@1210000 : Date) : Date;
+    BEGIN
+      IF (EndDate = 0D) OR (PayrollPeriod."Ending Date" < EndDate) THEN
+        EXIT(PayrollPeriod."Ending Date");
+
+      EXIT(EndDate);
+    END;
+
+    PROCEDURE CheckPeriodExistence@1210000(Date@1210000 : Date);
+    VAR
+      PayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      PayrollPeriod.RESET;
+      PayrollPeriod.SETFILTER("Ending Date",'%1..',Date);
+      PayrollPeriod.FINDFIRST;
+    END;
+
+    PROCEDURE GetPrevPeriod@1210004(VAR PrevPeriodCode@1210000 : Code[10]) : Boolean;
+    VAR
+      PayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      PayrollPeriod.GET(Code);
+      IF PayrollPeriod.NEXT(-1) = 0 THEN
+        EXIT(FALSE);
+
+      PrevPeriodCode := PayrollPeriod.Code;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE PeriodStartDateByPeriodCode@1210005(PeriodCode@1210000 : Code[10]) : Date;
+    VAR
+      PayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      IF NOT PayrollPeriod.GET(PeriodCode) THEN
+        EXIT(0D);
+      EXIT(PayrollPeriod."Starting Date");
+    END;
+
+    PROCEDURE PeriodEndDateByPeriodCode@1210006(PeriodCode@1210000 : Code[10]) : Date;
+    VAR
+      PayrollPeriod@1210001 : Record 17426;
+    BEGIN
+      IF NOT PayrollPeriod.GET(PeriodCode) THEN
+        EXIT(0D);
+      EXIT(PayrollPeriod."Ending Date");
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,639 @@
+OBJECT Codeunit 17414 Payroll Expression Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RecRef@1210033 : RecordRef;
+      FldRef@1210032 : FieldRef;
+      DivisionError@1210000 : Boolean;
+      Text001@1210022 : TextConst 'ENU=The parenthesis at position %1 is misplaced.;RUS=Пропущена скобка в позиции %1.';
+      Text002@1210021 : TextConst 'ENU=You cannot have two consecutive operators. The error occurred at position %1.;RUS=Нельзя использовать два оператора подряд. Ошибка в позиции %1.';
+      Text003@1210020 : TextConst 'ENU=There is an operand missing after position %1.;RUS=Пропущен операнд после позиции %1.';
+      Text004@1210019 : TextConst 'ENU=There are more left parentheses than right parentheses.;RUS=Левых скобок больше, чем правых.';
+      Text005@1210018 : TextConst 'ENU=There are more right parentheses than left parentheses.;RUS=Правых скобок больше, чем левых.';
+      Text017@1210008 : TextConst 'ENU="%1\\The error occurred when the program tried to calculate:\Acc. Sched. Line: Row No. = %1, Line No. = %2, Totaling = %3\Acc. Sched. Column: Column No. = %4, Line No. = %5, Formula  = %6.";RUS="%1\\Ошибка при вычислении:\Строка фин. отчета: номер ряда = %1, номер строки = %2, группировка = %3\Столбец фин. отчета: номер столбца = %4, номер строки = %5, формула = %6."';
+      CallingLineID@1210013 : Integer;
+      Text030@1210030 : TextConst 'ENU=Please use either %1 or %2.;RUS=Введите %1 или %2.';
+      Text031@1210014 : TextConst 'ENU=Variable %1 has value %2.;RUS=Переменная %1 имеет значение %2.';
+      Text032@1210001 : TextConst 'ENU=Option cannot be converted to Boolean value.;RUS=Параметр нельзя преобразовать в логическое значение.';
+      XDOC@1210027 : TextConst 'ENU=DOC;RUS=ДОК';
+
+    PROCEDURE EvaluateExpr@1210001(VAR PayrollDocLine@1210007 : Record 17415;PayrollDocLineCalc@1210005 : Record 17459;VAR PayrollDocLineVar@1210017 : TEMPORARY Record 17437;NewExpression@1001 : Text[250];ExprLevel@1210003 : Integer;ParentLineNo@1210004 : Integer;VAR DecimalResult@1210011 : Decimal;VAR LogicalResult@1210012 : Option);
+    VAR
+      PayrollDocLineExpr@1210002 : Record 17438;
+      PrevPayrollDocLineExpr@1210008 : Record 17438;
+      ExprResult@1210006 : Text[250];
+    BEGIN
+      // Error codes:
+      //
+      // 001 - Expression is not constant
+      // 002 - Field must be Decimal
+      // 003 - Local variable is not calculated
+      // 004 - Global variable is not calculated
+      // 006 - Journal line does not exist
+
+      // Calculate Expression
+      IF NewExpression <> '' THEN BEGIN
+
+        DecimalResult := 0;
+        ExprResult := '';
+
+        PayrollDocLineExpr.RESET;
+        PayrollDocLineExpr.SETRANGE("Document No.",PayrollDocLine."Document No.");
+        PayrollDocLineExpr.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+        PayrollDocLineExpr.SETRANGE("Calculation Line No.",PayrollDocLineCalc."Line No.");
+        PayrollDocLineExpr.SETRANGE("Parent Line No.",ParentLineNo);
+        PayrollDocLineExpr.SETRANGE(Level,ExprLevel);
+        IF PayrollDocLineExpr.FINDSET THEN
+          REPEAT
+            CalcSimpleExpr(PayrollDocLine,PayrollDocLineCalc,PayrollDocLineExpr,PayrollDocLineVar);
+            IF PayrollDocLineExpr.Comparison <> 0 THEN BEGIN
+              PayrollDocLineExpr."Logical Result" := SetCondition(PayrollDocLineExpr);
+              IF LogicalResult = 0 THEN BEGIN
+                IF PayrollDocLineExpr."Logical Prefix" = PayrollDocLineExpr."Logical Prefix"::"NOT" THEN
+                  LogicalResult := Boolean2Option(NOT Option2Boolean(PayrollDocLineExpr."Logical Result"))
+                ELSE
+                  LogicalResult := Boolean2Option(Option2Boolean(PayrollDocLineExpr."Logical Result"));
+              END ELSE
+                CASE PrevPayrollDocLineExpr."Logical Suffix" OF
+                  PrevPayrollDocLineExpr."Logical Suffix"::"AND":
+                    IF PayrollDocLineExpr."Logical Prefix" = PayrollDocLineExpr."Logical Prefix"::"NOT" THEN
+                      LogicalResult :=
+                        Boolean2Option(
+                          Option2Boolean(LogicalResult) AND
+                          (NOT Option2Boolean(PayrollDocLineExpr."Logical Result")))
+                    ELSE
+                      LogicalResult :=
+                        Boolean2Option(
+                          Option2Boolean(LogicalResult) AND
+                          Option2Boolean(PayrollDocLineExpr."Logical Result"));
+                  PrevPayrollDocLineExpr."Logical Suffix"::"OR":
+                    IF PayrollDocLineExpr."Logical Prefix" = PayrollDocLineExpr."Logical Prefix"::"NOT" THEN
+                      LogicalResult :=
+                        Boolean2Option(
+                          Option2Boolean(LogicalResult) OR
+                          (NOT Option2Boolean(PayrollDocLineExpr."Logical Result")))
+                    ELSE
+                      LogicalResult :=
+                        Boolean2Option(
+                          Option2Boolean(LogicalResult) OR
+                          Option2Boolean(PayrollDocLineExpr."Logical Result"));
+                  PrevPayrollDocLineExpr."Logical Suffix"::"XOR":
+                    IF PayrollDocLineExpr."Logical Prefix" = PayrollDocLineExpr."Logical Prefix"::"NOT" THEN
+                      LogicalResult :=
+                        Boolean2Option(
+                          Option2Boolean(LogicalResult) XOR
+                          (NOT Option2Boolean(PayrollDocLineExpr."Logical Result")))
+                    ELSE
+                      LogicalResult :=
+                        Boolean2Option(
+                          Option2Boolean(LogicalResult) XOR
+                          Option2Boolean(PayrollDocLineExpr."Logical Result"));
+                END;
+            END ELSE BEGIN
+              PayrollDocLineExpr.TESTFIELD("Logical Prefix",0);
+              PayrollDocLineExpr.TESTFIELD("Logical Suffix",0);
+            END;
+            SaveExprResult(PayrollDocLine,PayrollDocLineExpr,PayrollDocLineVar);
+
+            IF (ExprLevel = 0) AND
+               (PayrollDocLineCalc."Statement 2" IN
+                [PayrollDocLineCalc."Statement 2"::MIN,PayrollDocLineCalc."Statement 2"::MAX])
+            THEN BEGIN
+              CASE PayrollDocLineCalc."Statement 2" OF
+                PayrollDocLineCalc."Statement 2"::MIN:
+                  IF DecimalResult = 0 THEN
+                    DecimalResult := PayrollDocLineExpr."Result Value"
+                  ELSE
+                    IF DecimalResult > PayrollDocLineExpr."Result Value" THEN
+                      DecimalResult := PayrollDocLineExpr."Result Value";
+                PayrollDocLineCalc."Statement 2"::MAX:
+                  IF DecimalResult = 0 THEN
+                    DecimalResult := PayrollDocLineExpr."Result Value"
+                  ELSE
+                    IF DecimalResult < PayrollDocLineExpr."Result Value" THEN
+                      DecimalResult := PayrollDocLineExpr."Result Value";
+              END
+            END ELSE BEGIN
+              IF PayrollDocLineExpr."Result Value" < 0 THEN BEGIN
+                PayrollDocLineExpr."Left Bracket" := PayrollDocLineExpr."Left Bracket"::"(";
+                PayrollDocLineExpr."Right Bracket" := PayrollDocLineExpr."Right Bracket"::")"
+              END;
+              ExprResult := ExprResult +
+                DELCHR(FORMAT(PayrollDocLineExpr."Left Bracket")) +
+                DELCHR(FORMAT(PayrollDocLineExpr."Result Value")) +
+                DELCHR(FORMAT(PayrollDocLineExpr."Right Bracket")) +
+                DELCHR(FORMAT(PayrollDocLineExpr.Operator));
+            END;
+            PrevPayrollDocLineExpr := PayrollDocLineExpr;
+          UNTIL PayrollDocLineExpr.NEXT = 0;
+
+        IF ExprResult <> '' THEN
+          DecimalResult := PayrollDocLineExpr.Rounding(CalcResultExpr(ExprResult));
+
+        IF PayrollDocLineCalc."Statement 2" = PayrollDocLineCalc."Statement 2"::ABS THEN
+          DecimalResult := ABS(DecimalResult);
+      END ELSE
+        DecimalResult := 0;
+    END;
+
+    PROCEDURE CalcResultExpr@1210002(Expression@1210000 : Text[250]) : Decimal;
+    VAR
+      Result@1210011 : Decimal;
+      Parantheses@1210010 : Integer;
+      Operator@1210009 : Char;
+      LeftOperand@1210008 : Text[250];
+      RightOperand@1210007 : Text[250];
+      LeftResult@1210006 : Decimal;
+      RightResult@1210005 : Decimal;
+      i@1210004 : Integer;
+      IsExpression@1210003 : Boolean;
+      Operators@1210002 : Text[8];
+      OperatorNo@1210001 : Integer;
+    BEGIN
+      IF EVALUATE(Result,Expression) THEN
+        EXIT(Result);
+
+      IF STRLEN(Expression) > 0 THEN BEGIN
+        Parantheses := 0;
+        IsExpression := FALSE;
+        Operators := '+-*/^%';
+        OperatorNo := 1;
+        REPEAT
+          i := STRLEN(Expression);
+          REPEAT
+            IF Expression[i] = '(' THEN
+              Parantheses := Parantheses + 1
+            ELSE
+              IF Expression[i] = ')' THEN
+                Parantheses := Parantheses - 1;
+            IF (Parantheses = 0) AND (Expression[i] = Operators[OperatorNo]) THEN
+              IsExpression := TRUE
+            ELSE
+              i := i - 1;
+          UNTIL IsExpression OR (i <= 0);
+          IF NOT IsExpression THEN
+            OperatorNo := OperatorNo + 1;
+        UNTIL (OperatorNo > STRLEN(Operators)) OR IsExpression;
+        IF IsExpression THEN BEGIN
+          IF i > 1 THEN
+            LeftOperand := COPYSTR(Expression,1,i - 1)
+          ELSE
+            LeftOperand := '';
+          IF i < STRLEN(Expression) THEN
+            RightOperand := COPYSTR(Expression,i + 1)
+          ELSE
+            RightOperand := '';
+          Operator := Expression[i];
+          LeftResult :=
+            CalcResultExpr(LeftOperand);
+          IF (RightOperand = '') AND (Operator = '%') THEN BEGIN
+            RightResult :=
+              CalcResultExpr(LeftOperand);
+          END ELSE
+            RightResult :=
+              CalcResultExpr(RightOperand);
+          CASE Operator OF
+            '^':
+              Result := POWER(LeftResult,RightResult);
+            '%':
+              IF RightResult = 0 THEN BEGIN
+                Result := 0;
+                DivisionError := TRUE;
+              END ELSE
+                Result := 100 * LeftResult / RightResult;
+            '*':
+              Result := LeftResult * RightResult;
+            '/':
+              IF RightResult = 0 THEN BEGIN
+                Result := 0;
+                DivisionError := TRUE;
+              END ELSE
+                Result := LeftResult / RightResult;
+            '+':
+              Result := LeftResult + RightResult;
+            '-':
+              Result := LeftResult - RightResult;
+          END;
+        END ELSE
+          IF (Expression[1] = '(') AND (Expression[STRLEN(Expression)] = ')') THEN
+            Result :=
+              CalcResultExpr(COPYSTR(Expression,2,STRLEN(Expression) - 2));
+      END;
+
+      EXIT(Result);
+    END;
+
+    PROCEDURE CalcSimpleExpr@1210013(VAR PayrollDocLine@1210003 : Record 17415;PayrollDocLineCalc@1210000 : Record 17459;VAR PayrollDocLineExpr@1210001 : Record 17438;VAR PayrollDocLineVar@1210002 : TEMPORARY Record 17437);
+    BEGIN
+      PayrollDocLineExpr."Result Value" := 0;
+      PayrollDocLineExpr."Error Code" := '';
+      CASE PayrollDocLineExpr.Type OF
+        PayrollDocLineExpr.Type::Constant:
+          CalcConstant(PayrollDocLineExpr);
+        PayrollDocLineExpr.Type::Variable:
+          CalcVariable(PayrollDocLine,PayrollDocLineExpr,PayrollDocLineVar);
+        PayrollDocLineExpr.Type::Field:
+          CalcField(PayrollDocLine,PayrollDocLineExpr);
+        PayrollDocLineExpr.Type::Expression:
+          BEGIN
+            EvaluateExpr(
+              PayrollDocLine,PayrollDocLineCalc,PayrollDocLineVar,
+              PayrollDocLineExpr.Expression,PayrollDocLineExpr.Level + 1,PayrollDocLineExpr."Line No.",
+              PayrollDocLineExpr."Result Value",PayrollDocLineExpr."Logical Result");
+            SaveExprResult(PayrollDocLine,PayrollDocLineExpr,PayrollDocLineVar);
+          END;
+      END;
+    END;
+
+    PROCEDURE SaveExprResult@1210011(VAR PayrollDocLine@1210002 : Record 17415;VAR PayrollDocLineExpr@1210000 : Record 17438;VAR PayrollDocLineVar@1210001 : Record 17437);
+    BEGIN
+      // Save result of expression calculation to variable
+      IF PayrollDocLineExpr."Assign to Variable" <> '' THEN BEGIN
+        IF PayrollDocLineVar.GET(
+             PayrollDocLine."Document No.",
+             PayrollDocLine."Line No.",
+             PayrollDocLineExpr."Assign to Variable")
+        THEN BEGIN
+          PayrollDocLineVar.Value := PayrollDocLineExpr.Rounding(PayrollDocLineExpr."Result Value");
+          PayrollDocLineVar.Calculated := TRUE;
+          PayrollDocLineVar.Error := DivisionError;
+          PayrollDocLineVar.MODIFY;
+        END ELSE BEGIN
+          PayrollDocLineVar.INIT;
+          PayrollDocLineVar."Document No." := PayrollDocLine."Document No.";
+          PayrollDocLineVar."Document Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineVar."Element Code" := PayrollDocLine."Element Code";
+          PayrollDocLineVar."Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineVar.Variable := PayrollDocLineExpr."Assign to Variable";
+          PayrollDocLineVar.Value := PayrollDocLineExpr.Rounding(PayrollDocLineExpr."Result Value");
+          PayrollDocLineVar.Calculated := TRUE;
+          PayrollDocLineVar.Error := DivisionError;
+          PayrollDocLineVar.INSERT;
+        END;
+        CheckStops(PayrollDocLineVar);
+      END;
+      // Save result of expression calculation to field
+      IF PayrollDocLineExpr."Assign to Field No." <> 0 THEN BEGIN
+        RecRef.OPEN(DATABASE::"Payroll Document Line");
+        RecRef.GETTABLE(PayrollDocLine);
+        FldRef := RecRef.FIELD(PayrollDocLineExpr."Assign to Field No.");
+        FldRef.VALUE(PayrollDocLineExpr.Rounding(PayrollDocLineExpr."Result Value"));
+        RecRef.SETTABLE(PayrollDocLine);
+        RecRef.MODIFY;
+        RecRef.CLOSE;
+      END;
+      PayrollDocLineExpr.MODIFY;
+    END;
+
+    PROCEDURE CalcConstant@1210005(VAR PayrollDocLineExpr@1210000 : Record 17438);
+    BEGIN
+      IF NOT EVALUATE(PayrollDocLineExpr."Result Value",PayrollDocLineExpr.Expression) THEN
+        PayrollDocLineExpr."Error Code" := '001';
+      PayrollDocLineExpr.MODIFY;
+    END;
+
+    PROCEDURE CalcVariable@1210007(PayrollDocLine@1210002 : Record 17415;VAR PayrollDocLineExpr@1210000 : Record 17438;VAR PayrollDocLineVar@1210001 : Record 17437);
+    BEGIN
+      IF PayrollDocLineVar.GET(
+           PayrollDocLine."Document No.",
+           PayrollDocLine."Line No.",
+           PayrollDocLineExpr.Expression)
+      THEN
+        IF PayrollDocLineVar.Calculated THEN
+          PayrollDocLineExpr."Result Value" := PayrollDocLineVar.Value
+        ELSE
+          PayrollDocLineExpr."Error Code" := '003'
+      ELSE
+        PayrollDocLineExpr."Error Code" := '003';
+      PayrollDocLineExpr.MODIFY;
+    END;
+
+    PROCEDURE CalcField@1210009(VAR PayrollDocLine@1210001 : Record 17415;VAR PayrollDocLineExpr@1210000 : Record 17438);
+    VAR
+      Field@1210003 : Record 2000000041;
+      Employee@1210005 : Record 5200;
+      Person@1210004 : Record 17350;
+      Position@1210002 : Record 17370;
+    BEGIN
+      PayrollDocLineExpr.TESTFIELD("Table No.");
+      PayrollDocLineExpr.TESTFIELD("Field No.");
+      Employee.GET(PayrollDocLine."Employee No.");
+      CASE PayrollDocLineExpr."Table No." OF
+        DATABASE::Employee:
+          RecRef.GETTABLE(Employee);
+        DATABASE::Person:
+          BEGIN
+            Person.GET(Employee."Person No.");
+            RecRef.GETTABLE(Person);
+          END;
+        DATABASE::Position:
+          BEGIN
+            Position.GET(Employee."Position No.");
+            RecRef.GETTABLE(Position);
+          END;
+        DATABASE::"Payroll Document Line":
+          RecRef.GETTABLE(PayrollDocLine);
+      END;
+      FldRef := RecRef.FIELD(PayrollDocLineExpr."Field No.");
+      EVALUATE(Field.Type,FORMAT(FldRef.TYPE));
+      IF Field.Type = Field.Type::Decimal THEN BEGIN
+        Field.GET(RecRef.NUMBER,FldRef.NUMBER);
+        IF Field.Class = Field.Class::FlowField THEN
+          FldRef.CALCFIELD;
+        PayrollDocLineExpr."Result Value" := FldRef.VALUE;
+        PayrollDocLineExpr."Result Value" :=
+          PayrollDocLineExpr.Rounding(PayrollDocLineExpr."Result Value");
+      END ELSE
+        PayrollDocLineExpr."Error Code" := '002';
+      RecRef.CLOSE;
+      PayrollDocLineExpr.MODIFY;
+    END;
+
+    PROCEDURE CalcExpression@6(VAR PayrollDocLine@1210007 : Record 17415;VAR PayrollDocLineCalc@1000 : Record 17459;VAR PayrollDocLineVar@1210000 : TEMPORARY Record 17437) : Decimal;
+    VAR
+      PayrollDocLineExpr@1210001 : Record 17438;
+      ExprResult@1210004 : Text[250];
+    BEGIN
+      CalcSimpleExpr(PayrollDocLine,PayrollDocLineCalc,PayrollDocLineExpr,PayrollDocLineVar);
+      ExprResult := ExprResult +
+        DELCHR(FORMAT(PayrollDocLineExpr."Left Bracket")) +
+        DELCHR(FORMAT(PayrollDocLineExpr."Result Value")) +
+        DELCHR(FORMAT(PayrollDocLineExpr."Right Bracket")) +
+        DELCHR(FORMAT(PayrollDocLineExpr.Operator));
+
+      // calculate resulted expression
+      PayrollDocLineCalc."Result Value" :=
+        PayrollDocLineCalc.Rounding(CalcResultExpr(ExprResult));
+
+      // Save result of expression calculation
+      IF PayrollDocLineCalc.Variable <> '' THEN BEGIN
+        IF PayrollDocLineVar.GET(
+             PayrollDocLine."Document No.",
+             PayrollDocLine."Line No.",
+             PayrollDocLineCalc.Variable)
+        THEN BEGIN
+          PayrollDocLineVar.Value := PayrollDocLineExpr.Rounding(PayrollDocLineCalc."Result Value");
+          PayrollDocLineVar.Calculated := TRUE;
+          PayrollDocLineVar.Error := DivisionError;
+          PayrollDocLineVar.MODIFY;
+        END ELSE BEGIN
+          PayrollDocLineVar.INIT;
+          PayrollDocLineVar."Document No." := PayrollDocLine."Document No.";
+          PayrollDocLineVar."Document Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineVar."Element Code" := PayrollDocLine."Element Code";
+          PayrollDocLineVar."Line No." := PayrollDocLine."Line No.";
+          PayrollDocLineVar.Variable := PayrollDocLineCalc.Variable;
+          PayrollDocLineVar.Value := PayrollDocLineExpr.Rounding(PayrollDocLineCalc."Result Value");
+          PayrollDocLineVar.Calculated := TRUE;
+          PayrollDocLineVar.Error := DivisionError;
+          PayrollDocLineVar.INSERT;
+        END;
+        CheckStops(PayrollDocLineVar);
+      END;
+
+      EXIT(PayrollDocLineCalc."Result Value");
+    END;
+
+    PROCEDURE SetCondition@1210008(PayrollDocLineExpr@1210000 : Record 17438) : Integer;
+    VAR
+      LogicalResult@1210001 : ' ,FALSE,TRUE';
+    BEGIN
+      WITH PayrollDocLineExpr DO BEGIN
+        TESTFIELD(Comparison);
+        CASE Comparison OF
+          Comparison::"=0":
+            BEGIN
+              IF "Result Value" = 0 THEN
+                EXIT(LogicalResult::"TRUE");
+
+              EXIT(LogicalResult::"FALSE");
+            END;
+          Comparison::"<>0":
+            BEGIN
+              IF "Result Value" <> 0 THEN
+                EXIT(LogicalResult::"TRUE");
+
+              EXIT(LogicalResult::"FALSE");
+            END;
+          Comparison::">0":
+            BEGIN
+              IF "Result Value" > 0 THEN
+                EXIT(LogicalResult::"TRUE");
+
+              EXIT(LogicalResult::"FALSE");
+            END;
+          Comparison::"<0":
+            BEGIN
+              IF "Result Value" < 0 THEN
+                EXIT(LogicalResult::"TRUE");
+
+              EXIT(LogicalResult::"FALSE");
+            END;
+          Comparison::">=0":
+            BEGIN
+              IF "Result Value" >= 0 THEN
+                EXIT(LogicalResult::"TRUE");
+
+              EXIT(LogicalResult::"FALSE");
+            END;
+          Comparison::"<=0":
+            BEGIN
+              IF "Result Value" <= 0 THEN
+                EXIT(LogicalResult::"TRUE");
+
+              EXIT(LogicalResult::"FALSE");
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE FormatElementStatement@1210000(ExprSetup@1210000 : Record 17422) : Text[250];
+    VAR
+      ExprText@1210001 : Text[250];
+    BEGIN
+      ExprText := '';
+      IF (ExprSetup."Assign to Variable" <> '') AND (ExprSetup."Assign to Field No." <> 0) THEN
+        ERROR(Text030,ExprSetup.FIELDCAPTION("Assign to Variable"),ExprSetup.FIELDCAPTION("Assign to Field No."));
+      IF ExprSetup."Assign to Variable" <> '' THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Assign to Variable") + ' = ';
+      IF ExprSetup."Assign to Field No." <> 0 THEN BEGIN
+        ExprSetup.CALCFIELDS("Assign to Field Name");
+        IF STRPOS(ExprSetup."Assign to Field Name",' ') > 0 THEN
+          ExprSetup."Assign to Field Name" := STRSUBSTNO('"%1"',ExprSetup."Assign to Field Name");
+        ExprText := ExprText +
+          STRSUBSTNO(XDOC + '.%1 = ',ExprSetup."Assign to Field Name");
+      END;
+      IF ExprSetup."Left Bracket" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Left Bracket") + ' ';
+      IF ExprSetup."Logical Prefix" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Logical Prefix") + ' ';
+      IF ExprSetup.Expression <> '' THEN
+        ExprText := ExprText + FORMAT(ExprSetup.Expression) + ' ';
+      IF ExprSetup.Comparison <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup.Comparison) + ' ';
+      IF ExprSetup."Right Bracket" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Right Bracket") + ' ';
+      IF ExprSetup."Logical Suffix" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Logical Suffix") + ' ';
+      IF ExprSetup.Operator <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup.Operator) + ' ';
+
+      EXIT(ExprText);
+    END;
+
+    PROCEDURE FormatDocLineStatement@1210015(ExprSetup@1210000 : Record 17438) : Text[250];
+    VAR
+      ExprText@1210001 : Text[250];
+    BEGIN
+      ExprText := '';
+      IF (ExprSetup."Assign to Variable" <> '') AND (ExprSetup."Assign to Field No." <> 0) THEN
+        ERROR(Text030,ExprSetup.FIELDCAPTION("Assign to Variable"),ExprSetup.FIELDCAPTION("Assign to Field No."));
+      IF ExprSetup."Assign to Variable" <> '' THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Assign to Variable") + ' = ';
+      IF ExprSetup."Assign to Field No." <> 0 THEN BEGIN
+        ExprSetup.CALCFIELDS("Assign to Field Name");
+        IF STRPOS(ExprSetup."Assign to Field Name",' ') > 0 THEN
+          ExprSetup."Assign to Field Name" := STRSUBSTNO('"%1"',ExprSetup."Assign to Field Name");
+        ExprText := ExprText +
+          STRSUBSTNO(XDOC + '.%1 = ',ExprSetup."Assign to Field Name");
+      END;
+      IF ExprSetup."Left Bracket" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Left Bracket") + ' ';
+      IF ExprSetup."Logical Prefix" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Logical Prefix") + ' ';
+      IF ExprSetup.Expression <> '' THEN
+        ExprText := ExprText + FORMAT(ExprSetup.Expression) + ' ';
+      IF ExprSetup.Comparison <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup.Comparison) + ' ';
+      IF ExprSetup."Right Bracket" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Right Bracket") + ' ';
+      IF ExprSetup."Logical Suffix" <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup."Logical Suffix") + ' ';
+      IF ExprSetup.Operator <> 0 THEN
+        ExprText := ExprText + FORMAT(ExprSetup.Operator) + ' ';
+
+      EXIT(ExprText);
+    END;
+
+    PROCEDURE ShowError@19(MessageLine@1000 : Text[100];VAR PayrollDocLineCalc@1001 : Record 17459);
+    BEGIN
+      PayrollDocLineCalc.SETRANGE("Element Code",PayrollDocLineCalc."Element Code");
+      PayrollDocLineCalc.SETRANGE("Line No.",CallingLineID);
+      IF PayrollDocLineCalc.FIND('-') THEN;
+      ERROR(
+        STRSUBSTNO(Text017,MessageLine),
+        PayrollDocLineCalc.Variable,PayrollDocLineCalc."Line No.",PayrollDocLineCalc.Expression);
+    END;
+
+    PROCEDURE CheckParenthesis@1(Expression@1000 : Text[250]);
+    VAR
+      i@1001 : Integer;
+      ParenthesesLevel@1002 : Integer;
+      HasOperator@1003 : Boolean;
+    BEGIN
+      ParenthesesLevel := 0;
+      FOR i := 1 TO STRLEN(Expression) DO BEGIN
+        IF Expression[i] = '(' THEN
+          ParenthesesLevel := ParenthesesLevel + 1
+        ELSE
+          IF Expression[i] = ')' THEN
+            ParenthesesLevel := ParenthesesLevel - 1;
+        IF ParenthesesLevel < 0 THEN
+          ERROR(Text001,i);
+        IF Expression[i] IN ['+','-','*','/','^'] THEN BEGIN
+          IF HasOperator THEN
+            ERROR(Text002,i);
+
+          HasOperator := TRUE;
+          IF i = STRLEN(Expression) THEN
+            ERROR(Text003,i);
+
+          IF Expression[i + 1] = ')' THEN
+            ERROR(Text003,i);
+        END ELSE
+          HasOperator := FALSE;
+      END;
+      IF ParenthesesLevel > 0 THEN
+        ERROR(Text004);
+
+      IF ParenthesesLevel < 0 THEN
+        ERROR(Text005);
+    END;
+
+    PROCEDURE CheckStops@1210004(PayrollDocLineVar@1210001 : Record 17437);
+    VAR
+      PayrollExprStop@1210000 : Record 17423;
+    BEGIN
+      WITH PayrollExprStop DO BEGIN
+        SETRANGE("Element Code",PayrollDocLineVar."Element Code");
+        SETRANGE(Variable,PayrollDocLineVar.Variable);
+        IF FINDSET THEN
+          REPEAT
+            IF Value = PayrollDocLineVar.Value THEN
+              ERROR(Text031,Variable,Value);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ClearResults@1210006(PayrollDocLine@1210000 : Record 17415);
+    VAR
+      PayrollDocLineVar@1210001 : Record 17437;
+      PayrollDocLineExpr@1210002 : Record 17438;
+      PayrollDocLineCalc@1210004 : Record 17459;
+    BEGIN
+      PayrollDocLineVar.RESET;
+      PayrollDocLineVar.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineVar.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineVar.DELETEALL;
+
+      PayrollDocLineExpr.RESET;
+      PayrollDocLineExpr.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineExpr.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineExpr.MODIFYALL("Result Value",0);
+      PayrollDocLineExpr.MODIFYALL("Logical Result",0);
+
+      PayrollDocLineCalc.RESET;
+      PayrollDocLineCalc.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineCalc.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineCalc.MODIFYALL("Result Value",0);
+      PayrollDocLineCalc.MODIFYALL("Logical Result",0);
+      PayrollDocLineCalc.MODIFYALL("No. of Runs",0);
+    END;
+
+    PROCEDURE Boolean2Option@1210010(Condition@1210000 : Boolean) : Integer;
+    BEGIN
+      IF Condition THEN
+        EXIT(2);
+
+      EXIT(1);
+    END;
+
+    PROCEDURE Option2Boolean@1210012(Value@1210000 : Integer) : Boolean;
+    BEGIN
+      IF Value = 2 THEN
+        EXIT(TRUE);
+
+      IF Value = 1 THEN
+        EXIT(FALSE);
+
+      ERROR(Text032);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

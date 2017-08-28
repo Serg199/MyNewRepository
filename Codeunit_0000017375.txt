@@ -1,0 +1,142 @@
+OBJECT Codeunit 17375 Vacation Days Calculation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE CalcVacationForClosedPeriods@1210000(EmployeeNo@1210002 : Code[20];ToDate@1210000 : Date;TimeActivityCodeFilter@1210003 : Code[250];EntryType@1210004 : Integer) VacationDays : Decimal;
+    VAR
+      EmployeeAbsenceEntry@1210001 : Record 17389;
+    BEGIN
+      WITH EmployeeAbsenceEntry DO BEGIN
+        SETCURRENTKEY("Employee No.","Time Activity Code","Entry Type","Start Date");
+        SETRANGE("Accrual Entry No.",0);
+        SETRANGE("Employee No.",EmployeeNo);
+        SETRANGE("Entry Type",EntryType);
+        SETFILTER("Time Activity Code",TimeActivityCodeFilter);
+        SETFILTER("Start Date",'<=%1',ToDate);
+
+        IF FIND('+') THEN
+          WHILE NEXT(-1) <> 0 DO // period is closed if another period exists after current period
+            IF "Start Date" < ToDate THEN // not including periods after Report To Date
+              VacationDays += "Calendar Days"; // for closed periods only
+      END
+    END;
+
+    PROCEDURE CalcVacationForLastPeriod@1210016(EmployeeNo@1210002 : Code[20];ToDate@1210000 : Date;TimeActivityCodeFilter@1210004 : Code[250];EntryType@1210007 : Integer;SpecialTerminationReason@1210005 : Boolean) VacationDays : Decimal;
+    VAR
+      EmployeeAbsenceEntry@1210001 : Record 17389;
+      Months@1210003 : Integer;
+      LastDate@1210006 : Date;
+    BEGIN
+      WITH EmployeeAbsenceEntry DO BEGIN
+        SETCURRENTKEY("Employee No.","Time Activity Code","Entry Type","Start Date");
+        SETRANGE("Accrual Entry No.",0);
+        SETRANGE("Employee No.",EmployeeNo);
+        SETRANGE("Entry Type",EntryType);
+        SETFILTER("Time Activity Code",TimeActivityCodeFilter);
+        // No filter for EndDate because ToDate may point to additional entries.
+        SETFILTER("Start Date",'<=%1',ToDate);
+
+        IF FINDLAST THEN BEGIN
+          LastDate := GetAdditionalEntriesLastDate("Entry No.",EntryType);
+          IF LastDate = 0D THEN
+            LastDate := "End Date";
+
+          IF ToDate <= LastDate THEN BEGIN
+            Months := (DATE2DMY(ToDate,3) - DATE2DMY("Start Date",3)) * 12 + (DATE2DMY(ToDate,2) - DATE2DMY("Start Date",2)) -
+              ((DATE2DMY(LastDate,3) - DATE2DMY("End Date",3)) * 12 + DATE2DMY(LastDate,2) - DATE2DMY("End Date",2));
+
+            IF (DATE2DMY(ToDate,1) - DATE2DMY("Start Date",1) - (DATE2DMY(LastDate,1) - DATE2DMY("End Date",1))) > 15 THEN
+              Months += 1;
+
+            IF (DATE2DMY(ToDate,1) - DATE2DMY("Start Date",1) - (DATE2DMY(LastDate,1) - DATE2DMY("End Date",1))) <= -15 THEN
+              Months -= 1;
+
+            IF (SpecialTerminationReason AND (Months > 6)) OR (Months >= 11) THEN
+              VacationDays := "Calendar Days"
+            ELSE
+              VacationDays := ("Calendar Days" / 12) * Months;
+          END ELSE
+            VacationDays := "Calendar Days";
+        END;
+      END;
+      EXIT(VacationDays);
+    END;
+
+    PROCEDURE GetAdditionalEntriesLastDate@1210026(AccrualEntryNo@1210001 : Integer;EntryType@1210002 : Integer) : Date;
+    VAR
+      AdditionalAbsenceEntry@1210000 : Record 17389;
+      MaxDate@1210003 : Date;
+    BEGIN
+      WITH AdditionalAbsenceEntry DO BEGIN
+        SETCURRENTKEY("Accrual Entry No.","Entry Type");
+        SETRANGE("Accrual Entry No.",AccrualEntryNo);
+        SETRANGE("Entry Type",EntryType);
+
+        MaxDate := 0D;
+
+        IF FINDSET THEN
+          REPEAT
+            IF "End Date" > MaxDate THEN
+              MaxDate := "End Date";
+          UNTIL NEXT = 0;
+
+        EXIT(MaxDate);
+      END;
+    END;
+
+    PROCEDURE CalculateVacationDays@1210042(EmployeeNo@1210002 : Code[20];ToDate@1210001 : Date;TimeActivityCodeFilter@1210000 : Code[250]) : Decimal;
+    VAR
+      EmployeeAbsenceEntry@1210003 : Record 17389;
+    BEGIN
+      EXIT(CalcVacationForClosedPeriods(EmployeeNo,ToDate,TimeActivityCodeFilter,EmployeeAbsenceEntry."Entry Type"::Accrual) +
+        CalcVacationForLastPeriod(EmployeeNo,ToDate,TimeActivityCodeFilter,EmployeeAbsenceEntry."Entry Type"::Accrual,FALSE));
+    END;
+
+    PROCEDURE CalculateUsedVacationDays@1210041(EmployeeNo@1210002 : Code[20];ToDate@1210001 : Date;TimeActivityCodeFilter@1210000 : Code[250]) : Decimal;
+    VAR
+      EmployeeAbsenceEntry@1210003 : Record 17389;
+    BEGIN
+      WITH EmployeeAbsenceEntry DO BEGIN
+        SETCURRENTKEY("Employee No.","Time Activity Code","Entry Type","Start Date");
+        SETRANGE("Employee No.",EmployeeNo);
+        SETRANGE("Entry Type","Entry Type"::Usage);
+        SETFILTER("Time Activity Code",TimeActivityCodeFilter);
+        SETFILTER("Start Date",'<=%1',ToDate);
+
+        CALCSUMS("Calendar Days");
+        EXIT("Calendar Days");
+      END
+    END;
+
+    PROCEDURE CalculateUnusedVacationDays@1210001(EmployeeNo@1210002 : Code[20];ToDate@1210001 : Date;TimeActivityCodeFilter@1210000 : Code[250]) : Decimal;
+    BEGIN
+      EXIT(CalculateVacationDays(EmployeeNo,ToDate,TimeActivityCodeFilter) -
+        CalculateUsedVacationDays(EmployeeNo,ToDate,TimeActivityCodeFilter));
+    END;
+
+    PROCEDURE CalculateAllUnusedVacationDays@1210004(EmployeeNo@1210002 : Code[20];ToDate@1210001 : Date) : Decimal;
+    VAR
+      PayrollPeriodClose@1210003 : Codeunit 17410;
+    BEGIN
+      EXIT(CalculateUnusedVacationDays(EmployeeNo,ToDate,
+          PayrollPeriodClose.GetAnnualVacTimeActFilter(ToDate)));
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

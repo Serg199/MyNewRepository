@@ -1,0 +1,751 @@
+OBJECT Table 349 Dimension Value
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12.07.17;
+    Time=12:14:47;
+    Modified=Yes;
+    Version List=NAVW110.00,NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    DataPerCompany=No;
+    OnInsert=BEGIN
+               TESTFIELD("Dimension Code");
+               TESTFIELD(Code);
+               "Global Dimension No." := GetGlobalDimensionNo;
+
+               IF CostAccSetup.GET THEN BEGIN
+                 CostAccMgt.UpdateCostCenterFromDim(Rec,Rec,0);
+                 CostAccMgt.UpdateCostObjectFromDim(Rec,Rec,0);
+               END;
+             END;
+
+    OnModify=BEGIN
+               // BMN 13.06.12 При изменении значения измерения тоже проверять номер глобального измерения
+               // BMN 13.06.12 IF "Dimension Code" <> xRec."Dimension Code" THEN BEGIN
+               "Global Dimension No." := GetGlobalDimensionNo;
+               // BMN 13.06.12 END;
+
+               IF CostAccSetup.GET THEN BEGIN
+                 CostAccMgt.UpdateCostCenterFromDim(Rec,xRec,1);
+                 CostAccMgt.UpdateCostObjectFromDim(Rec,xRec,1);
+               END;
+
+               SynchroniseIt(1); // TD BMN 23.11.2012 NCS-712
+             END;
+
+    OnDelete=BEGIN
+               IF CheckIfDimValueUsed THEN
+                 ERROR(Text000,GetCheckDimErr);
+
+               //NC M1 > DP Отключено из-за лицензии
+               //TaxDimMgt.CheckDimValue(Rec,'');
+
+               DimValueComb.SETRANGE("Dimension 1 Code","Dimension Code");
+               DimValueComb.SETRANGE("Dimension 1 Value Code",Code);
+               DimValueComb.DELETEALL(TRUE);
+
+               DimValueComb.RESET;
+               DimValueComb.SETRANGE("Dimension 2 Code","Dimension Code");
+               DimValueComb.SETRANGE("Dimension 2 Value Code",Code);
+               DimValueComb.DELETEALL(TRUE);
+
+               DefaultDim.SETRANGE("Dimension Code","Dimension Code");
+               DefaultDim.SETRANGE("Dimension Value Code",Code);
+               DefaultDim.DELETEALL(TRUE);
+
+               SelectedDim.SETRANGE("Dimension Code","Dimension Code");
+               SelectedDim.SETRANGE("New Dimension Value Code",Code);
+               SelectedDim.DELETEALL(TRUE);
+
+               AnalysisSelectedDim.SETRANGE("Dimension Code","Dimension Code");
+               AnalysisSelectedDim.SETRANGE("New Dimension Value Code",Code);
+               AnalysisSelectedDim.DELETEALL(TRUE);
+             END;
+
+    OnRename=BEGIN
+               //NC PIF001 > DP
+               //DoNotRunRenameTriger := TRUE;
+
+               IF NOT DoNotRunRenameTriger THEN BEGIN
+               //NC PIF001 < DP
+
+                 //NC MDB03 > PCH
+                 IF xRec."Dimension Code" <> Rec."Dimension Code" THEN
+                   ERROR(Text55001);
+                 IF NOT DoNotTestRename THEN
+                   //NC S547 > PCH
+                   //IF NOT RenameRef.TestDimValue(xRec."Dimension Code",xRec.Code,Code,ErrorCode,ErrorText,TRUE) THEN
+                   IF NOT RenameRef.TestDimValue(xRec."Dimension Code",'',xRec.Code,Code,ErrorCode,ErrorText,TRUE) THEN
+                   //NC S547 < PCH
+                     ERROR(ErrorText);
+                 RenameRef.RenameDimValueInBuffer(xRec."Dimension Code",xRec.Code,Code);
+                 //NC MDB03 < PCH
+                 //NC MIO16 > PCH
+                 RenameRef.RenameDimValueInBufferNAV(xRec."Dimension Code",xRec.Code,Code);
+                 //NC MIO16 < PCH
+
+                 RenameBudgEntryDim;
+                 RenameAnalysisViewEntryDim;
+                 RenameItemBudgEntryDim;
+                 RenameItemAnalysisViewEntryDim;
+
+                 IF CostAccSetup.GET THEN BEGIN
+                   CostAccMgt.UpdateCostCenterFromDim(Rec,xRec,3);
+                   CostAccMgt.UpdateCostObjectFromDim(Rec,xRec,3);
+                 END;
+               END;
+               //NC PIF001 < DP
+
+               SynchroniseIt(3); // TD BMN 23.11.2012 NCS-712
+             END;
+
+    CaptionML=[ENU=Dimension Value;
+               RUS=Значение измерения];
+    LookupPageID=Page560;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Dimension Code      ;Code20        ;TableRelation=Dimension;
+                                                   CaptionML=[ENU=Dimension Code;
+                                                              RUS=Код измерения];
+                                                   NotBlank=Yes }
+    { 2   ;   ;Code                ;Code20        ;OnValidate=BEGIN
+                                                                IF UPPERCASE(Code) = Text002 THEN
+                                                                  ERROR(Text003,
+                                                                    FIELDCAPTION(Code));
+                                                              END;
+
+                                                   CaptionML=[ENU=Code;
+                                                              RUS=Код];
+                                                   NotBlank=Yes }
+    { 3   ;   ;Name                ;Text50        ;CaptionML=[ENU=Name;
+                                                              RUS=Название] }
+    { 4   ;   ;Dimension Value Type;Option        ;OnValidate=BEGIN
+                                                                IF ("Dimension Value Type" <> "Dimension Value Type"::Standard) AND
+                                                                   (xRec."Dimension Value Type" = xRec."Dimension Value Type"::Standard)
+                                                                THEN
+                                                                  IF CheckIfDimValueUsed THEN
+                                                                    ERROR(Text004,GetCheckDimErr);
+                                                                Totaling := '';
+                                                              END;
+
+                                                   CaptionML=[ENU=Dimension Value Type;
+                                                              RUS=Тип значения измерения];
+                                                   OptionCaptionML=[ENU=Standard,Heading,Total,Begin-Total,End-Total;
+                                                                    RUS=Стандартное,Заголовок,Сумма,Сумма (от),Сумма (до)];
+                                                   OptionString=Standard,Heading,Total,Begin-Total,End-Total }
+    { 5   ;   ;Totaling            ;Text250       ;TableRelation=IF (Dimension Value Type=CONST(Total)) "Dimension Value"."Dimension Code" WHERE (Dimension Code=FIELD(Dimension Code));
+                                                   OnValidate=BEGIN
+                                                                IF NOT ("Dimension Value Type" IN
+                                                                        ["Dimension Value Type"::Total,"Dimension Value Type"::"End-Total"]) AND (Totaling <> '')
+                                                                THEN
+                                                                  FIELDERROR("Dimension Value Type");
+                                                              END;
+
+                                                   ValidateTableRelation=No;
+                                                   TestTableRelation=No;
+                                                   CaptionML=[ENU=Totaling;
+                                                              RUS=Группировка] }
+    { 6   ;   ;Blocked             ;Boolean       ;OnValidate=BEGIN
+                                                                //TDRANCS-1071 >
+                                                                IF xRec.Blocked <> Blocked THEN BEGIN
+                                                                  IF Blocked = TRUE THEN
+                                                                    MESSAGE(g_Text008, FIELDCAPTION("Allow Posting From"),FIELDCAPTION("Allow Posting To"))
+                                                                  ELSE BEGIN
+                                                                    "Allow Posting From" := 0D;
+                                                                    "Allow Posting To" := 0D;
+                                                                  END;
+                                                                END;
+                                                                //TDRANCS-1071 <
+                                                              END;
+
+                                                   CaptionML=[ENU=Blocked;
+                                                              RUS=Заблокировано] }
+    { 7   ;   ;Consolidation Code  ;Code20        ;AccessByPermission=TableData 220=R;
+                                                   CaptionML=[ENU=Consolidation Code;
+                                                              RUS=Код консолидации] }
+    { 8   ;   ;Indentation         ;Integer       ;CaptionML=[ENU=Indentation;
+                                                              RUS=Отступ] }
+    { 9   ;   ;Global Dimension No.;Integer       ;CaptionML=[ENU=Global Dimension No.;
+                                                              RUS=Номер глобал. измерения] }
+    { 10  ;   ;Map-to IC Dimension Code;Code20    ;CaptionML=[ENU=Map-to IC Dimension Code;
+                                                              RUS=Соответствие коду МФ-измерения] }
+    { 11  ;   ;Map-to IC Dimension Value Code;Code20;
+                                                   TableRelation="IC Dimension Value".Code WHERE (Dimension Code=FIELD(Map-to IC Dimension Code));
+                                                   CaptionML=[ENU=Map-to IC Dimension Value Code;
+                                                              RUS=Соответствие коду значения МФ-измерения] }
+    { 12  ;   ;Dimension Value ID  ;Integer       ;OnValidate=BEGIN
+                                                                ERROR(Text006,FIELDCAPTION("Dimension Value ID"));
+                                                              END;
+
+                                                   AutoIncrement=Yes;
+                                                   CaptionML=[ENU=Dimension Value ID;
+                                                              RUS=Код значения измерения];
+                                                   Editable=No }
+    { 14950;  ;Name 2              ;Text250       ;CaptionML=[ENU=Name 2;
+                                                              RUS=Название 2] }
+    { 50001;  ;Dummy Dimension     ;Boolean       ;CaptionML=[ENU=Dummy Dimension;
+                                                              RUS=Фиктивное измерение];
+                                                   Description=NC MNET03 AG }
+    { 50003;  ;Use Mid Rate        ;Boolean       ;CaptionML=[ENU=Use Mid Rate;
+                                                              RUS=Использовать Mid-cтавку];
+                                                   Description=NC MMTM08 }
+    { 50007;  ;Rec ID              ;Code40        ;CaptionML=[ENU=Rec ID;
+                                                              RUS=ID Записи];
+                                                   Description=NC S547,S622 PCH }
+    { 50100;  ;Segment Code        ;Code10        ;TableRelation=Segment;
+                                                   CaptionML=[ENU=Segment Code;
+                                                              RUS=Сегмент Код];
+                                                   Description=NC S1883 PCH }
+    { 51020;  ;Allow Posting From  ;Date          ;OnValidate=BEGIN
+                                                                TESTFIELD(Blocked,TRUE);
+                                                              END;
+
+                                                   CaptionML=[ENU=Allow Posting From;
+                                                              RUS=Разрешить Учет От];
+                                                   Description=TDRANCS-1071 }
+    { 51030;  ;Allow Posting To    ;Date          ;OnValidate=BEGIN
+                                                                TESTFIELD(Blocked,TRUE);
+                                                              END;
+
+                                                   CaptionML=[ENU=Allow Posting To;
+                                                              RUS=Разрешить Учет До];
+                                                   Description=TDRANCS-1071 }
+    { 55001;  ;Company Name        ;Text30        ;TableRelation=Company.Name;
+                                                   CaptionML=[ENU=Company Name;
+                                                              RUS=Фирма Название];
+                                                   Description=AK }
+    { 55002;  ;Int Contragent Dim Value;Code20    ;OnValidate=BEGIN
+                                                                //NC PIF001 > DP
+                                                                ConsSetup.GET;
+                                                                ConsSetup.TESTFIELD("IC Dimension Code");
+                                                                IF "Int Contragent Dim Value" <> '' THEN
+                                                                  DimValue.GET(ConsSetup."IC Dimension Code", "Int Contragent Dim Value");
+                                                                //NC PIF001 < DP
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              //NC PIF001 > DP
+                                                              ConsSetup.GET;
+                                                              ConsSetup.TESTFIELD("IC Dimension Code");
+                                                              DimValue.SETRANGE("Dimension Code", ConsSetup."IC Dimension Code");
+                                                              IF PAGE.RUNMODAL(0, DimValue)  = ACTION::LookupOK THEN
+                                                                VALIDATE("Int Contragent Dim Value", DimValue.Code);
+                                                              //NC PIF001 < DP
+                                                            END;
+
+                                                   CaptionML=[ENU=Int Contragent Dim Value;
+                                                              RUS=Внутр. Контр. Код Значения Измерения];
+                                                   Description=AK }
+    { 55025;  ;Parent Code         ;Code20        ;TableRelation="Dimension Value".Code WHERE (Dimension Code=FIELD(Parent Dimension Code));
+                                                   ValidateTableRelation=No;
+                                                   TestTableRelation=No;
+                                                   CaptionML=[ENU=Parent Code;
+                                                              RUS=Код Элемента Родителя];
+                                                   Description=NC MDB01 PCH }
+    { 55026;  ;Parent Dimension Code;Code20       ;TableRelation=Dimension;
+                                                   CaptionML=[ENU=Parent Dimension Code;
+                                                              RUS=Родитель Код Измерения];
+                                                   Description=NC PIF001 }
+    { 55027;  ;Hierarchy Parent Code;Code20       ;CaptionML=[ENU=Hierarchy Parent Code;
+                                                              RUS=Иерархия Родитель Код Измерения];
+                                                   Description=RD }
+    { 55030;  ;Marked              ;Boolean       ;CaptionML=[ENU=Marked;
+                                                              RUS=Отмечена];
+                                                   Description=NC OAM45 RD }
+    { 55031;  ;External Code       ;Code20        ;OnValidate=VAR
+                                                                Dim@1101495001 : Record 348;
+                                                                MISCost@1101495000 : Record 50227;
+                                                              BEGIN
+                                                                //NCS-2361 > AAP
+                                                                Dim.GET("Dimension Code");
+                                                                Dim.TESTFIELD("External Code Type", Dim."External Code Type"::"Product Costcenter");
+
+                                                                IF "External Code" <> '' THEN BEGIN
+                                                                  MISCost.GET("External Code");
+                                                                  MISCost.TESTFIELD(MISCost."Costcenter Posting Type",MISCost."Costcenter Posting Type"::Posting);
+                                                                  MISCost.TESTFIELD(MISCost."Costcenter Type",MISCost."Costcenter Type"::Product);
+                                                                END;
+                                                                //NCS-2361 < AAP
+                                                              END;
+
+                                                   OnLookup=VAR
+                                                              Dim@1101495001 : Record 348;
+                                                              MISCostcenter@1101495000 : Record 50227;
+                                                            BEGIN
+                                                              //NCS-2361 > AAP
+                                                              Dim.GET("Dimension Code");
+                                                              IF Dim."External Code Type" = Dim."External Code Type"::"Product Costcenter" THEN BEGIN
+                                                                MISCostcenter.RESET;
+                                                                MISCostcenter.SETRANGE("Costcenter Type",MISCostcenter."Costcenter Type"::Product);
+                                                                MISCostcenter.SETRANGE(Blocked,FALSE);
+                                                                IF PAGE.RUNMODAL(0,MISCostcenter) = ACTION::LookupOK THEN BEGIN
+                                                                  VALIDATE("External Code",MISCostcenter."Costcenter Code");
+                                                                END;
+                                                              END;
+                                                              //NCS-2361 < AAP
+                                                            END;
+
+                                                   CaptionML=[ENU=External Code;
+                                                              RUS=Внешний Код];
+                                                   Description=NCS-2361 }
+    { 55032;  ;Costcenter Name     ;Text100       ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("MIS Costcenter"."Costcenter Name" WHERE (Costcenter Code=FIELD(External Code)));
+                                                   CaptionML=[ENU=Costcenter Name;
+                                                              RUS=Наименование Центра Прибыли];
+                                                   Description=NCS-2361;
+                                                   Editable=No }
+  }
+  KEYS
+  {
+    {    ;Dimension Code,Code                     ;Clustered=Yes }
+    {    ;Code,Global Dimension No.                }
+    {    ;Name                                     }
+  }
+  FIELDGROUPS
+  {
+    { 1   ;DropDown            ;Code,Name                                }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=%1\You cannot delete it.;RUS=%1\Нельзя удалить.';
+      Text002@1002 : TextConst 'ENU=(CONFLICT);RUS=(КОНФЛИКТ)';
+      Text003@1003 : TextConst 'ENU=%1 can not be (CONFLICT). This name is used internally by the system.;RUS=%1 не может быть (КОНФЛИКТ). Это имя зарезервировано системой.';
+      Text004@1004 : TextConst 'ENU=%1\You cannot change the type.;RUS=%1\Нельзя изменить тип.';
+      Text005@1005 : TextConst 'ENU=This dimension value has been used in posted or budget entries.;RUS=Это значение измерения используется в разнесенных и бюджетных операциях.';
+      DimSetEntry@1001 : Record 480;
+      DimValueComb@1014 : Record 351;
+      DefaultDim@1015 : Record 352;
+      SelectedDim@1016 : Record 369;
+      AnalysisSelectedDim@1021 : Record 7159;
+      CostAccSetup@1008 : Record 1108;
+      CostAccMgt@1007 : Codeunit 1100;
+      Text006@1006 : TextConst 'ENU=You cannot change the value of %1.;RUS=Невозможно изменить значение %1.';
+      TaxDimMgt@1210000 : Codeunit 17202;
+      "//"@1101495000 : Integer;
+      ConsSetup@1101495004 : Record 50000;
+      DimValue@1101495006 : Record 349;
+      DoNotRunRenameTriger@1101495005 : Boolean;
+      ErrorCode@1101495003 : Code[10];
+      ErrorText@1101495002 : Text[250];
+      DoNotTestRename@1101495001 : Boolean;
+      RenameRef@1101495007 : Codeunit 50029;
+      Text55001@1101495009 : TextConst 'ENU=You can not rename a dimension.;RUS=Нельзя переименовывать измерение.';
+      g_Text008@1101495008 : TextConst 'ENU=Check or setup value in the fields %1, %2;RUS=Проверьте или установите значения в полях %1, %2';
+
+    PROCEDURE CheckIfDimValueUsed@1() : Boolean;
+    BEGIN
+      DimSetEntry.SETCURRENTKEY("Dimension Value ID");
+      DimSetEntry.SETRANGE("Dimension Value ID","Dimension Value ID");
+      EXIT(NOT DimSetEntry.ISEMPTY);
+    END;
+
+    LOCAL PROCEDURE GetCheckDimErr@2() : Text[250];
+    BEGIN
+      EXIT(Text005);
+    END;
+
+    LOCAL PROCEDURE RenameBudgEntryDim@3();
+    VAR
+      GLBudget@1002 : Record 95;
+      GLBudgetEntry@1003 : Record 96;
+      GLBudgetEntry2@1001 : Record 96;
+      BudgDimNo@1000 : Integer;
+    BEGIN
+      GLBudget.LOCKTABLE;
+      IF GLBudget.FIND('-') THEN
+        REPEAT
+        UNTIL GLBudget.NEXT = 0;
+      FOR BudgDimNo := 1 TO 4 DO BEGIN
+        CASE TRUE OF
+          BudgDimNo = 1:
+            GLBudget.SETRANGE("Budget Dimension 1 Code","Dimension Code");
+          BudgDimNo = 2:
+            GLBudget.SETRANGE("Budget Dimension 2 Code","Dimension Code");
+          BudgDimNo = 3:
+            GLBudget.SETRANGE("Budget Dimension 3 Code","Dimension Code");
+          BudgDimNo = 4:
+            GLBudget.SETRANGE("Budget Dimension 4 Code","Dimension Code");
+        END;
+        IF GLBudget.FIND('-') THEN BEGIN
+          GLBudgetEntry.SETCURRENTKEY("Budget Name","G/L Account No.","Business Unit Code","Global Dimension 1 Code");
+          REPEAT
+            GLBudgetEntry.SETRANGE("Budget Name",GLBudget.Name);
+            CASE TRUE OF
+              BudgDimNo = 1:
+                GLBudgetEntry.SETRANGE("Budget Dimension 1 Code",xRec.Code);
+              BudgDimNo = 2:
+                GLBudgetEntry.SETRANGE("Budget Dimension 2 Code",xRec.Code);
+              BudgDimNo = 3:
+                GLBudgetEntry.SETRANGE("Budget Dimension 3 Code",xRec.Code);
+              BudgDimNo = 4:
+                GLBudgetEntry.SETRANGE("Budget Dimension 4 Code",xRec.Code);
+            END;
+            IF GLBudgetEntry.FIND('-') THEN
+              REPEAT
+                GLBudgetEntry2 := GLBudgetEntry;
+                CASE TRUE OF
+                  BudgDimNo = 1:
+                    GLBudgetEntry2."Budget Dimension 1 Code" := Code;
+                  BudgDimNo = 2:
+                    GLBudgetEntry2."Budget Dimension 2 Code" := Code;
+                  BudgDimNo = 3:
+                    GLBudgetEntry2."Budget Dimension 3 Code" := Code;
+                  BudgDimNo = 4:
+                    GLBudgetEntry2."Budget Dimension 4 Code" := Code;
+                END;
+                GLBudgetEntry2.MODIFY;
+              UNTIL GLBudgetEntry.NEXT = 0;
+            GLBudgetEntry.RESET;
+          UNTIL GLBudget.NEXT = 0;
+        END;
+        GLBudget.RESET;
+      END;
+    END;
+
+    LOCAL PROCEDURE RenameAnalysisViewEntryDim@5();
+    VAR
+      AnalysisView@1001 : Record 363;
+      AnalysisViewEntry@1002 : Record 365;
+      AnalysisViewEntry2@1003 : Record 365;
+      AnalysisViewBudgEntry@1004 : Record 366;
+      AnalysisViewBudgEntry2@1005 : Record 366;
+      DimensionNo@1000 : Integer;
+    BEGIN
+      AnalysisView.LOCKTABLE;
+      IF AnalysisView.FIND('-') THEN
+        REPEAT
+        UNTIL AnalysisView.NEXT = 0;
+
+      FOR DimensionNo := 1 TO 4 DO BEGIN
+        CASE TRUE OF
+          DimensionNo = 1:
+            AnalysisView.SETRANGE("Dimension 1 Code","Dimension Code");
+          DimensionNo = 2:
+            AnalysisView.SETRANGE("Dimension 2 Code","Dimension Code");
+          DimensionNo = 3:
+            AnalysisView.SETRANGE("Dimension 3 Code","Dimension Code");
+          DimensionNo = 4:
+            AnalysisView.SETRANGE("Dimension 4 Code","Dimension Code");
+        END;
+        IF AnalysisView.FIND('-') THEN
+          REPEAT
+            AnalysisViewEntry.SETRANGE("Analysis View Code",AnalysisView.Code);
+            AnalysisViewBudgEntry.SETRANGE("Analysis View Code",AnalysisView.Code);
+            CASE TRUE OF
+              DimensionNo = 1:
+                BEGIN
+                  AnalysisViewEntry.SETRANGE("Dimension 1 Value Code",xRec.Code);
+                  AnalysisViewBudgEntry.SETRANGE("Dimension 1 Value Code",xRec.Code);
+                END;
+              DimensionNo = 2:
+                BEGIN
+                  AnalysisViewEntry.SETRANGE("Dimension 2 Value Code",xRec.Code);
+                  AnalysisViewBudgEntry.SETRANGE("Dimension 2 Value Code",xRec.Code);
+                END;
+              DimensionNo = 3:
+                BEGIN
+                  AnalysisViewEntry.SETRANGE("Dimension 3 Value Code",xRec.Code);
+                  AnalysisViewBudgEntry.SETRANGE("Dimension 3 Value Code",xRec.Code);
+                END;
+              DimensionNo = 4:
+                BEGIN
+                  AnalysisViewEntry.SETRANGE("Dimension 4 Value Code",xRec.Code);
+                  AnalysisViewBudgEntry.SETRANGE("Dimension 4 Value Code",xRec.Code);
+                END;
+            END;
+            IF AnalysisViewEntry.FIND('-') THEN
+              REPEAT
+                AnalysisViewEntry2 := AnalysisViewEntry;
+                CASE TRUE OF
+                  DimensionNo = 1:
+                    AnalysisViewEntry2."Dimension 1 Value Code" := Code;
+                  DimensionNo = 2:
+                    AnalysisViewEntry2."Dimension 2 Value Code" := Code;
+                  DimensionNo = 3:
+                    AnalysisViewEntry2."Dimension 3 Value Code" := Code;
+                  DimensionNo = 4:
+                    AnalysisViewEntry2."Dimension 4 Value Code" := Code;
+                END;
+                AnalysisViewEntry.DELETE;
+                AnalysisViewEntry2.INSERT;
+              UNTIL AnalysisViewEntry.NEXT = 0;
+            AnalysisViewEntry.RESET;
+            IF AnalysisViewBudgEntry.FIND('-') THEN
+              REPEAT
+                AnalysisViewBudgEntry2 := AnalysisViewBudgEntry;
+                CASE TRUE OF
+                  DimensionNo = 1:
+                    AnalysisViewBudgEntry2."Dimension 1 Value Code" := Code;
+                  DimensionNo = 2:
+                    AnalysisViewBudgEntry2."Dimension 2 Value Code" := Code;
+                  DimensionNo = 3:
+                    AnalysisViewBudgEntry2."Dimension 3 Value Code" := Code;
+                  DimensionNo = 4:
+                    AnalysisViewBudgEntry2."Dimension 4 Value Code" := Code;
+                END;
+                AnalysisViewBudgEntry.DELETE;
+                AnalysisViewBudgEntry2.INSERT;
+              UNTIL AnalysisViewBudgEntry.NEXT = 0;
+            AnalysisViewBudgEntry.RESET;
+          UNTIL AnalysisView.NEXT = 0;
+        AnalysisView.RESET;
+      END;
+    END;
+
+    LOCAL PROCEDURE RenameItemBudgEntryDim@6();
+    VAR
+      ItemBudget@1003 : Record 7132;
+      ItemBudgetEntry@1002 : Record 7134;
+      ItemBudgetEntry2@1001 : Record 7134;
+      BudgDimNo@1000 : Integer;
+    BEGIN
+      ItemBudget.LOCKTABLE;
+      IF ItemBudget.FIND('-') THEN
+        REPEAT
+        UNTIL ItemBudget.NEXT = 0;
+
+      FOR BudgDimNo := 1 TO 3 DO BEGIN
+        CASE TRUE OF
+          BudgDimNo = 1:
+            ItemBudget.SETRANGE("Budget Dimension 1 Code","Dimension Code");
+          BudgDimNo = 2:
+            ItemBudget.SETRANGE("Budget Dimension 2 Code","Dimension Code");
+          BudgDimNo = 3:
+            ItemBudget.SETRANGE("Budget Dimension 3 Code","Dimension Code");
+        END;
+        IF ItemBudget.FIND('-') THEN BEGIN
+          ItemBudgetEntry.SETCURRENTKEY(
+            "Analysis Area","Budget Name","Item No.","Source Type","Source No.",Date,"Location Code","Global Dimension 1 Code");
+          REPEAT
+            ItemBudgetEntry.SETRANGE("Analysis Area",ItemBudget."Analysis Area");
+            ItemBudgetEntry.SETRANGE("Budget Name",ItemBudget.Name);
+            CASE TRUE OF
+              BudgDimNo = 1:
+                ItemBudgetEntry.SETRANGE("Budget Dimension 1 Code",xRec.Code);
+              BudgDimNo = 2:
+                ItemBudgetEntry.SETRANGE("Budget Dimension 2 Code",xRec.Code);
+              BudgDimNo = 3:
+                ItemBudgetEntry.SETRANGE("Budget Dimension 3 Code",xRec.Code);
+            END;
+            IF ItemBudgetEntry.FIND('-') THEN
+              REPEAT
+                ItemBudgetEntry2 := ItemBudgetEntry;
+                CASE TRUE OF
+                  BudgDimNo = 1:
+                    ItemBudgetEntry2."Budget Dimension 1 Code" := Code;
+                  BudgDimNo = 2:
+                    ItemBudgetEntry2."Budget Dimension 2 Code" := Code;
+                  BudgDimNo = 3:
+                    ItemBudgetEntry2."Budget Dimension 3 Code" := Code;
+                END;
+                ItemBudgetEntry2.MODIFY;
+              UNTIL ItemBudgetEntry.NEXT = 0;
+            ItemBudgetEntry.RESET;
+          UNTIL ItemBudget.NEXT = 0;
+        END;
+        ItemBudget.RESET;
+      END;
+    END;
+
+    LOCAL PROCEDURE RenameItemAnalysisViewEntryDim@7();
+    VAR
+      ItemAnalysisView@1005 : Record 7152;
+      ItemAnalysisViewEntry@1004 : Record 7154;
+      ItemAnalysisViewEntry2@1003 : Record 7154;
+      ItemAnalysisViewBudgEntry@1002 : Record 7156;
+      ItemAnalysisViewBudgEntry2@1001 : Record 7156;
+      DimensionNo@1000 : Integer;
+    BEGIN
+      ItemAnalysisView.LOCKTABLE;
+      IF ItemAnalysisView.FIND('-') THEN
+        REPEAT
+        UNTIL ItemAnalysisView.NEXT = 0;
+
+      FOR DimensionNo := 1 TO 3 DO BEGIN
+        CASE TRUE OF
+          DimensionNo = 1:
+            ItemAnalysisView.SETRANGE("Dimension 1 Code","Dimension Code");
+          DimensionNo = 2:
+            ItemAnalysisView.SETRANGE("Dimension 2 Code","Dimension Code");
+          DimensionNo = 3:
+            ItemAnalysisView.SETRANGE("Dimension 3 Code","Dimension Code");
+        END;
+        IF ItemAnalysisView.FIND('-') THEN
+          REPEAT
+            ItemAnalysisViewEntry.SETRANGE("Analysis Area",ItemAnalysisView."Analysis Area");
+            ItemAnalysisViewEntry.SETRANGE("Analysis View Code",ItemAnalysisView.Code);
+            ItemAnalysisViewBudgEntry.SETRANGE("Analysis Area",ItemAnalysisView."Analysis Area");
+            ItemAnalysisViewBudgEntry.SETRANGE("Analysis View Code",ItemAnalysisView.Code);
+            CASE TRUE OF
+              DimensionNo = 1:
+                BEGIN
+                  ItemAnalysisViewEntry.SETRANGE("Dimension 1 Value Code",xRec.Code);
+                  ItemAnalysisViewBudgEntry.SETRANGE("Dimension 1 Value Code",xRec.Code);
+                END;
+              DimensionNo = 2:
+                BEGIN
+                  ItemAnalysisViewEntry.SETRANGE("Dimension 2 Value Code",xRec.Code);
+                  ItemAnalysisViewBudgEntry.SETRANGE("Dimension 2 Value Code",xRec.Code);
+                END;
+              DimensionNo = 3:
+                BEGIN
+                  ItemAnalysisViewEntry.SETRANGE("Dimension 3 Value Code",xRec.Code);
+                  ItemAnalysisViewBudgEntry.SETRANGE("Dimension 3 Value Code",xRec.Code);
+                END;
+            END;
+            IF ItemAnalysisViewEntry.FIND('-') THEN
+              REPEAT
+                ItemAnalysisViewEntry2 := ItemAnalysisViewEntry;
+                CASE TRUE OF
+                  DimensionNo = 1:
+                    ItemAnalysisViewEntry2."Dimension 1 Value Code" := Code;
+                  DimensionNo = 2:
+                    ItemAnalysisViewEntry2."Dimension 2 Value Code" := Code;
+                  DimensionNo = 3:
+                    ItemAnalysisViewEntry2."Dimension 3 Value Code" := Code;
+                END;
+                ItemAnalysisViewEntry.DELETE;
+                ItemAnalysisViewEntry2.INSERT;
+              UNTIL ItemAnalysisViewEntry.NEXT = 0;
+            ItemAnalysisViewEntry.RESET;
+            IF ItemAnalysisViewBudgEntry.FIND('-') THEN
+              REPEAT
+                ItemAnalysisViewBudgEntry2 := ItemAnalysisViewBudgEntry;
+                CASE TRUE OF
+                  DimensionNo = 1:
+                    ItemAnalysisViewBudgEntry2."Dimension 1 Value Code" := Code;
+                  DimensionNo = 2:
+                    ItemAnalysisViewBudgEntry2."Dimension 2 Value Code" := Code;
+                  DimensionNo = 3:
+                    ItemAnalysisViewBudgEntry2."Dimension 3 Value Code" := Code;
+                END;
+                ItemAnalysisViewBudgEntry.DELETE;
+                ItemAnalysisViewBudgEntry2.INSERT;
+              UNTIL ItemAnalysisViewBudgEntry.NEXT = 0;
+            ItemAnalysisViewBudgEntry.RESET;
+          UNTIL ItemAnalysisView.NEXT = 0;
+        ItemAnalysisView.RESET;
+      END;
+    END;
+
+    PROCEDURE LookUpDimFilter@57(Dim@1000 : Code[20];VAR Text@1001 : Text[1024]) : Boolean;
+    VAR
+      DimVal@1002 : Record 349;
+      DimValList@1003 : Page 560;
+    BEGIN
+      IF Dim = '' THEN
+        EXIT(FALSE);
+      DimValList.LOOKUPMODE(TRUE);
+      DimVal.SETRANGE("Dimension Code",Dim);
+      DimValList.SETTABLEVIEW(DimVal);
+      IF DimValList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        Text := DimValList.GetSelectionFilter;
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE)
+    END;
+
+    PROCEDURE LookupDimValue@24(DimCode@1000 : Code[20];VAR DimValueCode@1001 : Code[20]);
+    VAR
+      DimValue@1003 : Record 349;
+      DimValuesList@1002 : Page 537;
+    BEGIN
+      DimValue.SETRANGE("Dimension Code",DimCode);
+      DimValuesList.LOOKUPMODE := TRUE;
+      DimValuesList.SETTABLEVIEW(DimValue);
+      IF DimValue.GET(DimCode,DimValueCode) THEN
+        DimValuesList.SETRECORD(DimValue);
+      IF DimValuesList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        DimValuesList.GETRECORD(DimValue);
+        DimValueCode := DimValue.Code;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetGlobalDimensionNo@8() : Integer;
+    VAR
+      GeneralLedgerSetup@1000 : Record 98;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      CASE "Dimension Code" OF
+        GeneralLedgerSetup."Global Dimension 1 Code":
+          EXIT(1);
+        GeneralLedgerSetup."Global Dimension 2 Code":
+          EXIT(2);
+        GeneralLedgerSetup."Shortcut Dimension 3 Code":
+          EXIT(3);
+        GeneralLedgerSetup."Shortcut Dimension 4 Code":
+          EXIT(4);
+        GeneralLedgerSetup."Shortcut Dimension 5 Code":
+          EXIT(5);
+        GeneralLedgerSetup."Shortcut Dimension 6 Code":
+          EXIT(6);
+        GeneralLedgerSetup."Shortcut Dimension 7 Code":
+          EXIT(7);
+        GeneralLedgerSetup."Shortcut Dimension 8 Code":
+          EXIT(8);
+        ELSE
+          EXIT(0);
+      END;
+    END;
+
+    PROCEDURE "NCV>"@1210000();
+    BEGIN
+    END;
+
+    PROCEDURE DoNotRunRenameTrigger@1210001();
+    BEGIN
+      DoNotRunRenameTriger := TRUE;
+    END;
+
+    PROCEDURE SetDoNotTestRename@1000000001(NewDoNotTestRename@1000000000 : Boolean);
+    BEGIN
+      //NC MDB03 > PCH
+      DoNotTestRename := NewDoNotTestRename;
+      //NC MDB03 < PCH
+    END;
+
+    PROCEDURE SynchroniseIt@1000000002(Mode@1000000000 : 'Insert,Modify,Delete,Rename');
+    VAR
+      SyncLog@1101495000 : Record 50121;
+      Recref@1000000006 : RecordRef;
+      xRecref@1000000004 : RecordRef;
+    BEGIN
+      //TD BMN 23.11.2012 NCS-712
+
+      xRecref.GETTABLE(xRec);
+      xRecref.SETRECFILTER;
+      Recref.GETTABLE(Rec);
+      Recref.SETRECFILTER;
+
+      SyncLog.Synchronise(Mode, xRecref, Recref);
+    END;
+
+    BEGIN
+    {
+      NC PIF001 DL Изменено св-во DataPerCompany
+      NC PIF001 AK Добавлено поля Company Name для связи значение измерения Внутр. Контрагент с фирмами Navision
+      NC PIF001 AK Добавлено поля Int Contragent Dim Value для связи значений измерений Контрагент, Банк с измерением Внутр. Контрагент
+      NC MP 07.03.07 Изменения в CheckIfDimValueUsed - проверка по всем фирмам
+      NC PIF001 MP Переход на 1С 8.0 DataPerCompany=Yes, изменения в коде
+      NC MDB01 PCH Добавлено поле "Parent Code"
+      NC PIF001 AIG Добавлены поля 55026, 55027, 55028
+      NC MDB03 PCH Контроль переименования измерений
+      NC OAM45 RD Добавлено поле Marked - флаг для неторговых договоров
+      NC MMTM08 DP Добавлено поле "Use Mid Rate" - расчет по ставке mid
+      NC S547,S622 PCH добавлено поле Rec ID, только для доработки S622
+      TD BMN 23.11.2012 NCS-712 "Интеграция данных из договоров OFF - IFRS"
+      TDRANCS-1071>
+        ADDed Fields "Allow Posting From", "Allow Posting To"
+        Changed validate for Blocked
+      NC MIO16 PCH перенос доработки переменование бефера NAV
+      NC S1883 PCH добавлено поле "Segment Code"
+      NCS-2361 AAP Добавлены поля "External Code", "Costcenter Name"
+    }
+    END.
+  }
+}
+

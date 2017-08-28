@@ -1,0 +1,372 @@
+OBJECT Codeunit 12404 G/L Corresp. Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.02.17;
+    Time=12:00:00;
+    Version List=NAVRU10.00.00.15601;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=rimd,
+                TableData 21=rimd,
+                TableData 25=rimd,
+                TableData 32=rimd,
+                TableData 169=rimd,
+                TableData 203=rimd,
+                TableData 238=rimd,
+                TableData 254=rimd,
+                TableData 271=rimd,
+                TableData 272=rimd,
+                TableData 5601=rimd,
+                TableData 5802=rimd,
+                TableData 5907=rimd,
+                TableData 5908=rimd,
+                TableData 12401=rimd,
+                TableData 12404=rimd,
+                TableData 12405=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1210010 : TextConst 'ENU=Transaction No. #1#######;RUS=Транзакция номер #1#######';
+      TempGLEntry@1210000 : TEMPORARY Record 17;
+
+    PROCEDURE CreateCorrespEntries@1210013(VAR GLEntry@1210004 : Record 17);
+    VAR
+      UpdateGLCorrAnalysisView@1210003 : Codeunit 14940;
+      WindowDialog@1210002 : Dialog;
+      TransNo@1210001 : Integer;
+      ShowDialog@1210000 : Boolean;
+    BEGIN
+      ShowDialog := GLEntry.GETFILTER("Entry No.") = '';
+      IF ShowDialog THEN
+        WindowDialog.OPEN(Text001);
+      TransNo := 0;
+
+      GLEntry.LOCKTABLE;
+      IF GLEntry.FINDSET THEN BEGIN
+        REPEAT
+          IF TransNo <> GLEntry."Transaction No." THEN BEGIN
+            ClearBuffer(GLEntry."Transaction No.");
+            IF ShowDialog THEN
+              WindowDialog.UPDATE(1,GLEntry."Transaction No.");
+            IF TransNo > 0 THEN
+              ProcessTransaction;
+            TempGLEntry.RESET;
+            TempGLEntry.DELETEALL;
+            TransNo := GLEntry."Transaction No.";
+          END;
+          TempGLEntry.TRANSFERFIELDS(GLEntry);
+          TempGLEntry."Used in Correspondence" := FALSE;
+          TempGLEntry.INSERT;
+        UNTIL GLEntry.NEXT = 0;
+        ClearBuffer(TransNo);
+        ProcessTransaction;
+        UpdateGLCorrAnalysisView.UpdateAll(TRUE);
+      END;
+      IF ShowDialog THEN
+        WindowDialog.CLOSE;
+    END;
+
+    LOCAL PROCEDURE ProcessTransaction@1210005();
+    VAR
+      CurrentTempGLEntry@1210003 : TEMPORARY Record 17;
+      Level@1210004 : Integer;
+      MaxLevel@1210001 : Integer;
+      SimpleMode@1210002 : Boolean;
+      FoundEntry@1210000 : Boolean;
+    BEGIN
+      SimpleMode := FALSE;
+      MaxLevel := 3;
+
+      IF IsReversedGLReg(TempGLEntry) THEN
+        TempGLEntry.ASCENDING(FALSE);
+
+      WITH TempGLEntry DO BEGIN
+        FOR Level := 1 TO MaxLevel DO BEGIN
+          SimpleMode := Level > 1;
+          IF FIND('-') THEN
+            REPEAT
+              IF (Amount = 0) AND ("Additional-Currency Amount" = 0) THEN
+                DELETE
+              ELSE BEGIN
+                CurrentTempGLEntry := TempGLEntry;
+                FoundEntry := FALSE;
+                SETFILTER("Entry No.",'<>%1',CurrentTempGLEntry."Entry No.");
+                IF FIND('-') THEN
+                  REPEAT
+                    IF (NOT CurrentTempGLEntry."Used in Correspondence") OR
+                       (NOT "Used in Correspondence")
+                    THEN
+                      IF ValidateEntries(CurrentTempGLEntry,TempGLEntry,SimpleMode) THEN BEGIN
+                        FoundEntry := TRUE;
+                        InsertCorrespEntry(CurrentTempGLEntry,TempGLEntry);
+                        IF (Amount = 0) AND ("Additional-Currency Amount" = 0) THEN
+                          DELETE
+                        ELSE
+                          MODIFY;
+                      END;
+                  UNTIL FoundEntry OR (NEXT = 0);
+                IF FoundEntry AND (Level = MaxLevel) THEN
+                  Level -= 1;
+                TempGLEntry := CurrentTempGLEntry;
+                IF (Amount = 0) AND ("Additional-Currency Amount" = 0) THEN
+                  DELETE
+                ELSE
+                  MODIFY;
+              END;
+            UNTIL NEXT = 0;
+        END;
+
+        RESET;
+        IF FIND('-') THEN
+          REPEAT
+            UpdateBuffer("Entry No.",Amount);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertCorrespEntry@1210000(VAR GLEntry1@1210000 : TEMPORARY Record 17;VAR GLEntry2@1210001 : TEMPORARY Record 17);
+    VAR
+      GLAcc@1210008 : Record 15;
+      GLCorresp@1210007 : Record 12400;
+      DebitEntry@1210010 : Record 17;
+      CreditEntry@1210011 : Record 17;
+      GLCorrespEntry@1210006 : Record 12401;
+      CorrAmount@1210005 : Decimal;
+      AmountACY@1210003 : Decimal;
+      Sign@1210002 : Integer;
+      GLCorrespEntryNo@1210004 : Integer;
+    BEGIN
+      Sign := SignEntry(GLEntry1,TRUE);
+      AmountACY := Sign * Min(ABS(GLEntry1."Additional-Currency Amount"),ABS(GLEntry2."Additional-Currency Amount"));
+      Sign := SignEntry(GLEntry1,FALSE);
+      CorrAmount := Sign * Min(ABS(GLEntry1.Amount),ABS(GLEntry2.Amount));
+
+      IF Debit(GLEntry1) THEN BEGIN
+        DebitEntry.TRANSFERFIELDS(GLEntry1);
+        CreditEntry.TRANSFERFIELDS(GLEntry2);
+        GLEntry1.Amount := GLEntry1.Amount - CorrAmount;
+        GLEntry1."Additional-Currency Amount" := GLEntry1."Additional-Currency Amount" - AmountACY;
+        GLEntry2.Amount := GLEntry2.Amount + CorrAmount;
+        GLEntry2."Additional-Currency Amount" := GLEntry2."Additional-Currency Amount" + AmountACY;
+      END ELSE BEGIN
+        DebitEntry.TRANSFERFIELDS(GLEntry2);
+        CreditEntry.TRANSFERFIELDS(GLEntry1);
+        GLEntry1.Amount := GLEntry1.Amount + CorrAmount;
+        GLEntry1."Additional-Currency Amount" := GLEntry1."Additional-Currency Amount" + AmountACY;
+        GLEntry2.Amount := GLEntry2.Amount - CorrAmount;
+        GLEntry2."Additional-Currency Amount" := GLEntry2."Additional-Currency Amount" - AmountACY;
+      END;
+
+      IF (NOT GLEntry1."Used in Correspondence") AND (NOT GLEntry2."Used in Correspondence") THEN
+        IF ABS(GLEntry1.Amount) < ABS(GLEntry2.Amount) THEN BEGIN
+          GLEntry1."Used in Correspondence" := TRUE;
+          GLCorrespEntryNo := GLEntry1."Entry No.";
+        END ELSE BEGIN
+          GLEntry2."Used in Correspondence" := TRUE;
+          GLCorrespEntryNo := GLEntry2."Entry No.";
+        END
+      ELSE
+        IF NOT GLEntry1."Used in Correspondence" THEN BEGIN
+          GLEntry1."Used in Correspondence" := TRUE;
+          GLCorrespEntryNo := GLEntry1."Entry No.";
+        END ELSE BEGIN
+          GLEntry2."Used in Correspondence" := TRUE;
+          GLCorrespEntryNo := GLEntry2."Entry No.";
+        END;
+
+      IF NOT GLCorresp.GET(DebitEntry."G/L Account No.",CreditEntry."G/L Account No.") THEN BEGIN
+        GLCorresp.INIT;
+        GLCorresp."Debit Account No." := DebitEntry."G/L Account No.";
+        GLAcc.GET(DebitEntry."G/L Account No.");
+        GLCorresp."Debit Account Name" := GLAcc.Name;
+        GLCorresp."Credit Account No." := CreditEntry."G/L Account No.";
+        GLAcc.GET(CreditEntry."G/L Account No.");
+        GLCorresp."Credit Account Name" := GLAcc.Name;
+        GLCorresp.INSERT;
+      END;
+
+      WITH GLCorrespEntry DO BEGIN
+        INIT;
+        "Entry No." := GLCorrespEntryNo;
+        "Document No." := GLEntry1."Document No.";
+        "Posting Date" := GLEntry1."Posting Date";
+        "Debit Account No." := DebitEntry."G/L Account No.";
+        "Credit Account No." := CreditEntry."G/L Account No.";
+        Amount := CorrAmount;
+        "Amount (ACY)" := AmountACY;
+        "User ID" := DebitEntry."User ID";
+        "Transaction No." := GLEntry1."Transaction No.";
+        "Business Unit Code" := GLEntry1."Business Unit Code";
+        "Debit Global Dimension 1 Code" := DebitEntry."Global Dimension 1 Code";
+        "Debit Global Dimension 2 Code" := DebitEntry."Global Dimension 2 Code";
+        "Debit Dimension Set ID" := DebitEntry."Dimension Set ID";
+        "Debit Source Type" := DebitEntry."Source Type";
+        "Debit Source No." := DebitEntry."Source No.";
+        "Credit Global Dimension 1 Code" := CreditEntry."Global Dimension 1 Code";
+        "Credit Global Dimension 2 Code" := CreditEntry."Global Dimension 2 Code";
+        "Credit Dimension Set ID" := CreditEntry."Dimension Set ID";
+        "Credit Source Type" := CreditEntry."Source Type";
+        "Credit Source No." := CreditEntry."Source No.";
+        Positive := Sign = 1;
+        "Creation Date" := TODAY;
+        "Debit Entry No." := DebitEntry."Entry No.";
+        "Credit Entry No." := CreditEntry."Entry No.";
+        INSERT(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE ValidateEntries@1210001(VAR GLEntry1@1210001 : Record 17;VAR GLEntry2@1210000 : Record 17;SimpleMode@1210004 : Boolean) : Boolean;
+    VAR
+      SameDebit@1210002 : Boolean;
+      SameSign@1210003 : Boolean;
+    BEGIN
+      IF NOT SimpleMode THEN
+        IF Reverse(GLEntry1) <> Reverse(GLEntry2) THEN
+          EXIT(FALSE);
+      SameDebit := Debit(GLEntry1) = Debit(GLEntry2);
+      SameSign := SignEntry(GLEntry1,FALSE) = SignEntry(GLEntry2,FALSE);
+      IF SameDebit = SameSign THEN
+        EXIT(FALSE);
+
+      IF NOT SimpleMode THEN BEGIN
+        IF (GLEntry1."Bal. Account Type" <> GLEntry1."Bal. Account Type"::"G/L Account") OR
+           (GLEntry2."Bal. Account Type" <> GLEntry2."Bal. Account Type"::"G/L Account")
+        THEN
+          EXIT(FALSE);
+
+        IF ((GLEntry1."Bal. Account Type" = GLEntry1."Bal. Account Type"::"G/L Account") AND
+            (GLEntry1."Bal. Account No." <> GLEntry2."G/L Account No.")) OR
+           (GLEntry1."Bal. Account No." = '') OR
+           ((GLEntry2."Bal. Account Type" = GLEntry2."Bal. Account Type"::"G/L Account") AND
+            (GLEntry2."Bal. Account No." <> GLEntry1."G/L Account No.")) OR
+           (GLEntry2."Bal. Account No." = '')
+        THEN
+          EXIT(FALSE);
+      END;
+      EXIT(TRUE)
+    END;
+
+    LOCAL PROCEDURE SignEntry@1210002(GLentry@1210000 : Record 17;ACY@1470000 : Boolean) : Integer;
+    BEGIN
+      CASE ACY OF
+        FALSE:
+          IF (GLentry."Debit Amount" > 0) OR (GLentry."Credit Amount" > 0) THEN
+            EXIT(1);
+        TRUE:
+          IF (GLentry."Add.-Currency Debit Amount" > 0) OR (GLentry."Add.-Currency Credit Amount" > 0) THEN
+            EXIT(1);
+      END;
+      EXIT(-1);
+    END;
+
+    LOCAL PROCEDURE Reverse@1210007(GLEntry@1210000 : Record 17) : Boolean;
+    BEGIN
+      EXIT((GLEntry."Debit Amount" < 0) OR (GLEntry."Credit Amount" < 0) OR
+        (GLEntry."Add.-Currency Debit Amount" < 0) OR (GLEntry."Add.-Currency Credit Amount" < 0));
+    END;
+
+    LOCAL PROCEDURE Debit@1210006(GLEntry@1210000 : Record 17) : Boolean;
+    BEGIN
+      IF GLEntry.Amount <> 0 THEN
+        EXIT(GLEntry."Debit Amount" <> 0);
+      EXIT(GLEntry."Add.-Currency Debit Amount" <> 0);
+    END;
+
+    LOCAL PROCEDURE Min@1210008(Value1@1210000 : Decimal;Value2@1210001 : Decimal) : Decimal;
+    BEGIN
+      IF Value1 < Value2 THEN
+        EXIT(Value1);
+
+      EXIT(Value2);
+    END;
+
+    LOCAL PROCEDURE UpdateBuffer@7(EntryNo@1210000 : Integer;CorAmount@1210002 : Decimal);
+    VAR
+      GLEntry@1210001 : Record 17;
+      DoubleEntryBuffer@1210003 : Record 12402;
+    BEGIN
+      WITH DoubleEntryBuffer DO BEGIN
+        INIT;
+        GLEntry.GET(EntryNo);
+        IF GET(GLEntry."Transaction No.",GLEntry."G/L Account No.") THEN BEGIN
+          "G/L Amount" += GLEntry.Amount;
+          "G/L Corresp. Amount" += CorAmount;
+          IF "G/L Corresp. Amount" = 0 THEN
+            DELETE
+          ELSE
+            MODIFY;
+        END ELSE BEGIN
+          "Transaction No." := GLEntry."Transaction No.";
+          "G/L Account No." := GLEntry."G/L Account No.";
+          "G/L Amount" := GLEntry.Amount;
+          "G/L Corresp. Amount" := CorAmount;
+          IF "G/L Corresp. Amount" <> 0 THEN
+            INSERT;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ClearBuffer@1210003(TransactionNo@1210000 : Integer);
+    VAR
+      DoubleEntryBuffer@1210001 : Record 12402;
+    BEGIN
+      DoubleEntryBuffer.RESET;
+      DoubleEntryBuffer.SETRANGE("Transaction No.",TransactionNo);
+      DoubleEntryBuffer.DELETEALL;
+    END;
+
+    PROCEDURE SetTransactionNo@1210004(GLEntry@1210000 : Record 17);
+    VAR
+      DtldCustLedgEntry@1210001 : Record 379;
+      DtldVendLedgEntry@1210002 : Record 380;
+    BEGIN
+      DtldCustLedgEntry.RESET;
+      DtldCustLedgEntry.SETCURRENTKEY(
+        "Customer No.","Posting Date","Entry Type");
+      DtldCustLedgEntry.SETRANGE("Customer No.",GLEntry."Source No.");
+      DtldCustLedgEntry.SETRANGE("Document No.",GLEntry."Document No.");
+      DtldCustLedgEntry.SETRANGE("Posting Date",GLEntry."Posting Date");
+      DtldCustLedgEntry.SETRANGE("Source Code",GLEntry."Source Code");
+      DtldCustLedgEntry.SETRANGE(
+        "Entry Type",
+        DtldCustLedgEntry."Entry Type"::"Unrealized Loss",
+        DtldCustLedgEntry."Entry Type"::"Unrealized Gain");
+      DtldCustLedgEntry.SETRANGE("Transaction No.",0);
+      DtldCustLedgEntry.MODIFYALL("Transaction No.",GLEntry."Transaction No.");
+
+      DtldVendLedgEntry.RESET;
+      DtldVendLedgEntry.SETCURRENTKEY(
+        "Vendor No.","Posting Date","Entry Type");
+      DtldVendLedgEntry.SETRANGE("Vendor No.",GLEntry."Source No.");
+      DtldVendLedgEntry.SETRANGE("Document No.",GLEntry."Document No.");
+      DtldVendLedgEntry.SETRANGE("Posting Date",GLEntry."Posting Date");
+      DtldVendLedgEntry.SETRANGE("Source Code",GLEntry."Source Code");
+      DtldVendLedgEntry.SETRANGE(
+        "Entry Type",
+        DtldVendLedgEntry."Entry Type"::"Unrealized Loss",
+        DtldVendLedgEntry."Entry Type"::"Unrealized Gain");
+      DtldVendLedgEntry.SETRANGE("Transaction No.",0);
+      DtldVendLedgEntry.MODIFYALL("Transaction No.",GLEntry."Transaction No.");
+    END;
+
+    LOCAL PROCEDURE IsReversedGLReg@1210009(GLEntry@1210000 : Record 17) : Boolean;
+    VAR
+      GLRegister@1210001 : Record 45;
+    BEGIN
+      GLRegister.SETFILTER("From Entry No.",'..%1',GLEntry."Entry No.");
+      GLRegister.SETFILTER("To Entry No.",'%1..',GLEntry."Entry No.");
+      GLRegister.SETRANGE(Reversed,TRUE);
+      EXIT(NOT GLRegister.ISEMPTY);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,225 @@
+OBJECT Codeunit 50019 Scheduler
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.06.14;
+    Time=14:51:22;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    SingleInstance=Yes;
+    OnRun=VAR
+            LastDateTime@1000000000 : DateTime;
+            IsPlan@1000000001 : Boolean;
+            IsRun@1000000002 : Boolean;
+            IsNas@1000000003 : Boolean;
+          BEGIN
+            Company.RESET;
+            Company.SETRANGE("Block Automations",FALSE);
+
+            IF Company.FINDSET THEN REPEAT
+              JobProc.RESET;
+              JobProc.SETRANGE("Company No.",Company.Name);
+              JobProc.SETRANGE(Blocked,FALSE);
+              JobProc.SETRANGE("Auto Start",TRUE);
+              JobProc.SETFILTER("Name Service NAS",'<>%1','');
+              IF NOT JobProc.ISEMPTY THEN BEGIN
+                //групприровка по Процессу и Сервису NAS + Внешний источник в случае Консолидирующей фирмы
+                GroupJobProc(JobProc,JobProcTemp);
+                JobProcTemp.RESET;
+                IF JobProcTemp.FINDSET THEN REPEAT
+                  IF isCheckTime(JobProcTemp,JobProcTimeTemp) THEN BEGIN
+                    BusinessProc.GET(JobProcTemp.Process);
+                    LastDateTime := JobProcStatus.GetLastTime(Company.Name,JobProcTemp.Process,JobProcTemp."Name Service NAS",
+                                                                           JobProcTemp."External Source");
+
+                    //NC S1197,MIO55 > PCH
+                    JobProc.SETRANGE(Process,JobProcTemp.Process);
+                    JobProc.SETRANGE("Name Service NAS",JobProcTemp."Name Service NAS");
+                    //NC S1197,MIO55 < PCH
+                    IsPlan := IsCheckProc(JobProc,STRSUBSTNO('%1..%2',JobProcStatus.Status::Planed,
+                                                                      JobProcStatus.Status::Working));
+
+                    //NC S1197,MIO55 > PCH
+                    //IF NASStatus.GET(Company.Name,JobProcTemp."Name Service NAS") THEN
+                    //  IsNas := (NASStatus."NAS Mode" = NASStatus."NAS Mode"::Flexible)
+                    //ELSE
+                    //NC S1197,MIO55 < PCH
+                      IsNas := FALSE;
+                    IF (CURRENTDATETIME - LastDateTime > BusinessProc."Periodicity (min.)"*60*1000) AND
+                       (IsPlan) AND
+                       (NOT IsNas) THEN BEGIN
+                      //Проверка на то что есть что обрабатывать
+
+                      JobProc.SETRANGE(Process,JobProcTemp.Process);
+                      JobProc.SETRANGE("Name Service NAS",JobProcTemp."Name Service NAS");
+                      IF Company."Company Type" = Company."Company Type"::Consolidation THEN
+                        JobProc.SETRANGE("External Source",JobProcTemp."External Source");
+
+                      IsRun := FALSE;
+                      JobProcStatus.ClearDependency;
+
+                      JobProc.SETRANGE(Dependency,0);
+                      IF JobProc.FINDSET THEN REPEAT
+                        IsRun := TRUE;
+
+                        IF JobProc."Data Check" THEN BEGIN
+                          IF JobProc."Type Processing" = JobProc."Type Processing"::" " THEN
+                            IsRun := IsRun AND FALSE
+                          ELSE
+                            IsRun := IsRun AND JobProc.IsRun;
+                        END ELSE
+                          IsRun := IsRun AND TRUE;
+
+                        IF JobProc."Check Uniqueness" THEN
+                          IsRun := IsRun AND JobProcStatus.IsCheckUniq(JobProc,STRSUBSTNO('%1..%2',JobProcStatus.Status::Planed,
+                                                                                                   JobProcStatus.Status::Working));
+                        IF IsRun THEN
+                          JobProcStatus.AddJob(JobProc);
+                        COMMIT;
+                      UNTIL JobProc.NEXT = 0;
+
+                      JobProc.SETFILTER(Dependency,'<>%1',0);
+                      IF JobProc.FINDSET THEN REPEAT
+                        IF 0 <> JobProcStatus.GetDependency(JobProc.Dependency) THEN BEGIN
+                          IsRun := TRUE;
+
+                          IF JobProc."Data Check" THEN BEGIN
+                            IF JobProc."Type Processing" = JobProc."Type Processing"::" " THEN
+                              IsRun := IsRun AND FALSE
+                            ELSE
+                              IsRun := IsRun AND JobProc.IsRun;
+                          END ELSE
+                            IsRun := IsRun AND TRUE;
+
+                          IF JobProc."Check Uniqueness" THEN
+                            IsRun := IsRun AND JobProcStatus.IsCheckUniq(JobProc,STRSUBSTNO('%1..%2',JobProcStatus.Status::Planed,
+                                                                                                     JobProcStatus.Status::Working));
+                          IF IsRun THEN
+                            JobProcStatus.AddJob(JobProc);
+                          COMMIT;
+                        END;
+                      UNTIL JobProc.NEXT = 0;
+
+                      //NC S1197,MIO55 > PCH
+                      JobProc.SETRANGE(Dependency);
+                      //NC S1197,MIO55 < PCH
+                    END;
+                  END;
+                UNTIL JobProcTemp.NEXT = 0;
+              END;
+              COMMIT;
+            UNTIL Company.NEXT = 0;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Company@1000000000 : Record 2000000006;
+      BusinessProc@1000000002 : Record 50061;
+      JobProc@1000000001 : Record 50062;
+      JobProcTemp@1000000003 : TEMPORARY Record 50062;
+      JobProcTimeTemp@1000000006 : TEMPORARY Record 50062;
+      JobProcStatus@1000000004 : Record 50063;
+      NASStatus@1000000005 : Record 50067;
+
+    PROCEDURE GroupJobProc@1000000005(VAR JobPr@1000000000 : Record 50062;VAR JobPrTemp@1000000001 : TEMPORARY Record 50062);
+    VAR
+      Company2@1000000002 : Record 2000000006;
+    BEGIN
+      JobPrTemp.DELETEALL;
+      IF JobPr.FINDSET THEN REPEAT
+        Company2.GET(JobPr."Company No.");
+        JobPrTemp.RESET;
+        JobPrTemp.SETRANGE(Process,JobPr.Process);
+        JobPrTemp.SETRANGE("Name Service NAS",JobPr."Name Service NAS");
+        IF Company2."Company Type" = Company2."Company Type"::Consolidation THEN
+          JobPrTemp.SETRANGE("External Source",JobPr."External Source");
+        IF JobPrTemp.ISEMPTY THEN BEGIN
+          JobPrTemp."Company No." := JobPr."Company No.";
+          JobPrTemp."Line No." := JobPr."Line No.";
+          JobPrTemp.Process := JobPr.Process;
+          JobPrTemp."Name Service NAS" := JobPr."Name Service NAS";
+          JobPr.CALCFIELDS("Name Server NAS");
+          JobPrTemp."Name Server NAS" := JobPr."Name Server NAS";
+          IF Company2."Company Type" = Company2."Company Type"::Consolidation THEN
+            JobPrTemp."External Source" := JobPr."External Source";
+          JobPrTemp.INSERT;
+        END;
+      UNTIL JobPr.NEXT = 0;
+    END;
+
+    PROCEDURE IsCheckProc@1000000007(VAR JobPr@1000000000 : TEMPORARY Record 50062;StatusFilter@1000000001 : Text[250]) : Boolean;
+    VAR
+      JobProcStatus2@1000000002 : TEMPORARY Record 50063;
+    BEGIN
+      IF JobPr.FINDSET THEN REPEAT
+        JobPr."Check Uniqueness" := FALSE;  // Значит проверка будет делаться только в текущей фирме
+        IF NOT JobProcStatus.IsCheckUniq(JobPr,StatusFilter) THEN
+          EXIT(FALSE);
+      UNTIL JobPr.NEXT = 0;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE isCheckTime@1000000000(VAR JobPr@1000000003 : Record 50062;VAR JobPrTimeTemp@1000000000 : TEMPORARY Record 50062) : Boolean;
+    VAR
+      BusProc@1000000001 : Record 50061;
+      Company2@1000000002 : Record 2000000006;
+    BEGIN
+      BusProc.GET(JobPr.Process);
+      Company2.GET(JobPr."Company No.");
+      IF TODAY <> CALCDATE(BusProc."Date Formula",TODAY) THEN
+        EXIT(FALSE);
+      IF (BusProc."Time Start" <> 0T) OR (BusProc."Time End" <> 0T) THEN BEGIN
+        IF BusProc."Time Start" <= BusProc."Time End" THEN BEGIN
+          IF (BusProc."Time Start" > TIME) OR (TIME > BusProc."Time End") THEN
+            EXIT(FALSE);
+        END ELSE BEGIN
+          IF (BusProc."Time Start" > TIME) AND (TIME > BusProc."Time End") THEN
+            EXIT(FALSE);
+        END;
+      END;
+      JobPrTimeTemp.RESET;
+      JobPrTimeTemp.SETRANGE("Company No.",JobPr."Company No.");
+      JobPrTimeTemp.SETRANGE(Process,JobPr.Process);
+      JobPrTimeTemp.SETRANGE("Name Service NAS",JobPr."Name Service NAS");
+      IF Company2."Company Type" = Company2."Company Type"::Consolidation THEN
+        JobPrTimeTemp.SETRANGE("External Source",JobPr."External Source");
+      IF JobProcTimeTemp.FINDFIRST THEN BEGIN
+        //NC S1197,MIO55 > PCH
+        //IF JobPrTimeTemp."Recons. Status Changed" + BusProc."Periodicity (min.)"*60*1000 < CURRENTDATETIME THEN BEGIN
+        IF JobPrTimeTemp."Recons. Status Changed" + BusProc."Periodicity (min.)"*60*1000 / 2 < CURRENTDATETIME THEN BEGIN
+        //NC S1197,MIO55 < PCH
+          JobPrTimeTemp."Recons. Status Changed" := CURRENTDATETIME;
+          JobPrTimeTemp.MODIFY;
+          EXIT(TRUE);
+        END;
+      END ELSE BEGIN
+        JobPrTimeTemp.INIT;
+        JobPrTimeTemp."Company No." := JobPr."Company No.";
+        JobPrTimeTemp."Line No." := JobPr."Line No.";
+        JobPrTimeTemp.Process := JobPr.Process;
+        JobPrTimeTemp."Name Service NAS" := JobPr."Name Service NAS";
+        IF Company2."Company Type" = Company2."Company Type"::Consolidation THEN
+          JobPrTimeTemp."External Source" := JobPr."External Source";
+        JobPrTimeTemp."Recons. Status Changed" := CURRENTDATETIME;
+        JobPrTimeTemp.INSERT;
+        EXIT(TRUE);
+      END;
+      EXIT(FALSE);
+    END;
+
+    BEGIN
+    {
+      NC MDM01 PCH
+      NC S1197 PCH Перенос логики с MIS. Включены запросы S616, S915
+      NC MIO55 PCH Исправлено когда в план не встают задачи в одной фирме но в разных сервисах,
+                   это частично пересекается с доработкой S1197
+    }
+    END.
+  }
+}
+

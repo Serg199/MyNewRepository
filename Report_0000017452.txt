@@ -1,0 +1,214 @@
+OBJECT Report 17452 Spreadsheet
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Spreadsheet;
+               RUS=Платежная ведомость];
+    ProcessingOnly=Yes;
+    OnPostReport=BEGIN
+                   ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 6670;    ;DataItem;                    ;
+               DataItemTable=Table12422;
+               DataItemTableView=WHERE(Type=CONST(Unit));
+               OnPreDataItem=BEGIN
+                               ExcelMgt.CreateBook;
+                               FillCell('A1','Организация: ' + LocalRepMngt.GetCompanyName,TRUE,0,0);
+                               FillCell('A2','Сводная ведомость по предприятию № ' + DocumentNo,TRUE,0,0);
+                               FillCell('A3',STRSUBSTNO('Учетный период от %1 до %2',
+                                   PayrollPeriod."Starting Date",PayrollPeriod."Ending Date"),TRUE,0,0);
+
+                               FillCell('A5','№ п/п',TRUE,1,0);
+                               FillCell('B5','Код подразделения',TRUE,1,0);
+                               FillCell('C5','Наименование подразделения',TRUE,1,0);
+                               FillCell('D5','Итого начислено',TRUE,1,0);
+                               FillCell('E5','Итого удержано',TRUE,1,0);
+                               FillCell('F5','Итого к выплате',TRUE,1,0);
+
+                               ExcelMgt.SetColumnSize('A5',3);
+                               ExcelMgt.FormatCell_WrapText('A5:F5',TRUE);
+                               ExcelMgt.SetColumnSize('B5',10);
+                               ExcelMgt.SetColumnSize('C5',30);
+                               ExcelMgt.SetColumnSize('D5',11);
+                               ExcelMgt.SetColumnSize('E5',11);
+                               ExcelMgt.SetColumnSize('F5',11);
+
+                               RowNo := 6;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CASE DataSource OF
+                                    DataSource::"Payroll Documents":
+                                      BEGIN
+                                        PayrollDocLine.SETRANGE("Org. Unit Code",Code);
+                                        PayrollDocLine.SETRANGE("Period Code",PeriodCode);
+
+                                        PayrollDocLine.SETFILTER("Element Type",'%1|%2',
+                                          PayrollDocLine."Element Type"::Wage,
+                                          PayrollDocLine."Element Type"::Bonus);
+                                        PayrollDocLine.CALCSUMS(Amount);
+                                        AddedAmount := PayrollDocLine.Amount;
+
+                                        PayrollDocLine.SETFILTER("Element Type",'%1|%2',
+                                          PayrollDocLine."Element Type"::"Income Tax",
+                                          PayrollDocLine."Element Type"::Deduction);
+                                        PayrollDocLine.CALCSUMS(Amount);
+                                        DeductedAmount := ABS(PayrollDocLine.Amount);
+
+                                        ToPayAmount := AddedAmount - DeductedAmount;
+                                      END;
+                                    DataSource::"Posted Entries":
+                                      BEGIN
+                                        PayrollLedgEntry.SETCURRENTKEY(
+                                          "Org. Unit Code","Element Type","Element Code","Posting Date","Period Code");
+                                        PayrollLedgEntry.SETRANGE("Org. Unit Code",Code);
+                                        PayrollLedgEntry.SETRANGE("Period Code",PeriodCode);
+                                        PayrollLedgEntry.SETFILTER("Element Type",'%1|%2',
+                                          PayrollLedgEntry."Element Type"::Wage,
+                                          PayrollLedgEntry."Element Type"::Bonus);
+                                        PayrollLedgEntry.CALCSUMS("Payroll Amount");
+                                        AddedAmount := PayrollLedgEntry."Payroll Amount";
+                                        PayrollLedgEntry.SETFILTER("Element Type",'%1|%2',
+                                          PayrollLedgEntry."Element Type"::"Income Tax",
+                                          PayrollLedgEntry."Element Type"::Deduction);
+                                        PayrollLedgEntry.CALCSUMS("Payroll Amount");
+                                        DeductedAmount := ABS(PayrollLedgEntry."Payroll Amount");
+
+                                        ToPayAmount := AddedAmount - DeductedAmount;
+                                      END;
+                                  END;
+
+                                  TotalAddedAmount += AddedAmount;
+                                  TotalDeductedAmount += DeductedAmount;
+                                  TotalToPayAmount += ToPayAmount;
+
+                                  FillCell('A' + FORMAT(RowNo),FORMAT(RowNo - 5),FALSE,1,0);
+                                  FillCell('B' + FORMAT(RowNo),Code,FALSE,1,0);
+                                  FillCell('C' + FORMAT(RowNo),Name,FALSE,1,0);
+                                  FillCell('D' + FORMAT(RowNo),FormatAmount(AddedAmount),FALSE,1,1);
+                                  FillCell('E' + FORMAT(RowNo),FormatAmount(DeductedAmount),FALSE,1,1);
+                                  FillCell('F' + FORMAT(RowNo),FormatAmount(ToPayAmount),FALSE,1,1);
+
+                                  RowNo += 1;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExcelMgt.MergeCells('A' + FORMAT(RowNo),'C' + FORMAT(RowNo));
+                                FillCell('A' + FORMAT(RowNo),'Итого по организации, руб.',TRUE,1,0);
+                                ExcelMgt.FormatCellOutsideBorders(STRSUBSTNO('A%1:C%1',FORMAT(RowNo)),1);
+
+                                FillCell('D' + FORMAT(RowNo),FormatAmount(TotalAddedAmount),TRUE,1,1);
+                                FillCell('E' + FORMAT(RowNo),FormatAmount(TotalDeductedAmount),TRUE,1,1);
+                                FillCell('F' + FORMAT(RowNo),FormatAmount(TotalToPayAmount),TRUE,1,1);
+                              END;
+
+               ReqFilterFields=Code }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   PeriodCode := PayrollPeriod.PeriodByDate(WORKDATE);
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Data Source;
+                             RUS=Источник данных];
+                  OptionCaptionML=[ENU=Posted Entries,Payroll Documents;
+                                   RUS=Учтенные операции,Зарплатные документы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DataSource }
+
+      { 1210001;2;Field     ;
+                  CaptionML=[ENU=Pay Period;
+                             RUS=Платежный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PeriodCode;
+                  OnValidate=BEGIN
+                               PeriodCodeOnAfterValidate;
+                             END;
+                              }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      PayrollDocLine@1210010 : Record 17415;
+      PayrollLedgEntry@1210009 : Record 17418;
+      PayrollPeriod@1210004 : Record 17426;
+      LocalRepMngt@1210008 : Codeunit 12401;
+      ExcelMgt@1210007 : Codeunit 12416;
+      DataSource@1210006 : 'Posted Entries,Payroll Documents';
+      PeriodCode@1210011 : Code[10];
+      DocumentNo@1210001 : Code[20];
+      RowNo@1210000 : Integer;
+      AddedAmount@1210012 : Decimal;
+      DeductedAmount@1210013 : Decimal;
+      ToPayAmount@1210014 : Decimal;
+      TotalAddedAmount@1210015 : Decimal;
+      TotalDeductedAmount@1210016 : Decimal;
+      TotalToPayAmount@1210017 : Decimal;
+
+    PROCEDURE FormatAmount@1210031(Amount@1210000 : Decimal) : Text[50];
+    BEGIN
+      IF Amount = 0 THEN
+        EXIT('');
+
+      EXIT(FORMAT(Amount,0,'<Precision,2:2><Standard Format,1>'));
+    END;
+
+    PROCEDURE FillCell@1210008(CellName@1210000 : Text[30];CellValue@1210001 : Text[250];Bold@1210003 : Boolean;Borders@1210002 : 'None,Thin,Medium';CellFormat@1210004 : 'Text,Decimal');
+    BEGIN
+      ExcelMgt.FillCell(CellName,CellValue);
+      CASE Borders OF
+        Borders::Thin:
+          ExcelMgt.FormatCellOutsideBorders(CellName,1);
+        Borders::Medium:
+          ExcelMgt.FormatCellOutsideBorders(CellName,2);
+      END;
+      IF Bold THEN
+        ExcelMgt.FormatCell_Bold(CellName,TRUE);
+
+      IF CellFormat = CellFormat::Decimal THEN
+        ExcelMgt.SetCellNumberFormat(CellName,'0,00');
+    END;
+
+    LOCAL PROCEDURE PeriodCodeOnAfterValidate@19067385();
+    BEGIN
+      PayrollPeriod.GET(PeriodCode);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,105 @@
+OBJECT Codeunit 17351 Average Headcount Calculation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HRSetup@1210003 : Record 5218;
+      TimesheetMgt@1210000 : Codeunit 17440;
+      CalendarMgt@1210001 : Codeunit 17430;
+
+    PROCEDURE CalcAvgCount@1470014(EmployeeNo@1210001 : Code[20];CurrDate@1470010 : Date) AvgAmt : Decimal;
+    VAR
+      EmplJobEntry@1470002 : Record 17363;
+      PayrollPeriod@1210002 : Record 17426;
+      StartDate@1210003 : Date;
+      EndDate@1210004 : Date;
+      ActualWorkDays@1210005 : Decimal;
+      ActualWorkHours@1210007 : Decimal;
+      StandardCalendarWorkHours@1210008 : Decimal;
+      AdjustedDaysOff@1210000 : Decimal;
+    BEGIN
+      HRSetup.GET;
+      HRSetup.TESTFIELD("Official Calendar Code");
+      HRSetup.TESTFIELD("Average Headcount Group Code");
+
+      PayrollPeriod.GET(PayrollPeriod.PeriodByDate(CurrDate));
+      PayrollPeriod.TESTFIELD("Starting Date");
+      StartDate := PayrollPeriod."Starting Date";
+      EndDate := PayrollPeriod."Ending Date";
+
+      EmplJobEntry.SETCURRENTKEY("Employee No.","Starting Date","Ending Date");
+      EmplJobEntry.SETRANGE("Employee No.",EmployeeNo);
+      EmplJobEntry.SETFILTER("Starting Date",'<=%1',EndDate);
+      EmplJobEntry.SETFILTER("Position Rate",'>0');
+      IF EmplJobEntry.FINDSET THEN
+        REPEAT
+          IF (EmplJobEntry."Ending Date" = 0D) OR
+             (EmplJobEntry."Ending Date" >= StartDate)
+          THEN
+            // full-time employee
+            IF NOT EmplJobEntry."Out-of-Staff" THEN BEGIN
+              ActualWorkDays :=
+                TimesheetMgt.GetTimesheetInfo(
+                  EmployeeNo,HRSetup."Average Headcount Group Code",StartDate,EndDate,2);
+              AdjustedDaysOff := AdjustDaysOff(EmployeeNo,StartDate,EndDate);
+              ActualWorkDays -= AdjustedDaysOff;
+              AvgAmt += ActualWorkDays / (EndDate - StartDate + 1);
+            END ELSE BEGIN
+              // part-time employee
+              ActualWorkHours :=
+                TimesheetMgt.GetTimesheetInfo(
+                  EmployeeNo,HRSetup."Average Headcount Group Code",StartDate,EndDate,3);
+              StandardCalendarWorkHours :=
+                CalendarMgt.GetPeriodInfo(HRSetup."Official Calendar Code",StartDate,EndDate,3);
+              IF StandardCalendarWorkHours <> 0 THEN
+                AvgAmt += ActualWorkHours / StandardCalendarWorkHours;
+            END;
+        UNTIL EmplJobEntry.NEXT = 0;
+    END;
+
+    PROCEDURE AdjustDaysOff@1210000(EmployeeNo@1210003 : Code[20];StartDate@1210001 : Date;EndDate@1210000 : Date) AdjAmount : Decimal;
+    VAR
+      TimesheetLine@1210002 : Record 17441;
+      TimesheetLineWorking@1210004 : Record 17441;
+    BEGIN
+      TimesheetLine.SETRANGE("Calendar Code",HRSetup."Default Calendar Code");
+      TimesheetLine.SETRANGE("Employee No.",EmployeeNo);
+      TimesheetLine.SETRANGE(Date,StartDate,EndDate);
+      TimesheetLine.SETRANGE(Nonworking,TRUE);
+      IF TimesheetLine.FINDSET THEN
+        REPEAT
+          // find previous working day
+          TimesheetLineWorking.COPY(TimesheetLine);
+          TimesheetLineWorking.SETFILTER(Date,'..%1',TimesheetLine.Date);
+          TimesheetLineWorking.SETRANGE(Nonworking,FALSE);
+          IF TimesheetLineWorking.FINDLAST THEN BEGIN
+            // check employees presence at that date
+            IF TimesheetMgt.GetTimesheetInfo(
+                 EmployeeNo,
+                 HRSetup."Average Headcount Group Code",
+                 TimesheetLineWorking.Date,
+                 TimesheetLineWorking.Date,
+                 2) = 0
+            THEN
+              AdjAmount += 1;
+          END;
+        UNTIL TimesheetLine.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

@@ -1,0 +1,394 @@
+OBJECT Codeunit 14940 Update G/L Corr. Analysis View
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=14940;
+    Permissions=TableData 363=rm,
+                TableData 364=r,
+                TableData 365=rimd,
+                TableData 366=rimd;
+    OnRun=BEGIN
+            MaxNumber := 2147483647;
+            IF Code <> '' THEN
+              IF CONFIRM(Text000,TRUE,TABLECAPTION,Code) THEN BEGIN
+                MODIFY;
+                UpdateOne(Rec,TRUE);
+              END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Do you want to update %1 %2?;RUS=Обновить %1 %2?';
+      Text005@1001 : TextConst 'ENU=Analysis View     #1############################\\;RUS=Аналит. отчет            #1############################\\';
+      Text006@1002 : TextConst 'ENU=Updating table    #2############################\;RUS=Обнов. таблицы           #2############################\';
+      Text007@1003 : TextConst 'ENU=Speed: (Entries/s)#4########\;RUS=Быстродействие: (оп./с)  #4########\';
+      Text008@1004 : TextConst 'ENU=Average Speed     #5########;RUS=Средняя скорость         #5########';
+      GLCorrAnalysisView@1005 : Record 14940;
+      GLCorrEntry@1006 : Record 12401;
+      GLCorrAnalysisViewEntry@1008 : Record 14942;
+      TempGLCorrAnalysisViewEntry@1010 : TEMPORARY Record 14942;
+      GLCorrAnalysisViewFilter@1210002 : Record 14941;
+      DimSetEntry@1210004 : Record 480;
+      TempDimBuf@1210005 : TEMPORARY Record 360;
+      TempDimSetEntry@1210001 : TEMPORARY Record 480;
+      TempDimEntryBuffer@1210000 : TEMPORARY Record 373;
+      FilterIsInitialized@1014 : Boolean;
+      FiltersExist@1210003 : Boolean;
+      MaxNumber@1015 : Integer;
+      LedgEntryDimEntryNo@1016 : Integer;
+      PrevPostingDate@1017 : Date;
+      PrevCalculatedPostingDate@1018 : Date;
+      NoOfEntries@1019 : Integer;
+      Window@1020 : Dialog;
+      ShowProgressWindow@1021 : Boolean;
+      WinLastEntryNo@1022 : Integer;
+      WinPrevEntryNo@1023 : Integer;
+      WinUpdateCounter@1024 : Integer;
+      WinTotalCounter@1025 : Integer;
+      WinTime0@1026 : Time;
+      WinTime1@1027 : Time;
+      WinTime2@1028 : Time;
+      Text009@1030 : TextConst 'ENU=#6############### @3@@@@@@@@@@@@@@@@@@@@@@@@@@@@\\;RUS=#6###############        @3@@@@@@@@@@@@@@@@@@@@@@@@@@@@\\';
+      Text010@1031 : TextConst 'ENU=Summarizing;RUS=Суммирование';
+      Text011@1032 : TextConst 'ENU=Updating Database;RUS=Обновление базы данных';
+
+    PROCEDURE UpdateAll@15(DirectlyFromPosting@1001 : Boolean);
+    VAR
+      GLCorrAnalysisView2@1002 : Record 14940;
+    BEGIN
+      MaxNumber := 2147483647;
+      GLCorrAnalysisView2.SETRANGE(Blocked,FALSE);
+      IF DirectlyFromPosting THEN
+        GLCorrAnalysisView2.SETRANGE("Update on G/L Corr. Creation",TRUE);
+
+      IF GLCorrAnalysisView2.ISEMPTY THEN
+        EXIT;
+
+      GLCorrAnalysisView2.LOCKTABLE;
+      IF GLCorrAnalysisView2.FINDSET THEN
+        REPEAT
+          UpdateOne(GLCorrAnalysisView2,NOT DirectlyFromPosting);
+        UNTIL GLCorrAnalysisView2.NEXT = 0;
+    END;
+
+    PROCEDURE Update@23(VAR NewGLCorrAnalysisView@1000 : Record 14940;ShowWindow@1002 : Boolean);
+    BEGIN
+      MaxNumber := 2147483647;
+      NewGLCorrAnalysisView.TESTFIELD(Blocked,FALSE);
+      UpdateOne(NewGLCorrAnalysisView,ShowWindow);
+    END;
+
+    LOCAL PROCEDURE UpdateOne@11(VAR NewGLCorrAnalysisView@1000 : Record 14940;ShowWindow@1002 : Boolean);
+    VAR
+      LastEntryNo@1003 : Integer;
+    BEGIN
+      GLCorrAnalysisView := NewGLCorrAnalysisView;
+      GLCorrAnalysisView.TESTFIELD(Blocked,FALSE);
+      ShowProgressWindow := ShowWindow;
+      IF ShowProgressWindow THEN
+        InitWindow;
+
+      GLCorrEntry.RESET;
+      GLCorrEntry.SETRANGE("Entry No.",GLCorrAnalysisView."Last Entry No." + 1,MaxNumber);
+      IF GLCorrEntry.FINDLAST THEN BEGIN
+        LastEntryNo := GLCorrEntry."Entry No.";
+        IF ShowProgressWindow THEN
+          UpdateWindowHeader(DATABASE::"G/L Corr. Analysis View Entry",GLCorrEntry."Entry No.");
+        GLCorrEntry.SETRANGE("Entry No.",GLCorrAnalysisView."Last Entry No." + 1,LastEntryNo);
+        UpdateEntries;
+        GLCorrAnalysisView."Last Entry No." := LastEntryNo;
+      END;
+
+      GLCorrAnalysisView."Last Date Updated" := TODAY;
+      GLCorrAnalysisView.MODIFY;
+
+      IF ShowProgressWindow THEN
+        Window.CLOSE;
+    END;
+
+    LOCAL PROCEDURE UpdateEntries@9();
+    BEGIN
+      FilterIsInitialized := FALSE;
+      LedgEntryDimEntryNo := 0;
+      GLCorrEntry.FILTERGROUP(2);
+      GLCorrEntry.SETFILTER("Debit Account No.",'<>%1','');
+      GLCorrEntry.SETFILTER("Credit Account No.",'<>%1','');
+      GLCorrEntry.FILTERGROUP(0);
+      IF GLCorrAnalysisView."Debit Account Filter" <> '' THEN
+        GLCorrEntry.SETFILTER("Debit Account No.",GLCorrAnalysisView."Debit Account Filter");
+      IF GLCorrAnalysisView."Credit Account Filter" <> '' THEN
+        GLCorrEntry.SETFILTER("Credit Account No.",GLCorrAnalysisView."Credit Account Filter");
+      IF GLCorrAnalysisView."Business Unit Filter" <> '' THEN
+        GLCorrEntry.SETFILTER("Business Unit Code",GLCorrAnalysisView."Business Unit Filter");
+      IF NOT GLCorrEntry.FINDSET(TRUE) THEN
+        EXIT;
+
+      REPEAT
+        IF CheckDimFilters THEN
+          UpdateAnalysisViewEntry(
+            GetDimValue(GLCorrEntry."Debit Dimension Set ID",GLCorrAnalysisView."Debit Dimension 1 Code"),
+            GetDimValue(GLCorrEntry."Debit Dimension Set ID",GLCorrAnalysisView."Debit Dimension 2 Code"),
+            GetDimValue(GLCorrEntry."Debit Dimension Set ID",GLCorrAnalysisView."Debit Dimension 3 Code"),
+            GetDimValue(GLCorrEntry."Credit Dimension Set ID",GLCorrAnalysisView."Credit Dimension 1 Code"),
+            GetDimValue(GLCorrEntry."Credit Dimension Set ID",GLCorrAnalysisView."Credit Dimension 2 Code"),
+            GetDimValue(GLCorrEntry."Credit Dimension Set ID",GLCorrAnalysisView."Credit Dimension 3 Code"));
+        IF ShowProgressWindow THEN
+          UpdateWindowCounter(GLCorrEntry."Entry No.");
+      UNTIL GLCorrEntry.NEXT = 0;
+
+      IF ShowProgressWindow THEN
+        UpdateWindowCounter(GLCorrEntry."Entry No.");
+      FlushAnalysisViewEntry;
+    END;
+
+    LOCAL PROCEDURE UpdateAnalysisViewEntry@3(DebitDimValue1@1000 : Code[20];DebitDimValue2@1001 : Code[20];DebitDimValue3@1002 : Code[20];CreditDimValue1@1210003 : Code[20];CreditDimValue2@1210002 : Code[20];CreditDimValue3@1210001 : Code[20]);
+    VAR
+      PostingDate@1004 : Date;
+      EntryNo@1005 : Integer;
+    BEGIN
+      PostingDate := GLCorrEntry."Posting Date";
+      IF PostingDate < GLCorrAnalysisView."Starting Date" THEN BEGIN
+        PostingDate := GLCorrAnalysisView."Starting Date" - 1;
+        EntryNo := 0;
+      END ELSE BEGIN
+        PostingDate := CalculatePeriodStart(PostingDate,GLCorrAnalysisView."Date Compression");
+        IF PostingDate < GLCorrAnalysisView."Starting Date" THEN
+          PostingDate := GLCorrAnalysisView."Starting Date";
+        IF GLCorrAnalysisView."Date Compression" = GLCorrAnalysisView."Date Compression"::None THEN
+          EntryNo := GLCorrEntry."Entry No."
+        ELSE
+          EntryNo := 0;
+      END;
+
+      TempGLCorrAnalysisViewEntry."G/L Corr. Analysis View Code" := GLCorrAnalysisView.Code;
+      TempGLCorrAnalysisViewEntry."Business Unit Code" := GLCorrEntry."Business Unit Code";
+      TempGLCorrAnalysisViewEntry."Debit Account No." := GLCorrEntry."Debit Account No.";
+      TempGLCorrAnalysisViewEntry."Credit Account No." := GLCorrEntry."Credit Account No.";
+      TempGLCorrAnalysisViewEntry."Posting Date" := PostingDate;
+      TempGLCorrAnalysisViewEntry."Debit Dimension 1 Value Code" := DebitDimValue1;
+      TempGLCorrAnalysisViewEntry."Debit Dimension 2 Value Code" := DebitDimValue2;
+      TempGLCorrAnalysisViewEntry."Debit Dimension 3 Value Code" := DebitDimValue3;
+      TempGLCorrAnalysisViewEntry."Credit Dimension 1 Value Code" := CreditDimValue1;
+      TempGLCorrAnalysisViewEntry."Credit Dimension 2 Value Code" := CreditDimValue2;
+      TempGLCorrAnalysisViewEntry."Credit Dimension 3 Value Code" := CreditDimValue3;
+      TempGLCorrAnalysisViewEntry."Entry No." := EntryNo;
+
+      IF TempGLCorrAnalysisViewEntry.FIND THEN BEGIN
+        TempGLCorrAnalysisViewEntry.Amount := TempGLCorrAnalysisViewEntry.Amount + GLCorrEntry.Amount;
+        TempGLCorrAnalysisViewEntry."Amount (ACY)" := TempGLCorrAnalysisViewEntry."Amount (ACY)" + GLCorrEntry."Amount (ACY)";
+        TempGLCorrAnalysisViewEntry.MODIFY;
+      END ELSE BEGIN
+        TempGLCorrAnalysisViewEntry.Amount := GLCorrEntry.Amount;
+        TempGLCorrAnalysisViewEntry."Amount (ACY)" := GLCorrEntry."Amount (ACY)";
+        TempGLCorrAnalysisViewEntry.INSERT;
+        NoOfEntries := NoOfEntries + 1;
+      END;
+      IF NoOfEntries >= 10000 THEN
+        FlushAnalysisViewEntry;
+    END;
+
+    LOCAL PROCEDURE FlushAnalysisViewEntry@5();
+    BEGIN
+      IF ShowProgressWindow THEN
+        Window.UPDATE(6,Text011);
+      IF TempGLCorrAnalysisViewEntry.FINDSET THEN
+        REPEAT
+          GLCorrAnalysisViewEntry.INIT;
+          GLCorrAnalysisViewEntry := TempGLCorrAnalysisViewEntry;
+          IF NOT GLCorrAnalysisViewEntry.INSERT THEN BEGIN
+            GLCorrAnalysisViewEntry.FIND;
+            GLCorrAnalysisViewEntry.Amount :=
+              GLCorrAnalysisViewEntry.Amount + TempGLCorrAnalysisViewEntry.Amount;
+            GLCorrAnalysisViewEntry."Amount (ACY)" :=
+              GLCorrAnalysisViewEntry."Amount (ACY)" + TempGLCorrAnalysisViewEntry."Amount (ACY)";
+            GLCorrAnalysisViewEntry.MODIFY;
+          END;
+        UNTIL TempGLCorrAnalysisViewEntry.NEXT = 0;
+      TempGLCorrAnalysisViewEntry.DELETEALL;
+      NoOfEntries := 0;
+      IF ShowProgressWindow THEN
+        Window.UPDATE(6,Text010);
+    END;
+
+    LOCAL PROCEDURE GetDimValue@1210004(DimSetID@1170000000 : Integer;DimCode@1000 : Code[20]) : Code[20];
+    VAR
+      DimSetEntry@1210000 : Record 480;
+    BEGIN
+      IF DimSetEntry.GET(DimSetID,DimCode) THEN
+        EXIT(DimSetEntry."Dimension Value Code");
+
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE InitWindow@1();
+    BEGIN
+      Window.OPEN(
+        Text005 +
+        Text006 +
+        Text009 +
+        Text007 +
+        Text008);
+      Window.UPDATE(6,Text010);
+    END;
+
+    LOCAL PROCEDURE UpdateWindowCounter@7(EntryNo@1000 : Integer);
+    BEGIN
+      WinUpdateCounter := WinUpdateCounter + 1;
+      WinTime2 := TIME;
+      IF (WinTime2 > WinTime1 + 1000) OR (EntryNo = WinLastEntryNo) THEN BEGIN
+        IF WinLastEntryNo <> 0 THEN
+          Window.UPDATE(3,ROUND(EntryNo / WinLastEntryNo * 10000,1));
+        WinPrevEntryNo := EntryNo;
+        WinTotalCounter := WinTotalCounter + WinUpdateCounter;
+        IF WinTime2 <> WinTime1 THEN
+          Window.UPDATE(4,ROUND(WinUpdateCounter * (1000 / (WinTime2 - WinTime1)),1));
+        IF WinTime2 <> WinTime0 THEN
+          Window.UPDATE(5,ROUND(WinTotalCounter * (1000 / (WinTime2 - WinTime0)),1));
+        WinTime1 := WinTime2;
+        WinUpdateCounter := 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateWindowHeader@13(TableID@1000 : Integer;EntryNo@1001 : Integer);
+    VAR
+      Object@1002 : Record 2000000001;
+    BEGIN
+      WinLastEntryNo := EntryNo;
+      WinPrevEntryNo := 0;
+      WinTotalCounter := 0;
+      Object.GET(Object.Type::Table,'',TableID);
+      Window.UPDATE(1,GLCorrAnalysisView.Code);
+      Window.UPDATE(2,Object.Name);
+      Window.UPDATE(3,0);
+      Window.UPDATE(4,0);
+      Window.UPDATE(5,0);
+      WinTime0 := TIME;
+      WinTime1 := WinTime0;
+      WinTime2 := WinTime0;
+    END;
+
+    PROCEDURE CheckDimFilters@1210005() : Boolean;
+    VAR
+      GLCorrAnalysisViewFilter@1210000 : Record 14941;
+      DimSetEntry@1170000000 : Record 480;
+    BEGIN
+      GLCorrAnalysisViewFilter.SETRANGE("G/L Corr. Analysis View Code",GLCorrAnalysisView.Code);
+      IF GLCorrAnalysisViewFilter.ISEMPTY THEN
+        EXIT(TRUE);
+
+      GLCorrAnalysisViewFilter.SETRANGE("Filter Group",GLCorrAnalysisViewFilter."Filter Group"::Debit);
+      IF GLCorrAnalysisViewFilter.FINDSET THEN
+        REPEAT
+          DimSetEntry.SETRANGE("Dimension Set ID",GLCorrEntry."Debit Dimension Set ID");
+          DimSetEntry.SETRANGE("Dimension Code",GLCorrAnalysisViewFilter."Dimension Code");
+          DimSetEntry.SETRANGE("Dimension Value Code",GLCorrAnalysisViewFilter."Dimension Value Filter");
+          IF DimSetEntry.ISEMPTY THEN
+            EXIT(FALSE);
+        UNTIL GLCorrAnalysisViewFilter.NEXT = 0;
+
+      GLCorrAnalysisViewFilter.SETRANGE("Filter Group",GLCorrAnalysisViewFilter."Filter Group"::Credit);
+      IF GLCorrAnalysisViewFilter.FINDSET THEN
+        REPEAT
+          DimSetEntry.SETRANGE("Dimension Set ID",GLCorrEntry."Credit Dimension Set ID");
+          DimSetEntry.SETRANGE("Dimension Code",GLCorrAnalysisViewFilter."Dimension Code");
+          DimSetEntry.SETRANGE("Dimension Value Code",GLCorrAnalysisViewFilter."Dimension Value Filter");
+          IF DimSetEntry.ISEMPTY THEN
+            EXIT(FALSE);
+        UNTIL GLCorrAnalysisViewFilter.NEXT = 0;
+
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CalculatePeriodStart@4(PostingDate@1000 : Date;DateCompression@1001 : Integer) : Date;
+    VAR
+      AccountingPeriod@1002 : Record 50;
+    BEGIN
+      IF PostingDate = CLOSINGDATE(PostingDate) THEN
+        EXIT(PostingDate);
+
+      CASE DateCompression OF
+        GLCorrAnalysisView."Date Compression"::Week:
+          PostingDate := CALCDATE('<CW+1D-1W>',PostingDate);
+        GLCorrAnalysisView."Date Compression"::Month:
+          PostingDate := CALCDATE('<CM+1D-1M>',PostingDate);
+        GLCorrAnalysisView."Date Compression"::Quarter:
+          PostingDate := CALCDATE('<CQ+1D-1Q>',PostingDate);
+        GLCorrAnalysisView."Date Compression"::Year:
+          PostingDate := CALCDATE('<CY+1D-1Y>',PostingDate);
+        GLCorrAnalysisView."Date Compression"::Period:
+          BEGIN
+            IF PostingDate <> PrevPostingDate THEN BEGIN
+              PrevPostingDate := PostingDate;
+              AccountingPeriod.SETRANGE("Starting Date",0D,PostingDate);
+              IF AccountingPeriod.FINDLAST THEN BEGIN
+                PrevCalculatedPostingDate := AccountingPeriod."Starting Date"
+              END ELSE
+                PrevCalculatedPostingDate := PostingDate;
+            END;
+            PostingDate := PrevCalculatedPostingDate;
+          END;
+      END;
+      EXIT(PostingDate);
+    END;
+
+    LOCAL PROCEDURE IsValueIncludedInFilter@1210001(DimValue@1002 : Code[20];DimFilter@1000 : Code[250]) : Boolean;
+    BEGIN
+      WITH TempDimBuf DO BEGIN
+        RESET;
+        DELETEALL;
+        INIT;
+        "Dimension Value Code" := DimValue;
+        INSERT;
+        SETFILTER("Dimension Value Code",DimFilter);
+        EXIT(FINDFIRST);
+      END;
+    END;
+
+    PROCEDURE DimSetIDInFilter@1210000(DimSetID@1000 : Integer;VAR GLCorrAnalysisView@1002 : Record 14940) : Boolean;
+    VAR
+      InFilters@1001 : Boolean;
+    BEGIN
+      IF NOT FilterIsInitialized THEN BEGIN
+        TempDimEntryBuffer.DELETEALL;
+        FilterIsInitialized := TRUE;
+        GLCorrAnalysisViewFilter.SETRANGE("G/L Corr. Analysis View Code",GLCorrAnalysisView.Code);
+        FiltersExist := NOT GLCorrAnalysisViewFilter.ISEMPTY;
+      END;
+      IF NOT FiltersExist THEN
+        EXIT(TRUE);
+
+      IF TempDimEntryBuffer.GET(DimSetID) THEN
+        EXIT(TempDimEntryBuffer."Dimension Entry No." <> 0);
+
+      InFilters := TRUE;
+      IF GLCorrAnalysisViewFilter.FINDSET THEN
+        REPEAT
+          IF DimSetEntry.GET(DimSetID,GLCorrAnalysisViewFilter."Dimension Code") THEN
+            InFilters :=
+              InFilters AND IsValueIncludedInFilter(DimSetEntry."Dimension Value Code",GLCorrAnalysisViewFilter."Dimension Value Filter")
+          ELSE
+            InFilters :=
+              InFilters AND IsValueIncludedInFilter('',GLCorrAnalysisViewFilter."Dimension Value Filter");
+        UNTIL (GLCorrAnalysisViewFilter.NEXT = 0) OR NOT InFilters;
+      TempDimEntryBuffer."No." := DimSetID;
+      IF InFilters THEN
+        TempDimEntryBuffer."Dimension Entry No." := 1
+      ELSE
+        TempDimEntryBuffer."Dimension Entry No." := 0;
+      TempDimEntryBuffer.INSERT;
+      EXIT(InFilters);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

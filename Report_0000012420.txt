@@ -1,0 +1,348 @@
+OBJECT Report 12420 Posted Inv. Item Waybill 1-T
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Posted Inv. Item Waybill 1-T;
+               RUS=Учт. счет товар.-трансп. накл. 1-Т];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF NOT CurrReport.USEREQUESTPAGE THEN
+                    CopiesNumber := 1;
+
+                  WaybillReportHelper.InitWaybillReportTmpl;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName = '' THEN
+                     WaybillReportHelper.ExportData
+                   ELSE
+                     WaybillReportHelper.ExportDataFile(FileName);
+                 END;
+
+  }
+  DATASET
+  {
+    { 7745;    ;DataItem;Header              ;
+               DataItemTable=Table112;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               CheckPrintOneDocument(Header);
+                               WaybillReportHelper.SetMainSheet;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CompanyInfo.GET;
+
+                                  DocumentDate := "Posting Date";
+                                  DocNo := "No.";
+
+                                  IF NOT ShipmentMethod.GET("Shipment Method Code") THEN
+                                    ShipmentMethod.INIT;
+
+                                  IF NOT PaymentTerms.GET("Payment Terms Code") THEN
+                                    PaymentTerms.INIT;
+
+                                  Cust.GET("Bill-to Customer No.");
+
+                                  ShowDiscount := FALSE;
+
+                                  SalesLine1.RESET;
+                                  SalesLine1.SETRANGE("Document No.","No.");
+
+                                  IF LogInteraction THEN
+                                    IF NOT CurrReport.PREVIEW THEN BEGIN
+                                      IF "Bill-to Contact No." <> '' THEN
+                                        SegManagement.LogDocument(
+                                          4,"No.",0,0,DATABASE::Contact,"Bill-to Contact No.","Salesperson Code",
+                                          "Campaign No.","Posting Description",'')
+                                      ELSE
+                                        SegManagement.LogDocument(
+                                          4,"No.",0,0,DATABASE::Customer,"Bill-to Customer No.","Salesperson Code",
+                                          "Campaign No.","Posting Description",'');
+                                    END;
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 7804;1   ;DataItem;CopyCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               SalesLine1.SETFILTER(Quantity,'<>0');
+                               IF NOT SalesLine1.FIND('-') THEN
+                                 CurrReport.BREAK;
+                               SETRANGE(Number,1,CopiesNumber);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TotalAmount := 0;
+                                  AmountLineNo := 0;
+                                  CurrReport.PAGENO := 1;
+                                  QtyNotItem := 0;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                IF NOT CurrReport.PREVIEW THEN
+                                  CODEUNIT.RUN(CODEUNIT::"Sales Inv.-Printed",Header);
+                              END;
+                               }
+
+    { 5739;2   ;DataItem;LineCycle           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number)
+                                 WHERE(Number=FILTER(1..));
+               OnPreDataItem=BEGIN
+                               Currency.InitRoundingPrecision;
+
+                               FillProlog;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  LineValues@1210000 : ARRAY [9] OF Text;
+                                BEGIN
+                                  IF Number = 1 THEN BEGIN
+                                    IF NOT SalesLine1.FIND('-') THEN
+                                      CurrReport.BREAK;
+                                  END ELSE
+                                    IF SalesLine1.NEXT(1) = 0 THEN
+                                      CurrReport.BREAK;
+
+                                  IF SalesLine1.Type <> SalesLine1.Type::" " THEN BEGIN
+                                    IF SalesLine1.Quantity = 0 THEN
+                                      CurrReport.SKIP;
+                                    SalesLine1."Amount Including VAT" := SalesLine1."Amount Including VAT (LCY)";
+                                    SalesLine1."Unit Price" :=
+                                      ROUND(SalesLine1."Amount Including VAT" / SalesLine1.Quantity,
+                                        Currency."Unit-Amount Rounding Precision");
+                                    TotalAmount := TotalAmount + SalesLine1."Amount Including VAT";
+                                  END;
+
+                                  IF SalesLine1.Type = SalesLine1.Type::Item THEN BEGIN
+                                    Item.GET(SalesLine1."No.");
+                                    ProductionCode := Item."No.";
+                                    TotalQty += SalesLine1.Quantity;
+                                    AmountLineNo := AmountLineNo + 1;
+                                  END ELSE
+                                    IF SalesLine1.Type = SalesLine1.Type::" " THEN
+                                      ProductionCode := ''
+                                    ELSE BEGIN
+                                      AmountLineNo := AmountLineNo + 1;
+                                      ProductionCode := SalesLine1."No.";
+                                      QtyNotItem += SalesLine1.Quantity;
+                                    END;
+
+                                  IF SalesLine1.Type <> SalesLine1.Type::" " THEN
+                                    TransferLineValues(LineValues,SalesLine1)
+                                  ELSE
+                                    WaybillReportHelper.TransferLineDescrValues(LineValues,SalesLine1.Description);
+
+                                  FillBody(LineValues);
+                                END;
+
+               OnPostDataItem=VAR
+                                FooterValues@1210000 : ARRAY [9] OF Text;
+                              BEGIN
+                                IF QtyNotItem < 1 THEN
+                                  AddendumSheets := ''
+                                ELSE
+                                  AddendumSheets := LocMgt.Integer2Text(QtyNotItem,1,'','','');
+
+                                FillFooter;
+                              END;
+                               }
+
+    { 4292;2   ;DataItem;Back Side           ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               IF NOT BackSideNecessary THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillBackSide;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      PopulateAllFields=Yes;
+      RefreshOnActivate=Yes;
+      OnOpenPage=BEGIN
+                   IF CopiesNumber < 1 THEN
+                     CopiesNumber := 1;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=No. of Copies;
+                             RUS=Число копий];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CopiesNumber;
+                  OnValidate=BEGIN
+                               IF CopiesNumber < 1 THEN
+                                 CopiesNumber := 1;
+                             END;
+                              }
+
+      { 5   ;2   ;Field     ;
+                  CaptionML=[ENU=Back Side Necessary;
+                             RUS=Необходима обратная сторона];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BackSideNecessary }
+
+      { 1470000;2;Field     ;
+                  CaptionML=[ENU=Log Interaction;
+                             RUS=Регистрировать взаимодействие];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=LogInteraction }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ShipmentMethod@1210005 : Record 10;
+      PaymentTerms@1210006 : Record 3;
+      CompanyInfo@1210007 : Record 79;
+      Cust@1210008 : Record 18;
+      SalesLine1@1210009 : Record 113;
+      Item@1210010 : Record 27;
+      Currency@1210001 : Record 4;
+      SegManagement@1470000 : Codeunit 5051;
+      LocMgt@1210003 : Codeunit 12400;
+      StdRepMgt@1210002 : Codeunit 12401;
+      WaybillReportHelper@1210000 : Codeunit 14933;
+      ShowDiscount@1210016 : Boolean;
+      TotalAmount@1210019 : Decimal;
+      TotalQty@1210021 : Decimal;
+      CopiesNumber@1210022 : Integer;
+      AmountLineNo@1210028 : Integer;
+      DocumentDate@1210030 : Date;
+      DocNo@1210031 : Code[20];
+      ProductionCode@1210032 : Text[20];
+      QtyNotItem@1210033 : Decimal;
+      AddendumSheets@1210011 : Text[80];
+      BackSideNecessary@1210043 : Boolean;
+      LogInteraction@1470001 : Boolean;
+      IncorrectNumberErr@1210004 : TextConst 'ENU=Please select only one document.;RUS=Выберите только один документ.';
+      FileName@1210012 : Text;
+
+    LOCAL PROCEDURE CheckPrintOneDocument@1210008(VAR SalesHeader@1210001 : Record 112);
+    VAR
+      SalesHeader2@1210000 : Record 112;
+    BEGIN
+      // Do not allow to print a bunch of documents.
+      SalesHeader2.COPYFILTERS(SalesHeader);
+      IF SalesHeader2.COUNT <> 1 THEN
+        ERROR(IncorrectNumberErr);
+    END;
+
+    LOCAL PROCEDURE TransferHeaderValues@1210010(VAR HeaderValue@1210000 : ARRAY [8] OF Text);
+    BEGIN
+      HeaderValue[1] := DocNo;
+      HeaderValue[2] := LocMgt.Date2Text(DocumentDate);
+      HeaderValue[3] := CompanyInfo."OKPO Code";
+      HeaderValue[4] := '';
+      HeaderValue[5] := '';
+      HeaderValue[6] := StdRepMgt.GetCompanyName + '. ' + StdRepMgt.GetLegalAddress;
+      HeaderValue[7] :=
+        StdRepMgt.GetShipToAddrName(
+          Header."Sell-to Customer No.",Header."Ship-to Code",Header."Ship-to Name",Header."Ship-to Name 2") + '  ' +
+        Header."Ship-to City" + ' ' + Header."Ship-to Address" + ' ' + Header."Ship-to Address 2";
+      HeaderValue[8] :=
+        StdRepMgt.GetCustName(Header."Bill-to Customer No.") + '  ' + Header."Bill-to City" + ' ' +
+        Header."Bill-to Address" + ' ' + Header."Bill-to Address 2";
+    END;
+
+    LOCAL PROCEDURE TransferLineValues@1210000(VAR LineValues@1210000 : ARRAY [9] OF Text;SalesLine@1210001 : Record 113);
+    BEGIN
+      LineValues[1] := ProductionCode;
+      LineValues[2] := StdRepMgt.FormatReportValue(SalesLine.Quantity,2);
+      LineValues[3] := StdRepMgt.FormatReportValue(SalesLine."Unit Price",2);
+      LineValues[4] := SalesLine.Description;
+      LineValues[5] := StdRepMgt.FormatTextValue(SalesLine."Unit of Measure");
+      LineValues[6] := '';
+      LineValues[7] := '';
+      LineValues[8] := '';
+      LineValues[9] := StdRepMgt.FormatReportValue(SalesLine."Amount Including VAT",2);
+    END;
+
+    LOCAL PROCEDURE TransferFooterValues@1210004(VAR FooterValue@1210000 : ARRAY [12] OF Text);
+    BEGIN
+      FooterValue[1] := LocMgt.Integer2Text(AmountLineNo,1,'','','');
+      FooterValue[2] := LocMgt.Integer2Text(AmountLineNo,2,'','','');
+      FooterValue[3] := StdRepMgt.FormatReportValue(TotalAmount,2);
+      FooterValue[4] := '';
+      FooterValue[5] := AddendumSheets;
+      FooterValue[6] := '';
+      FooterValue[7] := LocMgt.Amount2Text('',TotalAmount);
+      FooterValue[8] := '';
+      FooterValue[9] := LocMgt.Date2Text(Header."Posting Date");
+      FooterValue[10] := '';
+      FooterValue[11] := '';
+      FooterValue[12] := '';
+    END;
+
+    LOCAL PROCEDURE FillProlog@1210009();
+    VAR
+      HeaderValue@1210000 : ARRAY [8] OF Text;
+    BEGIN
+      TransferHeaderValues(HeaderValue);
+      WaybillReportHelper.FillProlog(HeaderValue);
+    END;
+
+    PROCEDURE FillBody@1210007(LineValues@1210000 : ARRAY [9] OF Text);
+    BEGIN
+      WaybillReportHelper.FillBody(LineValues);
+    END;
+
+    LOCAL PROCEDURE FillFooter@1210013();
+    VAR
+      FooterValues@1210001 : ARRAY [12] OF Text;
+    BEGIN
+      TransferFooterValues(FooterValues);
+      WaybillReportHelper.FinalizeReport(FooterValues);
+    END;
+
+    LOCAL PROCEDURE FillBackSide@1210001();
+    BEGIN
+      WaybillReportHelper.FillBackSide(DocNo);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210005(NewFileName@1210000 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

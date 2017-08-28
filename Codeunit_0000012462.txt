@@ -1,0 +1,542 @@
+OBJECT Codeunit 12462 Item Report Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      NoItemDeviationsErr@1210002 : TextConst 'ENU=There are no item deviations for the document.;RUS=Для этого документа отсутствуют отклонения товара.';
+      TelTxt@1210001 : TextConst 'ENU="tel.: ";RUS="тел.: "';
+      ExcelReportBuilderMgr@1210005 : Codeunit 14930;
+      Torg2RHeaderId@1210000 : Integer;
+
+    PROCEDURE PrintTORG2@1210001(DocPrintBuffer@1210004 : Record 12430;OperationType@1210003 : Text[30];OrderNo@1210001 : Code[20];OrderDate@1210000 : Date;FileName@1210002 : Text);
+    VAR
+      PurchSetup@1210010 : Record 312;
+      PurchaseHeaderTemp@1210009 : TEMPORARY Record 38;
+      PurchaseLineTemp@1210008 : TEMPORARY Record 39;
+      PurchaseHeader@1210007 : Record 38;
+      ItemDocumentHeader@1210006 : Record 12450;
+      ItemReceiptHeader@1210005 : Record 12451;
+    BEGIN
+      PurchSetup.GET;
+
+      CASE DocPrintBuffer."Table ID" OF
+        DATABASE::"Purchase Header":
+          BEGIN
+            PurchaseHeader.GET(DocPrintBuffer."Document Type",DocPrintBuffer."Document No.");
+            PurchaseHeader.TESTFIELD(Status,PurchaseHeader.Status::Released);
+            PurchaseHeaderTemp.INIT;
+            PurchaseHeaderTemp.TRANSFERFIELDS(PurchaseHeader);
+            PurchaseHeaderTemp.INSERT;
+          END;
+        DATABASE::"Item Document Header":
+          BEGIN
+            ItemDocumentHeader.GET(DocPrintBuffer."Document Type",DocPrintBuffer."Document No.");
+            ItemDocumentHeader.TESTFIELD(Status,ItemDocumentHeader.Status::Released);
+            PurchaseHeaderTemp.INIT;
+            PurchaseHeaderTemp."Location Code" := ItemDocumentHeader."Location Code";
+            PurchaseHeaderTemp."No." := ItemDocumentHeader."No.";
+            PurchaseHeaderTemp."Document Date" := ItemDocumentHeader."Document Date";
+            PurchaseHeaderTemp.INSERT;
+          END;
+        DATABASE::"Item Receipt Header":
+          BEGIN
+            ItemReceiptHeader.GET(DocPrintBuffer."Document No.");
+            PurchaseHeaderTemp.INIT;
+            PurchaseHeaderTemp."Location Code" := ItemReceiptHeader."Location Code";
+            PurchaseHeaderTemp."No." := ItemReceiptHeader."No.";
+            PurchaseHeaderTemp."Document Date" := ItemReceiptHeader."Document Date";
+            PurchaseHeaderTemp.INSERT;
+          END;
+      END;
+
+      CopyDocLinesToTempDocLines(DocPrintBuffer,PurchaseLineTemp);
+      IF CalculateNumberOfLines(PurchaseLineTemp,DocPrintBuffer."Table ID") = 0 THEN
+        ERROR(NoItemDeviationsErr);
+
+      PurchSetup.TESTFIELD("TORG-2 Template Code");
+      ExcelReportBuilderMgr.InitTemplate(PurchSetup."TORG-2 Template Code");
+
+      FillGeneralInfo(OperationType,OrderNo,OrderDate);
+      FillHeader(DocPrintBuffer,PurchaseHeaderTemp);
+      FillLastPage(DocPrintBuffer);
+
+      IF FileName <> '' THEN
+        ExcelReportBuilderMgr.ExportDataToClientFile(FileName)
+      ELSE
+        ExcelReportBuilderMgr.ExportData;
+    END;
+
+    LOCAL PROCEDURE FillGeneralInfo@1210015(OperationType@1210006 : Text[30];OrderNo@1210004 : Code[20];OrderDate@1210003 : Date);
+    VAR
+      CompanyInfo@1210000 : Record 79;
+      StdRepMgt@1210002 : Codeunit 12401;
+    BEGIN
+      CompanyInfo.GET;
+      ExcelReportBuilderMgr.SetSheet('Sheet1');
+      ExcelReportBuilderMgr.AddSection('PAGE1');
+      ExcelReportBuilderMgr.AddDataToSection(
+        'CompanyName',
+        StdRepMgt.GetCompanyName + ' ' +
+        StdRepMgt.GetCompanyAddress + ' ' +
+        StdRepMgt.GetCompanyPhoneFax);
+      ExcelReportBuilderMgr.AddDataToSection('OKPO',CompanyInfo."OKPO Code");
+      ExcelReportBuilderMgr.AddDataToSection('OKDP',CompanyInfo."OKVED Code");
+      ExcelReportBuilderMgr.AddDataToSection('OrderNo',OrderNo);
+      IF OrderDate <> 0D THEN BEGIN
+        ExcelReportBuilderMgr.AddDataToSection('DocumentDateDay',FORMAT(OrderDate,0,'<Day,2>'));
+        ExcelReportBuilderMgr.AddDataToSection('DocumentDateMonth',FORMAT(OrderDate,0,'<Month,2>'));
+        ExcelReportBuilderMgr.AddDataToSection('DocumentDateYear',FORMAT(OrderDate,0,'<Year>'));
+      END;
+      ExcelReportBuilderMgr.AddDataToSection('OperationType',OperationType);
+      ExcelReportBuilderMgr.AddDataToSection('DirectorPosition',StdRepMgt.GetEmpPosition(CompanyInfo."Director No."));
+      ExcelReportBuilderMgr.AddDataToSection('DirectorName',CompanyInfo."Director Name");
+    END;
+
+    LOCAL PROCEDURE FillHeader@1210004(DocPrintBuffer@1210001 : Record 12430;VAR PurchaseHeaderBuffer@1210000 : TEMPORARY Record 38);
+    VAR
+      PurchaseLineTemp@1210008 : TEMPORARY Record 39;
+      Location@1210005 : Record 14;
+      Vendor@1210004 : Record 23;
+      TransportMethod@1210003 : Record 259;
+      VendorAgreement@1210002 : Record 14901;
+      LocalMgt@1210006 : Codeunit 12400;
+      LocalReportMgt@1210007 : Codeunit 12401;
+      Address@1210009 : Text[250];
+      Name@1210011 : Text[250];
+    BEGIN
+      WITH PurchaseHeaderBuffer DO BEGIN
+        IF Location.GET("Location Code") THEN
+          ExcelReportBuilderMgr.AddDataToSection('DepartmentName',Location.Name);
+        ExcelReportBuilderMgr.AddDataToSection('DocumentNumber',"No.");
+        ExcelReportBuilderMgr.AddDataToSection('DocumentDate',FORMAT("Document Date"));
+
+        IF DocPrintBuffer."Table ID" = DATABASE::"Purchase Header" THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection('VendorReceiptDoc',"Vendor Receipts No." + ' ' + FORMAT("Vendor Receipts Date"));
+
+          IF "Agreement No." <> '' THEN BEGIN
+            ExcelReportBuilderMgr.AddDataToSection('ContractNumber',"Agreement No.");
+            VendorAgreement.GET("Buy-from Vendor No.","Agreement No.");
+            ExcelReportBuilderMgr.AddDataToSection('ContractDateDay',FORMAT(VendorAgreement."Agreement Date",0,'<Day>'));
+            ExcelReportBuilderMgr.AddDataToSection('ContractDateMonth',LocalMgt.Month2Text(VendorAgreement."Agreement Date"));
+            ExcelReportBuilderMgr.AddDataToSection('ContractDateYear',FORMAT(VendorAgreement."Agreement Date",0,'<Year>'));
+          END;
+
+          IF "Vendor VAT Invoice No." <> '' THEN BEGIN
+            ExcelReportBuilderMgr.AddDataToSection('VendorVATInvoiceNo',"Vendor VAT Invoice No.");
+            ExcelReportBuilderMgr.AddDataToSection('VendorVATInvoiceDateDay',FORMAT("Vendor VAT Invoice Date",0,'<Day>'));
+            ExcelReportBuilderMgr.AddDataToSection('VendorVATInvoiceDateMonth',LocalMgt.Month2Text("Vendor VAT Invoice Date"));
+            ExcelReportBuilderMgr.AddDataToSection('VendorVATInvoiceDateYear',FORMAT("Vendor VAT Invoice Date",0,'<Year>'));
+          END;
+
+          IF TransportMethod.GET("Transport Method") THEN
+            ExcelReportBuilderMgr.AddDataToSection('TransportMethod',TransportMethod.Description);
+
+          ExcelReportBuilderMgr.AddDataToSection('CompanyAddress',
+            "Ship-to Post Code" + ' ' + "Ship-to City" + ', ' +
+            "Ship-to Address" + ' ' + "Ship-to Address 2");
+
+          Vendor.GET("Buy-from Vendor No.");
+          Address :=
+            LocalReportMgt.GetFullAddr("Buy-from Post Code","Buy-from City","Buy-from Address",'');
+          Name := LocalReportMgt.GetVendorName("Buy-from Vendor No.");
+          IF Vendor."Phone No." <> '' THEN
+            ExcelReportBuilderMgr.AddDataToSection('InvoiceAccountName',
+              Name + ', ' + Address + ', ' + "Buy-from Address 2" + ', ' + TelTxt + Vendor."Phone No.")
+          ELSE
+            ExcelReportBuilderMgr.AddDataToSection('InvoiceAccountName',Name + ', ' + Address + ', ' + "Buy-from Address 2");
+
+          Address := '';
+          Vendor.GET("Pay-to Vendor No.");
+          Address :=
+            LocalReportMgt.GetFullAddr("Pay-to Post Code","Pay-to City","Pay-to Address",'');
+          Name := LocalReportMgt.GetVendorName("Pay-to Vendor No.");
+          IF Vendor."Phone No." <> '' THEN
+            ExcelReportBuilderMgr.AddDataToSection('VendAccountName',
+              Name + ', ' + Address + ', ' + "Pay-to Address 2" + ', ' + TelTxt + Vendor."Phone No.")
+          ELSE
+            ExcelReportBuilderMgr.AddDataToSection('VendAccountName',Name + ', ' + Address + ', ' + "Pay-to Address 2");
+        END;
+
+        CopyDocLinesToTempDocLines(DocPrintBuffer,PurchaseLineTemp);
+        FillLines(DocPrintBuffer,PurchaseHeaderBuffer,PurchaseLineTemp);
+      END;
+    END;
+
+    LOCAL PROCEDURE FillLines@1210016(DocumentPrintBuffer@1210001 : Record 12430;VAR TempPurchHeader@1210012 : TEMPORARY Record 38;VAR TempPurchLine@1210000 : TEMPORARY Record 39);
+    VAR
+      Item@1210013 : Record 27;
+      UnitOfMeasure@1210017 : Record 204;
+      ItemUnitOfMeasure@1210016 : Record 5404;
+      ItemLedgerEntry@1210015 : Record 32;
+      PurchRcptLine@1210014 : Record 121;
+      PurchaseLineBuffer@1210018 : TEMPORARY Record 39;
+      TotalAccomQty@1210009 : Decimal;
+      TotalAccomQtyToReceive@1210010 : Decimal;
+      TotalGrossWeight@1210002 : Decimal;
+      TotalNetWeight@1210011 : Decimal;
+      DecimalArray@1210007 : ARRAY [17] OF Decimal;
+      TextArray@1210006 : ARRAY [5] OF Text[250];
+      CurrencyFactor@1210008 : Decimal;
+    BEGIN
+      WITH TempPurchLine DO BEGIN
+        ExcelReportBuilderMgr.SetSheet('Sheet2');
+        ExcelReportBuilderMgr.AddSection('REPORTHEADER');
+        Torg2RHeaderId := ExcelReportBuilderMgr.GetCurrentSectionId;
+
+        CopyDocLinesToTempDocLines(DocumentPrintBuffer,PurchaseLineBuffer);
+        ExcelReportBuilderMgr.AddSection('PAGEHEADER');
+        IF FINDSET THEN
+          REPEAT
+            ClearArrays(DecimalArray,TextArray);
+            IF (Quantity <> "Qty. to Receive") OR Surplus OR
+               (DocumentPrintBuffer."Table ID" <> DATABASE::"Purchase Header")
+            THEN BEGIN
+              IF TempPurchHeader."Currency Code" <> '' THEN
+                CurrencyFactor := TempPurchHeader."Currency Factor"
+              ELSE
+                CurrencyFactor := 1;
+
+              TextArray[1] := Description + ' ' + "Description 2";
+              Item.GET("No.");
+              UnitOfMeasure.GET(Item."Base Unit of Measure");
+              TextArray[2] := UnitOfMeasure.Description;
+              TextArray[3] := UnitOfMeasure."OKEI Code";
+              IF DocumentPrintBuffer."Table ID" = DATABASE::"Purchase Header" THEN
+                TextArray[4] := "No.";
+              TextArray[5] := "No.";
+
+              DecimalArray[1] := Quantity;
+
+              ItemUnitOfMeasure.SETRANGE("Item No.","No.");
+              ItemUnitOfMeasure.SETRANGE(Code,"Unit of Measure");
+              DecimalArray[8] := Amount / CurrencyFactor / "Quantity (Base)";
+              IF DocumentPrintBuffer."Table ID" = DATABASE::"Purchase Header" THEN
+                DecimalArray[5] := DecimalArray[8]
+              ELSE
+                DecimalArray[8] := "Direct Unit Cost" / CurrencyFactor / ("Quantity (Base)" / Quantity);
+
+              IF DocumentPrintBuffer."Table ID" = DATABASE::"Purchase Header" THEN BEGIN
+                IF (TempPurchHeader."Document Type" = TempPurchHeader."Document Type"::"Credit Memo") AND NOT Surplus THEN BEGIN
+                  IF "Appl.-to Item Entry" <> 0 THEN BEGIN
+                    ItemLedgerEntry.GET("Appl.-to Item Entry");
+                    IF ItemLedgerEntry."Document Type" = ItemLedgerEntry."Document Type"::"Purchase Receipt" THEN BEGIN
+                      PurchRcptLine.GET(ItemLedgerEntry."Document No.",ItemLedgerEntry."Document Line No.");
+                      DecimalArray[2] := PurchRcptLine."Gross Weight" * PurchRcptLine.Quantity;
+                      DecimalArray[3] := DecimalArray[2];
+                      TotalNetWeight := TotalNetWeight + PurchRcptLine."Net Weight" * PurchRcptLine.Quantity;
+                    END;
+                    DecimalArray[1] := ItemLedgerEntry.Quantity / ItemLedgerEntry."Qty. per Unit of Measure";
+                    DecimalArray[4] := ItemLedgerEntry.Quantity;
+                    DecimalArray[6] := DecimalArray[4] * DecimalArray[5];
+                    DecimalArray[7] := DecimalArray[4] - "Return Qty. to Ship (Base)";
+                    TotalAccomQtyToReceive := TotalAccomQtyToReceive + DecimalArray[1] - Quantity;
+                  END
+                END ELSE
+                  IF Surplus THEN BEGIN
+                    PurchaseLineBuffer.SETRANGE("No.","No.");
+                    PurchaseLineBuffer.SETRANGE(Surplus,FALSE);
+                    DecimalArray[1] := 0;
+                    IF PurchaseLineBuffer.FINDSET THEN
+                      REPEAT
+                        IF PurchaseLineBuffer.Quantity = PurchaseLineBuffer."Qty. to Receive" THEN BEGIN
+                          DecimalArray[1] := DecimalArray[1] + PurchaseLineBuffer.Quantity;
+                          DecimalArray[2] := DecimalArray[2] + PurchaseLineBuffer."Gross Weight" * PurchaseLineBuffer.Quantity;
+                          DecimalArray[4] := DecimalArray[4] + PurchaseLineBuffer."Quantity (Base)";
+                          DecimalArray[6] := DecimalArray[6] + PurchaseLineBuffer.Amount / CurrencyFactor;
+                          DecimalArray[7] := DecimalArray[7] + PurchaseLineBuffer."Qty. to Receive (Base)";
+                          TotalAccomQtyToReceive := TotalAccomQtyToReceive + PurchaseLineBuffer.Quantity;
+                          TotalNetWeight := TotalNetWeight + PurchaseLineBuffer."Net Weight" * PurchaseLineBuffer.Quantity;
+                        END;
+                      UNTIL PurchaseLineBuffer.NEXT = 0;
+                    DecimalArray[3] := DecimalArray[2] + "Gross Weight" * Quantity;
+                    DecimalArray[7] := DecimalArray[7] + "Qty. to Receive (Base)";
+                  END ELSE BEGIN
+                    DecimalArray[2] := "Gross Weight" * Quantity;
+                    DecimalArray[3] := DecimalArray[2];
+                    DecimalArray[4] := "Quantity (Base)";
+                    DecimalArray[6] := Amount / CurrencyFactor;
+                    DecimalArray[7] := "Qty. to Receive (Base)";
+                    TotalNetWeight := TotalNetWeight + "Net Weight" * Quantity;
+                  END
+              END ELSE
+                DecimalArray[7] := "Quantity (Base)";
+
+              DecimalArray[9] := DecimalArray[7] * ROUND(DecimalArray[8],0.01);
+
+              IF DocumentPrintBuffer."Table ID" = DATABASE::"Purchase Header" THEN BEGIN
+                IF DecimalArray[4] > DecimalArray[7] THEN
+                  DecimalArray[14] := DecimalArray[4] - DecimalArray[7]
+                ELSE
+                  DecimalArray[16] := DecimalArray[7] - DecimalArray[4];
+                DecimalArray[15] := DecimalArray[14] * DecimalArray[5];
+                DecimalArray[17] := DecimalArray[16] * DecimalArray[5];
+              END;
+
+              TotalAccomQty := TotalAccomQty + DecimalArray[1];
+              IF DocumentPrintBuffer."Table ID" = DATABASE::"Purchase Header" THEN
+                TotalAccomQtyToReceive := TotalAccomQtyToReceive + "Qty. to Receive"
+              ELSE
+                TotalAccomQtyToReceive := TotalAccomQtyToReceive + Quantity;
+
+              TotalGrossWeight := TotalGrossWeight + DecimalArray[2];
+
+              FillLineToExcel(DecimalArray,TextArray);
+            END;
+          UNTIL NEXT = 0;
+        FillTotalsToExcel(TotalAccomQty,TotalAccomQtyToReceive,TotalGrossWeight,TotalNetWeight);
+      END;
+    END;
+
+    PROCEDURE FillLastPage@1210031(DocPrintBuffer@1210000 : Record 12430);
+    VAR
+      DocumentSignature@1210002 : Record 12420;
+      PostedDocumentSignature@1210001 : Record 12421;
+      CompanyInfo@1210003 : Record 79;
+    BEGIN
+      CompanyInfo.GET;
+
+      ExcelReportBuilderMgr.SetSheet('Sheet3');
+      ExcelReportBuilderMgr.AddSection('PAGE3');
+      IF DocPrintBuffer."Table ID" = DATABASE::"Item Receipt Header" THEN BEGIN
+        IF PostedDocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Chairman)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionHeadTitle',CompanyInfo.Name + ' ' + PostedDocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionHeadName',PostedDocumentSignature."Employee Name");
+        END;
+
+        IF PostedDocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Member1)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember1Title',CompanyInfo.Name + ' ' + PostedDocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember1Name',PostedDocumentSignature."Employee Name");
+        END;
+
+        IF PostedDocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Member2)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember2Title',CompanyInfo.Name + ' ' + PostedDocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember2Name',PostedDocumentSignature."Employee Name");
+        END;
+
+        IF PostedDocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Member3)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember3Title',CompanyInfo.Name + ' ' + PostedDocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember3Name',PostedDocumentSignature."Employee Name");
+        END;
+      END ELSE BEGIN
+        IF DocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Chairman)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionHeadTitle',CompanyInfo.Name + ' ' + DocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionHeadName',DocumentSignature."Employee Name");
+        END;
+
+        IF DocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Member1)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember1Title',CompanyInfo.Name + ' ' + DocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember1Name',DocumentSignature."Employee Name");
+        END;
+
+        IF DocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Member2)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember2Title',CompanyInfo.Name + ' ' + DocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember2Name',DocumentSignature."Employee Name");
+        END;
+
+        IF DocumentSignature.GET(
+             DocPrintBuffer."Table ID",
+             DocPrintBuffer."Document Type",
+             DocPrintBuffer."Document No.",
+             DocumentSignature."Employee Type"::Member3)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember3Title',CompanyInfo.Name + ' ' + DocumentSignature."Employee Job Title");
+          ExcelReportBuilderMgr.AddDataToSection(
+            'CommissionMember3Name',DocumentSignature."Employee Name");
+        END;
+      END;
+
+      ExcelReportBuilderMgr.AddDataToSection('AccountantName',CompanyInfo."Accountant Name");
+    END;
+
+    LOCAL PROCEDURE FillLineToExcel@1210005(DecimalLineValue@1210002 : ARRAY [17] OF Decimal;TextLineValue@1210003 : ARRAY [5] OF Text[250]);
+    BEGIN
+      ExcelReportBuilderMgr.AddSection('BODY');
+      ExcelReportBuilderMgr.AddDataToSection('ItemName',TextLineValue[1]);
+      ExcelReportBuilderMgr.AddDataToSection('Unit',TextLineValue[2]);
+      ExcelReportBuilderMgr.AddDataToSection('OKEI',TextLineValue[3]);
+      ExcelReportBuilderMgr.AddDataToSection('ItemId',TextLineValue[4]);
+      ExcelReportBuilderMgr.AddDataToSection('ItemId2',TextLineValue[5]);
+      ExcelReportBuilderMgr.AddDataToSection('DocQty',FormatValue(FORMAT(DecimalLineValue[4])));
+      ExcelReportBuilderMgr.AddDataToSection('DocPrice',FormatValue(FORMAT(ROUND(DecimalLineValue[5],0.01),0,1)));
+      ExcelReportBuilderMgr.AddDataToSection('DocAmount',FormatValue(FORMAT(ROUND(DecimalLineValue[6],0.01),0,1)));
+      ExcelReportBuilderMgr.AddDataToSection('FactQty',FormatValue(FORMAT(DecimalLineValue[7])));
+      ExcelReportBuilderMgr.AddDataToSection('FactPrice',FormatValue(FORMAT(ROUND(DecimalLineValue[8],0.01),0,1)));
+      ExcelReportBuilderMgr.AddDataToSection('FactAmount',FormatValue(FORMAT(DecimalLineValue[9],0,1)));
+      ExcelReportBuilderMgr.AddDataToSection('LossQty',FormatValue(FORMAT(DecimalLineValue[14])));
+      ExcelReportBuilderMgr.AddDataToSection('LossAmount',FormatValue(FORMAT(ROUND(DecimalLineValue[15],0.01),0,1)));
+      ExcelReportBuilderMgr.AddDataToSection('ProfitQty',FormatValue(FORMAT(DecimalLineValue[16])));
+      ExcelReportBuilderMgr.AddDataToSection('ProfitAmount',FormatValue(FORMAT(ROUND(DecimalLineValue[17],0.01),0,1)));
+    END;
+
+    LOCAL PROCEDURE CalculateNumberOfLines@1210013(VAR LineBuffer2@1210000 : TEMPORARY Record 39;TableID@1210001 : Integer) Number : Integer;
+    BEGIN
+      WITH LineBuffer2 DO BEGIN
+        IF FINDFIRST THEN
+          REPEAT
+            IF TableID = DATABASE::"Purchase Header" THEN BEGIN
+              IF (Quantity <> "Qty. to Receive") OR Surplus THEN
+                Number := Number + 1;
+            END ELSE
+              Number := Number + 1;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyDocLinesToTempDocLines@1210007(DocPrintBuffer@1210001 : Record 12430;VAR PurchaseLineBuffer@1210005 : TEMPORARY Record 39);
+    VAR
+      PurchaseLine2@1210004 : Record 39;
+      ItemDocumentLine2@1210003 : Record 12453;
+      ItemReceiptLine2@1210002 : Record 12452;
+    BEGIN
+      CASE DocPrintBuffer."Table ID" OF
+        DATABASE::"Purchase Header":
+          BEGIN
+            PurchaseLine2.SETRANGE("Document Type",DocPrintBuffer."Document Type");
+            PurchaseLine2.SETRANGE("Document No.",DocPrintBuffer."Document No.");
+            PurchaseLine2.SETRANGE(Type,PurchaseLine2.Type::Item);
+            IF PurchaseLine2.FINDSET THEN
+              REPEAT
+                PurchaseLineBuffer.INIT;
+                PurchaseLineBuffer.TRANSFERFIELDS(PurchaseLine2);
+                PurchaseLineBuffer.INSERT;
+              UNTIL PurchaseLine2.NEXT = 0;
+          END;
+        DATABASE::"Item Document Header":
+          BEGIN
+            ItemDocumentLine2.SETRANGE("Document Type",DocPrintBuffer."Document Type");
+            ItemDocumentLine2.SETRANGE("Document No.",DocPrintBuffer."Document No.");
+            IF ItemDocumentLine2.FINDSET THEN
+              REPEAT
+                PurchaseLineBuffer.INIT;
+                PurchaseLineBuffer."Line No." := ItemDocumentLine2."Line No.";
+                PurchaseLineBuffer."No." := ItemDocumentLine2."Item No.";
+                PurchaseLineBuffer.Description := ItemDocumentLine2.Description;
+                PurchaseLineBuffer.Quantity := ItemDocumentLine2.Quantity;
+                PurchaseLineBuffer."Direct Unit Cost" := ItemDocumentLine2."Unit Cost";
+                PurchaseLineBuffer."Quantity (Base)" := ItemDocumentLine2."Quantity (Base)";
+                PurchaseLineBuffer.INSERT;
+              UNTIL ItemDocumentLine2.NEXT = 0;
+          END;
+        DATABASE::"Item Receipt Header":
+          BEGIN
+            ItemReceiptLine2.SETRANGE("Document No.",DocPrintBuffer."Document No.");
+            IF ItemReceiptLine2.FINDSET THEN
+              REPEAT
+                PurchaseLineBuffer.INIT;
+                PurchaseLineBuffer."Line No." := ItemReceiptLine2."Line No.";
+                PurchaseLineBuffer."No." := ItemReceiptLine2."Item No.";
+                PurchaseLineBuffer.Description := ItemReceiptLine2.Description;
+                PurchaseLineBuffer.Quantity := ItemReceiptLine2.Quantity;
+                PurchaseLineBuffer."Direct Unit Cost" := ItemReceiptLine2."Unit Cost";
+                PurchaseLineBuffer."Quantity (Base)" := ItemReceiptLine2."Quantity (Base)";
+                PurchaseLineBuffer.INSERT;
+              UNTIL ItemReceiptLine2.NEXT = 0;
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ClearArrays@1210006(DecimaArray2@1210002 : ARRAY [17] OF Decimal;TextArray2@1210000 : ARRAY [5] OF Text[250]);
+    VAR
+      i@1210001 : Integer;
+    BEGIN
+      WHILE i < 16 DO BEGIN
+        CLEAR(DecimaArray2[i + 1]);
+        i := i + 1;
+      END;
+      i := 1;
+      WHILE i < 5 DO BEGIN
+        CLEAR(TextArray2[i]);
+        i := i + 1;
+      END;
+    END;
+
+    LOCAL PROCEDURE FormatValue@1210002(Value@1210000 : Text[50]) : Text[50];
+    BEGIN
+      IF Value = '0' THEN
+        EXIT('');
+      EXIT(Value);
+    END;
+
+    LOCAL PROCEDURE FillTotalsToExcel@1210008(AccomQty@1210000 : Decimal;AccomQtyToReceive@1210001 : Decimal;GrossWeight@1210002 : Decimal;NetWeight@1210003 : Decimal);
+    BEGIN
+      ExcelReportBuilderMgr.AddDataToPreviousSection(
+        Torg2RHeaderId,'AccomQty',FormatValue(FORMAT(AccomQty)));
+      ExcelReportBuilderMgr.AddDataToPreviousSection(
+        Torg2RHeaderId,'GrossWeight',FormatValue(FORMAT(GrossWeight)));
+      ExcelReportBuilderMgr.AddDataToPreviousSection(
+        Torg2RHeaderId,'TareWeight',FormatValue(FORMAT(GrossWeight - NetWeight)));
+      ExcelReportBuilderMgr.AddDataToPreviousSection(
+        Torg2RHeaderId,'NetWeight',FormatValue(FORMAT(NetWeight)));
+      ExcelReportBuilderMgr.AddDataToPreviousSection(
+        Torg2RHeaderId,'QtyActual',FORMAT(AccomQtyToReceive));
+      ExcelReportBuilderMgr.AddDataToPreviousSection(
+        Torg2RHeaderId,'QtyDiff',FORMAT(ABS(AccomQty - AccomQtyToReceive)));
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

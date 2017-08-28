@@ -1,0 +1,190 @@
+OBJECT Report 50219 FI Cost Calculation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:16;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=FI Cost Calculation;
+               RUS=îà ê†·Á•‚ ë‚Æ®¨Æ·‚®];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF EndDate = 0D THEN
+                    EndDate := 31129999D;
+                END;
+
+  }
+  DATASET
+  {
+    { 7674;    ;DataItem;                    ;
+               DataItemTable=Table50021;
+               OnPreDataItem=BEGIN
+                               IF GUIALLOWED THEN
+                                 Window.OPEN(ProgressTxt);
+
+                               IF FINoFilter <> '' THEN
+                                 SETFILTER("No.",FINoFilter);
+
+                               TotalCount := COUNT;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  Counter += 1;
+                                  IF GUIALLOWED THEN
+                                    Window.UPDATE(1,ROUND(Counter / TotalCount * 10000,1));
+
+                                  IF Reallocateëost THEN
+                                    RallocateCostForFI("No.");
+
+                                  FindApplyReversedEntries("No.");
+
+                                  //NC NCS-2386 09.01.2017 AA >>
+                                  COMMIT;
+                                  //NC NCS-2386 09.01.2017 AA <<
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 3327;1   ;DataItem;                    ;
+               DataItemTable=Table50216;
+               DataItemTableView=SORTING(FI No.,Posting Date)
+                                 WHERE(Open=CONST(Yes),
+                                       FI Entry Type=FILTER(Sale|Negative Adjmt.),
+                                       Reversed=CONST(No));
+               OnPreDataItem=BEGIN
+                               SETRANGE("Posting Date",StartDate,EndDate);
+
+                               //NC NCS-2392 AA >>
+                               TransactionLinesCount := 0;
+                               //NC NCS-2392 AA <<
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FICostMgt.ApplyFILedgerEntry("FI Ledger Entry 2");
+
+                                  //NC NCS-2392 AA >>
+                                  TransactionLinesCount += 1;
+                                  IF TransactionLinesCount = 1000 THEN BEGIN
+                                    COMMIT;
+                                    TransactionLinesCount := 0;
+                                  END;
+                                  //NC NCS-2392 AA <<
+                                END;
+
+               DataItemLink=FI No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FICostMgt@1170000008 : Codeunit 50081;
+      Window@1170000005 : Dialog;
+      StartDate@1170000000 : Date;
+      EndDate@1170000001 : Date;
+      Reallocateëost@1170000002 : Boolean;
+      ProgressTxt@1170000006 : TextConst 'ENU=FI Cost Calculation\@1@@@@@@@@@@@@;RUS=îà ê†·Á•‚ ë‚Æ®¨Æ·‚®\@1@@@@@@@@@@@@';
+      FINoFilter@1170000007 : Code[1024];
+      TotalCount@1170000009 : Integer;
+      Counter@1170000010 : Integer;
+      TransactionLinesCount@1101495000 : Integer;
+
+    PROCEDURE InitParameters@1170000000(NewFINoFilter@1170000002 : Code[1024];NewStartDate@1170000001 : Date;NewEndDate@1170000000 : Date;NewReallocateëost@1170000003 : Boolean);
+    BEGIN
+      FINoFilter := NewFINoFilter;
+      StartDate := NewStartDate;
+      EndDate := NewEndDate;
+      Reallocateëost := NewReallocateëost;
+    END;
+
+    PROCEDURE RallocateCostForFI@1170000001(FINo@1170000001 : Code[20]);
+    VAR
+      FILedgerEntry@1170000000 : Record 50216;
+      ReallocateStartDate@1170000003 : Date;
+      ReallocateStartTime@1170000002 : Time;
+    BEGIN
+      IF NOT FindFirstDateToReallocate(FINo,ReallocateStartDate,ReallocateStartTime) THEN
+        EXIT;
+
+      FILedgerEntry.SETCURRENTKEY("FI No.","Posting Date");
+      FILedgerEntry.SETRANGE("FI No.",FINo);
+      FILedgerEntry.SETRANGE("Posting Date",ReallocateStartDate,EndDate);
+      FILedgerEntry.SETRANGE(Reversed,FALSE);
+      IF FILedgerEntry.FINDSET(TRUE) THEN
+        REPEAT
+          IF IsDealAfterReallocateDateTime(FILedgerEntry,ReallocateStartDate,ReallocateStartTime) THEN
+            FICostMgt.ReverseApplication(FILedgerEntry);
+        UNTIL FILedgerEntry.NEXT = 0;
+    END;
+
+    PROCEDURE FindFirstDateToReallocate@1170000006(FINo@1170000001 : Code[20];VAR ReallocateStartDate@1170000002 : Date;VAR ReallocateStartTime@1170000003 : Time) : Boolean;
+    VAR
+      FILedgerEntry@1170000000 : Record 50216;
+    BEGIN
+      FILedgerEntry.SETCURRENTKEY("FI No.","Posting Date");
+      FILedgerEntry.SETRANGE("FI No.",FINo);
+      FILedgerEntry.SETRANGE("Posting Date",StartDate,EndDate);
+      FILedgerEntry.SETRANGE("Recalculate Application",TRUE);
+      IF FILedgerEntry.FINDFIRST THEN BEGIN
+        ReallocateStartDate := FILedgerEntry."Posting Date";
+        ReallocateStartTime := FILedgerEntry."Deal Time";
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsDealAfterReallocateDateTime@1170000002(FILedgerEntry@1170000001 : Record 50216;ReallocateStartDate@1170000002 : Date;ReallocateStartTime@1170000000 : Time) : Boolean;
+    BEGIN
+      IF FILedgerEntry."Posting Date" > ReallocateStartDate THEN
+        EXIT(TRUE);
+
+      IF FILedgerEntry."Posting Date" = ReallocateStartDate THEN
+        EXIT(FILedgerEntry."Deal Time" >= ReallocateStartTime);
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE FindApplyReversedEntries@1170000003(FINo@1170000000 : Code[20]);
+    VAR
+      FILedgerEntry@1170000001 : Record 50216;
+    BEGIN
+      FILedgerEntry.SETCURRENTKEY("FI No.","Posting Date");
+      FILedgerEntry.SETRANGE("FI No.",FINo);
+      FILedgerEntry.SETRANGE("Posting Date",StartDate,EndDate);
+      FILedgerEntry.SETRANGE(Open,TRUE);
+      FILedgerEntry.SETFILTER("Reversed By Entry No.",'<>0');
+      IF FILedgerEntry.FINDSET(TRUE,TRUE) THEN
+        REPEAT
+          FICostMgt.PostReversedFIEntryApplication(FILedgerEntry);
+        UNTIL FILedgerEntry.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      NC NCS-2360 ORM - Created
+      NC NCS-2386 09.01.2017 AA - Added function "COMMIT" on trigger Financial Instrument - OnAfterGetRecord()
+      NC NCS-2392 12.01.2017 AA - Added counter for applied entries during one transaction and COMMIT after every 1000 entries
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

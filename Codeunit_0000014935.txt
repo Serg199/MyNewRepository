@@ -1,0 +1,177 @@
+OBJECT Codeunit 14935 TORG-13 Report Helper
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GeneralLedgerSetup@1210008 : Record 98;
+      ExcelReportBuilderManager@1210000 : Codeunit 14930;
+      StdRepMgt@1210001 : Codeunit 12401;
+      LocMgt@1210007 : Codeunit 12400;
+      PrevDocPageNo@1210003 : Integer;
+      CurrentDocumentNo@1210002 : Text;
+      PageNoTxt@1210004 : TextConst 'ENU=Waybill %1 Page %2;RUS=Транспортная накладная %1, стр. %2';
+      LastTotalAmount@1210006 : ARRAY [4] OF Decimal;
+      TotalAmount@1210005 : ARRAY [4] OF Decimal;
+
+    PROCEDURE InitReportTemplate@1210001();
+    VAR
+      InventorySetup@1210000 : Record 313;
+    BEGIN
+      GeneralLedgerSetup.GET;
+      InventorySetup.GET;
+      InventorySetup.TESTFIELD("TORG-13 Template Code");
+      ExcelReportBuilderManager.InitTemplate(InventorySetup."TORG-13 Template Code");
+      ExcelReportBuilderManager.SetSheet('Sheet1');
+    END;
+
+    PROCEDURE IncreaseTotals@1210008(AmountValues@1210000 : ARRAY [4] OF Decimal);
+    VAR
+      I@1210001 : Integer;
+    BEGIN
+      FOR I := 1 TO 4 DO
+        TotalAmount[I] += AmountValues[I];
+    END;
+
+    PROCEDURE SaveLastTotals@1210006();
+    VAR
+      I@1210001 : Integer;
+    BEGIN
+      FOR I := 1 TO 4 DO
+        LastTotalAmount[I] := TotalAmount[I];
+    END;
+
+    PROCEDURE FillHeader@1210000(DocumentNo@1210000 : Text;DocumentDate@1210002 : Text;ReleasedOrgUnit@1210003 : Text;ReceivedOrgUnit@1210004 : Text);
+    VAR
+      CompanyInfo@1210001 : Record 79;
+    BEGIN
+      ExcelReportBuilderManager.AddSection('REPORTHEADER');
+      ExcelReportBuilderManager.AddDataToSection(
+        'CompanyName',StdRepMgt.GetCompanyName);
+      ExcelReportBuilderManager.AddDataToSection(
+        'OKPO',CompanyInfo."OKPO Code");
+      ExcelReportBuilderManager.AddDataToSection(
+        'OperationCode',CompanyInfo."OKPO Code");
+
+      ExcelReportBuilderManager.AddDataToSection('DocumentNum',DocumentNo);
+      ExcelReportBuilderManager.AddDataToSection('DocumentDate',DocumentDate);
+      ExcelReportBuilderManager.AddDataToSection('FromInventLocation',ReleasedOrgUnit);
+      ExcelReportBuilderManager.AddDataToSection('ToInventLocation',ReceivedOrgUnit);
+
+      CurrentDocumentNo := DocumentNo;
+      CLEAR(TotalAmount);
+      CLEAR(LastTotalAmount);
+    END;
+
+    PROCEDURE FillPageHeader@1210004();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('PAGEHEADER');
+
+      IF ExcelReportBuilderManager.GetLastPageNo - PrevDocPageNo <> 1 THEN
+        ExcelReportBuilderManager.AddDataToSection(
+          'PageNoText',
+          STRSUBSTNO(
+            PageNoTxt,
+            CurrentDocumentNo,
+            ExcelReportBuilderManager.GetLastPageNo - PrevDocPageNo));
+    END;
+
+    PROCEDURE FillLine@1210007(BodyDetails@1210000 : ARRAY [6] OF Text;AmountValues@1210001 : ARRAY [4] OF Decimal);
+    BEGIN
+      IF NOT ExcelReportBuilderManager.TryAddSectionWithPlaceForFooter('BODY','PAGEFOOTER') THEN BEGIN
+        FillPageFooter;
+        ExcelReportBuilderManager.AddPagebreak;
+        FillPageHeader;
+        ExcelReportBuilderManager.AddSection('BODY');
+      END;
+
+      IncreaseTotals(AmountValues);
+
+      ExcelReportBuilderManager.AddDataToSection('ItemName',BodyDetails[1]);
+      ExcelReportBuilderManager.AddDataToSection('ItemId',BodyDetails[2]);
+      ExcelReportBuilderManager.AddDataToSection('BOMUnitId',BodyDetails[3]);
+      ExcelReportBuilderManager.AddDataToSection('CodeOkei',BodyDetails[4]);
+      ExcelReportBuilderManager.AddDataToSection('QtyMultiples',BodyDetails[5]);
+      ExcelReportBuilderManager.AddDataToSection('Qty',FORMAT(AmountValues[2]));
+      ExcelReportBuilderManager.AddDataToSection('GrossWeight',FORMAT(AmountValues[3]));
+      ExcelReportBuilderManager.AddDataToSection('NetWeight',FORMAT(AmountValues[4]));
+      ExcelReportBuilderManager.AddDataToSection('Price',BodyDetails[6]);
+      ExcelReportBuilderManager.AddDataToSection('CostAmount',FORMAT(RoundDecValue(AmountValues[1])));
+    END;
+
+    PROCEDURE FillPageFooter@1210012();
+    BEGIN
+      ExcelReportBuilderManager.AddSection('PAGEFOOTER');
+
+      ExcelReportBuilderManager.AddDataToSection(
+        'QtyPage',FORMAT(TotalAmount[2] - LastTotalAmount[2]));
+      ExcelReportBuilderManager.AddDataToSection(
+        'GrossWeightPage',FORMAT(TotalAmount[3] - LastTotalAmount[3]));
+      ExcelReportBuilderManager.AddDataToSection(
+        'NetWeightPage',FORMAT(TotalAmount[4] - LastTotalAmount[4]));
+      ExcelReportBuilderManager.AddDataToSection(
+        'CostAmountPage',FORMAT(RoundDecValue(TotalAmount[1] - LastTotalAmount[1])));
+
+      SaveLastTotals;
+    END;
+
+    PROCEDURE FillFooter@1210013(FooterDetails@1210001 : ARRAY [4] OF Text);
+    BEGIN
+      IF NOT ExcelReportBuilderManager.TryAddSection('REPORTFOOTER') THEN BEGIN
+        FillPageFooter;
+        ExcelReportBuilderManager.AddPagebreak;
+        FillPageHeader;
+        ExcelReportBuilderManager.AddSection('REPORTFOOTER');
+      END;
+
+      ExcelReportBuilderManager.AddDataToSection('QtyTotal',FORMAT(TotalAmount[2]));
+      ExcelReportBuilderManager.AddDataToSection('GrossWeightTotal',FORMAT(TotalAmount[3]));
+      ExcelReportBuilderManager.AddDataToSection('NetWeightTotal',FORMAT(TotalAmount[4]));
+      ExcelReportBuilderManager.AddDataToSection('CostAmountTotal',FORMAT(RoundDecValue(TotalAmount[1])));
+
+      ExcelReportBuilderManager.AddDataToSection('SupplierTitle',FooterDetails[1]);
+      ExcelReportBuilderManager.AddDataToSection('SupplierName',FooterDetails[2]);
+
+      ExcelReportBuilderManager.AddDataToSection(
+        'AmountRTxt',LocMgt.Integer2Text(TotalAmount[1] DIV 1,1,'','',''));
+      ExcelReportBuilderManager.AddDataToSection(
+        'AmountCTxt',FORMAT((RoundDecValue(TotalAmount[1]) MOD 1) * 100));
+
+      ExcelReportBuilderManager.AddDataToSection('TakerTitle',FooterDetails[3]);
+      ExcelReportBuilderManager.AddDataToSection('TakerName',FooterDetails[4]);
+
+      PrevDocPageNo := ExcelReportBuilderManager.GetLastPageNo;
+      ExcelReportBuilderManager.AddPagebreak;
+    END;
+
+    PROCEDURE ExportData@1210002();
+    BEGIN
+      ExcelReportBuilderManager.ExportData;
+    END;
+
+    PROCEDURE ExportDataToClientFile@1210011(FileName@1210000 : Text);
+    BEGIN
+      ExcelReportBuilderManager.ExportDataToClientFile(FileName);
+    END;
+
+    LOCAL PROCEDURE RoundDecValue@1210027(DecValue@1210001 : Decimal) : Decimal;
+    BEGIN
+      EXIT(ROUND(DecValue,GeneralLedgerSetup."Amount Rounding Precision"));
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

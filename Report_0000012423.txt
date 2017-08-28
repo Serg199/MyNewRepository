@@ -1,0 +1,239 @@
+OBJECT Report 12423 Calc. FA Inventory
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calc. FA Inventory;
+               RUS=Расчет запасов ОС];
+    ProcessingOnly=Yes;
+  }
+  DATASET
+  {
+    { 3794;0   ;DataItem;                    ;
+               DataItemTable=Table5600;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(Inactive=FILTER(No),
+                                       Blocked=FILTER(No));
+               OnPreDataItem=BEGIN
+                               IF PostingDate = 0D THEN
+                                 ERROR(Text002);
+
+                               IF FATemp = '' THEN
+                                 ERROR(Text003);
+
+                               Window.OPEN(Text005,"No.");
+                               SetFAJournalBatch;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  NumberOfMonths@1210000 : Integer;
+                                BEGIN
+                                  Window.UPDATE;
+
+                                  FADepreciationBook.RESET;
+                                  IF FADepreciationBook.GET("No.",FADeprCode) THEN BEGIN
+                                    FADepreciationBook.GetLocationAtDate("FA Location Code","Responsible Employee",PostingDate);
+                                    IF "FA Location Code" <> FALocation.Code THEN BEGIN
+                                      IF "FA Location Code" <> '' THEN
+                                        FALocation.GET("FA Location Code");
+                                      SetFAJournalBatch;
+                                    END;
+                                    FADepreciationBook.SETFILTER("FA Posting Date Filter",'..%1',PostingDate);
+                                    IF NOT ShowZeroBookValue THEN BEGIN
+                                      FADepreciationBook.CALCFIELDS("Book Value");
+                                      IF FADepreciationBook."Book Value" = 0 THEN EXIT;
+                                    END;
+                                    FADepreciationBook.CALCFIELDS("Acquisition Cost", Quantity);
+                                    FactAcquisitionCost := FADepreciationBook."Acquisition Cost";
+                                    FactQuantity := FADepreciationBook.Quantity;
+                                    IF (FactAcquisitionCost > 0) AND (FactQuantity = 0) THEN
+                                      FactQuantity := 1;
+
+                                    FADepreciationBook.SETFILTER("FA Employee Filter","Responsible Employee");
+                                    FADepreciationBook.SETFILTER("FA Location Code Filter",FALocation.Code);
+                                    FADepreciationBook.CALCFIELDS("Acquisition Cost", Quantity);
+                                    CalcAcquisitionCost := FADepreciationBook."Acquisition Cost";
+                                    CalcQuantity := FADepreciationBook.Quantity;
+                                    IF (CalcAcquisitionCost > 0) AND (CalcQuantity = 0) THEN
+                                      CalcQuantity := 1;
+
+                                    IF (FactAcquisitionCost <> 0) OR (CalcAcquisitionCost <> 0) THEN BEGIN
+                                      LineNo := LineNo + 10000;
+                                      FAJournalLine.INIT;
+                                      FAJournalLine."Journal Template Name" := FAJournalBatch."Journal Template Name";
+                                      FAJournalLine."Journal Batch Name" := FAJournalBatch.Name;
+                                      FAJournalLine."Line No." := LineNo;
+                                      FAJournalLine.VALIDATE("FA No.","No.");
+                                      FAJournalLine.VALIDATE("Depreciation Book Code",FADeprCode);
+                                      FAJournalLine."FA Posting Date" := PostingDate;
+                                      FAJournalLine."Posting Date" := PostingDate;
+                                      FAJournalLine."Document Date" := DocumentDate;
+                                      FAJournalLine."Document No." := DocumentNo;
+                                      FAJournalLine.VALIDATE(FAJournalLine."Location Code",FALocation.Code);
+                                      FAJournalLine.VALIDATE(FAJournalLine."Employee No.","Responsible Employee");
+                                      FAJournalLine."Calc. Quantity" := CalcQuantity;
+                                      FAJournalLine."Calc. Amount" := CalcAcquisitionCost;
+                                      FAJournalLine."Actual Quantity" := FactQuantity;
+                                      FAJournalLine."Actual Amount" := FactAcquisitionCost;
+                                      FAJournalLine."Phys. Inventory" := TRUE;
+
+                                      IF "FA Type" = "FA Type"::"Future Expense" THEN BEGIN
+                                        FADepreciationBook.TESTFIELD("No. of Depreciation Months");
+                                        NumberOfMonths :=
+                                          DATE2DMY(PostingDate,2) - DATE2DMY(FADepreciationBook."Acquisition Date",2) +
+                                          (DATE2DMY(PostingDate,3) - DATE2DMY(FADepreciationBook."Acquisition Date",3)) * 12;
+                                        IF NumberOfMonths = 0 THEN
+                                          NumberOfMonths := 1;
+                                        FAJournalLine."Actual  Remaining Amount" := ROUND(
+                                          FactAcquisitionCost - NumberOfMonths * FactAcquisitionCost / FADepreciationBook."No. of Depreciation Months",0.01);
+                                        IF FAJournalLine."Actual  Remaining Amount" < 0 THEN
+                                          FAJournalLine."Actual  Remaining Amount" := 0;
+                                      END;
+
+                                      FAJournalLine.INSERT;
+                                    END;
+                                  END;
+                                END;
+
+               ReqFilterFields=FA Location Code,Responsible Employee,No.,FA Type }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   IF PostingDate = 0D THEN
+                     PostingDate := WORKDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210001;2;Field     ;
+                  CaptionML=[ENU=FA Journal Template;
+                             RUS=Шаблон журнала ОС];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=FATemp;
+                  TableRelation="FA Journal Template" }
+
+      { 5   ;2   ;Field     ;
+                  CaptionML=[ENU=Depreciation Book Code;
+                             RUS=Код книги амортизации];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=FADeprCode;
+                  TableRelation="Depreciation Book" }
+
+      { 9   ;2   ;Field     ;
+                  CaptionML=[ENU=Starting Document No.;
+                             RUS=Номер начального документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocumentNo }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Document Date;
+                             RUS=Дата документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocumentDate }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PostingDate }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU="Show FA with BookValue = 0 ";
+                             RUS="Выводить ОС с нулевой ост. стоимостью "];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowZeroBookValue }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FAJournalBatch@1210012 : Record 5620;
+      FAJournalLine@1210011 : Record 5621;
+      FALocation@1210002 : Record 5609;
+      Text001@1210013 : TextConst 'ENU=Do you want to delete line from FA Journal?;RUS=Удалить строку из журнала ОС?';
+      FATemp@1210014 : Code[20];
+      Text002@1210017 : TextConst 'ENU=Please, enter posting date;RUS=Введите дату учета.';
+      Text003@1210018 : TextConst 'ENU=Enter FA Journal Template.;RUS=Введите шаблон журнала ОС.';
+      Text004@1210019 : TextConst 'ENU=Enter FA Journal Batch.;RUS=Введите раздел журнала ОС.';
+      Text005@1210020 : TextConst 'ENU=FA Processing #1##########;RUS=Обработка ОС #1##########';
+      LineNo@1210021 : Integer;
+      PostingDate@1210023 : Date;
+      DocumentDate@1210024 : Date;
+      DocumentNo@1210030 : Code[20];
+      Window@1210026 : Dialog;
+      FactAcquisitionCost@1210003 : Decimal;
+      CalcAcquisitionCost@1210029 : Decimal;
+      Text006@1210032 : TextConst 'ENU="Phys. Inventory Journal ";RUS="Журнал инвентаризации "';
+      Text007@1210031 : TextConst 'ENU=DEFAULT;RUS=СТАНДАРТ';
+      Text008@1210033 : TextConst 'ENU=Phys. Inventory Journal DEFAULT;RUS=СТАНДАРТНЫЙ журнал инвентаризации';
+      FADepreciationBook@1210006 : Record 5612;
+      FADeprCode@1210000 : Code[20];
+      FactQuantity@1210004 : Integer;
+      CalcQuantity@1210005 : Integer;
+      ShowZeroBookValue@1210001 : Boolean;
+      FALocationCode@1210007 : Code[10];
+
+    PROCEDURE SetFAJournalBatch@1210000();
+    VAR
+      BatchName@1210000 : Code[10];
+      BatchDescr@1210001 : Text[50];
+    BEGIN
+      FAJournalBatch.RESET;
+      FAJournalBatch.SETRANGE("Journal Template Name",FATemp);
+      IF FALocation.Code <> '' THEN BEGIN
+        FAJournalBatch.SETRANGE(Name,FALocation.Code);
+        BatchName := FALocation.Code;
+        BatchDescr := Text006 + ' ' + FALocation.Code;
+      END ELSE BEGIN
+        FAJournalBatch.SETRANGE(Name,Text007);
+        BatchName := Text007;
+        BatchDescr := Text008;
+      END;
+
+      IF NOT FAJournalBatch.FIND('-') THEN BEGIN
+        FAJournalBatch.INIT;
+        FAJournalBatch."Journal Template Name" := FATemp;
+        FAJournalBatch.Name := BatchName;
+        FAJournalBatch.VALIDATE(Description, BatchDescr);
+        FAJournalBatch.INSERT(TRUE);
+      END;
+
+      FAJournalLine.RESET;
+      FAJournalLine.SETRANGE("Journal Template Name", FAJournalBatch."Journal Template Name");
+      FAJournalLine.SETRANGE("Journal Batch Name" , FAJournalBatch.Name);
+      IF FAJournalLine.FIND('+') THEN
+        LineNo := FAJournalLine."Line No."
+      ELSE
+        LineNo := 0;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

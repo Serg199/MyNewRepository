@@ -1,0 +1,329 @@
+OBJECT Page 398 Sales Credit Memo Statistics
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVW110.00,NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    Editable=No;
+    CaptionML=[ENU=Sales Credit Memo Statistics;
+               RUS=Статистика кредит-нот продажи];
+    LinksAllowed=No;
+    SourceTable=Table114;
+    PageType=ListPlus;
+    OnAfterGetRecord=VAR
+                       CostCalcMgt@1000 : Codeunit 5836;
+                     BEGIN
+                       CLEARALL;
+
+                       IF "Currency Code" = '' THEN
+                         Currency.InitRoundingPrecision
+                       ELSE
+                         Currency.GET("Currency Code");
+
+                       SalesCrMemoLine.SETRANGE("Document No.","No.");
+                       IF SalesCrMemoLine.FIND('-') THEN
+                         REPEAT
+                           CustAmount := CustAmount + SalesCrMemoLine.Amount;
+                           AmountInclVAT := AmountInclVAT + SalesCrMemoLine."Amount Including VAT";
+                           IF "Prices Including VAT" THEN
+                             InvDiscAmount := InvDiscAmount + SalesCrMemoLine."Inv. Discount Amount" / (1 + SalesCrMemoLine."VAT %" / 100)
+                           ELSE
+                             InvDiscAmount := InvDiscAmount + SalesCrMemoLine."Inv. Discount Amount";
+                           CostLCY := CostLCY + (SalesCrMemoLine.Quantity * SalesCrMemoLine."Unit Cost (LCY)");
+                           LineQty := LineQty + SalesCrMemoLine.Quantity;
+                           TotalNetWeight := TotalNetWeight + (SalesCrMemoLine.Quantity * SalesCrMemoLine."Net Weight");
+                           TotalGrossWeight := TotalGrossWeight + (SalesCrMemoLine.Quantity * SalesCrMemoLine."Gross Weight");
+                           TotalVolume := TotalVolume + (SalesCrMemoLine.Quantity * SalesCrMemoLine."Unit Volume");
+                           IF SalesCrMemoLine."Units per Parcel" > 0 THEN
+                             TotalParcels := TotalParcels + ROUND(SalesCrMemoLine.Quantity / SalesCrMemoLine."Units per Parcel",1,'>');
+                           IF SalesCrMemoLine."VAT %" <> VATpercentage THEN
+                             IF VATpercentage = 0 THEN
+                               VATpercentage := SalesCrMemoLine."VAT %"
+                             ELSE
+                               VATpercentage := -1;
+                           TotalAdjCostLCY := TotalAdjCostLCY + CostCalcMgt.CalcSalesCrMemoLineCostLCY(SalesCrMemoLine);
+                         UNTIL SalesCrMemoLine.NEXT = 0;
+                       VATAmount := AmountInclVAT - CustAmount;
+                       InvDiscAmount := ROUND(InvDiscAmount,Currency."Amount Rounding Precision");
+
+                       IF VATpercentage <= 0 THEN
+                         VATAmountText := Text000
+                       ELSE
+                         VATAmountText := STRSUBSTNO(Text001,VATpercentage);
+
+                       IF "Currency Code" = '' THEN
+                         AmountLCY := CustAmount
+                       ELSE
+                         AmountLCY :=
+                           CurrExchRate.ExchangeAmtFCYToLCY(
+                             WORKDATE,"Currency Code",CustAmount,"Currency Factor");
+
+                       ProfitLCY := AmountLCY - CostLCY;
+
+                       CustLedgEntry.SETCURRENTKEY("Document No.");
+                       CustLedgEntry.SETRANGE("Document No.","No.");
+                       CustLedgEntry.SETRANGE("Document Type",CustLedgEntry."Document Type"::"Credit Memo");
+                       CustLedgEntry.SETRANGE("Customer No.","Bill-to Customer No.");
+                       IF CustLedgEntry.FINDFIRST THEN
+                         AmountLCY := CustLedgEntry."Sales (LCY)";
+
+                       IF AmountLCY <> 0 THEN
+                         ProfitPct := ROUND(100 * ProfitLCY / AmountLCY,0.1);
+
+                       AdjProfitLCY := AmountLCY - TotalAdjCostLCY;
+                       IF AmountLCY <> 0 THEN
+                         AdjProfitPct := ROUND(100 * AdjProfitLCY / AmountLCY,0.1);
+
+                       IF Cust.GET("Bill-to Customer No.") THEN
+                         Cust.CALCFIELDS("Balance (LCY)")
+                       ELSE
+                         CLEAR(Cust);
+
+                       CASE TRUE OF
+                         Cust."Credit Limit (LCY)" = 0:
+                           CreditLimitLCYExpendedPct := 0;
+                         Cust."Balance (LCY)" / Cust."Credit Limit (LCY)" < 0:
+                           CreditLimitLCYExpendedPct := 0;
+                         Cust."Balance (LCY)" / Cust."Credit Limit (LCY)" > 1:
+                           CreditLimitLCYExpendedPct := 10000;
+                         ELSE
+                           CreditLimitLCYExpendedPct := ROUND(Cust."Balance (LCY)" / Cust."Credit Limit (LCY)" * 10000,1);
+                       END;
+
+                       SalesCrMemoLine.CalcVATAmountLines(Rec,TempVATAmountLine);
+                       CurrPage.Subform.PAGE.SetTempVATAmountLine(TempVATAmountLine);
+                       CurrPage.Subform.PAGE.InitGlobals("Currency Code",FALSE,FALSE,FALSE,FALSE,"VAT Base Discount %");
+                     END;
+
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 35  ;1   ;Group     ;
+                CaptionML=[ENU=General;
+                           RUS=Общее] }
+
+    { 2   ;2   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           RUS=Сумма];
+                ToolTipML=[ENU=Specifies the net amount of all the lines in the sales document.;
+                           RUS=Определяет чистую сумму по всем строкам в документе продажи.];
+                SourceExpr=CustAmount + InvDiscAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 6   ;2   ;Field     ;
+                CaptionML=[ENU=Inv. Discount Amount;
+                           RUS=Сумма скидки по счету];
+                ToolTipML=[ENU=Specifies the invoice discount amount for the sales document.;
+                           RUS=Определяет сумму скидки по счету для документа продажи.];
+                SourceExpr=InvDiscAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 12  ;2   ;Field     ;
+                CaptionML=[ENU=Total;
+                           RUS=Всего];
+                ToolTipML=[ENU=Specifies the total amount, less any invoice discount amount, and excluding VAT for the sales document.;
+                           RUS=Определяет общую сумму за вычетом любой суммы скидки по счету и НДС для документа продажи.];
+                SourceExpr=CustAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 16  ;2   ;Field     ;
+                CaptionML=[ENU=VAT Amount;
+                           RUS=Сумма НДС];
+                ToolTipML=[ENU=Specifies the total VAT amount that has been calculated for all the lines in the sales document.;
+                           RUS=Определяет общую сумму НДС, вычисленную по всем строкам документа продажи.];
+                SourceExpr=VATAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code";
+                CaptionClass=FORMAT(VATAmountText) }
+
+    { 20  ;2   ;Field     ;
+                CaptionML=[ENU=Total Incl. VAT;
+                           RUS=Всего, с учетом НДС];
+                ToolTipML=[ENU=Specifies the total amount, including VAT, that will be posted to the customer's account for all the lines in the sales document.;
+                           RUS=Определяет общую сумму (с НДС), которая будет учтена на счете клиента для всех строк документа продажи.];
+                SourceExpr=AmountInclVAT;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 26  ;2   ;Field     ;
+                CaptionML=[ENU=Sales (LCY);
+                           RUS=Продажи (руб.)];
+                ToolTipML=[ENU=Specifies your total sales turnover in the fiscal year.;
+                           RUS=Определяет общий оборот продаж в финансовом году.];
+                SourceExpr=AmountLCY;
+                AutoFormatType=1 }
+
+    { 30  ;2   ;Field     ;
+                CaptionML=[ENU=Original Profit (LCY);
+                           RUS=Исходная прибыль (руб.)];
+                ToolTipML=[ENU=Specifies the original profit that was associated with the sales when they were originally posted.;
+                           RUS=Определяет исходную прибыль, связанную с продажами при их первоначальном учете.];
+                SourceExpr=ProfitLCY;
+                AutoFormatType=1 }
+
+    { 39  ;2   ;Field     ;
+                CaptionML=[ENU=Adjusted Profit (LCY);
+                           RUS=Скорректир. прибыль (руб.)];
+                ToolTipML=[ENU=Specifies the profit, taking into consideration changes in the purchase prices of the goods.;
+                           RUS=Определяет прибыль, учитывающую изменения цен покупки товаров.];
+                SourceExpr=AdjProfitLCY;
+                AutoFormatType=1 }
+
+    { 32  ;2   ;Field     ;
+                CaptionML=[ENU=Original Profit %;
+                           RUS=Исходная прибыль (%)];
+                ToolTipML=[ENU=Specifies the original percentage of profit that was associated with the sales when they were originally posted.;
+                           RUS=Определяет исходный процент прибыли, связанной с продажами при их первоначальном учете.];
+                DecimalPlaces=1:1;
+                SourceExpr=ProfitPct }
+
+    { 41  ;2   ;Field     ;
+                CaptionML=[ENU=Adjusted Profit %;
+                           RUS=Скорректир. прибыль (%)];
+                ToolTipML=[ENU=Specifies the percentage of profit for all sales, including changes that occurred in the purchase prices of the goods.;
+                           RUS=Определяет процент прибыли по всем продажам с учетом изменений цен покупки товаров.];
+                DecimalPlaces=1:1;
+                SourceExpr=AdjProfitPct }
+
+    { 3   ;2   ;Field     ;
+                CaptionML=[ENU=Quantity;
+                           RUS=Кол-во];
+                ToolTipML=[ENU=Specifies the total quantity of G/L account entries, items and/or resources in the sales document.;
+                           RUS=Определяет общее количество операций ГК, товаров и/или ресурсов в документе продажи.];
+                DecimalPlaces=0:5;
+                SourceExpr=LineQty }
+
+    { 13  ;2   ;Field     ;
+                CaptionML=[ENU=Parcels;
+                           RUS=Упаковок];
+                ToolTipML=[ENU=Specifies the total number of parcels in the sales document.;
+                           RUS=Определяет общее число упаковок по документу продажи.];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalParcels }
+
+    { 7   ;2   ;Field     ;
+                CaptionML=[ENU=Net Weight;
+                           RUS=Вес нетто];
+                ToolTipML=[ENU=Specifies the total net weight of the items in the sales document.;
+                           RUS=Определяет суммарный вес нетто товаров по документу продажи.];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalNetWeight }
+
+    { 10  ;2   ;Field     ;
+                CaptionML=[ENU=Gross Weight;
+                           RUS=Вес брутто];
+                ToolTipML=[ENU=Specifies the total gross weight of the items in the sales document.;
+                           RUS=Определяет суммарный вес брутто товаров по документу продажи.];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalGrossWeight }
+
+    { 17  ;2   ;Field     ;
+                CaptionML=[ENU=Volume;
+                           RUS=Объем];
+                ToolTipML=[ENU=Specifies the total volume of the items in the sales document.;
+                           RUS=Определяет суммарный объем товаров по документу продажи.];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalVolume }
+
+    { 28  ;2   ;Field     ;
+                CaptionML=[ENU=Original Cost (LCY);
+                           RUS=Исходная стоимость (руб.)];
+                ToolTipML=[ENU=Specifies the total cost, in LCY, of the G/L account entries, items and/or resources in the sales document.;
+                           RUS=Определяет общую себестоимость (в рублях) операций ГК, товаров и/или ресурсов в документе продажи.];
+                SourceExpr=CostLCY;
+                AutoFormatType=1 }
+
+    { 36  ;2   ;Field     ;
+                CaptionML=[ENU=Adjusted Cost (LCY);
+                           RUS=Скоррект. себест. (руб.)];
+                SourceExpr=TotalAdjCostLCY;
+                AutoFormatType=1 }
+
+    { 44  ;2   ;Field     ;
+                CaptionML=[ENU=Cost Adjmt. Amount (LCY);
+                           RUS=Сумма корр. себест. (руб.)];
+                SourceExpr=TotalAdjCostLCY - CostLCY;
+                AutoFormatType=1;
+                OnLookup=BEGIN
+                           LookupAdjmtValueEntries;
+                         END;
+                          }
+
+    { 18  ;1   ;Part      ;
+                Name=Subform;
+                PagePartID=Page576;
+                Editable=FALSE }
+
+    { 1903289601;1;Group  ;
+                CaptionML=[ENU=Customer;
+                           RUS=Клиент] }
+
+    { 24  ;2   ;Field     ;
+                CaptionML=[ENU=Balance (LCY);
+                           RUS=Сальдо (руб.)];
+                ToolTipML=[ENU=Specifies the balance in LCY on the customer's account.;
+                           RUS=Определяет сальдо счета клиента в рублях.];
+                SourceExpr=Cust."Balance (LCY)";
+                AutoFormatType=1 }
+
+    { 21  ;2   ;Field     ;
+                CaptionML=[ENU=Credit Limit (LCY);
+                           RUS=Кредитный лимит (руб.)];
+                SourceExpr=Cust."Credit Limit (LCY)";
+                AutoFormatType=1 }
+
+    { 1   ;2   ;Field     ;
+                ExtendedDatatype=Ratio;
+                CaptionML=[ENU=Expended % of Credit Limit (LCY);
+                           RUS=Израсх. % кредитного лимита (руб.)];
+                ToolTipML=[ENU=Specifies the expended percentage of the credit limit in (LCY).;
+                           RUS=Определяет процент расхода кредитного лимита (в рублях).];
+                SourceExpr=CreditLimitLCYExpendedPct }
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=VAT Amount;RUS=Сумма НДС';
+      Text001@1001 : TextConst 'ENU=%1% VAT;RUS=%1% НДС';
+      CurrExchRate@1002 : Record 330;
+      SalesCrMemoLine@1003 : Record 115;
+      Cust@1004 : Record 18;
+      TempVATAmountLine@1005 : TEMPORARY Record 290;
+      Currency@1022 : Record 4;
+      CustLedgEntry@1210000 : Record 21;
+      TotalAdjCostLCY@1025 : Decimal;
+      CustAmount@1006 : Decimal;
+      AmountInclVAT@1007 : Decimal;
+      InvDiscAmount@1008 : Decimal;
+      VATAmount@1009 : Decimal;
+      CostLCY@1010 : Decimal;
+      ProfitLCY@1011 : Decimal;
+      ProfitPct@1012 : Decimal;
+      AdjProfitLCY@1026 : Decimal;
+      AdjProfitPct@1023 : Decimal;
+      LineQty@1013 : Decimal;
+      TotalNetWeight@1014 : Decimal;
+      TotalGrossWeight@1015 : Decimal;
+      TotalVolume@1016 : Decimal;
+      TotalParcels@1017 : Decimal;
+      AmountLCY@1018 : Decimal;
+      CreditLimitLCYExpendedPct@1019 : Decimal;
+      VATpercentage@1020 : Decimal;
+      VATAmountText@1021 : Text[30];
+
+    BEGIN
+    END.
+  }
+}
+

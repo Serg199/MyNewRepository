@@ -1,0 +1,367 @@
+OBJECT Report 14951 Bill of Lading
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Bill of Lading;
+               RUS=Товарная накладная];
+    ProcessingOnly=Yes;
+    OnPostReport=VAR
+                   SalesHeader@1210003 : Record 36;
+                   SalesReceivablesSetup@1210004 : Record 311;
+                   ExcelTemplate@1210006 : Record 14919;
+                   FileName@1210005 : Text[1024];
+                   ReportSource@1210007 : 'UnpostedSales,SalesInvoice,SalesShipment';
+                 BEGIN
+                   IF NOT DefineReportSource(ReportSource,SalesHeader) THEN
+                     EXIT;
+
+                   IF ReportSource = ReportSource::UnpostedSales THEN
+                     SalesHeader.TESTFIELD(Status,SalesHeader.Status::Released);
+
+                   SalesReceivablesSetup.GET;
+                   SalesReceivablesSetup.TESTFIELD("Bill of Lading Template Code");
+
+                   FileName := ExcelTemplate.OpenTemplate(SalesReceivablesSetup."Bill of Lading Template Code");
+
+                   ExcelMgt.OpenBook(FileName);
+
+                   FillSheets(SalesHeader,ReportSource);
+
+                   IF TestMode THEN
+                     ExcelMgt.CloseBook(TRUE)
+                   ELSE
+                     ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 6640;    ;DataItem;                    ;
+               DataItemTable=Table36 }
+
+    { 5581;    ;DataItem;                    ;
+               DataItemTable=Table112 }
+
+    { 3595;    ;DataItem;                    ;
+               DataItemTable=Table110 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1210000; ;Container ;
+                  Name=Controls;
+                  ContainerType=ContentArea }
+
+      { 1210004;1;Group     ;
+                  GroupType=Group }
+
+      { 1210001;2;Field     ;
+                  Name=ItemDescription;
+                  CaptionML=[ENU=Item Description;
+                             RUS=Описание товара];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ItemDescription }
+
+      { 1210002;2;Field     ;
+                  Name=VehicleDescription;
+                  CaptionML=[ENU=Vehicle Description;
+                             RUS=Описание ТС];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=VehicleDescription }
+
+      { 1210003;2;Field     ;
+                  Name=VehicleRegistrationNo;
+                  CaptionML=[ENU=Vehicle Registration No.;
+                             RUS=Регистрационный номер ТС];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=VehicleDescriptionRegNo }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ExcelMgt@1210000 : Codeunit 12416;
+      ItemDescription@1210001 : Text[1024];
+      VehicleDescription@1210002 : Text[1024];
+      VehicleDescriptionRegNo@1210003 : Text[1024];
+      TestMode@1210005 : Boolean;
+
+    PROCEDURE FillSheets@1210002(SalesHeader@1210005 : Record 36;ReportSource@1210004 : 'UnpostedSales,SalesInvoice,SalesShipment');
+    VAR
+      LocRepMgt@1210003 : Codeunit 12401;
+      Quantity@1210002 : Decimal;
+      Weight@1210001 : Decimal;
+      Volume@1210000 : Decimal;
+    BEGIN
+      ExcelMgt.OpenSheetByNumber(1);
+      ExcelMgt.FillCell('BI9',FORMAT(SalesHeader."Order Date"));
+      ExcelMgt.FillCell('CM9',SalesHeader."No.");
+      ExcelMgt.FillCell('B14',GetVendorInfo(SalesHeader));
+      ExcelMgt.FillCell('BD14',GetCustomerInfo(SalesHeader));
+      ExcelMgt.FillCell('B17',ItemDescription);
+      GetLinesInfo(SalesHeader,Quantity,Weight,Volume,ReportSource);
+      ExcelMgt.FillCell('B19',FORMAT(Quantity));
+      ExcelMgt.FillCell('B21',LocRepMgt.FormatReportValue(Weight,2) + ',  ,' + LocRepMgt.FormatReportValue(Volume,2));
+      ExcelMgt.FillCell('B35',LocRepMgt.FormatReportValue(GetAmountLCY(SalesHeader,ReportSource),2));
+      ExcelMgt.FillCell('B39',GetLocationInfo(SalesHeader));
+
+      ExcelMgt.OpenSheetByNumber(2);
+      ExcelMgt.FillCell('B5',GetShippingAgentName(SalesHeader));
+      ExcelMgt.FillCell('B12',VehicleDescription);
+      ExcelMgt.FillCell('BP12',VehicleDescriptionRegNo);
+      ExcelMgt.FillCell('B38',GetPayerInfo(SalesHeader));
+    END;
+
+    PROCEDURE GetVendorInfo@1210006(SalesHeader@1210000 : Record 36) : Text[250];
+    VAR
+      LocRepMgt@1210001 : Codeunit 12401;
+    BEGIN
+      IF SalesHeader."Consignor No." = '' THEN
+        EXIT(LocRepMgt.GetCompanyName + '. ' + LocRepMgt.GetLegalAddress + LocRepMgt.GetCompanyPhoneFax);
+
+      EXIT(LocRepMgt.GetConsignerInfo(SalesHeader."Consignor No.",SalesHeader."Responsibility Center"));
+    END;
+
+    PROCEDURE GetCustomerInfo@1210004(SalesHeader@1210000 : Record 36) : Text[250];
+    VAR
+      LocRepMgt@1210001 : Codeunit 12401;
+    BEGIN
+      EXIT(
+        LocRepMgt.GetShipToAddrName(
+          SalesHeader."Sell-to Customer No.",SalesHeader."Ship-to Code",SalesHeader."Ship-to Name",SalesHeader."Ship-to Name 2") + ' ' +
+        LocRepMgt.GetFullAddr(
+          SalesHeader."Sell-to Post Code",SalesHeader."Sell-to City",
+          SalesHeader."Sell-to Address",SalesHeader."Sell-to Address 2") + ' ' +
+        LocRepMgt.GetCustPhoneFax(SalesHeader."Sell-to Customer No."));
+    END;
+
+    PROCEDURE GetPayerInfo@1210003(SalesHeader@1210000 : Record 36) : Text[250];
+    VAR
+      LocRepMgt@1210001 : Codeunit 12401;
+    BEGIN
+      EXIT(
+        LocRepMgt.GetShipToAddrName(
+          SalesHeader."Bill-to Customer No.",SalesHeader."Ship-to Code",SalesHeader."Bill-to Name",SalesHeader."Bill-to Name 2") + ' ' +
+        LocRepMgt.GetFullAddr(
+          SalesHeader."Bill-to Post Code",SalesHeader."Bill-to City",
+          SalesHeader."Bill-to Address",SalesHeader."Bill-to Address 2") + ' ' +
+        LocRepMgt.GetCustBankAttrib(SalesHeader."Bill-to Customer No.",SalesHeader."Agreement No."));
+    END;
+
+    PROCEDURE GetShippingAgentName@1210012(SalesHeader@1210000 : Record 36) : Text[250];
+    VAR
+      ShippingAgent@1210001 : Record 291;
+    BEGIN
+      IF ShippingAgent.GET(SalesHeader."Shipping Agent Code") THEN
+        EXIT(ShippingAgent.Name);
+    END;
+
+    PROCEDURE GetResponsiblePersonInfo@1210018(SalesHeader@1210000 : Record 36;ReportSource@1210004 : 'UnpostedSales,SalesInvoice,SalesShipment') : Text[250];
+    VAR
+      Employee@1210003 : Record 5200;
+      DocumentSignature@1210002 : Record 12420;
+      PostedDocumentSignature@1210005 : Record 12421;
+      LocRepMgt@1210001 : Codeunit 12401;
+    BEGIN
+      CASE ReportSource OF
+        ReportSource::UnpostedSales:
+          BEGIN
+            IF NOT DocumentSignature.GET(
+                 DATABASE::"Sales Header",
+                 SalesHeader."Document Type",
+                 SalesHeader."No.",
+                 DocumentSignature."Employee Type"::Responsible)
+            THEN
+              EXIT('');
+            IF NOT Employee.GET(DocumentSignature."Employee No.") THEN
+              EXIT('');
+          END;
+        ReportSource::SalesInvoice:
+          BEGIN
+            IF NOT PostedDocumentSignature.GET(
+                 DATABASE::"Sales Invoice Header",
+                 0,
+                 SalesHeader."No.",
+                 DocumentSignature."Employee Type"::Responsible)
+            THEN
+              EXIT('');
+            IF NOT Employee.GET(PostedDocumentSignature."Employee No.") THEN
+              EXIT('');
+          END;
+        ReportSource::SalesShipment:
+          BEGIN
+            IF NOT PostedDocumentSignature.GET(
+                 DATABASE::"Sales Shipment Header",
+                 0,
+                 SalesHeader."No.",
+                 DocumentSignature."Employee Type"::Responsible)
+            THEN
+              EXIT('');
+            IF NOT Employee.GET(PostedDocumentSignature."Employee No.") THEN
+              EXIT('');
+          END;
+      END;
+
+      EXIT(
+        LocRepMgt.GetEmpName(Employee."No.") + ' ' +
+        Employee."Phone No." + ' ' +
+        Employee."Mobile Phone No.");
+    END;
+
+    PROCEDURE GetLinesInfo@1210021(SalesHeader@1210003 : Record 36;VAR Quantity@1210002 : Decimal;VAR Weight@1210001 : Decimal;VAR Volume@1210004 : Decimal;ReportSource@1210000 : 'UnpostedSales,SalesInvoice,SalesShipment');
+    BEGIN
+      CASE ReportSource OF
+        ReportSource::UnpostedSales:
+          GetSalesLinesInfo(SalesHeader,Quantity,Weight,Volume);
+        ReportSource::SalesInvoice:
+          GetInvoiceLinesInfo(SalesHeader,Quantity,Weight,Volume);
+        ReportSource::SalesShipment:
+          GetShipmentLinesInfo(SalesHeader,Quantity,Weight,Volume);
+      END;
+    END;
+
+    PROCEDURE GetSalesLinesInfo@1210028(SalesHeader@1210000 : Record 36;VAR Quantity@1210001 : Decimal;VAR Weight@1210002 : Decimal;VAR Volume@1210004 : Decimal);
+    VAR
+      SalesLine@1210003 : Record 37;
+    BEGIN
+      SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+      SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+
+      IF SalesLine.FINDSET THEN
+        REPEAT
+          Quantity += SalesLine."Qty. to Ship";
+          Weight += SalesLine."Qty. to Ship" * SalesLine."Net Weight";
+          Volume += SalesLine."Qty. to Ship" * SalesLine."Unit Volume";
+        UNTIL SalesLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetInvoiceLinesInfo@1210019(SalesHeader@1210002 : Record 36;VAR Quantity@1210001 : Decimal;VAR Weight@1210000 : Decimal;VAR Volume@1210004 : Decimal);
+    VAR
+      SalesInvoiceLine@1210003 : Record 113;
+    BEGIN
+      SalesInvoiceLine.SETRANGE("Document No.",SalesHeader."No.");
+
+      IF SalesInvoiceLine.FINDSET THEN
+        REPEAT
+          Quantity += SalesInvoiceLine.Quantity;
+          Weight += SalesInvoiceLine.Quantity * SalesInvoiceLine."Net Weight";
+          Volume += SalesInvoiceLine.Quantity * SalesInvoiceLine."Unit Volume";
+        UNTIL SalesInvoiceLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetShipmentLinesInfo@1210020(SalesHeader@1210002 : Record 36;VAR Quantity@1210001 : Decimal;VAR Weight@1210000 : Decimal;VAR Volume@1210004 : Decimal);
+    VAR
+      SalesShipmentLine@1210003 : Record 111;
+    BEGIN
+      SalesShipmentLine.SETRANGE("Document No.",SalesHeader."No.");
+
+      IF SalesShipmentLine.FINDSET THEN
+        REPEAT
+          Quantity += SalesShipmentLine.Quantity;
+          Weight += SalesShipmentLine.Quantity * SalesShipmentLine."Net Weight";
+          Volume += SalesShipmentLine.Quantity * SalesShipmentLine."Unit Volume";
+        UNTIL SalesShipmentLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetLocationInfo@1210009(SalesHeader@1210000 : Record 36) : Text[250];
+    VAR
+      Location@1210001 : Record 14;
+      CountryRegion@1210002 : Record 9;
+    BEGIN
+      Location.GET(SalesHeader."Location Code");
+      CountryRegion.GET(Location."Country/Region Code");
+      EXIT(
+        CountryRegion."Local Name" + '  ' + Location."Post Code" + '  ' +
+        Location.City + '  ' + Location.Address + '  ' + Location."Address 2");
+    END;
+
+    PROCEDURE GetAmountLCY@1210005(SalesHeader@1210000 : Record 36;ReportSource@1210001 : 'UnpostedSales,SalesInvoice,SalesShipment') : Decimal;
+    BEGIN
+      CASE ReportSource OF
+        ReportSource::UnpostedSales:
+          BEGIN
+            SalesHeader.CALCFIELDS("Amount Including VAT (LCY)");
+            EXIT(SalesHeader."Amount Including VAT (LCY)");
+          END;
+        ReportSource::SalesInvoice:
+          EXIT(GetInvoiceLinesAmountLCY(SalesHeader));
+        ReportSource::SalesShipment:
+          EXIT(GetShipmentLinesAmountLCY(SalesHeader));
+      END;
+    END;
+
+    PROCEDURE GetInvoiceLinesAmountLCY@1210008(SalesHeader@1210002 : Record 36) AmountLCY : Decimal;
+    VAR
+      SalesInvoiceLine@1210003 : Record 113;
+    BEGIN
+      SalesInvoiceLine.SETRANGE("Document No.",SalesHeader."No.");
+
+      IF SalesInvoiceLine.FINDSET THEN
+        REPEAT
+          AmountLCY += SalesInvoiceLine."Amount Including VAT (LCY)";
+        UNTIL SalesInvoiceLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetShipmentLinesAmountLCY@1210007(SalesHeader@1210002 : Record 36) AmountLCY : Decimal;
+    VAR
+      SalesShipmentLine@1210003 : Record 111;
+    BEGIN
+      SalesShipmentLine.SETRANGE("Document No.",SalesHeader."No.");
+
+      IF SalesShipmentLine.FINDSET THEN
+        REPEAT
+          AmountLCY += SalesShipmentLine."Amount Including VAT (LCY)";
+        UNTIL SalesShipmentLine.NEXT = 0;
+    END;
+
+    PROCEDURE DefineReportSource@1210001(VAR ReportSource@1210000 : 'UnpostedSales,SalesInvoice,SalesShipment';VAR SalesHeader@1210002 : Record 36) : Boolean;
+    BEGIN
+      IF "Sales Header".GETFILTERS <> '' THEN BEGIN
+        ReportSource := ReportSource::UnpostedSales;
+        SalesHeader := "Sales Header";
+        EXIT(TRUE);
+      END;
+
+      IF "Sales Invoice Header".GETFILTERS <> '' THEN BEGIN
+        ReportSource := ReportSource::SalesInvoice;
+        SalesHeader.TRANSFERFIELDS("Sales Invoice Header");
+        EXIT(TRUE);
+      END;
+
+      IF "Sales Shipment Header".GETFILTERS <> '' THEN BEGIN
+        ReportSource := ReportSource::SalesShipment;
+        SalesHeader.TRANSFERFIELDS("Sales Shipment Header");
+        EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE SetTestMode@1210000(NewTestMode@1210000 : Boolean);
+    BEGIN
+      TestMode := NewTestMode;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

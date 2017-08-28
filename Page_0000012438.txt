@@ -1,0 +1,890 @@
+OBJECT Page 12438 Cash Order Journal
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20.07.17;
+    Time=14:45:33;
+    Modified=Yes;
+    Version List=NAVRU10.00,NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Cash Order Journal;
+               RUS=Журнал регистрации кассовых документов];
+    SaveValues=Yes;
+    SourceTable=Table81;
+    DelayedInsert=Yes;
+    DataCaptionFields=Journal Batch Name;
+    PageType=Worksheet;
+    AutoSplitKey=Yes;
+    OnInit=BEGIN
+             TotalBalanceVisible := TRUE;
+             BalanceVisible := TRUE;
+           END;
+
+    OnOpenPage=VAR
+                 JnlSelected@1000 : Boolean;
+               BEGIN
+                 GenJnlManagement.TemplateSelection(PAGE::"Cash Order Journal",10,FALSE,Rec,JnlSelected);
+                 IF NOT JnlSelected THEN
+                   ERROR('');
+                 GenJnlManagement.OpenJnl(CurrentJnlBatchName,Rec);
+               END;
+
+    OnAfterGetRecord=BEGIN
+                       ShowShortcutDimCode(ShortcutDimCode);
+
+                       //NC S1880.1 > PCH
+                       //NOS-26 > ENK
+                       {
+                       IF CurrForm.ctrl_AccName2.VISIBLE THEN
+                       }
+                       //NOS-26 < ENK
+                         GenJnlManagement2.GetAccounts(Rec,AccName2,BalAccName2);
+                       //NC S1880.1 < PCH
+
+                       //NC NOS-26 > ENK
+                       {
+                       //TDRANCS-1101>
+                       l_recJnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+                       l_recJnlLineDim.SETRANGE("Journal Template Name","Journal Template Name");
+                       l_recJnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+                       l_recJnlLineDim.SETRANGE("Journal Line No.","Line No.");
+                       IF l_recJnlLineDim.FINDSET THEN REPEAT
+                         IF l_recJnlLineDim.fn_ColorBlockDim(l_recJnlLineDim."Dimension Code",
+                                                             l_recJnlLineDim."Dimension Value Code",
+                                                             "Posting Date") <> 0 THEN
+                           CurrForm."Posting Date".UPDATEFORECOLOR := l_recJnlLineDim.fn_ColorBlockDim(l_recJnlLineDim."Dimension Code",
+                                                                                                       l_recJnlLineDim."Dimension Value Code",
+                                                                                                       "Posting Date");
+                       UNTIL l_recJnlLineDim.NEXT = 0;
+                       //TDRANCS-1101<
+                       }
+                       PostingDateColor := DimensionManagement.fn_ColorBlockDim("Dimension Set ID", "Posting Date");
+                       //NC NOS-26 < ENK
+                     END;
+
+    OnNewRecord=BEGIN
+                  UpdateBalance;
+                  SetUpNewLine(xRec,Balance,BelowxRec);
+                  CLEAR(ShortcutDimCode);
+
+                  //NC OAM003 > DP
+                  IF xRec."Account No." ='' THEN
+                    "Account Type" := "Account Type"::"G/L Account";
+                  Amount := -(TotalBalance+"Balance (LCY)"-xRec."Balance (LCY)");
+                  //NC OAM003 < DP
+                END;
+
+    OnAfterGetCurrRecord=VAR
+                           TableID@1101495001 : ARRAY [10] OF Integer;
+                           No@1101495000 : ARRAY [10] OF Code[20];
+                         BEGIN
+                           // NC NOS-26 > SPA
+                           SpecifyTableID_No(TableID,No);
+                           CurrPage.DimensionsList.PAGE.RefreshList("Dimension Set ID",TableID,No);
+                           // NC NOS-26 < SPA
+                           GenJnlManagement.GetAccounts(Rec,AccName,BalAccName);
+                           UpdateBalance;
+                         END;
+
+    ActionList=ACTIONS
+    {
+      { 1900000003;0 ;ActionContainer;
+                      ActionContainerType=RelatedInformation }
+      { 59      ;1   ;ActionGroup;
+                      CaptionML=[ENU=&Line;
+                                 RUS=&Строка];
+                      Image=Line }
+      { 60      ;2   ;Action    ;
+                      ShortCutKey=Shift+Ctrl+D;
+                      CaptionML=[ENU=Dimensions;
+                                 RUS=Измерения];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=Dimensions;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 ShowDimensions;
+                                 CurrPage.UPDATE;
+                               END;
+                                }
+      { 37      ;1   ;ActionGroup;
+                      CaptionML=[ENU=A&ccount;
+                                 RUS=С&чет];
+                      Image=ChartOfAccounts }
+      { 38      ;2   ;Action    ;
+                      ShortCutKey=Shift+F7;
+                      CaptionML=[ENU=Card;
+                                 RUS=Карточка];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Codeunit 15;
+                      Image=EditLines }
+      { 39      ;2   ;Action    ;
+                      ShortCutKey=Ctrl+F7;
+                      CaptionML=[ENU=Ledger E&ntries;
+                                 RUS=&Книга операций];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Codeunit 14;
+                      Image=LedgerEntries }
+      { 1210002 ;1   ;ActionGroup;
+                      CaptionML=[ENU=&Payments;
+                                 RUS=&Платежи];
+                      Image=Payment }
+      { 1210004 ;2   ;Action    ;
+                      CaptionML=[ENU=P&review Cash Order;
+                                 RUS=Прос&мотр кассового ордера];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=View;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 CheckManagement.ShowPaymentDocument(Rec);
+                                 CODEUNIT.RUN(CODEUNIT::"Adjust Gen. Journal Balance",Rec);
+                                 CurrPage.UPDATE(FALSE);
+                               END;
+                                }
+      { 1210005 ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Print Cash Order;
+                                 RUS=Распечатать кассовый ордер];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=PrintDocument;
+                      PromotedCategory=Process;
+                      OnAction=VAR
+                                 BankAcc@1470001 : Record 270;
+                                 DocPrint@1470002 : Codeunit 229;
+                               BEGIN
+                                 GenJnlLine.RESET;
+                                 GenJnlLine.COPY(Rec);
+                                 GenJnlLine.SETRANGE("Journal Template Name","Journal Template Name");
+                                 GenJnlLine.SETRANGE("Journal Batch Name","Journal Batch Name");
+                                 GenJnlLine.SETRANGE("Line No.","Line No.");
+                                 GenJnlLine.TESTFIELD("Bal. Account Type",GenJnlLine."Bal. Account Type"::"Bank Account");
+                                 BankAcc.GET(GenJnlLine."Bal. Account No.");
+                                 CASE BankAcc."Account Type" OF
+                                   BankAcc."Account Type"::"Bank Account":
+                                     DocPrint.PrintCheck(GenJnlLine);
+                                   BankAcc."Account Type"::"Cash Account":
+                                     DocPrint.PrintCashOrder(GenJnlLine);
+                                 END;
+                                 CODEUNIT.RUN(CODEUNIT::"Adjust Gen. Journal Balance",Rec);
+                               END;
+                                }
+      { 1210006 ;2   ;Action    ;
+                      CaptionML=[ENU=Void Cash Order;
+                                 RUS=Аннулировать печать кассового ордера];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=VoidElectronicDocument;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 TESTFIELD("Bank Payment Type","Bank Payment Type"::"Computer Check");
+                                 TESTFIELD("Check Printed",TRUE);
+                                 IF CONFIRM(Text000,FALSE,"Document No.") THEN
+                                   CheckManagement.VoidCheck(Rec);
+                               END;
+                                }
+      { 1210007 ;2   ;Action    ;
+                      CaptionML=[ENU=Void &All Orders;
+                                 RUS=Аннулировать &все платежные документы];
+                      Visible=FALSE;
+                      Image=VoidAllElectronicDocuments;
+                      OnAction=BEGIN
+                                 IF CONFIRM(Text001,FALSE) THEN BEGIN
+                                   GenJnlLine.RESET;
+                                   GenJnlLine.COPY(Rec);
+                                   GenJnlLine.SETRANGE("Bank Payment Type","Bank Payment Type"::"Computer Check");
+                                   GenJnlLine.SETRANGE("Check Printed",TRUE);
+                                   IF GenJnlLine.FIND('-') THEN
+                                     REPEAT
+                                       GenJnlLine2 := GenJnlLine;
+                                       CheckManagement.VoidCheck(GenJnlLine2);
+                                     UNTIL GenJnlLine.NEXT = 0;
+                                 END;
+                               END;
+                                }
+      { 1900000004;0 ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 40      ;1   ;ActionGroup;
+                      CaptionML=[ENU=F&unctions;
+                                 RUS=Ф&ункции];
+                      Image=Action }
+      { 83      ;2   ;Action    ;
+                      ShortCutKey=Shift+F11;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Apply Entries;
+                                 RUS=Применить операции];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Codeunit 225;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=ApplyEntries;
+                      PromotedCategory=Process }
+      { 84      ;2   ;Action    ;
+                      CaptionML=[ENU=Insert Conv. LCY Rndg. Lines;
+                                 RUS=Вставить строки округл. для конвертации в руб.];
+                      ApplicationArea=#Basic,#Suite;
+                      RunObject=Codeunit 407;
+                      Image=InsertCurrency }
+      { 1210003 ;2   ;Action    ;
+                      CaptionML=[ENU=Copy Cash Order;
+                                 RUS=Копировать кассовый ордер];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=CopyDocument;
+                      OnAction=BEGIN
+                                 IF "Line No." = 0 THEN
+                                   FIELDERROR("Line No.");
+                                 GenJnlLine.RESET;
+                                 GenJnlLine.SETRANGE("Journal Template Name","Journal Template Name");
+                                 GenJnlLine.SETRANGE("Journal Batch Name","Journal Batch Name");
+                                 GenJnlLine.SETRANGE("Line No.","Line No.");
+                                 IF GenJnlLine.FIND('-') THEN
+                                   REPORT.RUNMODAL(REPORT::"Copy Payment Document",TRUE,TRUE,GenJnlLine);
+                               END;
+                                }
+      { 1101495000;2 ;Action    ;
+                      Name=------;
+                      CaptionML=RUS=------ }
+      { 1101495006;2 ;Action    ;
+                      CaptionML=[ENU=Copy General Ledger Entry;
+                                 RUS=Копировать Фин. Книга Операций];
+                      OnAction=VAR
+                                 CopyGL@1101495000 : Report 50052;
+                               BEGIN
+                                 //NC TR195 > EB
+                                 CLEAR(CopyGL);
+                                 CopyGL.SetJnlParam("Journal Template Name", "Journal Batch Name");
+                                 CopyGL.RUNMODAL;
+                                 //NC TR195 < EB
+                               END;
+                                }
+      { 1101495001;2 ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Insert FX Journal Line;
+                                 RUS=Вставить Строку Курс. Разниц];
+                      OnAction=VAR
+                                 InsertFXJournalLine@1101495001 : Report 50088;
+                                 GenJnlBatch@1101495000 : Record 232;
+                               BEGIN
+                                 //NC OAM33 > DP
+                                 CLEAR(InsertFXJournalLine);
+                                 IF GenJnlBatch.GET("Journal Template Name", "Journal Batch Name") THEN BEGIN
+                                   GenJnlBatch.TESTFIELD("FX Batch", TRUE);
+                                   InsertFXJournalLine.SetJnlLine(Rec);
+                                   InsertFXJournalLine.RUNMODAL;
+                                 END;
+                                 //NC OAM33 < DP
+                               END;
+                                }
+      { 1101495002;2 ;Action    ;
+                      CaptionML=ENU=A&pprove;
+                      OnAction=BEGIN
+                                 // NC NCS-1880 ORM
+                                 ApproveSelected;
+                               END;
+                                }
+      { 1101495003;2 ;Action    ;
+                      CaptionML=RUS=<&Reopen>;
+                      OnAction=BEGIN
+                                 // NC NCS-1880 ORM
+                                 ReopenSelected;
+                               END;
+                                }
+      { 41      ;1   ;ActionGroup;
+                      CaptionML=[ENU=P&osting;
+                                 RUS=У&чет];
+                      Image=Post }
+      { 42      ;2   ;Action    ;
+                      ShortCutKey=Ctrl+F11;
+                      CaptionML=[ENU=Reconcile;
+                                 RUS=Выверить];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=Reconcile;
+                      OnAction=BEGIN
+                                 GLReconcile.SetGenJnlLine(Rec);
+                                 GLReconcile.RUN;
+                               END;
+                                }
+      { 43      ;2   ;Action    ;
+                      Ellipsis=Yes;
+                      CaptionML=[ENU=Test Report;
+                                 RUS=Тестовый отчет];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=TestReport;
+                      OnAction=BEGIN
+                                 ReportPrint.PrintGenJnlLine(Rec);
+                               END;
+                                }
+      { 44      ;2   ;Action    ;
+                      ShortCutKey=F9;
+                      CaptionML=[ENU=P&ost;
+                                 RUS=У&чет];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=Post;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post",Rec);
+                                 CurrentJnlBatchName := GETRANGEMAX("Journal Batch Name");
+                                 CurrPage.UPDATE(FALSE);
+                               END;
+                                }
+      { 1210009 ;2   ;Action    ;
+                      Name=Preview;
+                      CaptionML=[ENU=Preview Posting;
+                                 RUS=Предварительный просмотр учета];
+                      ApplicationArea=#Basic,#Suite;
+                      Image=ViewPostedOrder;
+                      OnAction=VAR
+                                 GenJnlPost@1210000 : Codeunit 231;
+                               BEGIN
+                                 GenJnlPost.Preview(Rec);
+                               END;
+                                }
+      { 45      ;2   ;Action    ;
+                      ShortCutKey=Shift+F9;
+                      CaptionML=[ENU=Post and &Print;
+                                 RUS=Учет и &печать];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      PromotedIsBig=Yes;
+                      Image=PostPrint;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post+Print",Rec);
+                                 CurrentJnlBatchName := GETRANGEMAX("Journal Batch Name");
+                                 CurrPage.UPDATE(FALSE);
+                               END;
+                                }
+    }
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 33  ;1   ;Field     ;
+                Lookup=Yes;
+                CaptionML=[ENU=Batch Name;
+                           RUS=Код раздела];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=CurrentJnlBatchName;
+                OnValidate=BEGIN
+                             GenJnlManagement.CheckName(CurrentJnlBatchName,Rec);
+                             CurrentJnlBatchNameOnAfterVali;
+                           END;
+
+                OnLookup=BEGIN
+                           CurrPage.SAVERECORD;
+                           GenJnlManagement.LookupName(CurrentJnlBatchName,Rec);
+                           CurrPage.UPDATE(FALSE);
+                         END;
+                          }
+
+    { 1   ;1   ;Group     ;
+                GroupType=Repeater }
+
+    { 1101495009;2;Field  ;
+                SourceExpr="Line No.";
+                Visible=false }
+
+    { 1210016;2;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bank Payment Type" }
+
+    { 2   ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Posting Date";
+                StyleExpr=PostingDateColor }
+
+    { 61  ;2   ;Field     ;
+                SourceExpr="Document Date";
+                Visible=FALSE }
+
+    { 4   ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Document Type" }
+
+    { 1210020;2;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=Prepayment }
+
+    { 6   ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Document No." }
+
+    { 35  ;2   ;Field     ;
+                SourceExpr="External Document No.";
+                Visible=FALSE }
+
+    { 8   ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Account Type";
+                OnValidate=BEGIN
+                             GenJnlManagement.GetAccounts(Rec,AccName,BalAccName);
+                           END;
+                            }
+
+    { 10  ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Account No.";
+                OnValidate=BEGIN
+                             GenJnlManagement.GetAccounts(Rec,AccName,BalAccName);
+                             ShowShortcutDimCode(ShortcutDimCode);
+                           END;
+                            }
+
+    { 1101495010;2;Field  ;
+                Name=ctrl_AccName2;
+                CaptionML=[ENU=Account Name;
+                           RUS=Счет Название];
+                SourceExpr=AccName2;
+                Visible=FALSE;
+                Editable=FALSE }
+
+    { 1210022;2;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Posting Group" }
+
+    { 1101495012;2;Field  ;
+                SourceExpr="Agreement Condition No.";
+                Visible=FALSE }
+
+    { 1210018;2;Field     ;
+                ToolTipML=[ENU=Specifies the beneficiary bank code associated with the general journal line.;
+                           RUS=Определяет код банка получателя, связанный со строкой финансового журнала.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Beneficiary Bank Code";
+                Visible=TRUE }
+
+    { 12  ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=Description }
+
+    { 1210024;2;Field     ;
+                ToolTipML=[ENU=Specifies the prepayment document number associated with the general journal line.;
+                           RUS=Определяет номер документа предоплаты, связанный со строкой финансового журнала.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Prepayment Document No." }
+
+    { 1210026;2;Field     ;
+                ToolTipML=[ENU=Specifies the agreement number associated with the general journal line.;
+                           RUS=Определяет номер соглашения, связанный со строкой финансового журнала.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Agreement No.";
+                OnValidate=BEGIN
+                             ShowShortcutDimCode(ShortcutDimCode);
+                           END;
+                            }
+
+    { 51  ;2   ;Field     ;
+                SourceExpr="Salespers./Purch. Code";
+                Visible=FALSE }
+
+    { 85  ;2   ;Field     ;
+                SourceExpr="Campaign No.";
+                Visible=FALSE }
+
+    { 53  ;2   ;Field     ;
+                AssistEdit=Yes;
+                SourceExpr="Currency Code";
+                Visible=true;
+                OnAssistEdit=BEGIN
+                               ChangeExchangeRate.SetParameter("Currency Code","Currency Factor","Posting Date");
+                               IF ChangeExchangeRate.RUNMODAL = ACTION::OK THEN
+                                 VALIDATE("Currency Factor",ChangeExchangeRate.GetParameter);
+                               CLEAR(ChangeExchangeRate);
+                             END;
+                              }
+
+    { 63  ;2   ;Field     ;
+                SourceExpr="Gen. Posting Type";
+                Visible=FALSE }
+
+    { 65  ;2   ;Field     ;
+                SourceExpr="Gen. Bus. Posting Group";
+                Visible=FALSE }
+
+    { 67  ;2   ;Field     ;
+                SourceExpr="Gen. Prod. Posting Group";
+                Visible=FALSE }
+
+    { 75  ;2   ;Field     ;
+                SourceExpr="VAT Bus. Posting Group";
+                Visible=FALSE }
+
+    { 1210000;2;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Debit Amount" }
+
+    { 1210008;2;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Credit Amount" }
+
+    { 77  ;2   ;Field     ;
+                SourceExpr="VAT Prod. Posting Group";
+                Visible=FALSE }
+
+    { 14  ;2   ;Field     ;
+                SourceExpr=Amount;
+                Visible=true }
+
+    { 87  ;2   ;Field     ;
+                SourceExpr="VAT Amount";
+                Visible=FALSE }
+
+    { 89  ;2   ;Field     ;
+                SourceExpr="VAT Difference";
+                Visible=FALSE }
+
+    { 93  ;2   ;Field     ;
+                SourceExpr="Bal. VAT Amount";
+                Visible=FALSE }
+
+    { 1101495016;2;Field  ;
+                CaptionML=[ENU=Amount (LCY);
+                           RUS=Сумма (ВУЧ)];
+                SourceExpr="Amount (LCY)" }
+
+    { 91  ;2   ;Field     ;
+                SourceExpr="Bal. VAT Difference";
+                Visible=FALSE }
+
+    { 55  ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bal. Account Type" }
+
+    { 1101495011;2;Field  ;
+                Description=<NC PIF001 MP,TR204 EB>;
+                SourceExpr="Debit Amount (LCY)" }
+
+    { 16  ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Bal. Account No.";
+                OnValidate=BEGIN
+                             GenJnlManagement.GetAccounts(Rec,AccName,BalAccName);
+                             ShowShortcutDimCode(ShortcutDimCode);
+                           END;
+                            }
+
+    { 69  ;2   ;Field     ;
+                SourceExpr="Bal. Gen. Posting Type";
+                Visible=FALSE }
+
+    { 1101495013;2;Field  ;
+                Description=NC PIF001 MP,TR204 EB;
+                SourceExpr="Credit Amount (LCY)" }
+
+    { 71  ;2   ;Field     ;
+                SourceExpr="Bal. Gen. Bus. Posting Group";
+                Visible=FALSE }
+
+    { 73  ;2   ;Field     ;
+                SourceExpr="Bal. Gen. Prod. Posting Group";
+                Visible=FALSE }
+
+    { 79  ;2   ;Field     ;
+                SourceExpr="Bal. VAT Bus. Posting Group";
+                Visible=FALSE }
+
+    { 81  ;2   ;Field     ;
+                SourceExpr="Bal. VAT Prod. Posting Group";
+                Visible=FALSE }
+
+    { 47  ;2   ;Field     ;
+                SourceExpr="Shortcut Dimension 1 Code";
+                Visible=FALSE }
+
+    { 49  ;2   ;Field     ;
+                SourceExpr="Shortcut Dimension 2 Code";
+                Visible=FALSE }
+
+    { 300 ;2   ;Field     ;
+                SourceExpr=ShortcutDimCode[3];
+                CaptionClass='1,2,3';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(3),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             ValidateShortcutDimCode(3,ShortcutDimCode[3]);
+                           END;
+                            }
+
+    { 302 ;2   ;Field     ;
+                SourceExpr=ShortcutDimCode[4];
+                CaptionClass='1,2,4';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(4),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             ValidateShortcutDimCode(4,ShortcutDimCode[4]);
+                           END;
+                            }
+
+    { 304 ;2   ;Field     ;
+                SourceExpr=ShortcutDimCode[5];
+                CaptionClass='1,2,5';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(5),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             ValidateShortcutDimCode(5,ShortcutDimCode[5]);
+                           END;
+                            }
+
+    { 306 ;2   ;Field     ;
+                SourceExpr=ShortcutDimCode[6];
+                CaptionClass='1,2,6';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(6),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             ValidateShortcutDimCode(6,ShortcutDimCode[6]);
+                           END;
+                            }
+
+    { 308 ;2   ;Field     ;
+                SourceExpr=ShortcutDimCode[7];
+                CaptionClass='1,2,7';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(7),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             ValidateShortcutDimCode(7,ShortcutDimCode[7]);
+                           END;
+                            }
+
+    { 310 ;2   ;Field     ;
+                SourceExpr=ShortcutDimCode[8];
+                CaptionClass='1,2,8';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(8),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             ValidateShortcutDimCode(8,ShortcutDimCode[8]);
+                           END;
+                            }
+
+    { 1101495005;2;Field  ;
+                Name=<Control320>;
+                CaptionML=RUS=<Control320>;
+                SourceExpr=ShortcutDimCode[9];
+                CaptionClass='1,2,9';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(9),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             //NC NCS-2356 > DP
+                             ValidateShortcutDimCode(9,ShortcutDimCode[9]);
+                             //NC NCS-2356 < DP
+                           END;
+                            }
+
+    { 1101495004;2;Field  ;
+                Name=<Control330>;
+                CaptionML=RUS=<Control330>;
+                SourceExpr=ShortcutDimCode[10];
+                CaptionClass='1,2,10';
+                TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(10),
+                                                            Dimension Value Type=CONST(Standard),
+                                                            Blocked=CONST(No));
+                Visible=FALSE;
+                OnValidate=BEGIN
+                             //NC NCS-2356 > DP
+                             ValidateShortcutDimCode(10,ShortcutDimCode[10]);
+                             //NC NCS-2356 < DP
+                           END;
+                            }
+
+    { 18  ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Applies-to Doc. Type" }
+
+    { 20  ;2   ;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="Applies-to Doc. No." }
+
+    { 22  ;2   ;Field     ;
+                SourceExpr="Applies-to ID";
+                Visible=FALSE }
+
+    { 57  ;2   ;Field     ;
+                SourceExpr="Reason Code";
+                Visible=FALSE }
+
+    { 1210001;2;Field     ;
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="VAT Entry Type" }
+
+    { 1101495014;2;Field  ;
+                SourceExpr=Elimination }
+
+    { 1101495015;2;Field  ;
+                SourceExpr=Correction }
+
+    { 1101495007;2;Field  ;
+                SourceExpr="Modified By" }
+
+    { 1101495008;2;Field  ;
+                SourceExpr="Approved By" }
+
+    { 1101495018;2;Field  ;
+                SourceExpr="Payment Purpose" }
+
+    { 1101495019;2;Field  ;
+                SourceExpr="Amount Type" }
+
+    { 24  ;1   ;Group      }
+
+    { 29  ;2   ;Field     ;
+                CaptionML=[ENU=Account Name;
+                           RUS=Название счета];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=AccName;
+                Editable=FALSE }
+
+    { 31  ;2   ;Field     ;
+                CaptionML=[ENU=Bal. Account Name;
+                           RUS=Назв. баланс. счета];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=BalAccName;
+                Editable=FALSE }
+
+    { 25  ;2   ;Field     ;
+                Name=Balance;
+                CaptionML=[ENU=Balance;
+                           RUS=Сальдо];
+                ApplicationArea=#All;
+                SourceExpr=Balance + "Balance (LCY)" - xRec."Balance (LCY)";
+                AutoFormatType=1;
+                Visible=BalanceVisible;
+                Editable=FALSE }
+
+    { 27  ;2   ;Field     ;
+                Name=TotalBalance;
+                CaptionML=[ENU=Total Balance;
+                           RUS=Общее сальдо];
+                ApplicationArea=#All;
+                SourceExpr=TotalBalance + "Balance (LCY)" - xRec."Balance (LCY)";
+                AutoFormatType=1;
+                Visible=TotalBalanceVisible;
+                Editable=FALSE }
+
+    { 1900000007;0;Container;
+                ContainerType=FactBoxArea }
+
+    { 1101495020;1;Part   ;
+                Name=DimensionsList;
+                ApplicationArea=#Basic,#Suite;
+                PagePartID=Page50310;
+                PartType=Page }
+
+    { 1905767507;1;Part   ;
+                Visible=FALSE;
+                PartType=System;
+                SystemPartID=Notes }
+
+    { 1900383207;1;Part   ;
+                Visible=FALSE;
+                PartType=System;
+                SystemPartID=RecordLinks }
+
+  }
+  CODE
+  {
+    VAR
+      GenJnlLine@1210003 : Record 81;
+      GenJnlLine2@1210002 : Record 81;
+      GenJnlManagement@1002 : Codeunit 230;
+      ReportPrint@1003 : Codeunit 228;
+      CheckManagement@1210004 : Codeunit 367;
+      ChangeExchangeRate@1210006 : Page 511;
+      GLReconcile@1210005 : Page 345;
+      CurrentJnlBatchName@1004 : Code[10];
+      AccName@1005 : Text[50];
+      BalAccName@1006 : Text[50];
+      Balance@1007 : Decimal;
+      TotalBalance@1008 : Decimal;
+      ShowBalance@1009 : Boolean;
+      ShowTotalBalance@1010 : Boolean;
+      ShortcutDimCode@1011 : ARRAY [20] OF Code[20];
+      Text000@1210001 : TextConst 'ENU=Void Check %1?;RUS=Аннулировать платежный документ %1?';
+      Text001@1210000 : TextConst 'ENU=Void all printed checks?;RUS=Аннулировать все напечатанные платежные документы?';
+      BalanceVisible@19073040 : Boolean INDATASET;
+      TotalBalanceVisible@19063333 : Boolean INDATASET;
+      ">NOS-26"@1101495000 : Integer;
+      AccName2@1101495004 : Text[50];
+      BalAccName2@1101495003 : Text[50];
+      GenJnlManagement2@1101495002 : Codeunit 230;
+      GLSetup@1101495001 : Record 98;
+      PostingDateColor@1101495005 : Text;
+      DimensionManagement@1101495006 : Codeunit 408;
+
+    LOCAL PROCEDURE UpdateBalance@1();
+    BEGIN
+      GenJnlManagement.CalcBalance(
+        Rec,xRec,Balance,TotalBalance,ShowBalance,ShowTotalBalance);
+      BalanceVisible := ShowBalance;
+      TotalBalanceVisible := ShowTotalBalance;
+    END;
+
+    LOCAL PROCEDURE CurrentJnlBatchNameOnAfterVali@19002411();
+    BEGIN
+      CurrPage.SAVERECORD;
+      GenJnlManagement.SetName(CurrentJnlBatchName,Rec);
+      CurrPage.UPDATE(FALSE);
+    END;
+
+    PROCEDURE ApproveSelected@1170000000();
+    VAR
+      GenJournalLine@1170000000 : Record 81;
+    BEGIN
+      // NC NCS-1880 ORM
+      GenJournalLine.COPY(Rec);
+      CurrPage.SETSELECTIONFILTER(GenJournalLine);
+      GenJnlManagement.ApproveGenJnlLines(GenJournalLine);
+    END;
+
+    PROCEDURE ReopenSelected@1170000001();
+    VAR
+      GenJournalLine@1170000000 : Record 81;
+      ReopenedQty@1170000001 : Integer;
+    BEGIN
+      // NC NCS-1880 ORM
+      GenJournalLine.COPY(Rec);
+      CurrPage.SETSELECTIONFILTER(GenJournalLine);
+      GenJnlManagement.ReopenGenJnlLines(GenJournalLine);
+    END;
+
+    BEGIN
+    {
+      NC TR195 EB Перенос функции копирование ФКО
+      NC OAM003 DP Расчет баланса при переходе на новую строку, предпросмотр в учете журнала
+      TDRANCS-1101>
+        modified OnFormat for "Posting Date"
+      NC NCS-1880 ORM
+        Добавлены пункты меню Functions - Approve, Functions - Reopen
+        Добавлены поля "Created By", "Approved By"
+      NC S1880.1 PCH описание счета
+      NCS-2356 DP Added field "Shortcut Dimension 9 Code", "Shortcut Dimension 10 Code"
+                  Changed dimension of array ShortcutDimCode 8->10
+      -----
+      NC NOS-26 ENK
+        Delete function from NAV5 OnLookup ShortcutDimCode[3..10].
+        Change visible property for fields: Amount, Currency Code
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,617 @@
+OBJECT Report 17401 Suggest Payroll Documents
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Suggest Payroll Documents;
+               RUS=Предложить зарплатные документы];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  EmployeeNumber := 0;
+
+                  HumanResourcesSetup.GET;
+                  HumanResourcesSetup.TESTFIELD("Payroll Document Nos.");
+
+                  ACYRate := 1;
+
+                  IF CalculationDate = 0D THEN
+                    ERROR(Text008);
+
+                  PayrollCalcPeriod.TESTFIELD("Starting Date");
+                  PayrollCalcPeriod.TESTFIELD("Ending Date");
+
+                  IF DATE2DMY(CalculationDate,2) <> DATE2DMY(PayrollCalcPeriod."Ending Date",2) THEN BEGIN
+                    IF NOT CONFIRM(Text006,FALSE) THEN
+                      ERROR(Text007);
+                  END;
+
+                  Window.OPEN(Text001 + Text002 + Text003);
+                END;
+
+  }
+  DATASET
+  {
+    { 7528;    ;DataItem;                    ;
+               DataItemTable=Table5200;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               Employee.SETFILTER("Employment Date",'<=%1',PayrollCalcPeriod."Ending Date");
+
+                               NextTempLineNo := 0;
+                               TotalEmployees := COUNT;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CounterTotal := CounterTotal + 1;
+
+                                  // check current period
+                                  IF NOT PayrollStatus.GET(PayrollCalcPeriod.Code,"No.") THEN BEGIN
+                                    PayrollStatus.INIT;
+                                    PayrollStatus."Period Code" := PayrollCalcPeriod.Code;
+                                    PayrollStatus."Employee No." := "No.";
+                                    PayrollStatus.INSERT;
+                                  END ELSE
+                                    IF CreateNewDocs AND (CalcGroupCode = '') THEN
+                                      IF PayrollStatus."Payroll Status" >= PayrollStatus."Payroll Status"::Calculated THEN BEGIN
+                                        IF ShowMessages THEN
+                                          MESSAGE(Text013,PayrollStatus."Payroll Status",Employee."No.",PayrollStatus."Period Code");
+                                        CurrReport.SKIP;
+                                      END;
+
+                                  IF CalcGroupCode = '' THEN
+                                    PayrollCalcGr.GET(Employee."Payroll Calc Group")
+                                  ELSE
+                                    PayrollCalcGr.GET(CalcGroupCode);
+
+                                  IF PayrollCalcGr.Type <> PayrollCalcGr.Type::Between THEN BEGIN
+                                    IF TimesheetStatus.GET(PayrollCalcPeriod.Code,"No.") THEN
+                                      IF TimesheetStatus.Status <> TimesheetStatus.Status::Released THEN BEGIN
+                                        IF ShowMessages THEN
+                                          MESSAGE(Text014,TimesheetStatus.Status,Employee."No.");
+                                        CurrReport.SKIP;
+                                      END;
+
+                                    // check previous period
+                                    PayrollStatus.SETRANGE("Employee No.","No.");
+                                    IF PayrollStatus.NEXT(-1) <> 0 THEN
+                                      IF PayrollStatus."Payroll Status" < PayrollStatus."Payroll Status"::Posted THEN BEGIN
+                                        IF ShowMessages THEN
+                                          MESSAGE(Text013,PayrollStatus."Payroll Status",Employee."No.",PayrollStatus."Period Code");
+                                        CurrReport.SKIP;
+                                      END;
+                                  END;
+
+                                  IF Employee.Blocked THEN
+                                    CurrReport.SKIP;
+
+                                  HeaderExist := CreateHeader;
+                                  IF HeaderExist THEN
+                                    CounterOK := CounterOK + 1
+                                  ELSE BEGIN
+                                    IF ShowMessages THEN
+                                      MESSAGE(Text011,
+                                        PayrollDocument.TABLECAPTION,
+                                        Employee.FIELDCAPTION("No."),Employee."No.",
+                                        PayrollCalcPeriod.FIELDCAPTION(Code),PayrollCalcPeriod.Code);
+                                    CurrReport.SKIP;
+                                  END;
+
+                                  Window.UPDATE(1,Employee."No.");
+                                  Window.UPDATE(2,COPYSTR(Employee."Short Name",1,30));
+                                  Window.UPDATE(3,ROUND(CounterTotal / TotalEmployees * 10000,1));
+
+                                  EmployeeNumber := EmployeeNumber + 1;
+
+                                  NextLineNo := 0;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                Window.CLOSE;
+
+                                IF ShowMessages THEN
+                                  MESSAGE(Text010,CounterOK,CounterTotal);
+                              END;
+
+               ReqFilterFields=No.,Status,Org. Unit Code }
+
+    { 4197;1   ;DataItem;                    ;
+               DataItemTable=Table17403;
+               DataItemTableView=SORTING(Payroll Calc Group,Line No.);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Payroll Calc Group",PayrollCalcGr.Code);
+                             END;
+
+               OnPostDataItem=BEGIN
+                                WITH TempPayrollDocLine DO BEGIN
+                                  RESET;
+                                  IF FINDSET THEN
+                                    REPEAT
+                                      PayrollDocLine.INIT;
+                                      PayrollDocLine := TempPayrollDocLine;
+                                      PayrollDocLine.CreateDim(DATABASE::"Payroll Element","Element Code");
+                                      CombineDimensions(TempPayrollDocLine."Dimension Set ID");
+                                      PayrollDocLine.INSERT;
+                                    UNTIL NEXT = 0;
+                                  DELETEALL;
+                                END;
+
+                                WITH PayrollDocLine DO BEGIN
+                                  RESET;
+                                  SETRANGE("Document No.",PayrollDocument."No.");
+                                  SETRANGE(Calculate,TRUE);
+                                  IF FINDSET THEN
+                                    REPEAT
+                                      PayrollCalculation.RUN(PayrollDocLine);
+                                    UNTIL NEXT = 0;
+                                END;
+
+                                IF CalcGroupCode = '' THEN BEGIN
+                                  PayrollStatus.GET(PayrollCalcPeriod.Code,Employee."No.");
+                                  IF PayrollStatus."Payroll Status" = PayrollStatus."Payroll Status"::" " THEN BEGIN
+                                    PayrollStatus."Payroll Status" := PayrollStatus."Payroll Status"::Calculated;
+                                    PayrollStatus.MODIFY;
+                                  END;
+                                END;
+
+                                COMMIT;
+                              END;
+                               }
+
+    { 7384;2   ;DataItem;                    ;
+               DataItemTable=Table17404;
+               DataItemTableView=SORTING(Code);
+               DataItemLink=Code=FIELD(Payroll Calc Type) }
+
+    { 2700;3   ;DataItem;                    ;
+               DataItemTable=Table17405;
+               DataItemTableView=SORTING(Calc Type Code,Line No.)
+                                 WHERE(Activity=CONST(Yes));
+               OnPreDataItem=BEGIN
+                               SETFILTER("Element Code",'<>%1','');
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  PayrollElement.GET("Element Code");
+                                  CASE PayrollElement."Include into Calculation by" OF
+                                    PayrollElement."Include into Calculation by"::"Action Period":
+                                      BEGIN
+                                        EmplLedgEntry.RESET;
+                                        EmplLedgEntry.SETRANGE("Employee No.",Employee."No.");
+                                        EmplLedgEntry.SETRANGE("Element Code",PayrollElement.Code);
+                                        EmplLedgEntry.SETRANGE("Action Starting Date",
+                                          Employee."Employment Date",PayrollCalcPeriod."Ending Date");
+                                        EmplLedgEntry.SETFILTER("Action Ending Date",'%1|%2..',0D,PayrollCalcPeriod."Starting Date");
+                                        IF EmplLedgEntry.FINDSET THEN
+                                          REPEAT
+                                            InsertTempLine(
+                                              "Payroll Calc Type","Payroll Calc Type Line",
+                                              PayrollCalcPeriod,Employee,PayrollElement,CalculationDate);
+                                            UpdateTempLine(EmplLedgEntry);
+                                          UNTIL EmplLedgEntry.NEXT = 0
+                                        ELSE
+                                          IF "Payroll Calc Type"."Use in Calc" = "Payroll Calc Type"."Use in Calc"::Always THEN
+                                            InsertTempLine(
+                                              "Payroll Calc Type","Payroll Calc Type Line",
+                                              PayrollCalcPeriod,Employee,PayrollElement,CalculationDate);
+                                      END;
+                                    PayrollElement."Include into Calculation by"::"Period Code":
+                                      BEGIN
+                                        EmplLedgEntry.RESET;
+                                        EmplLedgEntry.SETRANGE("Employee No.",Employee."No.");
+                                        EmplLedgEntry.SETRANGE("Element Code",PayrollElement.Code);
+                                        EmplLedgEntry.SETRANGE("Period Code",PayrollCalcPeriod.Code);
+                                        IF EmplLedgEntry.FINDSET THEN
+                                          REPEAT
+                                            InsertTempLine(
+                                              "Payroll Calc Type","Payroll Calc Type Line",
+                                              PayrollCalcPeriod,Employee,PayrollElement,CalculationDate);
+                                            UpdateTempLine(EmplLedgEntry);
+                                          UNTIL EmplLedgEntry.NEXT = 0
+                                        ELSE
+                                          IF "Payroll Calc Type"."Use in Calc" = "Payroll Calc Type"."Use in Calc"::Always THEN
+                                            InsertTempLine(
+                                              "Payroll Calc Type","Payroll Calc Type Line",
+                                              PayrollCalcPeriod,Employee,PayrollElement,CalculationDate);
+                                      END;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                WITH PayrollStatus DO BEGIN
+                                  GET(PayrollCalcPeriod.Code,Employee."No.");
+                                  IF (CalcGroupCode = '') AND ("Payroll Status" = "Payroll Status"::" ") THEN
+                                    "Payroll Status" := "Payroll Status"::Calculated;
+                                  UpdateCalculated(PayrollStatus);
+                                  MODIFY;
+                                END;
+                              END;
+
+               DataItemLink=Calc Type Code=FIELD(Code) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   IF CalculationDate = 0D THEN
+                     CalculationDate := PayrollCalcPeriod."Ending Date";
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Calculation Period;
+                             RUS=Расчетный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CalcPeriodCode;
+                  TableRelation="Payroll Period";
+                  OnValidate=BEGIN
+                               PayrollCalcPeriod.GET(CalcPeriodCode);
+                               PayrollCalcPeriod.TESTFIELD("Starting Date");
+                               PayrollCalcPeriod.TESTFIELD("Ending Date");
+                               CalculationDate := PayrollCalcPeriod."Ending Date";
+                             END;
+                              }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Calculation Date;
+                             RUS=Дата расчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CalculationDate }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Calculation Group Code;
+                             RUS=Код группы расчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CalcGroupCode;
+                  TableRelation="Payroll Calc Group";
+                  OnValidate=BEGIN
+                               CalcGroupCodeOnAfterValidate;
+                             END;
+                              }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Create New Documents;
+                             RUS=Создать новые документы];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CreateNewDocs;
+                  OnValidate=BEGIN
+                               IF NOT CreateNewDocs THEN
+                                 IF CalcGroupCode <> '' THEN
+                                   ERROR(Text012);
+                             END;
+                              }
+
+      { 1210007;2;Field     ;
+                  CaptionML=[ENU=Show Messages;
+                             RUS=Показать сообщения];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowMessages;
+                  OnValidate=BEGIN
+                               IF NOT CreateNewDocs AND (CalcGroupCode <> '') THEN
+                                 ERROR(Text012);
+                             END;
+                              }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      PayrollDocument@1210036 : Record 17414;
+      PayrollDocLine@1210000 : Record 17415;
+      TempPayrollDocLine@1210001 : TEMPORARY Record 17415;
+      PstdPayrollDocLine@1210039 : Record 17417;
+      PayrollElement@1210006 : Record 17400;
+      PayrollPeriod@1210043 : Record 17426;
+      PayrollCalcPeriod@1210010 : Record 17426;
+      PayrollWagePeriod@1210004 : Record 17426;
+      PayrollPostingGr@1210005 : Record 17401;
+      PayrollCalcGr@1210021 : Record 17402;
+      EmplLedgEntry@1210012 : Record 17413;
+      HumanResourcesSetup@1210011 : Record 5218;
+      TimesheetStatus@1210028 : Record 17440;
+      PayrollStatus@1470000 : Record 17457;
+      PayrollCalculation@1210008 : Codeunit 17404;
+      Window@1210014 : Dialog;
+      CalculationDate@1210015 : Date;
+      CreateNewDocs@1210019 : Boolean;
+      EmployeeNumber@1210031 : Integer;
+      ACYRate@1210022 : Decimal;
+      Text001@1210033 : TextConst 'ENU=Employee No.        #1##################\;RUS=Код сотрудника      #1##################\';
+      Text002@1210034 : TextConst 'ENU=Short Name          #2############################\;RUS=Имя                 #2############################\';
+      Text003@1210026 : TextConst 'ENU="                    @3@@@@@@@@@@@@@@@@@@@@@@@@@@@@";RUS="                    @3@@@@@@@@@@@@@@@@@@@@@@@@@@@@"';
+      Text004@1210009 : TextConst 'ENU=%1, payroll charge for %2;RUS=%1, зарплатное начисление от %2';
+      Text006@1210023 : TextConst 'ENU=G/L posting date differs from calculation period. Continue?;RUS=Дата учета в ГК отличается от расчетного периода. Продолжить?';
+      Text007@1210025 : TextConst 'ENU=Calculation Date should be within Calculation Period.;RUS=Рассчитанная дата должна принадлежать расчетному периоду.';
+      Text008@1210027 : TextConst 'ENU=You should enter Calculation Date.;RUS=Необходимо ввести дату расчета.';
+      Text009@1210040 : TextConst 'ENU=There are payroll document lines included in paysheet %2 for employee %1. Recalculation should be made.;RUS=Для сотрудника %1 существуют строки зарплатного документа, включенные в платежную ведомость %2. Необходимо выполнить перерасчет.';
+      NextTempLineNo@1210044 : Integer;
+      NextLineNo@1210020 : Integer;
+      Text010@1210035 : TextConst 'ENU=%1 employees out of a total of %2 have now been calculated.;RUS=На текущий момент рассчитано сотрудников: %1 из %2.';
+      CounterOK@1210037 : Integer;
+      CounterTotal@1210038 : Integer;
+      TotalEmployees@1210024 : Integer;
+      ShowMessages@1210045 : Boolean;
+      HeaderExist@1210002 : Boolean;
+      CalcPeriodCode@1210017 : Code[10];
+      CalcGroupCode@1210018 : Code[20];
+      Text011@1210029 : TextConst 'ENU=%1 for %2 %3 %4 %5 does not exist.;RUS=%1 для %2 %3 %4 %5 не существует.';
+      Text012@1210030 : TextConst 'ENU=Create New Documents must be set if Calculation Group Code is not empty.;RUS=Необходимо установить значение "Создать новые документы", если поле "Код группы расчета" не пустое';
+      Text013@1210003 : TextConst 'ENU=Payroll Status is %1 for employee %2 in payroll period %3.;RUS=Статус зарплаты - %1 для сотрудника %2 в зарплатном периоде %3.';
+      Text014@1210007 : TextConst 'ENU=Timesheet Status is %1 for employee %2.;RUS=Статус табеля - %1 для сотрудника %2.';
+
+    PROCEDURE Set@1210002(NewCalcPeriodCode@1210000 : Code[10];NewCalcGroupCode@1210002 : Code[10];NewCalcDate@1210003 : Date;NewHideDialog@1210001 : Boolean);
+    BEGIN
+      IF NewCalcPeriodCode = '' THEN
+        NewCalcPeriodCode := PayrollCalcPeriod.PeriodByDate(WORKDATE);
+
+      PayrollCalcPeriod.GET(NewCalcPeriodCode);
+      PayrollCalcPeriod.TESTFIELD("Starting Date");
+      PayrollCalcPeriod.TESTFIELD("Ending Date");
+      CalcPeriodCode := PayrollCalcPeriod.Code;
+      IF NewCalcDate <> 0D THEN
+        CalculationDate := NewCalcDate
+      ELSE
+        CalculationDate := PayrollCalcPeriod."Ending Date";
+      CalcGroupCode := NewCalcGroupCode;
+      ShowMessages := NOT NewHideDialog;
+    END;
+
+    LOCAL PROCEDURE InsertTempLine@1210001(PayrollCalcType@1210008 : Record 17404;PayrollCalcTypeLine@1210007 : Record 17405;PayrollPeriod@1210005 : Record 17426;Employee@1210002 : Record 5200;PayrollElement@1210003 : Record 17400;PostingDate@1210006 : Date);
+    BEGIN
+      WITH TempPayrollDocLine DO BEGIN
+        INIT;
+        "Document No." := PayrollDocument."No.";
+        NextLineNo := NextLineNo + 10000;
+        "Line No." := NextLineNo;
+        "Period Code" := PayrollPeriod.Code;
+
+        CopyEmployeeToPayrollDocLine(Employee,TempPayrollDocLine);
+        CopyElementToPayrollDocLine(PayrollElement,TempPayrollDocLine);
+        CopyCalcTypeToPayrollDocLine(PayrollCalcType,TempPayrollDocLine);
+
+        "Wage Period From" := "Period Code";
+        "Wage Period To" := "Period Code";
+
+        IF PayrollCalcTypeLine."Payroll Posting Group" <> '' THEN
+          "Posting Group" := PayrollCalcTypeLine."Payroll Posting Group";
+        IF "Posting Group" = '' THEN
+          "Posting Group" := Employee."Posting Group";
+        IF (PayrollElement.Description = '') OR (PayrollElement.Type = PayrollElement.Type::"Netto Salary") THEN
+          Description := Employee.GetFullNameOnDate(CalculationDate);
+
+        INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateTempLine@1210003(EmplLedgEntry@1210001 : Record 17413);
+    VAR
+      DeleteDocLine@1210000 : Boolean;
+    BEGIN
+      TempPayrollDocLine.FINDLAST;
+      WITH TempPayrollDocLine DO BEGIN
+        EmplLedgEntry.TESTFIELD("Entry No.");
+        "Employee Ledger Entry No." := EmplLedgEntry."Entry No.";
+        "Document Type" := EmplLedgEntry."Document Type";
+        "HR Order No." := EmplLedgEntry."HR Order No.";
+        "HR Order Date" := EmplLedgEntry."HR Order Date";
+        "Time Activity Code" := EmplLedgEntry."Time Activity Code";
+        IF EmplLedgEntry."Wage Period From" <> '' THEN
+          "Wage Period From" := EmplLedgEntry."Wage Period From";
+        IF EmplLedgEntry."Wage Period To" <> '' THEN
+          "Wage Period To" := EmplLedgEntry."Wage Period To";
+        PayrollWagePeriod.GET("Wage Period From");
+        IF EmplLedgEntry."Action Starting Date" < PayrollWagePeriod."Starting Date" THEN
+          "Action Starting Date" := PayrollWagePeriod."Starting Date"
+        ELSE
+          "Action Starting Date" := EmplLedgEntry."Action Starting Date";
+        PayrollWagePeriod.GET("Wage Period To");
+        IF EmplLedgEntry."Action Ending Date" = 0D THEN
+          "Action Ending Date" := PayrollWagePeriod."Ending Date"
+        ELSE
+          IF EmplLedgEntry."Action Ending Date" > PayrollWagePeriod."Ending Date" THEN
+            "Action Ending Date" := PayrollWagePeriod."Ending Date"
+          ELSE
+            "Action Ending Date" := EmplLedgEntry."Action Ending Date";
+        Amount := EmplLedgEntry.Amount;
+        Quantity := EmplLedgEntry.Quantity;
+        "Payment Percent" := EmplLedgEntry."Payment Percent";
+        "Payment Days" := EmplLedgEntry."Payment Days";
+        "Payment Hours" := EmplLedgEntry."Payment Hours";
+        "Payment Source" := EmplLedgEntry."Payment Source";
+        "Days Not Paid" := EmplLedgEntry."Days Not Paid";
+        "Salary Indexation" := EmplLedgEntry."Salary Indexation";
+        "Depends on Salary Element" := EmplLedgEntry."Depends on Salary Element";
+        "AE Period From" := EmplLedgEntry."AE Period From";
+        "AE Period To" := EmplLedgEntry."AE Period To";
+        IF (EmplLedgEntry."Sick Leave Type" <> 0) AND
+           (EmplLedgEntry."Payment Source" = EmplLedgEntry."Payment Source"::Employeer)
+        THEN BEGIN
+          Employee.TESTFIELD("Int. Fnds Sick Leave Post. Gr.");
+          "Posting Group" := Employee."Int. Fnds Sick Leave Post. Gr.";
+        END;
+        IF EmplLedgEntry."Document Type" = EmplLedgEntry."Document Type"::Vacation THEN BEGIN
+          PayrollPeriod.GET(EmplLedgEntry."Period Code");
+          IF EmplLedgEntry."Action Starting Date" > PayrollPeriod."Ending Date" THEN BEGIN
+            Employee.TESTFIELD("Future Period Vacat. Post. Gr.");
+            "Posting Group" := Employee."Future Period Vacat. Post. Gr.";
+          END;
+        END;
+        "Dimension Set ID" := EmplLedgEntry."Dimension Set ID";
+        IF (PayrollCalcGr.Type = PayrollCalcGr.Type::Between) AND
+           ("Employee Ledger Entry No." <> 0)
+        THEN BEGIN
+          PstdPayrollDocLine.RESET;
+          PstdPayrollDocLine.SETCURRENTKEY("Employee No.","Period Code");
+          PstdPayrollDocLine.SETRANGE("Employee No.","Employee No.");
+          PstdPayrollDocLine.SETRANGE("Period Code","Period Code");
+          PstdPayrollDocLine.SETRANGE("Employee Ledger Entry No.","Employee Ledger Entry No.");
+          IF PstdPayrollDocLine.FINDSET THEN
+            REPEAT
+              IF DocWithoutCorrection(PstdPayrollDocLine."Document No.") THEN
+                DeleteDocLine := TRUE;
+            UNTIL PstdPayrollDocLine.NEXT = 0;
+            IF DeleteDocLine THEN
+              DELETE
+            ELSE
+              MODIFY;
+        END ELSE
+          MODIFY;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateHeader@1210005() : Boolean;
+    BEGIN
+      IF NOT CreateNewDocs THEN BEGIN
+        PayrollDocument.RESET;
+        PayrollDocument.SETCURRENTKEY("Employee No.");
+        PayrollDocument.SETRANGE("Employee No.",Employee."No.");
+        PayrollDocument.SETRANGE("Period Code",PayrollCalcPeriod.Code);
+        IF PayrollDocument.FINDFIRST THEN BEGIN
+          PayrollDocLine.RESET;
+          PayrollDocLine.SETRANGE("Document No.",PayrollDocument."No.");
+          PayrollDocLine.DELETEALL(TRUE);
+          EXIT(TRUE);
+        END;
+      END;
+
+      PayrollDocument.INIT;
+      PayrollDocument."No." := '';
+      PayrollDocument.INSERT(TRUE);
+      PayrollDocument.VALIDATE("Employee No.",Employee."No.");
+      PayrollDocument."Posting Date" := CalculationDate;
+      PayrollDocument."Period Code" := PayrollCalcPeriod.Code;
+      PayrollDocument."Calc Group Code" := PayrollCalcGr.Code;
+      PayrollDocument."Posting Description" :=
+        COPYSTR(
+          STRSUBSTNO(
+            Text004,
+            Employee."Short Name",
+            FORMAT(PayrollCalcPeriod."Ending Date",0,'<Month Text> <Year4>')),
+          1,
+          MAXSTRLEN(PayrollDocument."Posting Description"));
+      PayrollDocument.MODIFY;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CopyEmployeeToPayrollDocLine@1210009(Employee@1210000 : Record 5200;VAR PayrollDocLine@1210001 : Record 17415);
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        "Employee No." := Employee."No.";
+        "Calc Group" := Employee."Payroll Calc Group";
+        "Calendar Code" := Employee."Calendar Code";
+        "Org. Unit Code" := Employee."Org. Unit Code";
+        "Employee Posting Group" := Employee."Posting Group";
+        "Org. Unit Code" := Employee."Org. Unit Code";
+        "Shortcut Dimension 1 Code" := Employee."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := Employee."Global Dimension 2 Code";
+        IF PayrollPostingGr.GET(Employee."Posting Group") THEN
+          IF "Employee Account No." = '' THEN
+            "Employee Account No." := PayrollPostingGr."Account No.";
+      END;
+    END;
+
+    PROCEDURE CopyCalcTypeToPayrollDocLine@1210010(PayrollCalcType@1210000 : Record 17404;VAR PayrollDocLine@1210001 : Record 17415);
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        "Calc Type Code" := PayrollCalcType.Code;
+        Priority := PayrollCalcType.Priority;
+      END;
+    END;
+
+    PROCEDURE CopyElementToPayrollDocLine@1210000(PayrollElement@1210000 : Record 17400;VAR PayrollDocLine@1210001 : Record 17415);
+    VAR
+      PayrollCalcTypeLine@1210002 : Record 17405;
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        "Element Code" := PayrollElement.Code;
+        "Element Type" := PayrollElement.Type;
+        "Posting Type" := PayrollElement."Posting Type";
+        Calculate := PayrollElement.Calculate;
+        "Print in Pay-Sheet" := PayrollElement."Print in Pay-Sheet";
+        IF PayrollElement."Payroll Posting Group" <> '' THEN
+          "Posting Group" := PayrollElement."Payroll Posting Group";
+        Description := PayrollElement.Description;
+        "Element Group" := PayrollElement."Element Group";
+        "Directory Code" := PayrollElement."Directory Code";
+        "FSI Base" := PayrollElement."FSI Base";
+        "Federal FMI Base" := PayrollElement."Federal FMI Base";
+        "Territorial FMI Base" := PayrollElement."Territorial FMI Base";
+        "Pension Fund Base" := PayrollElement."PF Base";
+        "Income Tax Base" := PayrollElement."Income Tax Base";
+        "FSI Injury Base" := PayrollElement."FSI Injury Base";
+        "Print Priority" := PayrollElement."Print Priority";
+        "Pay Type" := PayrollElement."Pay Type";
+        "Source Pay" := PayrollElement."Source Pay";
+        "Bonus Type" := PayrollElement."Bonus Type";
+
+        // ПЕРЕНОС РАСХОДНОГО СЧЕТА
+        PayrollCalcTypeLine.RESET;
+        PayrollCalcTypeLine.SETRANGE("Element Code",PayrollElement.Code);
+        IF PayrollCalcTypeLine.FINDFIRST THEN
+          IF PayrollCalcTypeLine."Payroll Posting Group" <> '' THEN BEGIN
+            PayrollPostingGr.RESET;
+            PayrollPostingGr.SETRANGE(Code,PayrollCalcTypeLine."Payroll Posting Group");
+            IF PayrollPostingGr.FINDFIRST THEN BEGIN
+              IF PayrollPostingGr."Account No." <> '' THEN
+                "Employee Account No." := PayrollPostingGr."Account No.";
+            END;
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcGroupCodeOnAfterValidate@19011512();
+    BEGIN
+      CreateNewDocs := (CalcGroupCode <> '');
+    END;
+
+    LOCAL PROCEDURE CombineDimensions@1210004(DimSetID@1210001 : Integer) : Integer;
+    VAR
+      DimMgt@1210000 : Codeunit 408;
+      DimensionSetIDArr@1210002 : ARRAY [10] OF Integer;
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        DimensionSetIDArr[1] := "Dimension Set ID";
+        DimensionSetIDArr[2] := DimSetID;
+        "Dimension Set ID" :=
+          DimMgt.GetCombinedDimensionSetID(DimensionSetIDArr,"Shortcut Dimension 1 Code","Shortcut Dimension 2 Code");
+      END;
+    END;
+
+    LOCAL PROCEDURE DocWithoutCorrection@1210006(DocNo@1210000 : Code[20]) : Boolean;
+    VAR
+      PstdPayrollDocument@1210001 : Record 17416;
+    BEGIN
+      PstdPayrollDocument.GET(DocNo);
+      IF NOT PstdPayrollDocument.Reversed THEN
+        EXIT(TRUE);
+      EXIT(FALSE);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

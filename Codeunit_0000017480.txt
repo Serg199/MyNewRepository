@@ -1,0 +1,943 @@
+OBJECT Codeunit 17480 AE Calc Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17433=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PayrollDocLineAE@1210000 : Record 17431;
+      AECalcSetup@1210010 : Record 17458;
+      AEBonusSetup@1210011 : Record 17458;
+      PayrollPeriod@1210004 : Record 17426;
+      PayrollPeriodAE@1210013 : Record 17433;
+      Employee@1210003 : Record 5200;
+      PayrollElement@1210007 : Record 17400;
+      PayrollElement2@1210018 : Record 17400;
+      HRSetup@1210012 : Record 5218;
+      CalendarMgt@1210008 : Codeunit 17430;
+      TimesheetMgt@1210014 : Codeunit 17440;
+      PayrollDocCalculate@1210017 : Codeunit 17404;
+      Text001@1210001 : TextConst 'ENU=You should define FSI Limit for period %1.;RUS=Необходимо определить ограничение ФСС для периода %1.';
+
+    PROCEDURE FillAbsenceLineAEDates@1210002(VAR AbsenceLine@1210000 : Record 17386);
+    VAR
+      PreviousOrderLine@1210001 : Record 17388;
+      PayrollCalc@1210005 : Record 17406;
+      PayrollCalcLine@1210003 : Record 17407;
+      HRSetup@1210004 : Record 5218;
+      AESetupCode@1210006 : Code[10];
+      Step@1210002 : Integer;
+    BEGIN
+      WITH AbsenceLine DO BEGIN
+        TESTFIELD("Start Date");
+        TESTFIELD("Employee No.");
+
+        Employee.GET("Employee No.");
+
+        AECalcSetup.RESET;
+        AECalcSetup.SETRANGE(Type,AECalcSetup.Type::Calculation);
+        CASE "Document Type" OF
+          "Document Type"::Vacation:
+            AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::Vacation);
+          "Document Type"::"Sick Leave":
+            CASE "Sick Leave Type" OF
+              "Sick Leave Type"::"Child Care 1.5 years":
+                AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Child Care 1");
+              "Sick Leave Type"::"Child Care 3 years":
+                AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Child Care 2");
+              "Sick Leave Type"::"Pregnancy Leave":
+                AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Pregnancy Leave");
+              ELSE
+                AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Sick Leave");
+            END;
+          "Document Type"::Travel:
+            AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::Others);
+        END;
+        AECalcSetup.SETRANGE("Period Code",'',PayrollPeriod.PeriodByDate("Start Date"));
+        HRSetup.GET;
+        HRSetup.TESTFIELD("AE Calculation Function Code");
+        PayrollCalc.SETRANGE("Element Code","Element Code");
+        PayrollCalc.SETRANGE("Period Code",'',PayrollPeriod.PeriodByDate("Start Date"));
+        IF PayrollCalc.FINDLAST THEN BEGIN
+          PayrollCalcLine.RESET;
+          PayrollCalcLine.SETRANGE("Element Code","Element Code");
+          PayrollCalcLine.SETRANGE("Period Code",PayrollCalc."Period Code");
+          PayrollCalcLine.SETRANGE("Function Code",HRSetup."AE Calculation Function Code");
+          IF PayrollCalcLine.FINDFIRST THEN
+            AESetupCode := PayrollCalcLine."AE Setup Code";
+        END;
+        IF AESetupCode <> '' THEN
+          AECalcSetup.SETRANGE("Setup Code",AESetupCode);
+        IF AECalcSetup.FINDLAST THEN BEGIN
+          AECalcSetup.TESTFIELD("AE Calc Months");
+          IF AECalcSetup."Days for Calc Type" = AECalcSetup."Days for Calc Type"::"Whole Year" THEN
+            PayrollPeriod.GET(PayrollPeriod.PeriodByDate(CALCDATE('<-CY>',"Start Date")))
+          ELSE
+            PayrollPeriod.GET(PayrollPeriod.PeriodByDate("Start Date"));
+          Step := -1;
+          PayrollPeriod.NEXT(Step);
+          "AE Period To" := PayrollPeriod.Code;
+          Step := -(AECalcSetup."AE Calc Months" - 1);
+          PayrollPeriod.NEXT(Step);
+          "AE Period From" := PayrollPeriod.Code;
+          IF AECalcSetup."Days for Calc Type" <> AECalcSetup."Days for Calc Type"::"Whole Year" THEN
+            IF PayrollPeriod.PeriodByDate(Employee."Employment Date") > "AE Period From" THEN
+              "AE Period From" := PayrollPeriod.PeriodByDate(Employee."Employment Date");
+        END;
+        IF ("Document Type" = "Document Type"::"Sick Leave") AND FindPreviousAbsenceHeader(PreviousOrderLine) THEN BEGIN
+          "AE Period To" := PreviousOrderLine."AE Period To";
+          "AE Period From" := PreviousOrderLine."AE Period From";
+        END;
+      END;
+    END;
+
+    PROCEDURE FillDismissalAEDates@1210004(VAR EmplJnlLine@1210000 : Record 17382);
+    VAR
+      PayrollCalendarLine@1210003 : Record 17430;
+      Step@1210002 : Integer;
+      LastDateOfMonth@1210001 : Boolean;
+    BEGIN
+      WITH EmplJnlLine DO BEGIN
+        TESTFIELD("Ending Date");
+        TESTFIELD("Employee No.");
+
+        Employee.GET("Employee No.");
+
+        // check if Action Ending Date is a last month's day
+        LastDateOfMonth := "Ending Date" = CALCDATE('<CM>',"Ending Date");
+
+        AECalcSetup.RESET;
+        AECalcSetup.SETRANGE(Type,AECalcSetup.Type::Calculation);
+        CASE "Document Type" OF
+          "Document Type"::Vacation:
+            AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::Vacation);
+          "Document Type"::"Other Absence":
+            AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::Others);
+        END;
+        AECalcSetup.SETRANGE("Period Code",'',PayrollPeriod.PeriodByDate("Ending Date"));
+        IF AECalcSetup.FINDLAST THEN BEGIN
+          AECalcSetup.TESTFIELD("AE Calc Months");
+          PayrollPeriod.GET(PayrollPeriod.PeriodByDate("Ending Date"));
+          IF NOT LastDateOfMonth THEN BEGIN
+            Step := -1;
+            PayrollPeriod.NEXT(Step);
+          END;
+          "AE Period To" := PayrollPeriod.Code;
+          Step := -(AECalcSetup."AE Calc Months" - 1);
+          PayrollPeriod.NEXT(Step);
+          "AE Period From" := PayrollPeriod.Code;
+          IF PayrollPeriod.PeriodByDate(Employee."Employment Date") > "AE Period From" THEN
+            "AE Period From" := PayrollPeriod.PeriodByDate(Employee."Employment Date");
+        END;
+      END;
+    END;
+
+    PROCEDURE FillDocLineAEData@1210001(VAR PayrollDocLine@1210000 : Record 17415;AESetupCode@1210007 : Code[10]) : Decimal;
+    VAR
+      DtldPayrollLedgEntry@1210002 : Record 17419;
+      ElementInclusion@1210001 : Record 17447;
+      EmplLedgEntry@1210006 : Record 17413;
+      PersonIncomeLine@1210005 : Record 17396;
+      PrevAEPeriodFrom@1210003 : Code[10];
+      PrevAEPeriodTo@1210004 : Code[10];
+      SkipCurrentPeriod@1210008 : Boolean;
+    BEGIN
+      HRSetup.GET;
+      WITH PayrollDocLine DO BEGIN
+        TESTFIELD("Action Starting Date");
+        TESTFIELD("Element Code");
+
+        // Find actual salary
+        PayrollPeriod.GET("Period Code");
+        "Original Amount" :=
+          PayrollDocCalculate.GetBaseSalary("Employee No.",PayrollPeriod);
+
+        // Find AE setup
+        PayrollElement.GET("Element Code");
+
+        PayrollDocLineAE.RESET;
+        PayrollDocLineAE.SETRANGE("Document No.","Document No.");
+        PayrollDocLineAE.SETRANGE("Document Line No.","Line No.");
+        IF NOT PayrollDocLineAE.ISEMPTY THEN
+          PayrollDocLineAE.DELETEALL;
+
+        PayrollPeriodAE.RESET;
+        PayrollPeriodAE.SETRANGE("Document No.","Document No.");
+        PayrollPeriodAE.SETRANGE("Line No.","Line No.");
+        IF NOT PayrollPeriodAE.ISEMPTY THEN
+          PayrollPeriodAE.DELETEALL;
+
+        AECalcSetup.RESET;
+        AECalcSetup.SETRANGE(Type,AECalcSetup.Type::Calculation);
+        CASE "Document Type" OF
+          "Document Type"::Vacation:
+            AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::Vacation);
+          "Document Type"::"Sick Leave":
+            BEGIN
+              EmplLedgEntry.GET("Employee Ledger Entry No.");
+              CASE EmplLedgEntry."Sick Leave Type" OF
+                EmplLedgEntry."Sick Leave Type"::"Child Care 1.5 years":
+                  AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Child Care 1");
+                EmplLedgEntry."Sick Leave Type"::"Child Care 3 years":
+                  AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Child Care 2");
+                EmplLedgEntry."Sick Leave Type"::"Pregnancy Leave":
+                  AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Pregnancy Leave");
+                ELSE
+                  AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::"Sick Leave");
+              END;
+            END;
+          "Document Type"::"Other Absence",
+          "Document Type"::Travel:
+            AECalcSetup.SETRANGE("AE Calc Type",AECalcSetup."AE Calc Type"::Others);
+        END;
+        AECalcSetup.SETRANGE("Period Code",'',"Period Code");
+        IF AESetupCode <> '' THEN
+          AECalcSetup.SETRANGE("Setup Code",AESetupCode);
+        AECalcSetup.FINDLAST;
+        AECalcSetup.TESTFIELD("AE Calc Months");
+        IF AECalcSetup."Month Days Calc Method" = AECalcSetup."Month Days Calc Method"::Average THEN
+          AECalcSetup.TESTFIELD("Average Month Days");
+
+        AEBonusSetup.RESET;
+        AEBonusSetup.SETRANGE(Type,AEBonusSetup.Type::"Bonus Setup");
+        CASE "Document Type" OF
+          "Document Type"::Vacation:
+            AEBonusSetup.SETRANGE("AE Calc Type",AEBonusSetup."AE Calc Type"::Vacation);
+          "Document Type"::"Sick Leave":
+            BEGIN
+              EmplLedgEntry.GET("Employee Ledger Entry No.");
+              CASE EmplLedgEntry."Sick Leave Type" OF
+                EmplLedgEntry."Sick Leave Type"::"Child Care 1.5 years":
+                  AEBonusSetup.SETRANGE("AE Calc Type",AEBonusSetup."AE Calc Type"::"Child Care 1");
+                EmplLedgEntry."Sick Leave Type"::"Child Care 3 years":
+                  AEBonusSetup.SETRANGE("AE Calc Type",AEBonusSetup."AE Calc Type"::"Child Care 2");
+                EmplLedgEntry."Sick Leave Type"::"Pregnancy Leave":
+                  AEBonusSetup.SETRANGE("AE Calc Type",AEBonusSetup."AE Calc Type"::"Pregnancy Leave");
+                ELSE
+                  AEBonusSetup.SETRANGE("AE Calc Type",AEBonusSetup."AE Calc Type"::"Sick Leave");
+              END;
+            END;
+          "Document Type"::"Other Absence":
+            AEBonusSetup.SETRANGE("AE Calc Type",AEBonusSetup."AE Calc Type"::Others);
+        END;
+        AEBonusSetup.SETRANGE("Period Code",'',"Period Code");
+        IF AESetupCode <> '' THEN
+          AEBonusSetup.SETRANGE("Setup Code",AESetupCode);
+
+        ElementInclusion.RESET;
+        CASE "Document Type" OF
+          "Document Type"::Vacation:
+            ElementInclusion.SETRANGE(Type,ElementInclusion.Type::Vacation);
+          "Document Type"::"Sick Leave":
+            ElementInclusion.SETRANGE(Type,ElementInclusion.Type::"Sick Leave");
+          "Document Type"::Travel:
+            ElementInclusion.SETRANGE(Type,ElementInclusion.Type::Travel);
+          "Document Type"::"Other Absence":
+            ElementInclusion.SETRANGE(Type,ElementInclusion.Type::Other);
+        END;
+        ElementInclusion.SETRANGE("Period Code",'',"Period Code");
+
+        // Insert entries from AE period
+        DtldPayrollLedgEntry.RESET;
+        DtldPayrollLedgEntry.SETCURRENTKEY("Employee No.");
+        DtldPayrollLedgEntry.SETRANGE("Employee No.","Employee No.");
+        DtldPayrollLedgEntry.SETRANGE("Period Code","AE Period From","AE Period To");
+        IF DtldPayrollLedgEntry.FINDSET THEN
+          REPEAT
+            CreateDocLineAEfromEntry(DtldPayrollLedgEntry,ElementInclusion,"Document No.","Line No.");
+          UNTIL DtldPayrollLedgEntry.NEXT = 0;
+
+        SkipCurrentPeriod := AECalcSetup."Exclude Current Period" OR
+          (AECalcSetup."Days for Calc Type" = AECalcSetup."Days for Calc Type"::"Whole Year");
+
+        IF NOT SkipCurrentPeriod THEN BEGIN
+          PayrollDocLineAE.RESET;
+          PayrollDocLineAE.SETRANGE("Document No.","Document No.");
+          PayrollDocLineAE.SETRANGE("Document Line No.","Line No.");
+          IF PayrollDocLineAE.ISEMPTY THEN BEGIN
+            PayrollPeriod.GET("AE Period From");
+            PrevAEPeriodFrom := PayrollPeriod.PeriodByDate(CALCDATE('<-1Y>',PayrollPeriod."Ending Date"));
+            PayrollPeriod.GET("AE Period To");
+            PrevAEPeriodTo := PayrollPeriod.PeriodByDate(CALCDATE('<-1Y>',PayrollPeriod."Ending Date"));
+            DtldPayrollLedgEntry.SETRANGE("Period Code",PrevAEPeriodFrom,PrevAEPeriodTo);
+            IF DtldPayrollLedgEntry.FINDSET THEN
+              REPEAT
+                CreateDocLineAEfromEntry(DtldPayrollLedgEntry,ElementInclusion,"Document No.","Line No.");
+              UNTIL DtldPayrollLedgEntry.NEXT = 0;
+            "AE Period From" := PrevAEPeriodFrom;
+            "AE Period To" := PrevAEPeriodTo;
+          END;
+
+          IF "Period Code" = "AE Period To" THEN
+            CreateDocLinesAEfromDocument(ElementInclusion,"Document No.","Line No.");
+        END;
+
+        // Process bonus entries
+        CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::Monthly,FALSE);
+        CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::Quarterly,FALSE);
+        CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::"Semi-Annual",FALSE);
+        CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::Annual,FALSE);
+
+        // Insert current period entries if no other AE entries found
+        IF NOT SkipCurrentPeriod THEN BEGIN
+          PayrollDocLineAE.RESET;
+          PayrollDocLineAE.SETRANGE("Document No.","Document No.");
+          PayrollDocLineAE.SETRANGE("Document Line No.","Line No.");
+          IF PayrollDocLineAE.ISEMPTY THEN BEGIN
+            CreateDocLinesAEfromDocument(ElementInclusion,"Document No.","Line No.");
+            "AE Period From" := "Period Code";
+            "AE Period To" := "Period Code";
+            // Process bonus entries for current period
+            CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::Monthly,TRUE);
+            CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::Quarterly,TRUE);
+            CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::"Semi-Annual",TRUE);
+            CalcAEBonusEntries(PayrollDocLine,AEBonusSetup,PayrollDocLineAE."Bonus Type"::Annual,TRUE);
+          END;
+
+          // Insert base salary entry if no other AE entries found
+          PayrollDocLineAE.RESET;
+          PayrollDocLineAE.SETRANGE("Document No.","Document No.");
+          PayrollDocLineAE.SETRANGE("Document Line No.","Line No.");
+          IF PayrollDocLineAE.ISEMPTY THEN BEGIN
+            PayrollDocLineAE.INIT;
+            PayrollDocLineAE."Document No." := "Document No.";
+            PayrollDocLineAE."Document Line No." := "Line No.";
+            PayrollDocLineAE."Source Type" := PayrollDocLineAE."Source Type"::Salary;
+            PayrollDocLineAE."Ledger Entry No." := 0;
+            PayrollDocLineAE."Element Type" := PayrollDocLineAE."Element Type"::Wage;
+            HRSetup.TESTFIELD("Element Code Salary Days");
+            PayrollDocLineAE."Element Code" := HRSetup."Element Code Salary Days";
+            PayrollPeriod.GET("Period Code");
+            PayrollDocLineAE.Amount :=
+              PayrollDocCalculate.GetBaseSalary("Employee No.",PayrollPeriod) +
+              PayrollDocCalculate.GetExtraSalary("Employee No.",PayrollPeriod);
+            PayrollDocLineAE."Inclusion Factor" := 1;
+            PayrollDocLineAE."Amount for AE" :=
+              ROUND(PayrollDocLineAE.Amount * PayrollDocLineAE."Inclusion Factor");
+            PayrollDocLineAE."Wage Period Code" := "Period Code";
+            PayrollDocLineAE."Period Code" := "Period Code";
+            PayrollElement2.GET(PayrollDocLineAE."Element Code");
+            PayrollDocLineAE."Salary Indexation" := PayrollElement2."Use Indexation";
+            PayrollDocLineAE.INSERT;
+
+            "AE Period From" := "Period Code";
+            "AE Period To" := "Period Code";
+          END;
+        END;
+
+        // Process external income if any
+        IF "Document Type" = "Document Type"::"Sick Leave" THEN BEGIN
+          Employee.GET("Employee No.");
+          PersonIncomeLine.RESET;
+          PersonIncomeLine.SETRANGE("Person No.",Employee."Person No.");
+          PersonIncomeLine.SETRANGE("Period Code","AE Period From","AE Period To");
+          PersonIncomeLine.SETRANGE(Calculation,FALSE);
+          PersonIncomeLine.SETRANGE("Exclude from Calculation",FALSE);
+          IF PersonIncomeLine.FINDSET THEN
+            REPEAT
+              CreateDocLineAEfromIncome(PersonIncomeLine,"Document No.","Line No.");
+              IF AECalcSetup."Use Excluded Days" THEN BEGIN
+                PersonIncomeLine.CALCFIELDS("Excluded Days");
+                "Excluded Days" += PersonIncomeLine."Excluded Days";
+                MODIFY;
+              END;
+            UNTIL PersonIncomeLine.NEXT = 0;
+        END;
+
+        EXIT(CalcDocLineAEPeriods(PayrollDocLine,AECalcSetup));
+      END;
+    END;
+
+    PROCEDURE CalcAEBonusEntries@1210003(PayrollDocLine@1210000 : Record 17415;VAR AEBonusSetup@1210001 : Record 17458;BonusType@1210002 : ' ,Monthly,Quarterly,Semi-Annual,Annual';CurrentPeriod@1210007 : Boolean);
+    VAR
+      TempAEBuffer@1210006 : TEMPORARY Record 17463;
+      BonusAmt@1210005 : Decimal;
+      BonusQty@1210004 : Decimal;
+    BEGIN
+      // Process bonus entries
+      PayrollDocLineAE.RESET;
+      PayrollDocLineAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineAE.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineAE.SETRANGE("Bonus Type",BonusType);
+      IF CurrentPeriod THEN
+        PayrollDocLineAE.SETRANGE("Period Code",PayrollDocLine."Period Code");
+      IF PayrollDocLineAE.ISEMPTY THEN
+        EXIT;
+
+      AEBonusSetup.SETRANGE("Bonus Type",BonusType);
+      AEBonusSetup.FINDLAST;
+      CASE AEBonusSetup."AE Bonus Calc Method" OF
+        AEBonusSetup."AE Bonus Calc Method"::Full:
+          // Set factor 1 to all
+          PayrollDocLineAE.MODIFYALL("Inclusion Factor",1,TRUE);
+        AEBonusSetup."AE Bonus Calc Method"::Average:
+          BEGIN
+            BonusAmt := 0;
+            BonusQty := 0;
+            IF PayrollDocLineAE.FINDSET THEN
+              REPEAT
+                BonusAmt += PayrollDocLineAE.Amount;
+                BonusQty += 1;
+              UNTIL PayrollDocLineAE.NEXT = 0;
+            IF PayrollDocLineAE.FINDLAST THEN BEGIN
+              PayrollDocLineAE.VALIDATE("Amount for AE",
+                ROUND(BonusAmt / BonusQty));
+              PayrollDocLineAE.MODIFY;
+            END;
+          END;
+        AEBonusSetup."AE Bonus Calc Method"::Minimum:
+          BEGIN
+            TempAEBuffer.DELETEALL;
+            IF PayrollDocLineAE.FINDSET THEN
+              REPEAT
+                IF NOT TempAEBuffer.GET(
+                     PayrollDocLineAE."Period Code",PayrollDocLineAE."Element Code")
+                THEN BEGIN
+                  TempAEBuffer.INIT;
+                  TempAEBuffer."Period Code" := PayrollDocLineAE."Period Code";
+                  TempAEBuffer."Element Code" := PayrollDocLineAE."Element Code";
+                  TempAEBuffer.Amount := PayrollDocLineAE.Amount;
+                  TempAEBuffer."Entry No." := PayrollDocLineAE."Ledger Entry No.";
+                  TempAEBuffer.INSERT;
+                END ELSE
+                  IF PayrollDocLineAE.Amount < TempAEBuffer.Amount THEN BEGIN
+                    TempAEBuffer.Amount := PayrollDocLineAE.Amount;
+                    TempAEBuffer."Entry No." := PayrollDocLineAE."Ledger Entry No.";
+                    TempAEBuffer.MODIFY;
+                  END;
+              UNTIL PayrollDocLineAE.NEXT = 0;
+
+            IF TempAEBuffer.FINDSET THEN
+              REPEAT
+                PayrollDocLineAE.SETRANGE("Period Code",TempAEBuffer."Period Code");
+                PayrollDocLineAE.SETRANGE("Element Code",TempAEBuffer."Element Code");
+                IF PayrollDocLineAE.FINDSET THEN
+                  REPEAT
+                    IF PayrollDocLineAE."Ledger Entry No." = TempAEBuffer."Entry No." THEN BEGIN
+                      PayrollDocLineAE.VALIDATE("Amount for AE",TempAEBuffer.Amount);
+                      PayrollDocLineAE.MODIFY;
+                    END ELSE
+                      PayrollDocLineAE.DELETE;
+                  UNTIL PayrollDocLineAE.NEXT = 0;
+              UNTIL TempAEBuffer.NEXT = 0;
+          END;
+        AEBonusSetup."AE Bonus Calc Method"::Maximum:
+          BEGIN
+            TempAEBuffer.DELETEALL;
+            IF PayrollDocLineAE.FINDSET THEN
+              REPEAT
+                IF NOT TempAEBuffer.GET(
+                     PayrollDocLineAE."Period Code",PayrollDocLineAE."Element Code")
+                THEN BEGIN
+                  TempAEBuffer.INIT;
+                  TempAEBuffer."Period Code" := PayrollDocLineAE."Period Code";
+                  TempAEBuffer."Element Code" := PayrollDocLineAE."Element Code";
+                  TempAEBuffer.Amount := PayrollDocLineAE.Amount;
+                  TempAEBuffer."Entry No." := PayrollDocLineAE."Ledger Entry No.";
+                  TempAEBuffer.INSERT;
+                END ELSE
+                  IF PayrollDocLineAE.Amount > TempAEBuffer.Amount THEN BEGIN
+                    TempAEBuffer.Amount := PayrollDocLineAE.Amount;
+                    TempAEBuffer."Entry No." := PayrollDocLineAE."Ledger Entry No.";
+                    TempAEBuffer.MODIFY;
+                  END;
+              UNTIL PayrollDocLineAE.NEXT = 0;
+
+            IF TempAEBuffer.FINDSET THEN
+              REPEAT
+                PayrollDocLineAE.SETRANGE("Period Code",TempAEBuffer."Period Code");
+                PayrollDocLineAE.SETRANGE("Element Code",TempAEBuffer."Element Code");
+                IF PayrollDocLineAE.FINDSET THEN
+                  REPEAT
+                    IF PayrollDocLineAE."Ledger Entry No." = TempAEBuffer."Entry No." THEN BEGIN
+                      PayrollDocLineAE.VALIDATE("Amount for AE",TempAEBuffer.Amount);
+                      PayrollDocLineAE.MODIFY;
+                    END ELSE
+                      PayrollDocLineAE.DELETE;
+                  UNTIL PayrollDocLineAE.NEXT = 0;
+              UNTIL TempAEBuffer.NEXT = 0;
+          END;
+        AEBonusSetup."AE Bonus Calc Method"::Last:
+          IF PayrollDocLineAE.FINDLAST THEN BEGIN
+            PayrollDocLineAE.VALIDATE("Amount for AE",PayrollDocLineAE.Amount);
+            PayrollDocLineAE.MODIFY;
+          END;
+        AEBonusSetup."AE Bonus Calc Method"::"Match by Period":
+          IF PayrollDocLineAE.FINDSET THEN
+            REPEAT
+              PayrollPeriod.GET(PayrollDocLine."Period Code");
+              IF (PayrollDocLineAE."Wage Period Code" >=
+                  PayrollPeriod.PeriodByDate(CALCDATE(
+                      STRSUBSTNO('<-%1M>',AECalcSetup."AE Calc Months"),PayrollPeriod."Ending Date"))) AND
+                 (PayrollDocLineAE."Wage Period Code" <= PayrollDocLine."Period Code")
+              THEN BEGIN
+                PayrollDocLineAE.VALIDATE("Amount for AE",PayrollDocLineAE.Amount);
+                PayrollDocLineAE.MODIFY;
+              END;
+            UNTIL PayrollDocLineAE.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CalcDocLineAEPeriods@1210000(VAR PayrollDocLine@1210001 : Record 17415;AECalcSetup@1210000 : Record 17458) : Decimal;
+    VAR
+      DtldPayrollLedgerEntry@1210010 : Record 17419;
+      PayrollDocLineAE2@1210008 : Record 17431;
+      TempPayrollDocumentLineAE@1210007 : TEMPORARY Record 17431;
+      PeriodNo@1210002 : Integer;
+      PayrollLedgEntryNo@1210011 : Integer;
+      BaseSalary@1210003 : Decimal;
+      ExtraSalary@1210005 : Decimal;
+      BonusAmount@1210006 : Decimal;
+      AddPeriod@1210004 : Integer;
+      NoYears@1210012 : Integer;
+      I@1210013 : Integer;
+      PeriodCodeFrom@1210014 : Code[10];
+      PeriodCodeTo@1210015 : Code[10];
+    BEGIN
+      HRSetup.GET;
+      HRSetup.TESTFIELD("Excl. Days Group Code");
+      Employee.GET(PayrollDocLine."Employee No.");
+
+      // Find current salary
+      PayrollPeriod.GET(PayrollDocLine."Period Code");
+      BaseSalary := PayrollDocCalculate.GetBaseSalary(PayrollDocLine."Employee No.",PayrollPeriod);
+      ExtraSalary := PayrollDocCalculate.GetExtraSalary(PayrollDocLine."Employee No.",PayrollPeriod);
+
+      PayrollDocLineAE.RESET;
+      PayrollDocLineAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineAE.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineAE.SETRANGE("Period Code",PayrollDocLine."Period Code");
+      IF NOT PayrollDocLineAE.ISEMPTY THEN BEGIN
+        PeriodNo := 0;
+        AddPeriod := 1;
+        PayrollPeriod.RESET;
+        PayrollPeriod.SETFILTER(Code,'%1..%2|%3',
+          PayrollDocLine."AE Period From",PayrollDocLine."AE Period To",PayrollPeriod.Code);
+      END ELSE BEGIN
+        PeriodNo := 1;
+        AddPeriod := 0;
+        PayrollPeriod.RESET;
+        PayrollPeriod.SETRANGE(Code,PayrollDocLine."AE Period From",PayrollDocLine."AE Period To");
+      END;
+      PayrollDocLineAE.SETRANGE("Period Code");
+
+      IF PayrollPeriod.FIND('+') THEN
+        REPEAT
+          PayrollPeriodAE.INIT;
+          PayrollPeriodAE."Document No." := PayrollDocLine."Document No.";
+          PayrollPeriodAE."Line No." := PayrollDocLine."Line No.";
+          PayrollPeriodAE."Period Code" := PayrollPeriod.Code;
+          PayrollPeriodAE."Period No." := PeriodNo;
+          PayrollPeriodAE.Month := DATE2DMY(PayrollPeriod."Ending Date",2);
+          PayrollPeriodAE.Year := DATE2DMY(PayrollPeriod."Ending Date",3);
+          PeriodNo := PeriodNo + 1;
+          IF (Employee."Termination Date" <> 0D) AND
+             (Employee."Termination Date" >= PayrollPeriod."Starting Date") AND
+             (Employee."Termination Date" <= PayrollPeriod."Ending Date")
+          THEN
+            PayrollPeriodAE."Period End Date" := Employee."Termination Date"
+          ELSE
+            PayrollPeriodAE."Period End Date" := PayrollPeriod."Ending Date";
+          IF (Employee."Employment Date" >= PayrollPeriod."Starting Date") AND
+             (Employee."Employment Date" <= PayrollPeriod."Ending Date")
+          THEN
+            PayrollPeriodAE."Period Start Date" := Employee."Employment Date"
+          ELSE
+            PayrollPeriodAE."Period Start Date" := PayrollPeriod."Starting Date";
+          PayrollDocLineAE.SETRANGE("Period Code",PayrollPeriod.Code);
+          IF PayrollDocLineAE.FINDSET THEN
+            REPEAT
+              IF PayrollDocLineAE."Bonus Type" = 0 THEN BEGIN
+                IF PayrollDocLineAE."Source Type" <> PayrollDocLineAE."Source Type"::"External Income" THEN
+                  PayrollElement2.GET(PayrollDocLineAE."Element Code");
+                PayrollPeriodAE."Salary Amount" += PayrollDocLineAE."Amount for AE";
+                IF PayrollElement2."Depends on Salary Element" <> '' THEN
+                  PayrollPeriodAE."Extra Salary" += PayrollDocLineAE."Amount for AE";
+              END ELSE
+                PayrollPeriodAE."Bonus Amount" += PayrollDocLineAE."Amount for AE";
+            UNTIL PayrollDocLineAE.NEXT = 0;
+
+          CalcPeriodAEDays(PayrollPeriodAE,PayrollDocLine,AECalcSetup."Use Excluded Days");
+
+          // Update bonus amount
+          IF PayrollPeriodAE."Planned Work Days" <> PayrollPeriodAE."Actual Work Days" THEN
+            PayrollDocLineAE.SETRANGE("Bonus Type",PayrollDocLineAE."Bonus Type"::Monthly);
+          IF PayrollDocLineAE.FINDSET THEN
+            REPEAT
+              PayrollElement.GET(PayrollDocLineAE."Element Code");
+              IF NOT PayrollElement."Fixed Amount Bonus" AND
+                (AEBonusSetup."AE Bonus Calc Method" <> AEBonusSetup."AE Bonus Calc Method":: Full)
+              THEN BEGIN
+                BonusAmount := PayrollDocLineAE."Amount for AE";
+                PayrollDocLineAE.VALIDATE("Inclusion Factor",
+                  PayrollPeriodAE."Actual Work Days" / PayrollPeriodAE."Planned Work Days");
+                PayrollDocLineAE.MODIFY;
+                PayrollPeriodAE."Bonus Amount" := PayrollPeriodAE."Bonus Amount" -
+                  BonusAmount + PayrollDocLineAE."Amount for AE";
+              END;
+            UNTIL PayrollDocLineAE.NEXT = 0;
+          PayrollDocLineAE.SETRANGE("Bonus Type");
+
+          PayrollPeriodAE."Base Salary" :=
+            PayrollDocCalculate.GetBaseSalary(PayrollDocLine."Employee No.",PayrollPeriod);
+          PayrollPeriodAE."Indexation Factor" := 1;
+          PeriodCodeFrom := PayrollPeriod.Code;
+          PayrollPeriodAE.INSERT;
+        UNTIL (PayrollPeriod.NEXT(-1) = 0) OR (PeriodNo > AECalcSetup."AE Calc Months" + AddPeriod);
+
+      CalcIndexationFactor(PeriodCodeFrom,PayrollDocLine);
+
+      // Update out of AE period bonus amount
+      PayrollDocLineAE.RESET;
+      PayrollDocLineAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineAE.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineAE.SETFILTER("Wage Period Code",'<%1',PayrollDocLine."AE Period From");
+      PayrollDocLineAE.SETRANGE("Element Type",PayrollDocLineAE."Element Type"::Bonus);
+      IF PayrollDocLineAE.FINDSET THEN BEGIN
+        // calculate whole AE period planned and fact days
+        PayrollPeriodAE.RESET;
+        PayrollPeriodAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+        PayrollPeriodAE.SETRANGE("Line No.",PayrollDocLine."Line No.");
+        PayrollPeriodAE.CALCSUMS("Planned Work Days","Actual Work Days");
+
+        REPEAT
+          DtldPayrollLedgerEntry.GET(PayrollDocLineAE."Ledger Entry No.");
+          PayrollLedgEntryNo := DtldPayrollLedgerEntry."Payroll Ledger Entry No.";
+
+          // look for the lines with the same Payroll Ledger Entry No.
+          PayrollDocLineAE2.SETRANGE("Document No.",PayrollDocLine."Document No.");
+          PayrollDocLineAE2.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+          PayrollDocLineAE2.SETRANGE("Element Type",PayrollDocLineAE2."Element Type"::Bonus);
+          PayrollDocLineAE2.SETRANGE("Source Type",PayrollDocLineAE2."Source Type"::"Ledger Entry");
+          IF PayrollDocLineAE2.FINDSET THEN
+            REPEAT
+              IF DtldPayrollLedgerEntry.GET(PayrollDocLineAE2."Ledger Entry No.") THEN
+                IF DtldPayrollLedgerEntry."Payroll Ledger Entry No." = PayrollLedgEntryNo THEN
+                  IF NOT TempPayrollDocumentLineAE.GET(
+                       PayrollDocLineAE2."Document No.",PayrollDocLineAE2."Document Line No.",PayrollDocLineAE2."Wage Period Code",
+                       PayrollDocLineAE2."Source Type",PayrollDocLineAE2."Ledger Entry No.")
+                  THEN BEGIN
+                    TempPayrollDocumentLineAE := PayrollDocLineAE2;
+                    TempPayrollDocumentLineAE.INSERT;
+                  END;
+            UNTIL PayrollDocLineAE2.NEXT = 0;
+        UNTIL PayrollDocLineAE.NEXT = 0;
+
+        IF TempPayrollDocumentLineAE.FINDSET THEN
+          REPEAT
+            PayrollDocLineAE.GET(
+              TempPayrollDocumentLineAE."Document No.",
+              TempPayrollDocumentLineAE."Document Line No.",
+              TempPayrollDocumentLineAE."Wage Period Code",
+              TempPayrollDocumentLineAE."Source Type",
+              TempPayrollDocumentLineAE."Ledger Entry No.");
+            PayrollDocLineAE.VALIDATE("Inclusion Factor",
+              PayrollPeriodAE."Actual Work Days" / PayrollPeriodAE."Planned Work Days");
+            PayrollDocLineAE.MODIFY;
+          UNTIL TempPayrollDocumentLineAE.NEXT = 0;
+      END;
+
+      // Updated indexed amounts
+      PayrollDocLineAE.RESET;
+      PayrollDocLineAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineAE.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      IF PayrollDocLineAE.FINDSET THEN
+        REPEAT
+          PayrollPeriodAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+          PayrollPeriodAE.SETRANGE("Line No.",PayrollDocLine."Line No.");
+          PayrollPeriodAE.SETRANGE("Period Code",PayrollDocLineAE."Period Code");
+          IF PayrollPeriodAE.FINDFIRST THEN BEGIN
+            PayrollElement.GET(PayrollDocLineAE."Element Code");
+            IF (PayrollElement.Type = PayrollElement.Type::Bonus) AND PayrollElement."Fixed Amount Bonus" THEN
+              PayrollDocLineAE."Indexed Amount for AE" := PayrollDocLineAE."Amount for AE"
+            ELSE
+              PayrollDocLineAE."Indexed Amount for AE" :=
+                PayrollPeriodAE."Indexation Factor" * PayrollDocLineAE."Amount for AE";
+            PayrollDocLineAE.MODIFY;
+          END;
+        UNTIL PayrollDocLineAE.NEXT = 0;
+
+      // update amount for FSI
+      IF AECalcSetup."Days for Calc Type" = AECalcSetup."Days for Calc Type"::"Whole Year" THEN BEGIN
+        NoYears := AECalcSetup."AE Calc Months" / 12;
+        I := 0;
+        WHILE I < NoYears DO BEGIN
+          PayrollPeriod.GET(PayrollDocLine."AE Period From");
+          PayrollPeriod.NEXT(I * 12);
+          PeriodCodeFrom := PayrollPeriod.Code;
+          PayrollPeriod.NEXT(I * 12 + 11);
+          PeriodCodeTo := PayrollPeriod.Code;
+          UpdateFSIAmounts(PayrollDocLine,PeriodCodeFrom,PeriodCodeTo,AECalcSetup."Use FSI Limits");
+          I := I + 1;
+        END;
+      END;
+
+      // calculate average earnings
+      CalcExcludedDays(PayrollDocLine,AECalcSetup."Use Excluded Days");
+      IF AECalcSetup."Days for Calc Type" <> AECalcSetup."Days for Calc Type"::"Whole Year" THEN BEGIN
+        PayrollDocLine.CALCFIELDS("AE Total Earnings","AE Total Days","AE Total Earnings Indexed");
+        IF PayrollDocLine."AE Total Days" <> 0 THEN
+          PayrollDocLine.VALIDATE("AE Daily Earnings",
+            ROUND(
+              PayrollDocLine."AE Total Earnings Indexed" /
+              (PayrollDocLine."AE Total Days" - PayrollDocLine."Excluded Days")));
+      END ELSE BEGIN
+        PayrollDocLine.CALCFIELDS("AE Total FSI Earnings","AE Total Days");
+        IF PayrollDocLine."AE Total Days" <> 0 THEN
+          PayrollDocLine.VALIDATE(
+            "AE Daily Earnings",
+            ROUND(
+              PayrollDocLine."AE Total FSI Earnings" /
+              (PayrollDocLine."AE Total Days" - PayrollDocLine."Excluded Days")));
+      END;
+      PayrollDocLine.MODIFY;
+
+      EXIT(PayrollDocLine."AE Daily Earnings");
+    END;
+
+    PROCEDURE CalcPeriodAEDays@1210007(VAR PayrollPeriodAE@1210000 : Record 17433;PayrollDocLine@1210001 : Record 17415;UseExcludedDays@1210002 : Boolean);
+    BEGIN
+      PayrollPeriodAE."Planned Calendar Days" :=
+        CalendarMgt.GetPeriodInfo(
+          HRSetup."Official Calendar Code",
+          PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",1);
+      PayrollPeriodAE."Absence Days" :=
+        TimesheetMgt.GetTimesheetInfo(
+          PayrollDocLine."Employee No.",HRSetup."Absence Group Code",
+          PayrollPeriodAE."Period Start Date",PayrollPeriodAE."Period End Date",2);
+      PayrollPeriodAE."Actual Calendar Days" :=
+        CalendarMgt.GetPeriodInfo(
+          HRSetup."Official Calendar Code",
+          PayrollPeriodAE."Period Start Date",PayrollPeriodAE."Period End Date",1) -
+        PayrollPeriodAE."Absence Days";
+      PayrollPeriodAE."Planned Work Days" :=
+        CalendarMgt.GetPeriodInfo(
+          HRSetup."Official Calendar Code",
+          PayrollPeriod."Starting Date",PayrollPeriod."Ending Date",2);
+      PayrollPeriodAE."Actual Work Days" :=
+        TimesheetMgt.GetTimesheetInfo(
+          PayrollDocLine."Employee No.",HRSetup."Work Time Group Code",
+          PayrollPeriodAE."Period Start Date",PayrollPeriodAE."Period End Date",4);
+
+      CASE PayrollDocLine."Document Type" OF
+        PayrollDocLine."Document Type"::Vacation:
+          BEGIN
+            AECalcSetup.TESTFIELD("Average Month Days");
+            IF PayrollPeriodAE."Actual Calendar Days" <> 0 THEN
+              PayrollPeriodAE."Average Days" :=
+                ROUND(AECalcSetup."Average Month Days" *
+                  (PayrollPeriodAE."Actual Calendar Days" / PayrollPeriodAE."Planned Calendar Days"))
+            ELSE
+              IF PayrollPeriodAE."Salary Amount" = 0 THEN
+                PayrollPeriodAE."Average Days" := 0
+              ELSE
+                PayrollPeriodAE."Average Days" :=
+                  ROUND(AECalcSetup."Average Month Days");
+          END;
+        PayrollDocLine."Document Type"::"Sick Leave":
+          BEGIN
+            IF AECalcSetup."Days for Calc Type" = AECalcSetup."Days for Calc Type"::"Whole Year" THEN BEGIN
+              PayrollPeriodAE."Average Days" := PayrollPeriodAE."Planned Calendar Days";
+              IF NOT UseExcludedDays AND (DATE2DMY(PayrollPeriodAE."Period End Date",1) = 29) THEN
+                PayrollPeriodAE."Average Days" := 28;
+            END ELSE
+              IF PayrollPeriodAE."Planned Calendar Days" = PayrollPeriodAE."Actual Calendar Days" THEN
+                PayrollPeriodAE."Average Days" := PayrollPeriodAE."Planned Calendar Days"
+              ELSE
+                IF (PayrollPeriodAE."Actual Calendar Days" <> 0) OR
+                   (PayrollPeriodAE."Salary Amount" = 0)
+                THEN
+                  PayrollPeriodAE."Average Days" :=
+                    PayrollPeriodAE."Actual Calendar Days"
+                ELSE
+                  IF PayrollPeriodAE."Salary Amount" <> 0 THEN
+                    PayrollPeriodAE."Average Days" :=
+                      PayrollPeriodAE."Planned Calendar Days"
+                  ELSE
+                    PayrollPeriodAE."Average Days" := 0;
+          END;
+        PayrollDocLine."Document Type"::Travel,
+        PayrollDocLine."Document Type"::"Other Absence":
+          BEGIN
+            IF PayrollPeriodAE."Actual Work Days" <> 0 THEN
+              PayrollPeriodAE."Average Days" := PayrollPeriodAE."Actual Work Days"
+            ELSE
+              PayrollPeriodAE."Average Days" := PayrollPeriodAE."Planned Work Days";
+          END;
+        PayrollDocLine."Document Type"::" ": // Dismissal
+          PayrollPeriodAE."Average Days" := PayrollPeriodAE."Planned Work Days";
+      END;
+    END;
+
+    PROCEDURE CreateDocLineAEfromEntry@1210005(DtldPayrollLedgEntry@1210000 : Record 17419;VAR ElementInclusion@1210003 : Record 17447;DocumentNo@1210001 : Code[20];LineNo@1210002 : Integer);
+    BEGIN
+      ElementInclusion.SETRANGE("Element Code",DtldPayrollLedgEntry."Element Code");
+      IF ElementInclusion.FINDLAST THEN BEGIN
+        PayrollDocLineAE.INIT;
+        PayrollDocLineAE."Document No." := DocumentNo;
+        PayrollDocLineAE."Document Line No." := LineNo;
+        PayrollDocLineAE."Source Type" := PayrollDocLineAE."Source Type"::"Ledger Entry";
+        PayrollDocLineAE."Ledger Entry No." := DtldPayrollLedgEntry."Entry No.";
+        PayrollDocLineAE."Element Type" := DtldPayrollLedgEntry."Element Type";
+        PayrollDocLineAE."Element Code" := DtldPayrollLedgEntry."Element Code";
+        PayrollDocLineAE.Amount := DtldPayrollLedgEntry."Payroll Amount";
+        IF DtldPayrollLedgEntry."Element Type" = DtldPayrollLedgEntry."Element Type"::Wage THEN
+          PayrollDocLineAE."Inclusion Factor" := 1;
+        PayrollDocLineAE."Amount for AE" := ROUND(PayrollDocLineAE.Amount * PayrollDocLineAE."Inclusion Factor");
+        PayrollDocLineAE."Wage Period Code" := DtldPayrollLedgEntry."Wage Period Code";
+        PayrollDocLineAE."Period Code" := DtldPayrollLedgEntry."Period Code";
+        PayrollDocLineAE."Bonus Type" := DtldPayrollLedgEntry."Bonus Type";
+        PayrollDocLineAE."Salary Indexation" := DtldPayrollLedgEntry."Salary Indexation";
+        PayrollDocLineAE."Depends on Salary Element" := DtldPayrollLedgEntry."Depends on Salary Element";
+        PayrollDocLineAE.INSERT;
+      END;
+    END;
+
+    PROCEDURE CreateDocLinesAEfromDocument@1210006(VAR ElementInclusion@1210003 : Record 17447;DocumentNo@1210001 : Code[20];LineNo@1210002 : Integer);
+    VAR
+      PayrollDocLine@1210000 : Record 17415;
+    BEGIN
+      PayrollDocLine.RESET;
+      PayrollDocLine.SETRANGE("Document No.",DocumentNo);
+      PayrollDocLine.SETFILTER("Payroll Amount",'<>%1',0);
+      IF PayrollDocLine.FINDSET THEN
+        REPEAT
+          ElementInclusion.SETRANGE("Element Code",PayrollDocLine."Element Code");
+          IF ElementInclusion.FINDLAST THEN BEGIN
+            PayrollDocLineAE.INIT;
+            PayrollDocLineAE."Document No." := DocumentNo;
+            PayrollDocLineAE."Document Line No." := LineNo;
+            PayrollDocLineAE."Source Type" := PayrollDocLineAE."Source Type"::"Payroll Document";
+            PayrollDocLineAE."Ledger Entry No." := PayrollDocLine."Line No.";
+            PayrollDocLineAE."Element Type" := PayrollDocLine."Element Type";
+            PayrollDocLineAE."Element Code" := PayrollDocLine."Element Code";
+            PayrollDocLineAE.Amount := PayrollDocLine."Payroll Amount";
+            PayrollDocLineAE."Inclusion Factor" := 1;
+            PayrollDocLineAE."Amount for AE" :=
+              ROUND(PayrollDocLineAE.Amount * PayrollDocLineAE."Inclusion Factor");
+            PayrollDocLineAE."Wage Period Code" := PayrollDocLine."Wage Period From";
+            PayrollDocLineAE."Period Code" := PayrollDocLine."Period Code";
+            PayrollDocLineAE."Salary Indexation" := PayrollDocLine."Salary Indexation";
+            PayrollDocLineAE."Depends on Salary Element" := PayrollDocLine."Depends on Salary Element";
+            PayrollDocLineAE.INSERT;
+          END;
+        UNTIL PayrollDocLine.NEXT = 0;
+    END;
+
+    PROCEDURE CreateDocLineAEfromIncome@1210009(PersonIncomeLine@1210000 : Record 17396;DocumentNo@1210001 : Code[20];LineNo@1210002 : Integer);
+    BEGIN
+      PayrollDocLineAE.INIT;
+      PayrollDocLineAE."Document No." := DocumentNo;
+      PayrollDocLineAE."Document Line No." := LineNo;
+      PayrollDocLineAE."Source Type" := PayrollDocLineAE."Source Type"::"External Income";
+      PayrollDocLineAE."Ledger Entry No." := 0;
+      PayrollDocLineAE."Element Type" := PayrollDocLineAE."Element Type"::Wage;
+      HRSetup.TESTFIELD("Element Code Salary Days");
+      PayrollDocLineAE."Element Code" := HRSetup."Element Code Salary Days";
+      PayrollDocLineAE.Amount := PersonIncomeLine.Amount;
+      PayrollDocLineAE."Inclusion Factor" := 1;
+      PayrollDocLineAE."Amount for AE" := ROUND(PayrollDocLineAE.Amount * PayrollDocLineAE."Inclusion Factor");
+      PayrollDocLineAE."Wage Period Code" := PersonIncomeLine."Period Code";
+      PayrollDocLineAE."Period Code" := PersonIncomeLine."Period Code";
+      PayrollDocLineAE.INSERT;
+    END;
+
+    PROCEDURE UpdateFSIAmounts@1210008(PayrollDocLine@1210000 : Record 17415;PeriodCodeFrom@1210001 : Code[10];PeriodCodeTo@1210002 : Code[10];UseFSILimit@1210004 : Boolean);
+    VAR
+      FSILimit@1210003 : Decimal;
+    BEGIN
+      PayrollPeriodAE.RESET;
+      PayrollPeriodAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollPeriodAE.SETRANGE("Line No.",PayrollDocLine."Line No.");
+
+      IF UseFSILimit THEN BEGIN
+        FSILimit := PayrollDocCalculate.GetFSILimit(PeriodCodeFrom,1);
+        IF FSILimit = 0 THEN
+          ERROR(Text001,PeriodCodeFrom);
+      END;
+
+      PayrollDocLineAE.RESET;
+      PayrollDocLineAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+      PayrollDocLineAE.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+      PayrollDocLineAE.SETRANGE("Period Code",PeriodCodeFrom,PeriodCodeTo);
+      IF PayrollDocLineAE.FINDSET(TRUE,FALSE) THEN
+        REPEAT
+          IF NOT ((PayrollDocLineAE."Element Type" = PayrollDocLineAE."Element Type"::Bonus) AND
+             (PayrollDocLineAE.Amount < 0)) THEN BEGIN
+            IF UseFSILimit THEN BEGIN
+              IF PayrollDocLineAE.Amount <= FSILimit THEN BEGIN
+                PayrollDocLineAE."Amount for FSI" := PayrollDocLineAE.Amount;
+                FSILimit -= PayrollDocLineAE.Amount;
+              END ELSE BEGIN
+                PayrollDocLineAE."Amount for FSI" := FSILimit;
+                FSILimit := 0;
+              END;
+            END ELSE
+              PayrollDocLineAE."Amount for FSI" := PayrollDocLineAE.Amount;
+            PayrollPeriodAE.SETRANGE("Period Code",PayrollDocLineAE."Period Code");
+            IF PayrollPeriodAE.FINDFIRST THEN BEGIN
+              PayrollPeriodAE."Amount for FSI" += PayrollDocLineAE."Amount for FSI";
+              PayrollPeriodAE.MODIFY;
+            END;
+            PayrollDocLineAE.MODIFY;
+          END;
+        UNTIL PayrollDocLineAE.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CalcIndexationFactor@1210010(PeriodFrom@1210001 : Code[10];PayrollDocLine@1210003 : Record 17415);
+    VAR
+      PayrollStatus@1210004 : Record 17457;
+      IndexationFactor@1210005 : Decimal;
+      PrevPeriodCode@1210006 : Code[10];
+    BEGIN
+      PayrollPeriod.RESET;
+      PayrollPeriod.SETRANGE(Code,PeriodFrom,PayrollDocLine."Period Code");
+      IF PayrollPeriod.FINDSET THEN
+        REPEAT
+          IF PayrollStatus.GET(PayrollPeriod.Code,PayrollDocLine."Employee No.") THEN
+            IF PayrollStatus.HasSalaryIndexation(IndexationFactor) THEN
+              IF PayrollPeriod.GetPrevPeriod(PrevPeriodCode) THEN BEGIN
+                PayrollPeriodAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+                PayrollPeriodAE.SETRANGE("Line No.",PayrollDocLine."Line No.");
+                PayrollPeriodAE.SETRANGE("Period Code",PeriodFrom,PrevPeriodCode);
+                IF PayrollPeriodAE.FINDSET(TRUE) THEN
+                  REPEAT
+                    PayrollPeriodAE."Indexation Factor" *= IndexationFactor;
+                    PayrollPeriodAE.MODIFY;
+                  UNTIL PayrollPeriodAE.NEXT = 0;
+              END;
+        UNTIL PayrollPeriod.NEXT = 0
+    END;
+
+    PROCEDURE CalcExcludedDays@1210014(VAR PayrollDocLine@1210000 : Record 17415;UseExcludedDays@1210001 : Boolean);
+    BEGIN
+      PayrollDocLine."Days To Exclude" :=
+        TimesheetMgt.GetTimesheetInfo(
+          PayrollDocLine."Employee No.",HRSetup."Excl. Days Group Code",
+          PayrollDocLine."Action Starting Date",PayrollDocLine."Action Ending Date",2);
+
+      IF UseExcludedDays THEN
+        PayrollDocLine."Excluded Days" +=
+          TimesheetMgt.GetTimesheetInfo(
+            PayrollDocLine."Employee No.",HRSetup."Excl. Days Group Code",
+            PayrollPeriod.PeriodStartDateByPeriodCode(PayrollDocLine."AE Period From"),
+            PayrollPeriod.PeriodEndDateByPeriodCode(PayrollDocLine."AE Period To"),2);
+      PayrollDocLine.MODIFY;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

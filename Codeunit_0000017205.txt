@@ -1,0 +1,317 @@
+OBJECT Codeunit 17205 Create Tax Register FA Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17211;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      TaxRegSetup@1210000 : Record 17236;
+      Window@1210001 : Dialog;
+
+    PROCEDURE CreateRegister@1(SectionCode@1210003 : Code[10];StartDate@1000 : Date;EndDate@1001 : Date);
+    VAR
+      FALedgEntry@1006 : Record 5601;
+      TaxRegFAEntry@1007 : Record 17211;
+      TaxReg@1008 : Record 17200;
+      TaxRegTemplate@1009 : Record 17202;
+      TempTaxRegTemplate@1210000 : TEMPORARY Record 17202;
+      TaxRegAccumulation@1010 : Record 17208;
+      TaxRegAccumulation2@1210002 : Record 17208;
+      TaxRegMgt@1012 : Codeunit 17201;
+      TaxRegTermMgt@1210001 : Codeunit 17200;
+    BEGIN
+      TaxRegSetup.GET;
+      TaxRegSetup.TESTFIELD("Tax Depreciation Book");
+
+      TaxRegMgt.ValidateAbsenceFAEntriesDate(StartDate,EndDate,SectionCode);
+
+      TaxRegAccumulation.RESET;
+      IF NOT TaxRegAccumulation.FINDLAST THEN
+        TaxRegAccumulation."Entry No." := 0;
+
+      TaxRegAccumulation.INIT;
+      TaxRegAccumulation."Section Code" := SectionCode;
+      TaxRegAccumulation."Starting Date" := StartDate;
+      TaxRegAccumulation."Ending Date" := EndDate;
+
+      Window.OPEN(Text21000900);
+      Window.UPDATE(1,StartDate);
+      Window.UPDATE(2,EndDate);
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register FA Entry");
+      IF TaxReg.FINDSET THEN BEGIN
+        REPEAT
+          TaxRegTemplate.SETRANGE("Section Code",TaxReg."Section Code");
+          TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+          IF TaxRegTemplate.FINDSET THEN
+            REPEAT
+              TempTaxRegTemplate := TaxRegTemplate;
+              WITH TaxRegTemplate DO
+                IF Expression <> '' THEN BEGIN
+                  SetFALedgerEntryFilters(FALedgEntry,TaxRegTemplate,StartDate,EndDate,0);
+                  CASE "Sum Field No." OF
+                    TaxRegFAEntry.FIELDNO("Acquisition Cost"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Valuation Changes"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Depreciation Amount"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := -FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Sales Gain/Loss"):
+                      CASE "Result on Disposal" OF
+                        "Result on Disposal"::Gain:
+                          BEGIN
+                            FALedgEntry.CALCSUMS("Sales Gain Amount");
+                            TempTaxRegTemplate.Value := FALedgEntry."Sales Gain Amount";
+                          END;
+                        "Result on Disposal"::Loss:
+                          BEGIN
+                            FALedgEntry.CALCSUMS("Sales Loss Amount");
+                            TempTaxRegTemplate.Value := FALedgEntry."Sales Loss Amount";
+                          END;
+                        ELSE BEGIN
+                          FALedgEntry.CALCSUMS(Amount);
+                          TempTaxRegTemplate.Value := -FALedgEntry.Amount;
+                        END;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Sales Amount"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := -FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Depr. Group Elimination"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := -FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Depreciation Bonus Amount"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := -FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Depr. Bonus Recovery Amount"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := -FALedgEntry.Amount;
+                      END;
+                    TaxRegFAEntry.FIELDNO("Sold FA Qty"):
+                      TempTaxRegTemplate.Value := FALedgEntry.COUNT;
+                    TaxRegFAEntry.FIELDNO("Acquis. Cost for Released FA"):
+                      BEGIN
+                        FALedgEntry.CALCSUMS(Amount);
+                        TempTaxRegTemplate.Value := FALedgEntry.Amount;
+                      END;
+                  END;
+                END;
+
+              TempTaxRegTemplate.INSERT;
+            UNTIL TaxRegTemplate.NEXT = 0;
+
+          TempTaxRegTemplate.RESET;
+          IF TempTaxRegTemplate.FINDSET THEN
+            REPEAT
+              TaxRegAccumulation."Report Line Code" := TempTaxRegTemplate."Report Line Code";
+              TaxRegAccumulation."Template Line Code" := TempTaxRegTemplate."Line Code";
+              TaxRegAccumulation."Tax Register No." := TempTaxRegTemplate.Code;
+              TaxRegAccumulation.Indentation := TempTaxRegTemplate.Indentation;
+              TaxRegAccumulation.Bold := TempTaxRegTemplate.Bold;
+              TaxRegAccumulation.Description := TempTaxRegTemplate.Description;
+              TaxRegAccumulation."Amount Period" := TempTaxRegTemplate.Value;
+              TaxRegAccumulation."Template Line No." := TempTaxRegTemplate."Line No.";
+              TaxRegAccumulation."Amount Date Filter" :=
+                TaxRegTermMgt.CalcIntervalDate(
+                  TaxRegAccumulation."Starting Date",
+                  TaxRegAccumulation."Ending Date",
+                  TempTaxRegTemplate.Period);
+              TaxRegAccumulation.Amount := TaxRegAccumulation."Amount Period";
+              TaxRegAccumulation."Entry No." += 1;
+              TaxRegAccumulation.INSERT;
+              IF TempTaxRegTemplate.Period <> '' THEN BEGIN
+                TaxRegAccumulation2 := TaxRegAccumulation;
+                TaxRegAccumulation2.RESET;
+                TaxRegAccumulation2.SETCURRENTKEY("Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+                TaxRegAccumulation2.SETRANGE("Section Code",SectionCode);
+                TaxRegAccumulation2.SETRANGE("Tax Register No.",TaxRegAccumulation."Tax Register No.");
+                TaxRegAccumulation2.SETRANGE("Template Line No.",TaxRegAccumulation."Template Line No.");
+                TaxRegAccumulation2.SETFILTER("Starting Date",TaxRegAccumulation."Amount Date Filter");
+                TaxRegAccumulation2.SETFILTER("Ending Date",TaxRegAccumulation."Amount Date Filter");
+                TaxRegAccumulation2.CALCSUMS("Amount Period");
+                TaxRegAccumulation.Amount := TaxRegAccumulation2."Amount Period";
+                TaxRegAccumulation.MODIFY;
+              END;
+            UNTIL TempTaxRegTemplate.NEXT = 0;
+
+          TempTaxRegTemplate.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+
+        FillInTaxRegFALedgerEntry(
+          StartDate,
+          EndDate,
+          SectionCode);
+        TempTaxRegTemplate.INSERT;
+      END;
+    END;
+
+    PROCEDURE SetFALedgerEntryFilters@1210000(VAR FALedgEntry@1210001 : Record 5601;TaxRegTemplate@1210000 : Record 17202;StartDate@1210003 : Date;EndDate@1210002 : Date;Mode@1210005 : 'Calculate,Drilldown');
+    VAR
+      TaxRegFAEntry@1210004 : Record 17211;
+    BEGIN
+      WITH TaxRegTemplate DO
+        IF Expression <> '' THEN BEGIN
+          FALedgEntry.RESET;
+          FALedgEntry.SETCURRENTKEY(
+            "Depreciation Book Code","FA Posting Date","FA Posting Category","FA Posting Type",
+            "Belonging to Manufacturing","FA Type","Depreciation Group","Depr. Bonus");
+          FALedgEntry.SETFILTER("Depreciation Book Code","Depr. Book Filter");
+          FALedgEntry.SETRANGE("FA Posting Date",StartDate,EndDate);
+          IF "Belonging to Manufacturing" <> "Belonging to Manufacturing"::" " THEN
+            FALedgEntry.SETRANGE("Belonging to Manufacturing","Belonging to Manufacturing");
+          CASE "FA Type" OF
+            "FA Type"::"Fixed Assets":
+              FALedgEntry.SETRANGE("FA Type",FALedgEntry."FA Type"::"Fixed Assets");
+            "FA Type"::"Intangible Assets":
+              FALedgEntry.SETRANGE("FA Type",FALedgEntry."FA Type"::"Intangible Asset");
+          END;
+          IF "Depreciation Group" <> '' THEN
+            FALedgEntry.SETRANGE("Depreciation Group","Depreciation Group");
+          FALedgEntry.SETRANGE("FA Posting Category",FALedgEntry."FA Posting Category"::" ");
+          IF "Tax Difference Code Filter" <> '' THEN
+            FALedgEntry.SETFILTER("Tax Difference Code","Tax Difference Code Filter");
+
+          CASE "Sum Field No." OF
+            TaxRegFAEntry.FIELDNO("Acquisition Cost"):
+              FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::"Acquisition Cost");
+            TaxRegFAEntry.FIELDNO("Valuation Changes"):
+              FALedgEntry.SETRANGE("FA Posting Type",
+                FALedgEntry."FA Posting Type"::"Write-Down",FALedgEntry."FA Posting Type"::Appreciation);
+            TaxRegFAEntry.FIELDNO("Depreciation Amount"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::Depreciation);
+                FALedgEntry.SETRANGE("Depr. Bonus",FALSE);
+              END;
+            TaxRegFAEntry.FIELDNO("Sales Gain/Loss"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::"Gain/Loss");
+                FALedgEntry.SETRANGE("Depr. Group Elimination",FALSE);
+                IF Mode = Mode::Drilldown THEN
+                  CASE "Result on Disposal" OF
+                    "Result on Disposal"::Gain:
+                      BEGIN
+                        FALedgEntry.SETFILTER("Sales Gain Amount",'>=%1',0);
+                        FALedgEntry.SETRANGE("Sales Loss Amount",0);
+                      END;
+                    "Result on Disposal"::Loss:
+                      FALedgEntry.SETFILTER("Sales Loss Amount",'>%1',0);
+                  END;
+              END;
+            TaxRegFAEntry.FIELDNO("Sales Amount"):
+              FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::"Proceeds on Disposal");
+            TaxRegFAEntry.FIELDNO("Depr. Group Elimination"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::"Gain/Loss");
+                FALedgEntry.SETRANGE("Depr. Group Elimination",TRUE);
+              END;
+            TaxRegFAEntry.FIELDNO("Depreciation Bonus Amount"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::Depreciation);
+                FALedgEntry.SETRANGE("Depr. Bonus",TRUE);
+                IF "Depr. Bonus % Filter" <> '' THEN
+                  FALedgEntry.SETFILTER("Depr. Bonus %","Depr. Bonus % Filter");
+              END;
+            TaxRegFAEntry.FIELDNO("Depr. Bonus Recovery Amount"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::Depreciation);
+                FALedgEntry.SETRANGE("Depr. Bonus",TRUE);
+                FALedgEntry.SETRANGE("FA Posting Date");
+                FALedgEntry.SETRANGE("Depr. Bonus Recovery Date",StartDate,EndDate);
+              END;
+            TaxRegFAEntry.FIELDNO("Sold FA Qty"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::"Gain/Loss");
+                FALedgEntry.SETRANGE("Result on Disposal",FALedgEntry."Result on Disposal"::Gain);
+                CASE "Result on Disposal" OF
+                  "Result on Disposal"::Gain:
+                    BEGIN
+                      FALedgEntry.SETFILTER("Sales Gain Amount",'>=%1',0);
+                      FALedgEntry.SETRANGE("Sales Loss Amount",0);
+                    END;
+                  "Result on Disposal"::Loss:
+                    FALedgEntry.SETFILTER("Sales Loss Amount",'>%1',0);
+                END;
+              END;
+            TaxRegFAEntry.FIELDNO("Acquis. Cost for Released FA"):
+              BEGIN
+                FALedgEntry.SETRANGE("FA Posting Type",FALedgEntry."FA Posting Type"::"Acquisition Cost");
+                FALedgEntry.SETRANGE("Reclassification Entry",TRUE);
+                FALedgEntry.SETRANGE(Quantity,1);
+              END;
+          END;
+        END;
+    END;
+
+    LOCAL PROCEDURE FillInTaxRegFALedgerEntry@1210001(StartDate@1210004 : Date;EndDate@1210003 : Date;SectionCode@1210002 : Code[10]);
+    VAR
+      FixedAsset@1210005 : Record 5600;
+      FALedgerEntry@1210000 : Record 5601;
+      FADepreciationBook@1210007 : Record 5612;
+      TaxRegFAEntry@1210001 : Record 17211;
+      EntryNo@1210006 : Integer;
+    BEGIN
+      IF NOT TaxRegSetup."Create Data for Printing Forms" THEN
+        EXIT;
+
+      IF TaxRegFAEntry.FINDLAST THEN
+        EntryNo := TaxRegFAEntry."Entry No." + 1
+      ELSE
+        EntryNo := 0;
+
+      FADepreciationBook.SETRANGE("Depreciation Book Code",TaxRegSetup."Tax Depreciation Book");
+      IF FADepreciationBook.FINDSET THEN
+        REPEAT
+          FALedgerEntry.SETRANGE("FA No.",FADepreciationBook."FA No.");
+          FALedgerEntry.SETRANGE("Depreciation Book Code",FADepreciationBook."Depreciation Book Code");
+          FALedgerEntry.SETRANGE("FA Posting Date",StartDate,EndDate);
+          IF FALedgerEntry.FINDFIRST THEN BEGIN
+            FixedAsset.GET(FALedgerEntry."FA No.");
+            TaxRegFAEntry.INIT;
+            TaxRegFAEntry."Section Code" := SectionCode;
+            TaxRegFAEntry."Starting Date" := StartDate;
+            TaxRegFAEntry."Ending Date" := EndDate;
+            TaxRegFAEntry."FA No." := FALedgerEntry."FA No.";
+            TaxRegFAEntry."Depreciation Book Code" := FALedgerEntry."Depreciation Book Code";
+            TaxRegFAEntry."Belonging to Manufacturing" := FixedAsset."Belonging to Manufacturing";
+            TaxRegFAEntry."FA Type" := FixedAsset."FA Type";
+            TaxRegFAEntry."Depreciation Group" := FixedAsset."Depreciation Group";
+            TaxRegFAEntry."Entry No." := EntryNo;
+            TaxRegFAEntry.INSERT;
+            EntryNo += 1;
+          END;
+        UNTIL FADepreciationBook.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

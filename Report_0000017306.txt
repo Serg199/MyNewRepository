@@ -1,0 +1,443 @@
+OBJECT Report 17306 Calculate Tax Diff. for FA
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Tax Diff. for FA;
+               RUS=Расчет налог. разниц по ОС];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   TaxRegisterSetup.GET;
+                   TaxRegisterSetup.TESTFIELD("Use Group Depr. Method from",0D);
+                   TaxRegisterSetup.TESTFIELD("Tax Depreciation Book");
+                   TaxRegisterSetup.TESTFIELD("Calculate TD for each FA",TRUE);
+                   FASetup.GET;
+                 END;
+
+    OnPreReport=BEGIN
+                  StartDate := DatePeriod."Period Start";
+                  EndDate := NORMALDATE(DatePeriod."Period End");
+
+                  IF TemplateName = '' THEN
+                    ERROR(Text001);
+
+                  IF BatchName = '' THEN
+                    ERROR(Text002);
+
+                  TaxDiffJnlBatch.GET(TemplateName,BatchName);
+                  TaxDiffJnlBatch.TESTFIELD("No. Series");
+                END;
+
+  }
+  DATASET
+  {
+    { 3794;    ;DataItem;                    ;
+               DataItemTable=Table5600;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(FA Type=FILTER(Fixed Assets|Intangible Asset),
+                                       Blocked=CONST(No),
+                                       Inactive=CONST(No));
+               OnPreDataItem=BEGIN
+                               TaxDiffJnlLine."Journal Template Name" := TemplateName;
+                               TaxDiffJnlLine."Journal Batch Name" := BatchName;
+                               TaxDiffJnlLine.SETRANGE("Journal Template Name",TemplateName);
+                               TaxDiffJnlLine.SETRANGE("Journal Batch Name",BatchName);
+                               IF TaxDiffJnlLine.FINDLAST THEN;
+                               LineNo := TaxDiffJnlLine."Line No." + 10000;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  AccAcquisitionCost@1210007 : Decimal;
+                                  TaxAcquisitionCost@1210006 : Decimal;
+                                  AccCurrPeriodAcquisitionCost@1210005 : Decimal;
+                                  TaxCurrPeriodAcquisitionCost@1210004 : Decimal;
+                                  AccDeprAmount@1210003 : Decimal;
+                                  TaxDeprAmount@1210002 : Decimal;
+                                  TaxDeprBonusAmount@1210000 : Decimal;
+                                  BufferedAccDeprAmount@1210008 : Decimal;
+                                  DiffAccDeprAmountToPost@1210009 : Decimal;
+                                  DiffAccDeprBonusAmountToPost@1210011 : Decimal;
+                                  TaxDiffPeriodDeprAmount@1210010 : Decimal;
+                                BEGIN
+                                  TaxDiffFAPostingBuffer.RESET;
+                                  TaxDiffFAPostingBuffer.DELETEALL;
+
+                                  SourceType := GetTDESourceType;
+
+                                  IF FADepreciationBook.GET("No.",FASetup."Release Depr. Book") THEN BEGIN
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",0D,StartDate - 1);
+                                    FADepreciationBook.CALCFIELDS("Acquisition Cost","Salvage Value",Appreciation);
+                                    AccAcquisitionCost :=
+                                      FADepreciationBook."Acquisition Cost" +
+                                      FADepreciationBook.Appreciation +
+                                      FADepreciationBook."Salvage Value";
+
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",StartDate,EndDate);
+                                    FADepreciationBook.CALCFIELDS("Acquisition Cost","Salvage Value",Appreciation,Depreciation);
+                                    AccCurrPeriodAcquisitionCost :=
+                                      FADepreciationBook."Acquisition Cost" +
+                                      FADepreciationBook.Appreciation +
+                                      FADepreciationBook."Salvage Value";
+                                    AccDeprAmount := -FADepreciationBook.Depreciation;
+                                  END;
+
+                                  IF FADepreciationBook.GET("No.",TaxRegisterSetup."Tax Depreciation Book") THEN BEGIN
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",0D,StartDate - 1);
+                                    FADepreciationBook.CALCFIELDS("Acquisition Cost","Salvage Value",Appreciation);
+                                    TaxAcquisitionCost :=
+                                      FADepreciationBook."Acquisition Cost" +
+                                      FADepreciationBook.Appreciation +
+                                      FADepreciationBook."Salvage Value";
+
+                                    FADepreciationBook.SETRANGE("FA Posting Date Filter",StartDate,EndDate);
+                                    FADepreciationBook.CALCFIELDS("Acquisition Cost","Salvage Value",Appreciation,Depreciation,"Depreciation Bonus");
+                                    TaxCurrPeriodAcquisitionCost :=
+                                      FADepreciationBook."Acquisition Cost" +
+                                      FADepreciationBook.Appreciation +
+                                      FADepreciationBook."Salvage Value";
+                                    TaxDeprAmount := -FADepreciationBook.Depreciation;
+                                    TaxDeprBonusAmount := -FADepreciationBook."Depreciation Bonus";
+                                  END;
+
+                                  IF AccAcquisitionCost < TaxAcquisitionCost THEN BEGIN
+                                    MESSAGE(Text003,"Fixed Asset".TABLECAPTION,"No.");
+                                    CurrReport.SKIP;
+                                  END;
+
+                                  IF (AccAcquisitionCost <> TaxAcquisitionCost) OR
+                                     (AccCurrPeriodAcquisitionCost <> TaxCurrPeriodAcquisitionCost) OR
+                                     (AccDeprAmount <> TaxDeprAmount) OR
+                                     (TaxDeprBonusAmount <> 0)
+                                  THEN BEGIN
+                                    DepreciationBook.SETRANGE("Control FA Acquis. Cost",TRUE);
+                                    IF DepreciationBook.FINDSET THEN
+                                      REPEAT
+                                        IF FADepreciationBook.GET("No.",DepreciationBook.Code) THEN BEGIN
+                                          FALedgerEntry.RESET;
+                                          FALedgerEntry.SETCURRENTKEY("FA No.","Depreciation Book Code","FA Posting Date",Reversed,"Tax Difference Code");
+                                          FALedgerEntry.SETRANGE("FA No.","No.");
+                                          FALedgerEntry.SETRANGE("FA Posting Date",0D,EndDate);
+                                          FALedgerEntry.SETRANGE("Depreciation Book Code",DepreciationBook.Code);
+                                          FALedgerEntry.SETFILTER(
+                                            "FA Posting Type",
+                                            '%1|%2|%3',
+                                            FALedgerEntry."FA Posting Type"::"Acquisition Cost",
+                                            FALedgerEntry."FA Posting Type"::Appreciation,
+                                            FALedgerEntry."FA Posting Type"::"Salvage Value");
+                                          FALedgerEntry.SETRANGE("Reclassification Entry",FALSE);
+                                          FALedgerEntry.SETFILTER("Tax Difference Code",'<>%1&<>%2','',TaxRegisterSetup."Default FA TD Code");
+                                          IF FALedgerEntry.FINDSET THEN
+                                            REPEAT
+                                              TaxDiff.GET(FALedgerEntry."Tax Difference Code");
+
+                                              IF FALedgerEntry."FA Posting Date" < StartDate THEN BEGIN
+                                                IF AccDeprAmount <> TaxDeprAmount THEN
+                                                  UpdateTaxDiffPostBuf(
+                                                    TaxDiffFAPostingBuffer.Type::Depreciation,
+                                                    FALedgerEntry."Tax Difference Code",
+                                                    FALedgerEntry.Amount);
+                                              END ELSE BEGIN
+                                                IF (AccCurrPeriodAcquisitionCost <> TaxCurrPeriodAcquisitionCost) AND
+                                                   (TaxDiff.Type = TaxDiff.Type::"Temporary")
+                                                THEN
+                                                  UpdateTaxDiffPostBuf(
+                                                    TaxDiffFAPostingBuffer.Type::"Acquisition Cost",
+                                                    FALedgerEntry."Tax Difference Code",
+                                                    FALedgerEntry.Amount);
+                                              END;
+                                            UNTIL FALedgerEntry.NEXT = 0;
+                                        END;
+                                      UNTIL DepreciationBook.NEXT = 0;
+
+                                    FALedgerEntry.SETRANGE("Tax Difference Code");
+                                    FALedgerEntry.SETRANGE("Depreciation Book Code",TaxRegisterSetup."Tax Depreciation Book");
+                                    FALedgerEntry.SETRANGE("FA Posting Date",0D,EndDate);
+                                    FALedgerEntry.SETRANGE("FA Posting Type",FALedgerEntry."FA Posting Type"::Depreciation);
+                                    FALedgerEntry.SETRANGE("Depr. Bonus",TRUE);
+                                    IF FALedgerEntry.FINDSET THEN
+                                      REPEAT
+                                        UpdateTaxDiffPostBuf(
+                                          TaxDiffFAPostingBuffer.Type::"Depreciation Bonus",
+                                          TaxRegisterSetup."Depr. Bonus TD Code",
+                                          FALedgerEntry.Amount);
+                                      UNTIL FALedgerEntry.NEXT = 0;
+                                  END;
+
+                                  TaxDiffFAPostingBuffer.RESET;
+                                  IF TaxDiffFAPostingBuffer.FINDSET THEN BEGIN
+                                    REPEAT
+                                      TaxDiff.GET(TaxDiffFAPostingBuffer."Tax Diff. Code");
+
+                                      CASE TaxDiffFAPostingBuffer.Type OF
+                                        TaxDiffFAPostingBuffer.Type::"Acquisition Cost":
+                                          BEGIN
+                                            IF NOT TaxDiffAlreadyPosted(
+                                                 TaxDiffFAPostingBuffer."Tax Diff. Code",
+                                                 SourceType,
+                                                 "No.",
+                                                 "Initial Release Date")
+                                            THEN
+                                              CreateJnlLine(
+                                                STRSUBSTNO('%1 %2',TaxDiff.Description,"No."),
+                                                "Initial Release Date",
+                                                TaxDiffFAPostingBuffer."Tax Diff. Code",
+                                                0,
+                                                TaxDiffFAPostingBuffer."Initial Amount",
+                                                TaxDiffJnlLine."Source Type"::"Fixed Asset",
+                                                "No.");
+                                          END;
+                                        TaxDiffFAPostingBuffer.Type::Depreciation:
+                                          IF NOT TaxDiffAlreadyPosted(
+                                               TaxDiffFAPostingBuffer."Tax Diff. Code",
+                                               SourceType,
+                                               "No.",
+                                               EndDate)
+                                          THEN BEGIN
+                                            DiffAccDeprAmountToPost := ROUND(AccDeprAmount * TaxDiffFAPostingBuffer."Initial Amount" / AccAcquisitionCost);
+                                            IF DiffAccDeprAmountToPost <> 0 THEN BEGIN
+                                              CreateJnlLine(
+                                                STRSUBSTNO('%1 %2',TaxDiff.Description,"No."),
+                                                EndDate,
+                                                TaxDiffFAPostingBuffer."Tax Diff. Code",
+                                                DiffAccDeprAmountToPost,
+                                                0,
+                                                TaxDiffJnlLine."Source Type"::"Fixed Asset",
+                                                "No.");
+                                              BufferedAccDeprAmount := BufferedAccDeprAmount + DiffAccDeprAmountToPost;
+                                            END;
+                                          END;
+                                        TaxDiffFAPostingBuffer.Type::"Depreciation Bonus":
+                                          IF NOT TaxDiffAlreadyPosted(
+                                               TaxDiffFAPostingBuffer."Tax Diff. Code",
+                                               SourceType,
+                                               "No.",
+                                               EndDate)
+                                          THEN BEGIN
+                                            DiffAccDeprBonusAmountToPost :=
+                                              - ROUND(AccDeprAmount * TaxDiffFAPostingBuffer."Initial Amount" / AccAcquisitionCost);
+                                            IF DiffAccDeprBonusAmountToPost <> 0 THEN
+                                              CreateJnlLine(
+                                                STRSUBSTNO('%1 %2',TaxDiff.Description,"No."),
+                                                EndDate,
+                                                TaxDiffFAPostingBuffer."Tax Diff. Code",
+                                                DiffAccDeprBonusAmountToPost,
+                                                0,
+                                                TaxDiffJnlLine."Source Type"::"Fixed Asset",
+                                                "No.");
+                                          END;
+                                      END;
+                                    UNTIL TaxDiffFAPostingBuffer.NEXT = 0;
+                                  END;
+
+                                  TaxDiffPeriodDeprAmount := AccDeprAmount - BufferedAccDeprAmount - DiffAccDeprBonusAmountToPost;
+                                  IF ((TaxDiffPeriodDeprAmount <> 0) OR (TaxDeprAmount - TaxDeprBonusAmount <> 0)) AND
+                                     (TaxDiffPeriodDeprAmount <> TaxDeprAmount - TaxDeprBonusAmount)
+                                  THEN BEGIN
+                                    TaxDiff.GET("Tax Difference Code");
+                                    IF NOT TaxDiffAlreadyPosted(
+                                         "Tax Difference Code",
+                                         SourceType,
+                                         "No.",
+                                         EndDate)
+                                    THEN
+                                      CreateJnlLine(
+                                        STRSUBSTNO('%1 %2',TaxDiff.Description,"No."),
+                                        EndDate,
+                                        "Tax Difference Code",
+                                        TaxDiffPeriodDeprAmount,
+                                        TaxDeprAmount - TaxDeprBonusAmount,
+                                        TaxDiffJnlLine."Source Type"::"Fixed Asset",
+                                        "No.");
+                                  END;
+                                END;
+
+               ReqFilterFields=No. }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,0);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210003;2;Field     ;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,FALSE);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE }
+
+      { 1210009;2;Field     ;
+                  CaptionML=[ENU=Jnl. Template Name;
+                             RUS=Имя шаблона журнала];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=TemplateName;
+                  TableRelation="Tax Diff. Journal Template" }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Jnl. Batch Name;
+                             RUS=Код раздела журнала];
+                  ApplicationArea=#FixedAssets;
+                  SourceExpr=BatchName;
+                  OnLookup=BEGIN
+                             IF TemplateName <> '' THEN BEGIN
+                               TaxDiffJnlBatch.SETRANGE("Journal Template Name",TemplateName);
+                               TaxDiffJnlBatch.SETRANGE(Name,BatchName);
+                               IF TaxDiffJnlBatch.FINDFIRST THEN ;
+                               TaxDiffJnlBatch.SETRANGE(Name);
+                               IF ACTION::LookupOK = PAGE.RUNMODAL(0,TaxDiffJnlBatch) THEN BEGIN
+                                 TemplateName := TaxDiffJnlBatch."Journal Template Name";
+                                 BatchName := TaxDiffJnlBatch.Name;
+                               END;
+                             END;
+                           END;
+                            }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FALedgerEntry@1210017 : Record 5601;
+      FASetup@1210011 : Record 5603;
+      DepreciationBook@1210016 : Record 5611;
+      FADepreciationBook@1210012 : Record 5612;
+      TaxRegisterSetup@1210000 : Record 17236;
+      TaxDiffJnlBatch@1210008 : Record 17304;
+      TaxDiffJnlLine@1210007 : Record 17305;
+      xRecTaxDiffJnlLine@1470000 : Record 17305;
+      TaxDiffFAPostingBuffer@1210015 : TEMPORARY Record 17323;
+      TaxDiff@1210006 : Record 17300;
+      TaxDiffLedgerEntry@1210021 : Record 17306;
+      CalendarPeriod@1210005 : Record 2000000007;
+      DatePeriod@1210004 : Record 2000000007;
+      NoSeriesMgt@1210028 : Codeunit 396;
+      PeriodReportManagement@1210003 : Codeunit 12406;
+      StartDate@1210018 : Date;
+      EndDate@1210019 : Date;
+      AccountPeriod@1210001 : Text[30];
+      TemplateName@1210010 : Code[10];
+      BatchName@1210009 : Code[10];
+      LineNo@1210020 : Integer;
+      Text001@1210002 : TextConst 'ENU=Please enter a journal template name.;RUS=Введите имя шаблона журнала.';
+      Text002@1210027 : TextConst 'ENU=Please enter a journal batch name.;RUS=Введите код раздела журнала.';
+      SourceType@1210031 : ' ,Future Expense,Fixed Asset,Intangible Asset';
+      Text003@1210013 : TextConst 'ENU=%1 %2 is skipped. Please calculate tax difference manually if it is necessary.;RUS=%1 %2 пропущен. При необходимости вычислите налоговую разницу вручную.';
+
+    PROCEDURE CreateJnlLine@1210006(Description@1210000 : Text[80];PostingDate@1210001 : Date;TaxDiffCode@1210002 : Code[10];AmountBase@1210003 : Decimal;AmountTax@1210004 : Decimal;SourceType@1210005 : Option;SourceNo@1210006 : Code[20]);
+    BEGIN
+      xRecTaxDiffJnlLine := TaxDiffJnlLine;
+      TaxDiffJnlLine.INIT;
+      TaxDiffJnlLine.SetUpNewLine(xRecTaxDiffJnlLine);
+      TaxDiffJnlLine."Journal Template Name" := TemplateName;
+      TaxDiffJnlLine."Journal Batch Name" := BatchName;
+      TaxDiffJnlLine."Line No." := LineNo;
+      TaxDiffJnlLine.Description := COPYSTR(Description,1,MAXSTRLEN(TaxDiffJnlLine.Description));
+      TaxDiffJnlLine."Document No." := NoSeriesMgt.GetNextNo(TaxDiffJnlBatch."No. Series",EndDate,TRUE);
+      IF PostingDate = 0D THEN
+        TaxDiffJnlLine."Posting Date" := EndDate
+      ELSE
+        TaxDiffJnlLine."Posting Date" := PostingDate;
+      TaxDiffJnlLine."Source Type" := SourceType;
+      TaxDiffJnlLine.VALIDATE("Source No.",SourceNo);
+      TaxDiffJnlLine.VALIDATE("Tax Diff. Code",TaxDiffCode);
+      TaxDiffJnlLine.VALIDATE("Amount (Base)",AmountBase);
+      TaxDiffJnlLine.VALIDATE("Amount (Tax)",AmountTax);
+      TaxDiffJnlLine."Source Entry Type" := TaxDiffJnlLine."Source Entry Type"::FA;
+      TaxDiffJnlLine.INSERT;
+      LineNo += 10000;
+    END;
+
+    PROCEDURE TaxDiffAlreadyPosted@1210003(TaxDiffCode@1210000 : Code[10];SourceType@1210001 : Option;SourceNo@1210002 : Code[20];PostingDate@1210003 : Date) : Boolean;
+    BEGIN
+      TaxDiffLedgerEntry.SETCURRENTKEY("Tax Diff. Code","Source Type","Source No.","Posting Date");
+      TaxDiffLedgerEntry.SETRANGE("Posting Date",PostingDate);
+      TaxDiffLedgerEntry.SETRANGE("Source Type",SourceType);
+      TaxDiffLedgerEntry.SETRANGE("Source No.",SourceNo);
+      TaxDiffLedgerEntry.SETRANGE("Tax Diff. Code",TaxDiffCode);
+      TaxDiffLedgerEntry.SETRANGE(Reversed,FALSE);
+      TaxDiffLedgerEntry.SETRANGE("Source Entry Type",TaxDiffLedgerEntry."Source Entry Type"::FA);
+      EXIT(NOT TaxDiffLedgerEntry.ISEMPTY);
+    END;
+
+    PROCEDURE UpdateTaxDiffPostBuf@1210000(Type@1210001 : 'Acquisition Cost,Depreciation Bonus,Depreciation';TaxDiffCode@1210000 : Code[10];InitialAmount@1210002 : Decimal);
+    BEGIN
+      IF NOT TaxDiffFAPostingBuffer.GET(Type,TaxDiffCode) THEN BEGIN
+        TaxDiffFAPostingBuffer.Type := Type;
+        TaxDiffFAPostingBuffer."Tax Diff. Code" := TaxDiffCode;
+        TaxDiffFAPostingBuffer."Initial Amount" := InitialAmount;
+        TaxDiffFAPostingBuffer.INSERT;
+        LineNo += 10000;
+      END ELSE BEGIN
+        TaxDiffFAPostingBuffer."Initial Amount" += InitialAmount;
+        TaxDiffFAPostingBuffer.MODIFY;
+      END;
+    END;
+
+    PROCEDURE InitializeRequest@1470000(NewEndDate@1210001 : Date;NewTemplateName@1210002 : Code[10];NewBatchName@1210003 : Code[10]);
+    BEGIN
+      TemplateName := NewTemplateName;
+      BatchName := NewBatchName;
+      DatePeriod.SETRANGE("Period Type",DatePeriod."Period Type"::Month);
+      DatePeriod.SETRANGE("Period End",CLOSINGDATE(CALCDATE('<CM>',NewEndDate)));
+      DatePeriod.FINDFIRST;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

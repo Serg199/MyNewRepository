@@ -1,0 +1,341 @@
+OBJECT Codeunit 12458 Copy Item Document Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1034 : TextConst 'ENU=Please enter a Document No.;RUS=Введите номер документа';
+      Text001@1033 : TextConst 'ENU=%1 %2 cannot be copied onto itself.;RUS=%1 %2 нельзя скопировать в себя.';
+      Text002@1032 : TextConst 'ENU=The existing lines for %1 %2 will be deleted.\\;RUS=Существующие строки для %1 %2 будут удалены.\\';
+      Text003@1031 : TextConst 'ENU=Do you want to continue?;RUS=Продолжить?';
+      Text004@1030 : TextConst 'ENU=The document line(s) with a G/L account where direct posting is not allowed have not been copied to the new document by the Copy Document batch job.;RUS=Строки документа со счетами ГК, для которых не разрешен прямой учет, не были скопированы в новый документ пакетным заданием "Копировать документ".';
+      ItemCheckAvail@1005 : Codeunit 311;
+      TransferOldExtLines@1004 : Codeunit 379;
+      ItemDocType@1002 : 'Receipt,Shipment,Posted Receipt,Posted Shipment';
+      IncludeHeader@1001 : Boolean;
+      RecalculateLines@1000 : Boolean;
+      CreateToHeader@1011 : Boolean;
+      HideDialog@1013 : Boolean;
+      FillAppliesFields@1210000 : Boolean;
+
+    PROCEDURE SetProperties@2(NewIncludeHeader@1001 : Boolean;NewRecalculateLines@1000 : Boolean;NewCreateToHeader@1002 : Boolean;NewHideDialog@1003 : Boolean;NewFillAppliesFields@1210000 : Boolean);
+    BEGIN
+      IncludeHeader := NewIncludeHeader;
+      RecalculateLines := NewRecalculateLines;
+      CreateToHeader := NewCreateToHeader;
+      HideDialog := NewHideDialog;
+      FillAppliesFields := NewFillAppliesFields;
+    END;
+
+    PROCEDURE CopyItemDoc@16(FromDocType@1007 : Option;FromDocNo@1006 : Code[20];VAR ToItemDocHeader@1008 : Record 12450);
+    VAR
+      ToItemDocLine@1025 : Record 12453;
+      OldItemDocHeader@1024 : Record 12450;
+      FromItemDocHeader@1023 : Record 12450;
+      FromItemDocLine@1022 : Record 12453;
+      FromItemRcptHeader@1021 : Record 12451;
+      FromItemRcptLine@1020 : Record 12452;
+      FromItemShptHeader@1019 : Record 12454;
+      FromItemShptLine@1018 : Record 12455;
+      NextLineNo@1003 : Integer;
+      LinesNotCopied@1000 : Integer;
+    BEGIN
+      WITH ToItemDocHeader DO BEGIN
+        IF NOT CreateToHeader THEN BEGIN
+          TESTFIELD(Status,Status::Open);
+          IF FromDocNo = '' THEN
+            ERROR(Text000);
+          FIND;
+        END;
+        TransferOldExtLines.ClearLineNumbers;
+        CASE FromDocType OF
+          ItemDocType::Receipt,
+          ItemDocType::Shipment:
+            BEGIN
+              FromItemDocHeader.GET(FromDocType,FromDocNo);
+              IF (FromItemDocHeader."Document Type" = "Document Type") AND
+                 (FromItemDocHeader."No." = "No.")
+              THEN
+                ERROR(
+                  Text001,
+                  "Document Type","No.");
+
+              FromItemDocLine.SETRANGE("Document Type",FromItemDocHeader."Document Type");
+              FromItemDocLine.SETRANGE("Document No.",FromItemDocHeader."No.");
+              IF FromItemDocLine.FIND('-') THEN
+                REPEAT
+                  IF FromItemDocLine.Quantity > 0 THEN BEGIN
+                    ToItemDocLine."Item No." := FromItemDocLine."Item No.";
+                    ToItemDocLine."Variant Code" := FromItemDocLine."Variant Code";
+                    ToItemDocLine."Location Code" := FromItemDocLine."Location Code";
+                    ToItemDocLine."Bin Code" := FromItemDocLine."Bin Code";
+                    ToItemDocLine."Unit of Measure Code" := FromItemDocLine."Unit of Measure Code";
+                    ToItemDocLine."Qty. per Unit of Measure" := FromItemDocLine."Qty. per Unit of Measure";
+                    ToItemDocLine.Quantity := FromItemDocLine.Quantity;
+                    CheckItemAvailable(ToItemDocHeader,ToItemDocLine);
+                  END;
+                UNTIL FromItemDocLine.NEXT = 0;
+              IF NOT IncludeHeader AND NOT RecalculateLines THEN
+                FromItemDocHeader.TESTFIELD("Gen. Bus. Posting Group","Gen. Bus. Posting Group");
+            END;
+          ItemDocType::"Posted Receipt":
+            BEGIN
+              FromItemRcptHeader.GET(FromDocNo);
+              FromItemRcptLine.SETRANGE("Document No.",FromItemRcptHeader."No.");
+              IF FromItemRcptLine.FIND('-') THEN
+                REPEAT
+                  IF FromItemRcptLine.Quantity > 0 THEN BEGIN
+                    ToItemDocLine."Item No." := FromItemRcptLine."Item No.";
+                    ToItemDocLine."Variant Code" := FromItemRcptLine."Variant Code";
+                    ToItemDocLine."Location Code" := FromItemRcptLine."Location Code";
+                    ToItemDocLine."Bin Code" := FromItemRcptLine."Bin Code";
+                    ToItemDocLine."Unit of Measure Code" := FromItemRcptLine."Unit of Measure Code";
+                    ToItemDocLine."Qty. per Unit of Measure" := FromItemRcptLine."Qty. per Unit of Measure";
+                    ToItemDocLine.Quantity := FromItemRcptLine.Quantity;
+                    CheckItemAvailable(ToItemDocHeader,ToItemDocLine);
+                  END;
+                UNTIL FromItemRcptLine.NEXT = 0;
+              IF NOT IncludeHeader AND NOT RecalculateLines THEN
+                FromItemRcptHeader.TESTFIELD("Gen. Bus. Posting Group","Gen. Bus. Posting Group");
+            END;
+          ItemDocType::"Posted Shipment":
+            BEGIN
+              FromItemShptHeader.GET(FromDocNo);
+              FromItemShptLine.SETRANGE("Document No.",FromItemShptHeader."No.");
+              IF FromItemShptLine.FIND('-') THEN
+                REPEAT
+                  IF FromItemShptLine.Quantity > 0 THEN BEGIN
+                    ToItemDocLine."Item No." := FromItemShptLine."Item No.";
+                    ToItemDocLine."Variant Code" := FromItemShptLine."Variant Code";
+                    ToItemDocLine."Location Code" := FromItemShptLine."Location Code";
+                    ToItemDocLine."Bin Code" := FromItemShptLine."Bin Code";
+                    ToItemDocLine."Unit of Measure Code" := FromItemShptLine."Unit of Measure Code";
+                    ToItemDocLine."Qty. per Unit of Measure" := FromItemShptLine."Qty. per Unit of Measure";
+                    ToItemDocLine.Quantity := FromItemShptLine.Quantity;
+                    CheckItemAvailable(ToItemDocHeader,ToItemDocLine);
+                  END;
+                UNTIL FromItemShptLine.NEXT = 0;
+              IF NOT IncludeHeader AND NOT RecalculateLines THEN
+                FromItemShptHeader.TESTFIELD("Gen. Bus. Posting Group","Gen. Bus. Posting Group");
+            END;
+        END;
+
+        ToItemDocLine.LOCKTABLE;
+
+        IF CreateToHeader THEN BEGIN
+          INSERT(TRUE);
+          ToItemDocLine.SETRANGE("Document Type","Document Type");
+          ToItemDocLine.SETRANGE("Document No.","No.");
+        END ELSE BEGIN
+          ToItemDocLine.SETRANGE("Document Type","Document Type");
+          ToItemDocLine.SETRANGE("Document No.","No.");
+          IF IncludeHeader THEN
+            IF ToItemDocLine.FINDFIRST THEN BEGIN
+              COMMIT;
+              IF NOT
+                 CONFIRM(
+                   Text002 +
+                   Text003,TRUE,
+                   "Document Type","No.")
+              THEN
+                EXIT;
+              ToItemDocLine.DELETEALL(TRUE);
+            END;
+        END;
+
+        IF ToItemDocLine.FINDLAST THEN
+          NextLineNo := ToItemDocLine."Line No."
+        ELSE
+          NextLineNo := 0;
+
+        IF IncludeHeader THEN BEGIN
+          OldItemDocHeader := ToItemDocHeader;
+          CASE FromDocType OF
+            ItemDocType::Receipt,
+            ItemDocType::Shipment:
+              BEGIN
+                TRANSFERFIELDS(FromItemDocHeader,FALSE);
+                IF OldItemDocHeader."Posting Date" = 0D THEN
+                  "Posting Date" := WORKDATE
+                ELSE
+                  "Posting Date" := OldItemDocHeader."Posting Date";
+              END;
+            ItemDocType::"Posted Receipt":
+              TRANSFERFIELDS(FromItemRcptHeader,FALSE);
+            ItemDocType::"Posted Shipment":
+              TRANSFERFIELDS(FromItemShptHeader,FALSE);
+          END;
+          Status := Status::Open;
+          "No. Series" := OldItemDocHeader."No. Series";
+          "Posting Description" := OldItemDocHeader."Posting Description";
+          "Posting No." := OldItemDocHeader."Posting No.";
+          "Posting No. Series" := OldItemDocHeader."Posting No. Series";
+          "No. Printed" := 0;
+
+          IF CreateToHeader THEN BEGIN
+            MODIFY(TRUE);
+          END ELSE
+            MODIFY;
+        END;
+
+        LinesNotCopied := 0;
+        CASE FromDocType OF
+          ItemDocType::Receipt,
+          ItemDocType::Shipment:
+            BEGIN
+              FromItemDocLine.RESET;
+              FromItemDocLine.SETRANGE("Document Type",FromItemDocHeader."Document Type");
+              FromItemDocLine.SETRANGE("Document No.",FromItemDocHeader."No.");
+              IF FromItemDocLine.FIND('-') THEN
+                REPEAT
+                  CopyItemDocLine(ToItemDocHeader,ToItemDocLine,FromItemDocHeader,FromItemDocLine,NextLineNo,LinesNotCopied);
+                UNTIL FromItemDocLine.NEXT = 0;
+            END;
+          ItemDocType::"Posted Receipt":
+            BEGIN
+              FromItemDocHeader.TRANSFERFIELDS(FromItemRcptHeader);
+              FromItemRcptLine.RESET;
+              FromItemRcptLine.SETRANGE("Document No.",FromItemRcptHeader."No.");
+              IF FromItemRcptLine.FIND('-') THEN
+                REPEAT
+                  FromItemDocLine.TRANSFERFIELDS(FromItemRcptLine);
+                  CopyItemDocLine(
+                    ToItemDocHeader,ToItemDocLine,FromItemDocHeader,FromItemDocLine,
+                    NextLineNo,LinesNotCopied);
+                UNTIL FromItemRcptLine.NEXT = 0;
+            END;
+          ItemDocType::"Posted Shipment":
+            BEGIN
+              FromItemDocHeader.TRANSFERFIELDS(FromItemShptHeader);
+              FromItemDocHeader."Document Type" := FromItemDocHeader."Document Type"::Shipment;
+              FromItemShptLine.RESET;
+              FromItemShptLine.SETRANGE("Document No.",FromItemShptHeader."No.");
+              IF FromItemShptLine.FIND('-') THEN
+                REPEAT
+                  FromItemDocLine.TRANSFERFIELDS(FromItemShptLine);
+                  CopyItemDocLine(ToItemDocHeader,ToItemDocLine,FromItemDocHeader,FromItemDocLine,NextLineNo,LinesNotCopied);
+                UNTIL FromItemShptLine.NEXT = 0;
+            END;
+        END;
+      END;
+
+      IF LinesNotCopied > 0 THEN
+        MESSAGE(Text004);
+    END;
+
+    PROCEDURE ShowItemDoc@15(ToItemDocHeader@1000 : Record 12450);
+    BEGIN
+      WITH ToItemDocHeader DO
+        CASE "Document Type" OF
+          "Document Type"::Receipt:
+            PAGE.RUN(PAGE::"Item Receipt",ToItemDocHeader);
+          "Document Type"::Shipment:
+            PAGE.RUN(PAGE::"Item Shipment",ToItemDocHeader);
+        END;
+    END;
+
+    LOCAL PROCEDURE CopyItemDocLine@7(VAR ToItemDocHeader@1004 : Record 12450;VAR ToItemDocLine@1001 : Record 12453;VAR FromItemDocHeader@1005 : Record 12450;VAR FromItemDocLine@1002 : Record 12453;VAR NextLineNo@1003 : Integer;VAR LinesNotCopied@1006 : Integer);
+    VAR
+      ItemLedgerEntry@1210000 : Record 32;
+      CopyThisLine@1210001 : Boolean;
+    BEGIN
+      CopyThisLine := TRUE;
+      IF RecalculateLines THEN
+        ToItemDocLine.INIT
+      ELSE
+        ToItemDocLine := FromItemDocLine;
+      NextLineNo := NextLineNo + 10000;
+      ToItemDocLine."Document Type" := ToItemDocHeader."Document Type";
+      ToItemDocLine."Document No." := ToItemDocHeader."No.";
+      ToItemDocLine."Line No." := NextLineNo;
+      IF RecalculateLines THEN BEGIN
+        ToItemDocLine.VALIDATE(Description,FromItemDocLine.Description);
+        IF FromItemDocLine."Item No." <> '' THEN BEGIN
+          ToItemDocLine.VALIDATE("Item No.",FromItemDocLine."Item No.");
+          ToItemDocLine.VALIDATE("Variant Code",FromItemDocLine."Variant Code");
+          ToItemDocLine.VALIDATE("Location Code",FromItemDocLine."Location Code");
+          ToItemDocLine.VALIDATE("Unit of Measure Code",FromItemDocLine."Unit of Measure Code");
+          ToItemDocLine.VALIDATE(Quantity,FromItemDocLine.Quantity);
+        END;
+      END ELSE BEGIN
+        ToItemDocLine."Reserved Quantity Inbnd." := 0;
+        ToItemDocLine."Reserved Qty. Inbnd. (Base)" := 0;
+        ToItemDocLine."Reserved Quantity Outbnd." := 0;
+        ToItemDocLine."Reserved Qty. Outbnd. (Base)" := 0;
+        IF NOT CreateToHeader THEN
+          ToItemDocLine."Document Date" := ToItemDocHeader."Document Date";
+      END;
+      IF FillAppliesFields THEN
+        IF FromItemDocHeader."Document Type" = FromItemDocHeader."Document Type"::Receipt THEN
+          ToItemDocLine.VALIDATE(
+            "Applies-to Entry",
+            GetItemDocLedgerEntryNo(
+              FromItemDocLine."Document No.",
+              ItemLedgerEntry."Document Type"::"Item Receipt",
+              FromItemDocLine."Line No."))
+        ELSE
+          ToItemDocLine.VALIDATE(
+            "Applies-from Entry",
+            GetItemDocLedgerEntryNo(
+              FromItemDocLine."Document No.",
+              ItemLedgerEntry."Document Type"::"Item Shipment",
+              FromItemDocLine."Line No."));
+      IF CopyThisLine THEN
+        ToItemDocLine.INSERT
+      ELSE
+        LinesNotCopied := LinesNotCopied + 1;
+    END;
+
+    LOCAL PROCEDURE CheckItemAvailable@5(VAR ToItemDocHeader@1001 : Record 12450;VAR ToItemDocLine@1000 : Record 12453);
+    BEGIN
+      IF HideDialog THEN
+        EXIT;
+
+      ToItemDocLine."Document Type" := ToItemDocHeader."Document Type";
+      ToItemDocLine."Document No." := ToItemDocHeader."No.";
+      ToItemDocLine."Line No." := 0;
+
+      IF ToItemDocLine."Document Date" = 0D THEN BEGIN
+        IF ToItemDocHeader."Document Date" <> 0D THEN
+          ToItemDocLine.VALIDATE("Document Date",ToItemDocHeader."Document Date")
+        ELSE
+          ToItemDocLine.VALIDATE("Document Date",WORKDATE);
+      END;
+
+      ItemCheckAvail.ItemDocCheckLine(ToItemDocLine);
+    END;
+
+    PROCEDURE GetItemDocLedgerEntryNo@1210000(DocNo@1210001 : Code[20];DocType@1210003 : Integer;DocLineNo@1210002 : Integer) : Integer;
+    VAR
+      ItemLedgerEntry@1210000 : Record 32;
+    BEGIN
+      WITH ItemLedgerEntry DO BEGIN
+        RESET;
+        SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+        SETRANGE("Document No.",DocNo);
+        SETRANGE("Document Type",DocType);
+        SETRANGE("Document Line No.",DocLineNo);
+
+        IF FINDFIRST THEN
+          EXIT("Entry No.");
+
+        EXIT(0);
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

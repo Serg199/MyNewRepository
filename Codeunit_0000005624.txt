@@ -1,0 +1,569 @@
+OBJECT Codeunit 5624 Cancel FA Ledger Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29.05.17;
+    Time=14:36:52;
+    Modified=Yes;
+    Version List=NAVW17.10,NAVRU7.10,NOS-26;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000 : TextConst 'ENU=must be the same in all canceled ledger entries;RUS=должно быть идентичным во всех отмененных операциях ГК';
+      Text002@1001 : TextConst 'ENU="%1 = %2 has already been canceled.";RUS="%1 = %2 уже отменен."';
+      Text003@1002 : TextConst 'ENU=The ledger entries have been transferred to the journal.;RUS=Операции ГК перенесены в журнал.';
+      Text004@1003 : TextConst 'ENU="%1 = %2 cannot be canceled. Use %3 = %4.";RUS="%1 = %2 нельзя отменить. Используйте %3 = %4."';
+      FAJnlSetup@1005 : Record 5605;
+      DeprBook@1006 : Record 5611;
+      GenJnlLine@1007 : Record 81;
+      FAJnlLine@1008 : Record 5621;
+      FA@1009 : Record 5600;
+      GLIntegration@1010 : ARRAY [9] OF Boolean;
+      FAJnlNextLineNo@1011 : Integer;
+      GenJnlNextLineNo@1012 : Integer;
+      DeprBookCode@1013 : Code[10];
+      GenJnlUsedOnce@1014 : Boolean;
+      FAJnlUsedOnce@1015 : Boolean;
+      FAJnlDocumentNo@1016 : Code[20];
+      GenJnlDocumentNo@1017 : Code[20];
+      "NCV>"@1101495007 : Integer;
+      GLSetup@1101495006 : Record 98;
+      ConsolidationSource@1101495005 : Record 50001;
+      ConsolidationSetup@1101495004 : Record 50000;
+      CurTemplateCode@1101495003 : Code[10];
+      CurBatchCode@1101495002 : Code[10];
+      LineNo@1101495001 : Integer;
+      NoSeriesMgt@1101495000 : Codeunit 396;
+
+    PROCEDURE TransferLine@1(VAR FALedgEntry@1000 : Record 5601;BalAccount@1001 : Boolean;NewPostingDate@1002 : Date);
+    BEGIN
+      CLEARALL;
+      WITH FALedgEntry DO BEGIN
+        IF FIND('+') THEN
+          REPEAT
+            IF DeprBookCode = '' THEN
+              DeprBookCode := "Depreciation Book Code";
+            IF DeprBookCode <> "Depreciation Book Code" THEN
+              FIELDERROR("Depreciation Book Code",Text001);
+            IF "FA No." = '' THEN
+              ERROR(Text002,FIELDCAPTION("Entry No."),"Entry No.");
+            FA.GET("FA No.");
+            DeprBook.GET("Depreciation Book Code");
+            DeprBook.IndexGLIntegration(GLIntegration);
+            CheckType(FALedgEntry);
+            IF NewPostingDate > 0D THEN BEGIN
+              "Posting Date" := NewPostingDate;
+              DeprBook.TESTFIELD("Use Same FA+G/L Posting Dates",FALSE);
+            END;
+            IF GLIntegration[ConvertPostingType + 1] AND NOT FA."Budgeted Asset" THEN
+              InsertGenJnlLine(FALedgEntry,BalAccount)
+            ELSE
+              InsertFAJnlLine(FALedgEntry);
+          UNTIL NEXT(-1) = 0;
+      END;
+      MESSAGE(Text003);
+    END;
+
+    LOCAL PROCEDURE CheckType@4(VAR FALedgEntry@1000 : Record 5601);
+    BEGIN
+      WITH FALedgEntry DO
+        IF ("FA Posting Type" > "FA Posting Type"::"Salvage Value") OR
+           ("FA Posting Category" <> "FA Posting Category"::" ")
+        THEN BEGIN
+          "FA Posting Type" := "FA Posting Type"::"Proceeds on Disposal";
+          ERROR(
+            Text004,
+            FIELDCAPTION("Entry No."),"Entry No.",FIELDCAPTION("FA Posting Type"),"FA Posting Type");
+        END;
+    END;
+
+    LOCAL PROCEDURE InsertFAJnlLine@6(VAR FALedgEntry@1000 : Record 5601);
+    BEGIN
+      IF NOT FAJnlUsedOnce THEN BEGIN;
+        FAJnlLine.LOCKTABLE;
+        FAJnlSetup.FAJnlName(DeprBook,FAJnlLine,FAJnlNextLineNo);
+        FAJnlUsedOnce := TRUE;
+        FAJnlDocumentNo :=
+          FAJnlSetup.GetFAJnlDocumentNo(FAJnlLine,FALedgEntry."FA Posting Date",FALSE);
+      END;
+
+      FALedgEntry.MoveToFAJnl(FAJnlLine);
+      WITH FAJnlLine DO BEGIN
+        "Document No." := FAJnlDocumentNo;
+        "Document Type" := "Document Type"::" ";
+        "External Document No." := '';
+        "Shortcut Dimension 1 Code" := FALedgEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FALedgEntry."Global Dimension 2 Code";
+        "Dimension Set ID" := FALedgEntry."Dimension Set ID";
+        "FA Error Entry No." := FALedgEntry."Entry No.";
+        "Posting No. Series" := FAJnlSetup.GetFANoSeries(FAJnlLine);
+        Quantity := -Quantity;
+        VALIDATE(Amount,-Amount);
+        VALIDATE(Correction,DeprBook."Mark Errors as Corrections");
+        "Line No." := "Line No." + 10000;
+        "Depr. Bonus" := FALedgEntry."Depr. Bonus";
+        INSERT(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertGenJnlLine@7(VAR FALedgEntry@1000 : Record 5601;BalAccount@1001 : Boolean);
+    VAR
+      FAInsertGLAcc@1002 : Codeunit 5601;
+    BEGIN
+      IF NOT GenJnlUsedOnce THEN BEGIN;
+        GenJnlLine.LOCKTABLE;
+        FAJnlSetup.GenJnlName(DeprBook,GenJnlLine,GenJnlNextLineNo);
+        GenJnlUsedOnce := TRUE;
+        GenJnlDocumentNo :=
+          FAJnlSetup.GetGenJnlDocumentNo(GenJnlLine,FALedgEntry."FA Posting Date",FALSE);
+      END;
+
+      FALedgEntry.MoveToGenJnl(GenJnlLine);
+      WITH GenJnlLine DO BEGIN
+        "Document No." := GenJnlDocumentNo;
+        "Document Type" := "Document Type"::" ";
+        "External Document No." := '';
+        "Shortcut Dimension 1 Code" := FALedgEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FALedgEntry."Global Dimension 2 Code";
+        "Dimension Set ID" := FALedgEntry."Dimension Set ID";
+        "FA Error Entry No." := FALedgEntry."Entry No.";
+        Quantity := -Quantity;
+        VALIDATE(Amount,-Amount);
+        VALIDATE(Correction,DeprBook."Mark Errors as Corrections");
+        "Posting No. Series" := FAJnlSetup.GetGenNoSeries(GenJnlLine);
+        "Line No." := "Line No." + 10000;
+        "Depr. Bonus" := FALedgEntry."Depr. Bonus";
+        INSERT(TRUE);
+        IF BalAccount THEN
+          FAInsertGLAcc.GetBalAcc(GenJnlLine);
+      END;
+    END;
+
+    PROCEDURE TransferLineFromBuffer@1210000(VAR FALedgEntry@1000 : Record 5601;BalAccount@1001 : Boolean;VAR FABuffer@1210000 : Record 50008);
+    BEGIN
+      //NC PIF001 > DP
+      CLEARALL;
+      WITH FALedgEntry DO BEGIN
+        IF FIND('+') THEN
+          REPEAT
+            IF "FA No." = '' THEN
+              ERROR(Text002,FIELDCAPTION("Entry No."),"Entry No.");
+            FA.GET("FA No.");
+            DeprBook.GET("Depreciation Book Code");
+            DeprBook.IndexGLIntegration(GLIntegration);
+            CheckType(FALedgEntry);
+            IF GLIntegration[ConvertPostingType + 1] AND NOT FA."Budgeted Asset" THEN
+              InsertConsGenJnlLine(FALedgEntry,FALSE,FABuffer)
+            ELSE
+              InsertConsFAJnlLine(FALedgEntry,FABuffer);
+          UNTIL NEXT(-1) = 0;
+      END;
+      //NC PIF001 < DP
+    END;
+
+    LOCAL PROCEDURE InsertConsFAJnlLine@1210002(VAR FALedgEntry@1000 : Record 5601;VAR FABuffer@1210000 : Record 50008);
+    VAR
+      FAJnlLine1@1210001 : Record 5621;
+      FAJnlBatch@1210002 : Record 5620;
+    BEGIN
+      //NC PIF001 > DP
+
+      GLSetup.GET;
+      GLSetup.TESTFIELD(GLSetup."Allow Posting From");
+
+      IF NOT FAJnlUsedOnce THEN BEGIN
+        ConsolidationSource.GET(FABuffer."Cons. Source Code");
+        CASE FABuffer."FA Operation Type" OF
+          FABuffer."FA Operation Type"::Acquisition: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Acquisition FA Batch Name");
+            CurBatchCode := ConsolidationSource."Acquisition FA Batch Name";
+          END;
+          FABuffer."FA Operation Type"::Release: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Release FA Batch Name");
+            CurBatchCode := ConsolidationSource."Release FA Batch Name";
+          END;
+          FABuffer."FA Operation Type"::LeasingRelease: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Depreciation FA Batch Name");
+            CurBatchCode := ConsolidationSource."Depreciation FA Batch Name";
+          END;
+          FABuffer."FA Operation Type"::Depreciation: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Reclass. FA Batch Name");
+            CurBatchCode := ConsolidationSource."Reclass. FA Batch Name";
+          END;
+          FABuffer."FA Operation Type"::Reclass: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Dispose FA Batch Name");
+            CurBatchCode := ConsolidationSource."Dispose FA Batch Name";
+          END;
+        END;
+
+        ConsolidationSetup.GET;
+        ConsolidationSetup.TESTFIELD(ConsolidationSetup."FA Import FA Jnl Template");
+        CurTemplateCode := ConsolidationSetup."FA Import FA Jnl Template";
+
+        FAJnlLine1.SETRANGE("Journal Template Name", CurTemplateCode);
+        FAJnlLine1.SETRANGE("Journal Batch Name", CurBatchCode);
+        IF  FAJnlLine1.FIND('+') THEN BEGIN
+           FAJnlDocumentNo := INCSTR(FAJnlLine1."Document No.");
+          LineNo :=  FAJnlLine1."Line No." + 10000
+        END ELSE BEGIN
+          LineNo := 10000;
+          FAJnlBatch.GET(CurTemplateCode,CurBatchCode);
+          FAJnlBatch.TESTFIELD("No. Series");
+          CLEAR(NoSeriesMgt);
+          FAJnlDocumentNo := NoSeriesMgt.GetNextNo( FAJnlBatch."No. Series", FABuffer."Document Date",FALSE);
+        END;
+        FAJnlUsedOnce := TRUE;
+      END ELSE BEGIN
+          LineNo := LineNo + 10000
+      END;
+
+      FAJnlLine.INIT;
+      FAJnlLine.VALIDATE("Journal Template Name",CurTemplateCode);
+      FAJnlLine.VALIDATE("Journal Batch Name",CurBatchCode);
+      FAJnlLine.VALIDATE("Line No.",LineNo);
+
+
+      FALedgEntry.MoveToFAJnl(FAJnlLine);
+      WITH FAJnlLine DO BEGIN
+         VALIDATE("Posting Date", FALedgEntry."Posting Date");
+        "Document No." := FAJnlDocumentNo;
+        "Document Type" := "Document Type"::" ";
+        "External Document No." := '';
+        "Shortcut Dimension 1 Code" := FALedgEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FALedgEntry."Global Dimension 2 Code";
+        "Dimension Set ID" := FALedgEntry."Dimension Set ID"; // NC NOS-26 SPA
+        "FA Error Entry No." := FALedgEntry."Entry No.";
+        "Posting No. Series" := FAJnlSetup.GetFANoSeries(FAJnlLine);
+        Quantity := -Quantity;
+        VALIDATE(Amount,-Amount);
+         VALIDATE(Correction,DeprBook."Mark Errors as Corrections");
+        "Buffer Entry No." := FABuffer."Entry No.";
+        "Cons. Source Code" := FABuffer."Cons. Source Code";
+        "Line No." := "Line No." + 10000;
+        INSERT(TRUE);
+        //CopyFALedgDimToJnlLineDim(
+        //  DATABASE::"FA Journal Line","Journal Template Name",
+        //  "Journal Batch Name","Line No.",FALedgEntry."Entry No.");
+      END;
+      //NC PIF001 < DP
+    END;
+
+    LOCAL PROCEDURE InsertConsGenJnlLine@1210001(VAR FALedgEntry@1000 : Record 5601;BalAccount@1001 : Boolean;VAR FABuffer@1210000 : Record 50008);
+    VAR
+      FAInsertGLAcc@1002 : Codeunit 5601;
+      GenJnlLine1@1210001 : Record 81;
+      GenJnlBatch@1210002 : Record 232;
+    BEGIN
+      //NC PIF001 > DP
+      GLSetup.GET;
+      GLSetup.TESTFIELD(GLSetup."Allow Posting From");
+
+      IF NOT GenJnlUsedOnce THEN BEGIN
+        ConsolidationSource.GET(FABuffer."Cons. Source Code");
+        CASE FABuffer."FA Operation Type" OF
+          FABuffer."FA Operation Type"::Acquisition: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Acquisition Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Acquisition Gen. Batch Name";
+          END;
+          FABuffer."FA Operation Type"::Release: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Release Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Release Gen. Batch Name";
+          END;
+          FABuffer."FA Operation Type"::WriteOff: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Reclass. Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Dispose Gen. Batch Name";
+          END;
+          FABuffer."FA Operation Type"::Reclass: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Dispose Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Reclass. Gen. Batch Name";
+          END;
+          FABuffer."FA Operation Type"::Transfer: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Transfer Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Transfer Gen. Batch Name";
+          END;
+        END;
+
+        ConsolidationSetup.GET;
+        ConsolidationSetup.TESTFIELD(ConsolidationSetup."FA Import Journal Template");
+        CurTemplateCode := ConsolidationSetup."FA Import Journal Template";
+
+        GenJnlLine1.SETRANGE("Journal Template Name", CurTemplateCode);
+        GenJnlLine1.SETRANGE("Journal Batch Name", CurBatchCode);
+        IF GenJnlLine1.FIND('+') THEN BEGIN
+          GenJnlDocumentNo := INCSTR(GenJnlLine1."Document No.");
+          LineNo := GenJnlLine1."Line No." + 10000
+        END ELSE BEGIN
+          LineNo := 10000;
+          GenJnlBatch.GET(CurTemplateCode,CurBatchCode);
+          GenJnlBatch.TESTFIELD(GenJnlBatch."No. Series");
+          CLEAR(NoSeriesMgt);
+          GenJnlDocumentNo := NoSeriesMgt.GetNextNo(GenJnlBatch."No. Series", FABuffer."Document Date",FALSE);
+        END;
+        GenJnlUsedOnce := TRUE;
+      END ELSE BEGIN
+          LineNo := LineNo + 10000
+      END;
+
+      GenJnlLine.INIT;
+      GenJnlLine.VALIDATE("Journal Template Name",CurTemplateCode);
+      GenJnlLine.VALIDATE("Journal Batch Name",CurBatchCode);
+      GenJnlLine.VALIDATE("Line No.",LineNo);
+
+      FALedgEntry.MoveToGenJnl(GenJnlLine);
+      WITH GenJnlLine DO BEGIN
+        IF   FALedgEntry."Posting Date" < GLSetup."Allow Posting From" THEN BEGIN
+          GenJnlLine."Source Historical Date" := FALedgEntry."Posting Date";
+          GenJnlLine.VALIDATE("Posting Date", GLSetup."Allow Posting From");
+        END;
+        "Document No." := GenJnlDocumentNo;
+        "Document Type" := "Document Type"::" ";
+        "External Document No." := '';
+        "Shortcut Dimension 1 Code" := FALedgEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FALedgEntry."Global Dimension 2 Code";
+        "Dimension Set ID" := FALedgEntry."Dimension Set ID"; // NC NOS-26 SPA
+        "FA Error Entry No." := FALedgEntry."Entry No.";
+        Quantity := -Quantity;
+        VALIDATE(Amount,-Amount);
+        VALIDATE(Correction,DeprBook."Mark Errors as Corrections");
+        "Posting No. Series" := FAJnlSetup.GetGenNoSeries(GenJnlLine);
+        "Buffer Entry No." := FABuffer."Entry No.";
+        "Cons. Source Code" := FABuffer."Cons. Source Code";
+        "Capital %" := FALedgEntry."Capital %";
+        "Reclass. Capital %" := FALedgEntry."Reklass. Capital %";
+        "Line No." := "Line No." + 10000;
+        INSERT(TRUE);
+        //CopyFALedgDimToJnlLineDim(
+        //  DATABASE::"Gen. Journal Line","Journal Template Name",
+        //  "Journal Batch Name","Line No.",FALedgEntry."Entry No.");
+        IF BalAccount THEN
+          FAInsertGLAcc.GetBalAcc(GenJnlLine);
+      END;
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE TransferLineFromBuffer1@1101495002(VAR FALedgEntry@1000 : Record 5601;BalAccount@1001 : Boolean;VAR BufferFALE@1210000 : Record 50119);
+    BEGIN
+      //NC MIO-9 > DP
+      CLEARALL;
+      WITH FALedgEntry DO BEGIN
+        IF FIND('+') THEN
+          REPEAT
+            IF "FA No." = '' THEN
+              ERROR(Text002,FIELDCAPTION("Entry No."),"Entry No.");
+            FA.GET("FA No.");
+            DeprBook.GET("Depreciation Book Code");
+            DeprBook.IndexGLIntegration(GLIntegration);
+            CheckType(FALedgEntry);
+            IF GLIntegration[ConvertPostingType + 1] AND NOT FA."Budgeted Asset" THEN
+              InsertConsGenJnlLine1(FALedgEntry,BalAccount,BufferFALE)
+            ELSE
+              InsertConsFAJnlLine1(FALedgEntry,BufferFALE);
+          UNTIL NEXT(-1) = 0;
+      END;
+      //NC MIO-9 < DP
+    END;
+
+    LOCAL PROCEDURE InsertConsFAJnlLine1@1101495000(VAR FALedgEntry@1000 : Record 5601;VAR BufferFALE@1210000 : Record 50119);
+    VAR
+      FAJnlLine1@1210001 : Record 5621;
+      FAJnlBatch@1210002 : Record 5620;
+    BEGIN
+      //NC MIO-9 > DP
+
+      GLSetup.GET;
+      GLSetup.TESTFIELD(GLSetup."Allow Posting From");
+
+      IF NOT FAJnlUsedOnce THEN BEGIN
+        ConsolidationSource.GET(BufferFALE."Cons. Source Code");
+        CASE BufferFALE."FA Export Type" OF
+          BufferFALE."FA Export Type"::Acquisition,
+          BufferFALE."FA Export Type"::"Reverse Acquisition": BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Acquisition FA Batch Name");
+            CurBatchCode := ConsolidationSource."Acquisition FA Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Release: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Release FA Batch Name");
+            CurBatchCode := ConsolidationSource."Release FA Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Depreciation: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Depreciation FA Batch Name");
+            CurBatchCode := ConsolidationSource."Depreciation FA Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Transfer: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Reclass. FA Batch Name");
+            CurBatchCode := ConsolidationSource."Reclass. FA Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Disposal: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Dispose FA Batch Name");
+            CurBatchCode := ConsolidationSource."Dispose FA Batch Name";
+          END;
+        END;
+
+        ConsolidationSetup.GET;
+        ConsolidationSetup.TESTFIELD(ConsolidationSetup."FA Import FA Jnl Template");
+        CurTemplateCode := ConsolidationSetup."FA Import FA Jnl Template";
+
+        FAJnlLine1.SETRANGE("Journal Template Name", CurTemplateCode);
+        FAJnlLine1.SETRANGE("Journal Batch Name", CurBatchCode);
+        IF  FAJnlLine1.FIND('+') THEN BEGIN
+           FAJnlDocumentNo := INCSTR(FAJnlLine1."Document No.");
+          LineNo :=  FAJnlLine1."Line No." + 10000
+        END ELSE BEGIN
+          LineNo := 10000;
+          FAJnlBatch.GET(CurTemplateCode,CurBatchCode);
+          FAJnlBatch.TESTFIELD("No. Series");
+          CLEAR(NoSeriesMgt);
+          FAJnlDocumentNo := NoSeriesMgt.GetNextNo( FAJnlBatch."No. Series", BufferFALE."FA Posting Date",FALSE);
+        END;
+        FAJnlUsedOnce := TRUE;
+      END ELSE BEGIN
+          LineNo := LineNo + 10000
+      END;
+
+      FAJnlLine.INIT;
+      FAJnlLine.VALIDATE("Journal Template Name",CurTemplateCode);
+      FAJnlLine.VALIDATE("Journal Batch Name",CurBatchCode);
+      FAJnlLine.VALIDATE("Line No.",LineNo);
+
+
+      FALedgEntry.MoveToFAJnl(FAJnlLine);
+      WITH FAJnlLine DO BEGIN
+         VALIDATE("Posting Date", FALedgEntry."Posting Date");
+        "Document No." := FAJnlDocumentNo;
+        "Document Type" := "Document Type"::" ";
+        "External Document No." := '';
+        "Shortcut Dimension 1 Code" := FALedgEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FALedgEntry."Global Dimension 2 Code";
+        "Dimension Set ID" := FALedgEntry."Dimension Set ID"; // NC NOS-26 SPA
+        "FA Error Entry No." := FALedgEntry."Entry No.";
+        "Posting No. Series" := FAJnlSetup.GetFANoSeries(FAJnlLine);
+        Quantity := -Quantity;
+        VALIDATE(Amount,-Amount);
+         VALIDATE(Correction,DeprBook."Mark Errors as Corrections");
+        "Source FA Entry No." := BufferFALE."Entry No.";
+        "Cons. Source Code" := BufferFALE."Cons. Source Code";
+        "Line No." := "Line No." + 10000;
+        INSERT(TRUE);
+        //CopyFALedgDimToJnlLineDim(
+        //  DATABASE::"FA Journal Line","Journal Template Name",
+        //  "Journal Batch Name","Line No.",FALedgEntry."Entry No.");
+        VALIDATE("FA Posting Type","FA Posting Type");
+
+      END;
+      //NC MIO-9 < DP
+    END;
+
+    LOCAL PROCEDURE InsertConsGenJnlLine1@1101495001(VAR FALedgEntry@1000 : Record 5601;BalAccount@1001 : Boolean;VAR BufferFALE@1210000 : Record 50119);
+    VAR
+      FAInsertGLAcc@1002 : Codeunit 5601;
+      GenJnlLine1@1210001 : Record 81;
+      GenJnlBatch@1210002 : Record 232;
+    BEGIN
+      //NC MIO-9 > DP
+      GLSetup.GET;
+      GLSetup.TESTFIELD(GLSetup."Allow Posting From");
+
+      IF NOT GenJnlUsedOnce THEN BEGIN
+        ConsolidationSource.GET(BufferFALE."Cons. Source Code");
+        CASE BufferFALE."FA Export Type" OF
+          BufferFALE."FA Export Type"::Acquisition,
+          BufferFALE."FA Export Type"::"Reverse Acquisition": BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Acquisition Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Acquisition Gen. Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Release: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Release Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Release Gen. Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Depreciation: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Depreciation Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Depreciation Gen. Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Transfer: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Reclass. Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Reclass. Gen. Batch Name";
+          END;
+          BufferFALE."FA Export Type"::Disposal: BEGIN
+            ConsolidationSource.TESTFIELD(ConsolidationSource."Dispose Gen. Batch Name");
+            CurBatchCode := ConsolidationSource."Dispose Gen. Batch Name";
+          END;
+        END;
+
+        ConsolidationSetup.GET;
+        ConsolidationSetup.TESTFIELD(ConsolidationSetup."FA Import Journal Template");
+        CurTemplateCode := ConsolidationSetup."FA Import Journal Template";
+
+        GenJnlLine1.SETRANGE("Journal Template Name", CurTemplateCode);
+        GenJnlLine1.SETRANGE("Journal Batch Name", CurBatchCode);
+        IF GenJnlLine1.FIND('+') THEN BEGIN
+          GenJnlDocumentNo := INCSTR(GenJnlLine1."Document No.");
+          LineNo := GenJnlLine1."Line No." + 10000
+        END ELSE BEGIN
+          LineNo := 10000;
+          GenJnlBatch.GET(CurTemplateCode,CurBatchCode);
+          GenJnlBatch.TESTFIELD(GenJnlBatch."No. Series");
+          CLEAR(NoSeriesMgt);
+          GenJnlDocumentNo := NoSeriesMgt.GetNextNo(GenJnlBatch."No. Series", BufferFALE."FA Posting Date",FALSE);
+        END;
+        GenJnlUsedOnce := TRUE;
+      END ELSE BEGIN
+          LineNo := LineNo + 10000
+      END;
+
+      GenJnlLine.INIT;
+      GenJnlLine.VALIDATE("Journal Template Name",CurTemplateCode);
+      GenJnlLine.VALIDATE("Journal Batch Name",CurBatchCode);
+      GenJnlLine.VALIDATE("Line No.",LineNo);
+
+      FALedgEntry.MoveToGenJnl(GenJnlLine);
+      WITH GenJnlLine DO BEGIN
+        IF   FALedgEntry."Posting Date" < GLSetup."Allow Posting From" THEN BEGIN
+          GenJnlLine."Source Historical Date" := FALedgEntry."Posting Date";
+          GenJnlLine.VALIDATE("Posting Date", GLSetup."Allow Posting From");
+        END;
+        "Document No." := GenJnlDocumentNo;
+        "Document Type" := "Document Type"::" ";
+        "External Document No." := '';
+        "Shortcut Dimension 1 Code" := FALedgEntry."Global Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := FALedgEntry."Global Dimension 2 Code";
+        "Dimension Set ID" := FALedgEntry."Dimension Set ID"; // NC NOS-26 SPA
+        "FA Error Entry No." := FALedgEntry."Entry No.";
+        Quantity := -Quantity;
+        VALIDATE(Amount,-Amount);
+        VALIDATE(Correction,DeprBook."Mark Errors as Corrections");
+        "Posting No. Series" := FAJnlSetup.GetGenNoSeries(GenJnlLine);
+        "Source FA Entry No." := BufferFALE."Entry No.";
+        "Cons. Source Code" := BufferFALE."Cons. Source Code";
+        "Capital %" := FALedgEntry."Capital %";
+        "Reclass. Capital %" := FALedgEntry."Reklass. Capital %";
+        "Line No." := "Line No." + 10000;
+        INSERT(TRUE);
+        //CopyFALedgDimToJnlLineDim(
+        //  DATABASE::"Gen. Journal Line","Journal Template Name",
+        //  "Journal Batch Name","Line No.",FALedgEntry."Entry No.");
+        VALIDATE("FA Posting Type");
+
+        IF BalAccount THEN
+          FAInsertGLAcc.GetBalAcc(GenJnlLine);
+      END;
+      //NC MIO-9 < DP
+    END;
+
+    BEGIN
+    {
+      NC PIF001 DP Добавлены ф-ции TransferLineFromBuffer, InsertConsFAJnlLine,InsertConsGenJnlLine
+      NC MIO-9 DP Добавлены ф-ции TransferLineFromBuffer1, InsertConsFAJnlLine1,InsertConsGenJnlLine1
+      --------------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+}
+

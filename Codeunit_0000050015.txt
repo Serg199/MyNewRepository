@@ -1,0 +1,654 @@
+OBJECT Codeunit 50015 Run Job Process
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26.12.16;
+    Time=13:09:28;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            RecRefReference@1101495000 : ARRAY [2] OF RecordRef;
+            StrPrimaryKey@1101495001 : ARRAY [2] OF Text[250];
+            i@1101495002 : Integer;
+            isSkip@1101495003 : Boolean;
+            NoReport@1000000000 : Integer;
+          BEGIN
+            JobProcStatus.GET("Line No.");
+            JobProcStatus.Status := JobProcStatus.Status::Working;
+            JobProcStatus."Time Status" := CURRENTDATETIME;
+            //NC MDM01.1 > PCH
+            JobProcStatus."Time Start" := CURRENTDATETIME;
+            //NC MDM01.1 < PCH
+            JobProcStatus.MODIFY;
+            COMMIT;
+
+            IF "Company No." <> COMPANYNAME THEN
+              ERROR(Text002);
+
+            Company.GET("Company No.");
+            ConsSetup.GET;
+
+            CASE "Type Processing" OF
+              "Type Processing"::Reference :
+                BEGIN
+                  JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                  IF CODEUNIT.RUN(CODEUNIT::"Load All References",JobProcStatus) THEN BEGIN
+                    JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                    JobProcStatus."Time Status" := CURRENTDATETIME;
+                    //NC S1185 > PCH
+                    JobProcStatus.CalcCountError;
+                    //NC S1185 < PCH
+                    JobProcStatus.MODIFY;
+                  END ELSE BEGIN
+                    JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                    JobProcStatus."Time Status" := CURRENTDATETIME;
+                    JobProcStatus.MODIFY;
+
+                    RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                    ErrorJournal.AddLastError1('',ErrorJournal."Error Group"::Load,ErrorJournal.Type::Error,
+                                               '',0,
+                                               JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                  END;
+                END;
+              "Type Processing"::"Cons. Source" :
+                IF ConsSource.GET(Processor) THEN
+                  CASE TRUE OF
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FromExtSystem) AND  //загрузка из буфера
+                    (NOT ConsSource."Use External File") :
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Load Operation",JobProcStatus) THEN BEGIN
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Load,ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FromBuffer) :  //трансформация
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::Consolidation,JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Transformation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FromNavision) AND  //консолидация
+                    (ConsSource."Company Name" <> '') :
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::Consolidation,JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Consolidation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+
+                    //NC MIO-10 > DP
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FromBufferNAV) :  //трансформация полупроводок
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Transformation From Buffer NAV",JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Transformation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    //NC MIO-10 < DP
+
+
+                    //NC MTF01 > PCH
+                    (ConsSource."Import Format" = ConsSource."Import Format"::OperationFromExtSystem) AND  //загрузка фактов из буфера
+                    (NOT ConsSource."Use External File") :
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Load Operation Fact",JobProcStatus) THEN BEGIN
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Load,ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    (ConsSource."Import Format" = ConsSource."Import Format"::OperationFromBuffer) :  //трансформация фактов операций
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Transformation Operation Fact",JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Transformation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    //NC MTF01 < PCH
+                    //NC S622 > PCH
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FromPreBufferDealEntry) AND  //загрузка из буфера
+                    (NOT ConsSource."Use External File") :
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Load Deal Entry",JobProcStatus) THEN BEGIN
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Load,ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FromBufferDealEntry) :  //трансформация операций по сделкам
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Transf. Deal Entry",JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Transformation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    //NC S622 < PCH
+                    //NC S1753 > PCH
+                    (ConsSource."Import Format" = ConsSource."Import Format"::EventUpload) :  //трансформация операций по сделкам 2
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Transf. Event Upload",JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          //NC S1185 > PCH
+                          JobProcStatus.CalcCountError;
+                          //NC S1185 < PCH
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Transformation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    //NC S1753 < PCH
+
+                    //NC S2360 > AAP
+                    (ConsSource."Import Format" = ConsSource."Import Format"::FIOperation) :
+                      BEGIN
+                        JobProcStatus."Processing Mode" := JobProcStatus."Processing Mode"::Load;
+                        IF CODEUNIT.RUN(CODEUNIT::"Transfer FI Operation",JobProcStatus) THEN BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.CalcCountError;
+                          JobProcStatus.MODIFY;
+                        END ELSE BEGIN
+                          JobProcStatus.GET("Line No.");
+                          JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                          JobProcStatus."Time Status" := CURRENTDATETIME;
+                          JobProcStatus.MODIFY;
+
+                          RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                          ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::Transformation,
+                                                     ErrorJournal.Type::Error,
+                                                     JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                     JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                        END;
+                      END;
+                    //NC S2360 < AAP
+                  END;
+              "Type Processing"::Posting :
+                IF ConsSource.GET(Processor) THEN
+                  CASE ConsSource."Import Format" OF
+                    //NC MIO55 > PCH
+                    {
+                    //NC NCS-622.9 > DP
+                    //ConsSource."Import Format"::FromBuffer :
+                    ConsSource."Import Format"::FromBuffer, ConsSource."Import Format"::FromBufferDealEntry:
+                    //NC NCS-622.9 < DP
+                    }
+                    ConsSource."Import Format"::OperationFromBuffer :
+                      PostJnlConsSource(Processor,JobProcStatus);
+                    //NCS-2360 > AAP
+                    ConsSource."Import Format"::FIOperation: BEGIN
+                      PostFIJnl(ConsSetup."FI Jnl. Template",ConsSource."FI Journal Batch",JobProcStatus);
+                      PostFIJnl(ConsSetup."FI Jnl. Template",ConsSource."Cancel FI Journal Batch",JobProcStatus);
+                      PostFIJnl(ConsSetup."FI Jnl. Template",ConsSource."Correction FI Journal Batch",JobProcStatus);
+
+                      JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                      JobProcStatus."Time Status" := CURRENTDATETIME;
+                      JobProcStatus.CalcCountError;
+                      JobProcStatus.MODIFY;
+                    END;
+                    //NCS-2360 < AAP
+                    ELSE
+                    //NC MIO55 < PCH
+
+                      BEGIN
+                        PostJnl(ConsSetup."Gen. Jnl. Template",ConsSource."Gen. Journal Batch",JobProcStatus);
+                        PostJnl(ConsSetup."Gen. Jnl. Template",ConsSource."Reposted Journal Batch",JobProcStatus);
+                        PostJnl(ConsSetup."Gen. Jnl. Template",ConsSource."Removed Journal Batch",JobProcStatus);
+
+                        //NC MIO-10 > DP
+                        IF ConsSource."Post Closed Period Batch" THEN
+                          PostJnl(ConsSetup."Gen. Jnl. Template",ConsSource."Closed Period Journal Batch",JobProcStatus);
+                        //NC MIO-10 < DP
+
+                        JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                        JobProcStatus."Time Status" := CURRENTDATETIME;
+                        //NC S1185 > PCH
+                        JobProcStatus.CalcCountError;
+                        //NC S1185 < PCH
+                        JobProcStatus.MODIFY;
+                      END;
+                    //NC MIO55 > PCH
+                    {
+                    //NC MTF01 > PCH
+                    ConsSource."Import Format"::OperationFromBuffer :
+                      PostJnlConsSource(Processor,JobProcStatus);
+                    //NC MTF01 < PCH
+                    }
+                    //NC MIO55 < PCH
+                  END;
+              //NC MTF01 > PCH
+              "Type Processing"::"Document Posting" :
+                IF ConsSource.GET(Processor) THEN
+                  IF ConsSource."Import Format" = ConsSource."Import Format"::OperationFromBuffer THEN
+                    PostDocConsSource(Processor,JobProcStatus);
+              //NC MTF01 < PCH
+              "Type Processing"::"Packet Task" : BEGIN
+                IF Processor = '' THEN
+                  NoReport := 0
+                ELSE BEGIN
+                  IF EVALUATE(NoReport,Processor) THEN
+                    REPORT.RUNMODAL(NoReport,FALSE);
+                END;
+                JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                JobProcStatus."Time Status" := CURRENTDATETIME;
+                //NC S1185 > PCH
+                JobProcStatus.CalcCountError;
+                //NC S1185 < PCH
+                JobProcStatus.MODIFY;
+              END;
+              "Type Processing"::"Program Module" : BEGIN
+                IF Processor = '' THEN BEGIN
+                  NoReport := 0;
+                  JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                  JobProcStatus."Time Status" := CURRENTDATETIME;
+                  //NC S1185 > PCH
+                  JobProcStatus.CalcCountError;
+                  //NC S1185 < PCH
+                  JobProcStatus.MODIFY;
+                END ELSE BEGIN
+                  IF EVALUATE(NoReport,Processor) THEN BEGIN
+                    IF "Use Parameters" THEN BEGIN
+                      IF CODEUNIT.RUN(NoReport,JobProcStatus) THEN BEGIN
+                        JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                        JobProcStatus."Time Status" := CURRENTDATETIME;
+                        //NC S1185 > PCH
+                        JobProcStatus.CalcCountError;
+                        //NC S1185 < PCH
+                        JobProcStatus.MODIFY;
+                      END ELSE BEGIN
+                        JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                        JobProcStatus."Time Status" := CURRENTDATETIME;
+                        JobProcStatus.MODIFY;
+
+                        RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                        ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::"Periodical Job",
+                                                   ErrorJournal.Type::Error,
+                                                   JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                   JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                      END;
+                    END ELSE BEGIN
+                      IF CODEUNIT.RUN(NoReport) THEN BEGIN
+                        JobProcStatus.Status := JobProcStatus.Status::"Competed Successfully";
+                        JobProcStatus."Time Status" := CURRENTDATETIME;
+                        //NC S1185 > PCH
+                        JobProcStatus.CalcCountError;
+                        //NC S1185 < PCH
+                        JobProcStatus.MODIFY;
+                      END ELSE BEGIN
+                        JobProcStatus.Status := JobProcStatus.Status::"Error Reported";
+                        JobProcStatus."Time Status" := CURRENTDATETIME;
+                        JobProcStatus.MODIFY;
+
+                        RecRefJobProcStatus.GETTABLE(JobProcStatus);
+                        ErrorJournal.AddLastError1(JobProcStatus."Company No.",ErrorJournal."Error Group"::"Periodical Job",
+                                                   ErrorJournal.Type::Error,
+                                                   JobProcStatus.Processor,JobProcStatus."Cons. Register",
+                                                   JobProcStatus.Description,RecRefJobProcStatus,"Line No.");
+                      END;
+                    END;
+                  END;
+                END;
+              END;
+              ELSE BEGIN
+                JobProcStatus.Status := JobProcStatus.Status::Canceled;
+                JobProcStatus."Time Status" := CURRENTDATETIME;
+                JobProcStatus.MODIFY;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TableCheckBlocked@1000000007 : Codeunit 50010;
+      ErrorJournal@1101495000 : Record 50023;
+      TextError@1101495001 : Text[250];
+      Text002@1000000000 : TextConst 'ENU=Processing source consolidation %1 must be run in your company;RUS=Обработка должна запускаться в своей фирме';
+      Company@1000000001 : Record 2000000006;
+      ConsSetup@1000000002 : Record 50000;
+      ConsSource@1000000003 : Record 50001;
+      JobProcStatus@1000000005 : Record 50063;
+      RecRefJobProcStatus@1000000006 : RecordRef;
+      TextEDB01@1000000008 : TextConst 'ENU=In the process of implementation %1 unclassified error occurred. %2 Processing stopped.;RUS=В процессе выполнения %1 возникла ошибка. %2 Обработка прекращена.';
+
+    PROCEDURE PostJnl@1000000072(PostTemplate@1000000004 : Code[10];PostBatch@1000000000 : Code[10];JobProcStatus2@1000000002 : Record 50063);
+    VAR
+      GenJnlLinePost@1101495000 : Record 81;
+      Text001@1101495001 : TextConst 'ENU=Post gen. journal %1.;RUS=Учет фин. журнала %1.';
+      RecRefJobProcStatus2@1000000001 : RecordRef;
+      PartPostLine@1000000003 : Report 50023;
+    BEGIN
+      //NC MDB02 > PCH
+      ConsSetup.GET;
+      GenJnlLinePost.RESET;
+      GenJnlLinePost.SETRANGE("Journal Template Name", PostTemplate);
+      GenJnlLinePost.SETRANGE("Journal Batch Name", PostBatch);
+
+      //NC NCS-738 > DP
+
+      GenJnlLinePost.SETFILTER("Account No.", '<>%1','');
+
+      //NC NCS-738 < DP
+
+      IF NOT GenJnlLinePost.FINDFIRST THEN
+        EXIT;
+      // Порционный учет
+      //NC S1185 > PCH
+      PartPostLine.SetLineJobProcNo(JobProcStatus2."Line No.");
+      //NC S1185 < PCH
+      PartPostLine.USEREQUESTPAGE(FALSE);
+      PartPostLine.SETTABLEVIEW(GenJnlLinePost);
+      PartPostLine.RUNMODAL();
+      {
+      IF NOT CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post Part. Batch",GenJnlLinePost) THEN BEGIN
+      //IF NOT CODEUNIT.RUN(CODEUNIT::"Gen. Jnl.-Post Batch",GenJnlLinePost) THEN BEGIN
+        RecRefJobProcStatus2.GETTABLE(JobProcStatus2);
+        ErrorJournal.AddLastError1(JobProcStatus2."Company No.",ErrorJournal."Error Group"::Post,ErrorJournal.Type::Error,
+                                   JobProcStatus2.Processor,JobProcStatus2."Cons. Register",
+                                   STRSUBSTNO(Text001,PostBatch),RecRefJobProcStatus2,JobProcStatus2."Line No.");
+      END;
+      }
+      //NC MDB02 < PCH
+    END;
+
+    PROCEDURE PostJnlConsSource@1000000000(ConSourceCode@1000000000 : Code[20];JobProcStatus2@1000000005 : Record 50063);
+    VAR
+      GenJnlLinePost@1000000002 : Record 81;
+      PartPostLine@1000000001 : Report 50023;
+      GenJnlLineTemplateList@1000000003 : TEMPORARY Record 81;
+      GenJnlLineBatchList@1000000004 : TEMPORARY Record 81;
+    BEGIN
+      //NC MTF01 > PCH
+      GenJnlLinePost.RESET;
+      GenJnlLinePost.SETRANGE("Export Cons. Source Code",ConSourceCode);
+      WHILE GenJnlLinePost.FINDFIRST DO BEGIN
+        GenJnlLineTemplateList.RESET;
+        GenJnlLineTemplateList.SETRANGE("Journal Template Name",GenJnlLinePost."Journal Template Name");
+        IF GenJnlLineTemplateList.ISEMPTY THEN BEGIN
+          GenJnlLineTemplateList.INIT;
+          GenJnlLineTemplateList."Journal Template Name" := GenJnlLinePost."Journal Template Name";
+          GenJnlLineTemplateList.INSERT;
+          IF GenJnlLinePost.GETFILTER("Journal Template Name") = '' THEN
+            GenJnlLinePost.SETFILTER("Journal Template Name",'<>%1',GenJnlLinePost."Journal Template Name")
+          ELSE
+            GenJnlLinePost.SETFILTER("Journal Template Name",'%1&<>%2',GenJnlLinePost.GETFILTER("Journal Template Name"),
+                                                                       GenJnlLinePost."Journal Template Name");
+        END;
+      END;
+
+      GenJnlLineTemplateList.RESET;
+      IF GenJnlLineTemplateList.FINDSET THEN REPEAT
+        GenJnlLineBatchList.RESET;
+        GenJnlLineBatchList.DELETEALL;
+
+        GenJnlLinePost.RESET;
+        GenJnlLinePost.SETRANGE("Journal Template Name",GenJnlLineTemplateList."Journal Template Name");
+        GenJnlLinePost.SETRANGE("Export Cons. Source Code",ConSourceCode);
+
+        WHILE GenJnlLinePost.FINDFIRST DO BEGIN
+          GenJnlLineBatchList.RESET;
+          GenJnlLineBatchList.SETRANGE("Journal Batch Name",GenJnlLinePost."Journal Batch Name");
+          IF GenJnlLineBatchList.ISEMPTY THEN BEGIN
+            GenJnlLineBatchList.INIT;
+            GenJnlLineBatchList."Journal Batch Name" := GenJnlLinePost."Journal Batch Name";
+            GenJnlLineBatchList.INSERT;
+            IF GenJnlLinePost.GETFILTER("Journal Batch Name") = '' THEN
+              GenJnlLinePost.SETFILTER("Journal Batch Name",'<>%1',GenJnlLinePost."Journal Batch Name")
+            ELSE
+              GenJnlLinePost.SETFILTER("Journal Batch Name",'%1&<>%2',GenJnlLinePost.GETFILTER("Journal Batch Name"),
+                                                                      GenJnlLinePost."Journal Batch Name");
+
+            PostJnl(GenJnlLinePost."Journal Template Name",GenJnlLinePost."Journal Batch Name",JobProcStatus2);
+          END;
+        END;
+      UNTIL GenJnlLineTemplateList.NEXT = 0;
+      //NC MTF01 < PCH
+    END;
+
+    PROCEDURE PostDocConsSource@1000000022(ConSourceCode@1000000000 : Code[20];JobProcStatus2@1000000005 : Record 50063);
+    VAR
+      SalesHeader@1000000001 : Record 36;
+      PurchHeader@1000000002 : Record 38;
+      RecRefJobProcStatus2@1000000003 : RecordRef;
+      Text001@1000000004 : TextConst 'ENU=Posting for sales document %1 %2.;RUS=Учет документа продажи %1 %2.';
+      Text002@1000000006 : TextConst 'ENU=Posting for purchase of document %1 %2.;RUS=Учет документа покупки %1 %2.';
+    BEGIN
+      //NC MTF01 > PCH
+      SalesHeader.RESET;
+      SalesHeader.SETFILTER("Document Type",'%1|%2',SalesHeader."Document Type"::Invoice,
+                                                    SalesHeader."Document Type"::"Credit Memo");
+      SalesHeader.SETRANGE("Export Cons. Source Code",ConSourceCode);
+      IF SalesHeader.FIND('-') THEN REPEAT
+        IF NOT CODEUNIT.RUN(CODEUNIT::"Sales-Post",SalesHeader) THEN BEGIN
+          RecRefJobProcStatus2.GETTABLE(JobProcStatus2);
+          ErrorJournal.AddLastError1(JobProcStatus2."Company No.",ErrorJournal."Error Group"::Post,ErrorJournal.Type::Error,
+                                     JobProcStatus2.Processor,JobProcStatus2."Cons. Register",
+                                     STRSUBSTNO(Text001,SalesHeader."Document Type",SalesHeader."No."),
+                                     RecRefJobProcStatus2,JobProcStatus2."Line No.");
+        END;
+      UNTIL SalesHeader.NEXT = 0;
+
+      PurchHeader.RESET;
+      PurchHeader.SETFILTER("Document Type",'%1|%2',PurchHeader."Document Type"::Invoice,
+                                                    PurchHeader."Document Type"::"Credit Memo");
+      PurchHeader.SETRANGE("Export Cons. Source Code",ConSourceCode);
+      IF PurchHeader.FIND('-') THEN REPEAT
+        IF NOT CODEUNIT.RUN(CODEUNIT::"Sales-Post",PurchHeader) THEN BEGIN
+          RecRefJobProcStatus2.GETTABLE(JobProcStatus2);
+          ErrorJournal.AddLastError1(JobProcStatus2."Company No.",ErrorJournal."Error Group"::Post,ErrorJournal.Type::Error,
+                                     JobProcStatus2.Processor,JobProcStatus2."Cons. Register",
+                                     STRSUBSTNO(Text001,PurchHeader."Document Type",PurchHeader."No."),
+                                     RecRefJobProcStatus2,JobProcStatus2."Line No.");
+        END;
+      UNTIL PurchHeader.NEXT = 0;
+
+      //NC MTF01 < PCH
+    END;
+
+    PROCEDURE PostFIJnl@1101495000(PostTemplate@1000000004 : Code[10];PostBatch@1000000000 : Code[10];JobProcStatus2@1000000002 : Record 50063);
+    VAR
+      FIJnlLine@1101495000 : Record 50220;
+      Text001@1101495001 : TextConst 'ENU=Post gen. journal %1.;RUS=Учет фин. журнала %1.';
+      RecRefJobProcStatus2@1000000001 : RecordRef;
+    BEGIN
+      //NCS-2360 > AAP
+      ConsSetup.GET;
+      FIJnlLine.RESET;
+      FIJnlLine.SETRANGE("Journal Template Name", PostTemplate);
+      FIJnlLine.SETRANGE("Journal Batch Name", PostBatch);
+
+      IF NOT FIJnlLine.FINDFIRST THEN
+        EXIT;
+
+      COMMIT;
+      IF NOT CODEUNIT.RUN(CODEUNIT::"FI Jnl.-Post Batch",FIJnlLine) THEN BEGIN
+        RecRefJobProcStatus2.GETTABLE(JobProcStatus2);
+        ErrorJournal.AddLastError1(JobProcStatus2."Company No.",ErrorJournal."Error Group"::Post,ErrorJournal.Type::Error,
+                                   JobProcStatus2.Processor,JobProcStatus2."Cons. Register",
+                                   STRSUBSTNO(Text001,PostBatch),RecRefJobProcStatus2,JobProcStatus2."Line No.");
+      END;
+      //NCS-2360 < AAP
+    END;
+
+    BEGIN
+    {
+      NC MDB03 PCH Создан CU
+      ПАРАМЕТРЫ:
+        "Company No."
+        "Line No."
+        Blocked
+        Process
+        Description
+        "Auto Start"
+        Dependency
+        "Type Processing" - Ист. Консолидации
+        Processor - Код Ист. Консолидации
+        "Status Monitor" - 0 - Загрузка из Внеш. Системы
+        "Import Format" - 0 - Загрузка из Внеш. Системы
+        "External Source" - ID внешней системы
+        "Transaction No."
+        "Object No." - не используется
+        "Processing Mode" - Test - проверка наличия записей, Load - загрузка
+        "Record ID" - не используется
+      ВОЗВРАТ:
+        isOK - ОК
+        "Cons. Register" - регистр в котором произошла загрузка
+        Status
+        "Time Status"
+
+      NC MTF01 PCH добавлена обработка фактов операций
+      NC MDM01.1 PCH время страта
+      NC S486 PCH обработка причины отмены
+      NC S622 PCH обработка буфера операций по сделкам
+      NC NCS-622.9 DP учет журналов для буфера операций по сделкам
+      NC NCS-738 DP учет журнала с нулевой строкой
+      NC S1185 PCH расчет количества ошибок
+      NC MIO-10 DP трансформация полупроводок, учет раздела закрытого периода - изменена функция OnRun
+      NC MIO55 PCH испрпавлена обработка учета
+      NC S1753 PCH
+      NC NCS-2360 AAP Модифицирована функция OnRun, добавлена функция PostFIJnl
+    }
+    END.
+  }
+}
+

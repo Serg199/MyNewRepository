@@ -1,0 +1,307 @@
+OBJECT Report 17207 Create Norm Details
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Norm Details;
+               RUS=Создание подробностей нормы];
+    ProcessingOnly=Yes;
+  }
+  DATASET
+  {
+    { 4593;    ;DataItem;                    ;
+               DataItemTable=Table17220;
+               DataItemTableView=SORTING(Code);
+               OnPreDataItem=BEGIN
+                               WITH NormJurisdiction DO BEGIN
+                                 COPY("Tax Register Norm Jurisdiction");
+                                 IF FIND('-') THEN
+                                   IF NEXT <> 0 THEN
+                                     CurrReport.QUIT;
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  NormTemplateLine.GenerateProfile;
+                                  NormTermName.GenerateProfile;
+                                  COMMIT;
+
+                                  TaxRegTermMgt.CheckTaxRegTerm(TRUE,Code,
+                                    DATABASE::"Tax Reg. Norm Term",DATABASE::"Tax Reg. Norm Term Formula");
+
+                                  TaxRegTermMgt.CheckTaxRegLink(TRUE,Code,
+                                    DATABASE::"Tax Reg. Norm Template Line");
+                                END;
+
+               ReqFilterFields=Code }
+
+    { 9857;1   ;DataItem;                    ;
+               DataItemTable=Table2000000007;
+               DataItemTableView=SORTING(Period Type,Period Start)
+                                 WHERE(Period Type=CONST(Month));
+               OnPreDataItem=BEGIN
+                               SETRANGE("Period Type","Period Type"::Month);
+                               SETRANGE("Period Start",NORMALDATE(DatePeriod."Period Start"),NORMALDATE(DatePeriod."Period End"));
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  DateBegin := NORMALDATE("Period Start");
+                                  DateEnd := NORMALDATE("Period End");
+                                  CreateNormDetails("Tax Register Norm Jurisdiction".Code,DateBegin,DateEnd);
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,Periodicity);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 23  ;2   ;Field     ;
+                  Name=Периодичность;
+                  CaptionML=[ENU=Periodicity;
+                             RUS=Периодичность];
+                  OptionCaptionML=[ENU=Month,Quarter,Year;
+                                   RUS=Месяц,Квартал,Год];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Periodicity;
+                  OnValidate=BEGIN
+                               PeriodReportManagement.InitPeriod(CalendarPeriod,Periodicity);
+                               AccountPeriod := '';
+                               PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,FALSE);
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             END;
+                              }
+
+      { 21  ;2   ;Field     ;
+                  Name=Отчетный период;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный период];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,FALSE);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 18  ;2   ;Field     ;
+                  Name=с;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE }
+
+      { 20  ;2   ;Field     ;
+                  Name=по;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      NormJurisdiction@1000 : Record 17220;
+      NormTermName@1001 : Record 17240;
+      NormTemplateLine@1002 : Record 17239;
+      CalendarPeriod@1210002 : Record 2000000007;
+      DatePeriod@1210001 : Record 2000000007;
+      PeriodReportManagement@1210000 : Codeunit 12406;
+      TaxRegTermMgt@1003 : Codeunit 17200;
+      DateBegin@1004 : Date;
+      DateEnd@1005 : Date;
+      Periodicity@1012 : 'Month,Quarter,Year';
+      AccountPeriod@1013 : Text[30];
+      Text1001@1016 : TextConst 'ENU=Existing details will be delete.\Continue?;RUS=Существующие значения будут уничтожены.\Продолжить?';
+      DeleteWasConfirmed@1017 : Boolean;
+
+    PROCEDURE CreateNormDetails@1(NormJurisdictionCode@1000 : Code[10];DateBegin@1001 : Date;DateEnd@1002 : Date);
+    VAR
+      NormGroup@1003 : Record 17221;
+      NormDetail@1004 : Record 17222;
+      NormTemplateLine@1005 : Record 17239;
+      NormAccumulat@1006 : Record 17242;
+      EntryNoAmountBuffer@1008 : TEMPORARY Record 386;
+      GeneralTermMgt@1011 : Codeunit 17200;
+      NormTemplateRecordRef@1210001 : RecordRef;
+      LinkAccumulateRecordRef@1210000 : RecordRef;
+      CycleLevel@1012 : Integer;
+    BEGIN
+      NormGroup.SETRANGE("Norm Jurisdiction Code",NormJurisdictionCode);
+      NormGroup.SETRANGE("Storing Method",NormGroup."Storing Method"::Calculation);
+      LinkAccumulateRecordRef.OPEN(DATABASE::"Tax Reg. Norm Accumulation");
+      WITH NormAccumulat DO BEGIN
+        INIT;
+        SETCURRENTKEY("Norm Jurisdiction Code","Norm Group Code","Template Line No.");
+        SETRANGE("Norm Jurisdiction Code",NormJurisdictionCode);
+        SETRANGE("Ending Date",DateEnd);
+        LinkAccumulateRecordRef.SETVIEW(GETVIEW(FALSE));
+      END;
+      NormDetail.SETRANGE("Norm Jurisdiction Code",NormJurisdictionCode);
+      NormDetail.SETRANGE("Norm Type",NormDetail."Norm Type"::Amount);
+      NormDetail.SETFILTER("Effective Date",'%1..',DateEnd);
+      IF NormGroup.FINDSET THEN
+        REPEAT
+          NormDetail.SETRANGE("Norm Group Code",NormGroup.Code);
+          NormAccumulat.SETRANGE("Norm Group Code",NormGroup.Code);
+          NormAccumulat.DELETEALL;
+          IF NormDetail.FINDFIRST THEN
+            IF NOT DeleteWasConfirmed THEN BEGIN
+              IF NOT CONFIRM(Text1001,FALSE) THEN
+                ERROR('');
+              DeleteWasConfirmed := TRUE;
+            END;
+          NormDetail.DELETEALL(TRUE);
+        UNTIL NormGroup.NEXT = 0;
+      NormGroup.SETRANGE("Storing Method");
+      NormTemplateLine.SETRANGE("Norm Jurisdiction Code",NormJurisdictionCode);
+      CycleLevel := 1;
+      WHILE CycleLevel <> 0 DO BEGIN
+        NormGroup.SETRANGE(Level,CycleLevel);
+        IF NOT NormGroup.FINDSET THEN
+          CycleLevel := 0
+        ELSE BEGIN
+          REPEAT
+            IF NormGroup."Storing Method" = NormGroup."Storing Method"::Calculation THEN BEGIN
+              NormTemplateLine.SETRANGE("Norm Group Code",NormGroup.Code);
+              IF NormTemplateLine.FINDFIRST THEN BEGIN
+                NormTemplateLine.SETRANGE("Date Filter",DateBegin,DateEnd);
+                NormTemplateRecordRef.GETTABLE(NormTemplateLine);
+                NormTemplateRecordRef.SETVIEW(NormTemplateLine.GETVIEW(FALSE));
+                GeneralTermMgt.AccumulateTaxRegTemplate(
+                  NormTemplateRecordRef,EntryNoAmountBuffer,LinkAccumulateRecordRef);
+
+                NormDetail.INIT;
+                NormDetail."Norm Jurisdiction Code" := NormGroup."Norm Jurisdiction Code";
+                NormDetail."Norm Group Code" := NormGroup.Code;
+                NormDetail."Norm Type" := NormDetail."Norm Type"::Amount;
+                NormDetail."Effective Date" := DateEnd;
+
+                IF CreateAccumulate(NormTemplateLine,EntryNoAmountBuffer,NormDetail.Norm) THEN
+                  NormDetail.INSERT;
+
+                EntryNoAmountBuffer.DELETEALL;
+              END;
+            END;
+          UNTIL NormGroup.NEXT = 0;
+          CycleLevel += 1;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateAccumulate@2(VAR NormTemplateLine@1000 : Record 17239;VAR EntryNoAmountBuffer@1001 : Record 386;VAR NormValue@1002 : Decimal) RetCode : Boolean;
+    VAR
+      NormTemplateLine0@1003 : Record 17239;
+      NormAccumulat@1004 : Record 17242;
+      NormAccumulat0@1005 : Record 17242;
+      NormAccumulat1@1006 : Record 17242;
+      GeneralTermMgt@1007 : Codeunit 17200;
+    BEGIN
+      RetCode := EntryNoAmountBuffer.FIND('-');
+      IF RetCode THEN BEGIN
+        NormAccumulat."Starting Date" := NormTemplateLine.GETRANGEMIN("Date Filter");
+        NormAccumulat."Ending Date" := NormTemplateLine.GETRANGEMAX("Date Filter");
+        NormAccumulat."Norm Jurisdiction Code" := NormTemplateLine."Norm Jurisdiction Code";
+        NormAccumulat."Norm Group Code" := NormTemplateLine."Norm Group Code";
+        REPEAT
+          NormTemplateLine0.GET(
+            NormAccumulat."Norm Jurisdiction Code",NormAccumulat."Norm Group Code",EntryNoAmountBuffer."Entry No.");
+          NormAccumulat."Template Line Code" := NormTemplateLine0."Line Code";
+          NormAccumulat.Indentation := NormTemplateLine0.Indentation;
+          NormAccumulat.Bold := NormTemplateLine0.Bold;
+          NormAccumulat.Description := NormTemplateLine0.Description;
+          NormAccumulat."Template Line No." := NormTemplateLine0."Line No.";
+          NormAccumulat."Amount Date Filter" :=
+            GeneralTermMgt.CalcIntervalDate(
+              NormAccumulat."Starting Date",
+              NormAccumulat."Ending Date",
+              NormTemplateLine0.Period);
+
+          NormAccumulat.Amount := EntryNoAmountBuffer.Amount;
+          NormAccumulat."Amount Period" := NormAccumulat.Amount;
+
+          IF NOT NormAccumulat0.FINDLAST THEN
+            NormAccumulat0."Entry No." := 0;
+          NormAccumulat."Entry No." := NormAccumulat0."Entry No." + 1;
+          NormAccumulat.INSERT;
+
+          IF NormTemplateLine0.Period <> '' THEN BEGIN
+            NormAccumulat1 := NormAccumulat;
+            NormAccumulat1.RESET;
+            NormAccumulat1.SETCURRENTKEY(
+              "Norm Jurisdiction Code","Norm Group Code","Template Line No.","Starting Date","Ending Date");
+            NormAccumulat1.SETRANGE("Norm Jurisdiction Code",NormAccumulat."Norm Jurisdiction Code");
+            NormAccumulat1.SETRANGE("Norm Group Code",NormAccumulat."Norm Group Code");
+            NormAccumulat1.SETRANGE("Template Line No.",NormAccumulat."Template Line No.");
+            NormAccumulat1.SETFILTER("Starting Date",NormAccumulat."Amount Date Filter");
+            NormAccumulat1.SETFILTER("Ending Date",NormAccumulat."Amount Date Filter");
+            NormAccumulat1.CALCSUMS("Amount Period");
+            NormAccumulat.Amount := NormAccumulat1."Amount Period";
+            NormAccumulat.MODIFY;
+          END;
+
+          IF NormTemplateLine0."Line Type" = NormTemplateLine0."Line Type"::"Norm Value" THEN
+            NormValue := NormAccumulat.Amount;
+          RetCode := RetCode AND (NormTemplateLine0."Line Type" <> NormTemplateLine0."Line Type"::"Amount for Norm");
+
+        UNTIL EntryNoAmountBuffer.NEXT(1) = 0;
+      END;
+    END;
+
+    PROCEDURE SetPeriod@3(NewDate@1000 : Date);
+    BEGIN
+      IF NewDate <> 0D THEN BEGIN
+        Periodicity := Periodicity::Month;
+        CalendarPeriod.GET(CalendarPeriod."Period Type"::Month,CALCDATE('<-CM>',NewDate));
+        DatePeriod.COPY(CalendarPeriod);
+        PeriodReportManagement.PeriodSetup(DatePeriod,FALSE);
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

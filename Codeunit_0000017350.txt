@@ -1,0 +1,241 @@
+OBJECT Codeunit 17350 Record of Service Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE CalcPersonTotalService@1470020(PersonNo@1210004 : Code[20];UnbrokenService@1210006 : Boolean;VAR ServicePeriod@1470025 : ARRAY [3] OF Integer);
+    VAR
+      RecordOfService@1210000 : Record 17354;
+      TotalDays@1210007 : Integer;
+    BEGIN
+      // Function calculate total seniority based on personal job history
+      WITH RecordOfService DO BEGIN
+        RESET;
+        SETRANGE("Person No.",PersonNo);
+        IF UnbrokenService THEN
+          SETRANGE("Unbroken Record of Service",TRUE);
+        IF FINDSET THEN
+          REPEAT
+            TESTFIELD("Ending Date");
+            TotalDays += "Ending Date" - "Starting Date";
+            IF "Insured Period Starting Date" <> 0D THEN
+              TotalDays := TotalDays + 1;
+          UNTIL NEXT = 0;
+
+        CalcServicePeriod(TotalDays,ServicePeriod);
+      END;
+    END;
+
+    PROCEDURE CalcPersonInsuredService@1210009(PersonNo@1210007 : Code[20];VAR ServicePeriod@1210005 : ARRAY [3] OF Integer);
+    VAR
+      RecordOfService@1210000 : Record 17354;
+      PrevStartDate@1210010 : Date;
+      PrevEndDate@1210011 : Date;
+    BEGIN
+      // Function calculates insurance seniority based on personal job history
+      WITH RecordOfService DO BEGIN
+        RESET;
+        SETRANGE("Person No.",PersonNo);
+        IF FINDSET THEN
+          REPEAT
+            IF "Insured Period Starting Date" <> 0D THEN BEGIN
+              TESTFIELD("Insured Period Ending Date");
+              ProcessISEntry(
+                "Insured Period Starting Date","Insured Period Ending Date",
+                PrevStartDate,PrevEndDate,ServicePeriod);
+            END;
+          UNTIL NEXT = 0;
+
+        IF PrevStartDate <> 0D THEN
+          AddToServicePeriod(PrevStartDate,PrevEndDate,ServicePeriod);
+        NormalizeServicePeriod(ServicePeriod);
+      END;
+    END;
+
+    PROCEDURE UpdatePersonService@1210000(PersonNo@1210000 : Code[20];TotalService@1210001 : ARRAY [3] OF Integer;InsuredService@1210002 : ARRAY [3] OF Integer;UnbrokenService@1210003 : ARRAY [3] OF Integer);
+    VAR
+      Person@1210004 : Record 17350;
+    BEGIN
+      Person.GET(PersonNo);
+      WITH Person DO
+        IF (("Total Service (Days)" <> TotalService[1]) OR
+            ("Total Service (Months)" <> TotalService[2]) OR
+            ("Total Service (Years)" <> TotalService[3]) OR
+            ("Insured Service (Days)" <> InsuredService[1]) OR
+            ("Insured Service (Months)" <> InsuredService[2]) OR
+            ("Insured Service (Years)" <> InsuredService[3]) OR
+            ("Unbroken Service (Days)" <> UnbrokenService[1]) OR
+            ("Unbroken Service (Months)" <> UnbrokenService[2]) OR
+            ("Unbroken Service (Years)" <> UnbrokenService[3]))
+        THEN BEGIN
+          "Total Service (Days)" := TotalService[1];
+          "Total Service (Months)" := TotalService[2];
+          "Total Service (Years)" := TotalService[3];
+          "Insured Service (Days)" := InsuredService[1];
+          "Insured Service (Months)" := InsuredService[2];
+          "Insured Service (Years)" := InsuredService[3];
+          "Unbroken Service (Days)" := UnbrokenService[1];
+          "Unbroken Service (Months)" := UnbrokenService[2];
+          "Unbroken Service (Years)" := UnbrokenService[3];
+          MODIFY;
+        END;
+    END;
+
+    PROCEDURE CalcEmplTotalService@1210001(Employee@1210004 : Record 5200;CurrentDate@1470027 : Date;UnbrokenService@1210006 : Boolean;VAR ServicePeriod@1470025 : ARRAY [3] OF Integer);
+    VAR
+      Person@1210007 : Record 17350;
+      EmplJobEntry@1210000 : Record 17363;
+      PrevStartDate@1210003 : Date;
+      PrevEndDate@1210002 : Date;
+    BEGIN
+      // Function calculate total seniority based on job history and current date
+      CLEAR(ServicePeriod);
+      IF Person.GET(Employee."Person No.") THEN
+        IF UnbrokenService THEN BEGIN
+          ServicePeriod[1] := Person."Unbroken Service (Days)";
+          ServicePeriod[2] := Person."Unbroken Service (Months)";
+          ServicePeriod[3] := Person."Unbroken Service (Years)";
+        END ELSE BEGIN
+          ServicePeriod[1] := Person."Total Service (Days)";
+          ServicePeriod[2] := Person."Total Service (Months)";
+          ServicePeriod[3] := Person."Total Service (Years)";
+        END;
+
+      WITH EmplJobEntry DO BEGIN
+        RESET;
+        SETRANGE("Employee No.",Employee."No.");
+        IF UnbrokenService THEN
+          SETRANGE("Uninterrupted Service",TRUE);
+        IF FINDSET THEN
+          REPEAT
+            IF ("Ending Date" = 0D) OR (CurrentDate < "Ending Date") THEN
+              "Ending Date" := CurrentDate;
+
+            IF "Starting Date" <> 0D THEN
+              ProcessISEntry(
+                "Starting Date","Ending Date",PrevStartDate,PrevEndDate,ServicePeriod);
+          UNTIL NEXT = 0;
+
+        IF PrevStartDate <> 0D THEN
+          AddToServicePeriod(PrevStartDate,PrevEndDate,ServicePeriod);
+        NormalizeServicePeriod(ServicePeriod);
+
+      END;
+    END;
+
+    PROCEDURE CalcEmplInsuredService@1210005(Employee@1210007 : Record 5200;CurrentDate@1210006 : Date;VAR ServicePeriod@1210005 : ARRAY [3] OF Integer);
+    VAR
+      Person@1210003 : Record 17350;
+      EmplJobEntry@1210000 : Record 17363;
+      PrevStartDate@1210010 : Date;
+      PrevEndDate@1210011 : Date;
+    BEGIN
+      // Function calculates insurance seniority based on job history and current date
+      CLEAR(ServicePeriod);
+      IF Person.GET(Employee."Person No.") THEN BEGIN
+        ServicePeriod[1] := Person."Insured Service (Days)";
+        ServicePeriod[2] := Person."Insured Service (Months)";
+        ServicePeriod[3] := Person."Insured Service (Years)";
+      END;
+
+      WITH EmplJobEntry DO BEGIN
+        RESET;
+        SETRANGE("Employee No.",Employee."No.");
+        IF FINDSET THEN
+          REPEAT
+            IF "Insured Period Starting Date" <> 0D THEN
+              IF ("Insured Period Ending Date" = 0D) OR (CurrentDate < "Insured Period Ending Date") THEN
+                "Insured Period Ending Date" := CurrentDate;
+            IF "Insured Period Starting Date" <> 0D THEN
+              ProcessISEntry(
+                "Insured Period Starting Date","Insured Period Ending Date",
+                PrevStartDate,PrevEndDate,ServicePeriod);
+          UNTIL NEXT = 0;
+
+        IF PrevStartDate <> 0D THEN
+          AddToServicePeriod(PrevStartDate,PrevEndDate,ServicePeriod);
+        NormalizeServicePeriod(ServicePeriod);
+      END;
+    END;
+
+    PROCEDURE CalcServicePeriod@1210002(TotalDays@1210001 : Integer;VAR ServicePeriod@1210000 : ARRAY [3] OF Integer);
+    BEGIN
+      ServicePeriod[1] := TotalDays MOD 30;
+      ServicePeriod[2] := TotalDays DIV 30;
+      ServicePeriod[3] := ServicePeriod[2] DIV 12;
+      ServicePeriod[2] := ServicePeriod[2] MOD 12;
+    END;
+
+    LOCAL PROCEDURE AddToServicePeriod@1210010(StartDate@1210001 : Date;EndDate@1210002 : Date;VAR ServicePeriod@1210000 : ARRAY [3] OF Integer);
+    VAR
+      DifferenceMonths@1210003 : Integer;
+    BEGIN
+      IF (DATE2DMY(StartDate,1) = 1) AND (EndDate = CALCDATE('<+CM>',StartDate)) THEN BEGIN
+        ServicePeriod[2] += 1;
+        EXIT;
+      END;
+      IF (DATE2DMY(StartDate,1) <> 1) OR (EndDate < CALCDATE('<+CM>',StartDate)) THEN
+        ServicePeriod[1] += (CALCDATE('<+CM>',StartDate) - StartDate) + 1
+      ELSE
+        ServicePeriod[2] += 1;
+      IF (CALCDATE('<+CM>',EndDate) <> EndDate) OR (StartDate > CALCDATE('<-CM>',EndDate)) THEN
+        ServicePeriod[1] += (EndDate - CALCDATE('<-CM>',EndDate)) + 1
+      ELSE
+        ServicePeriod[2] += 1;
+      StartDate := CALCDATE('<+CM+1D>',StartDate);
+      EndDate := CALCDATE('<-CM>',EndDate);
+      IF (StartDate > EndDate) THEN
+        ServicePeriod[1] -= (StartDate - EndDate)
+      ELSE BEGIN
+        ServicePeriod[3] += DATE2DMY(EndDate,3) - DATE2DMY(StartDate,3);
+        DifferenceMonths := DATE2DMY(EndDate,2) - DATE2DMY(StartDate,2);
+        IF DifferenceMonths < 0 THEN BEGIN
+          ServicePeriod[3] -= 1;
+          DifferenceMonths += 12;
+        END;
+        ServicePeriod[2] += DifferenceMonths;
+      END;
+    END;
+
+    LOCAL PROCEDURE NormalizeServicePeriod@1210011(VAR ServicePeriod@1210000 : ARRAY [3] OF Integer);
+    VAR
+      TotalMonths@1210001 : Integer;
+    BEGIN
+      TotalMonths := ServicePeriod[1] DIV 30;
+      ServicePeriod[1] := ServicePeriod[1] MOD 30;
+      ServicePeriod[2] += TotalMonths;
+      ServicePeriod[3] += ServicePeriod[2] DIV 12;
+      ServicePeriod[2] := ServicePeriod[2] MOD 12;
+    END;
+
+    LOCAL PROCEDURE ProcessISEntry@1210012(IPStartDate@1210001 : Date;IPEndDate@1210005 : Date;VAR PrevStartDate@1210002 : Date;VAR PrevEndDate@1210003 : Date;VAR ServicePeriod@1210004 : ARRAY [3] OF Integer);
+    BEGIN
+      IF PrevStartDate <> 0D THEN BEGIN
+        IF (IPStartDate - PrevEndDate) <> 1 THEN BEGIN
+          AddToServicePeriod(PrevStartDate,PrevEndDate,ServicePeriod);
+          PrevStartDate := IPStartDate;
+        END
+      END ELSE
+        PrevStartDate := IPStartDate;
+      PrevEndDate := IPEndDate;
+      IF PrevStartDate > PrevEndDate THEN
+        PrevStartDate := PrevEndDate + 1;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

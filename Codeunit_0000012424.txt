@@ -1,0 +1,822 @@
+OBJECT Codeunit 12424 VAT Invoice Journal Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.09.15;
+    Time=12:00:00;
+    Version List=NAVRU9.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      LastEntryNo@1210001 : Integer;
+
+    PROCEDURE GetVendVATList@1210000(VAR TempVendorLedgerEntry@1210001 : Record 25;VAR Vendor@1210002 : Record 23;ReportType@1210004 : 'Received,Issued';DatePeriod@1210003 : Record 2000000007;ShowCorrection@1210005 : Boolean);
+    VAR
+      VendorLedgerEntry@1210000 : Record 25;
+    BEGIN
+      TempVendorLedgerEntry.RESET;
+      TempVendorLedgerEntry.DELETEALL;
+
+      IF Vendor.FINDSET THEN
+        REPEAT
+          WITH VendorLedgerEntry DO BEGIN
+            SETRANGE("Vendor No.",Vendor."No.");
+            IF FINDSET THEN
+              REPEAT
+                IF ("Document Type" = "Document Type"::Payment) AND (ReportType = ReportType::Issued) THEN
+                  IF IsVATAgent("Entry No.") THEN
+                    InsertVATAgent(VendorLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+
+                IF ("Vendor VAT Invoice Rcvd Date" >= DatePeriod."Period Start") AND
+                   ("Vendor VAT Invoice Rcvd Date" <= DatePeriod."Period End") AND
+                   IsVATinfoAvaliable(VendorLedgerEntry)
+                THEN
+                  IF ReportType = ReportType::Issued THEN BEGIN
+                    IF "Document Type" = "Document Type"::"Credit Memo" THEN
+                      IF IsCrMemoIncludedInVatLedg("Document No.",ReportType) THEN
+                        InsertVendLE(VendorLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                  END ELSE
+                    CASE "Document Type" OF
+                      "Document Type"::Invoice:
+                        InsertVendLE(VendorLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                      "Document Type"::Payment:
+                        IF Prepayment THEN
+                          InsertVendLE(VendorLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                      "Document Type"::"Credit Memo":
+                        IF ShowCorrection AND NOT IsCrMemoIncludedInVatLedg("Document No.",ReportType::Issued) THEN
+                          InsertVendLE(VendorLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                    END;
+              UNTIL NEXT = 0;
+          END;
+        UNTIL Vendor.NEXT = 0;
+    END;
+
+    PROCEDURE GetCustVATList@1210001(VAR TempVendorLedgerEntry@1210000 : Record 25;VAR Customer@1210002 : Record 18;ReportType@1210006 : 'Received,Issued';DatePeriod@1210005 : Record 2000000007;ShowCorrection@1210003 : Boolean);
+    VAR
+      CustomerLedgerEntry@1210001 : Record 21;
+    BEGIN
+      TempVendorLedgerEntry.RESET;
+      TempVendorLedgerEntry.DELETEALL;
+
+      IF Customer.FINDSET THEN
+        REPEAT
+          WITH CustomerLedgerEntry DO BEGIN
+            SETRANGE("Posting Date",DatePeriod."Period Start",DatePeriod."Period End");
+            SETRANGE("Customer No.",Customer."No.");
+            IF FINDSET THEN
+              REPEAT
+                IF ReportType = ReportType::Received THEN BEGIN
+                  IF "Document Type" = "Document Type"::"Credit Memo" THEN
+                    IF IsCrMemoIncludedInVatLedg("Document No.",ReportType) THEN
+                      InsertCustLE(CustomerLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                END ELSE
+                  CASE "Document Type" OF
+                    "Document Type"::Invoice:
+                      InsertCustLE(CustomerLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                    "Document Type"::Payment:
+                      IF Prepayment THEN
+                        InsertCustLE(CustomerLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                    "Document Type"::"Credit Memo":
+                      IF NOT (ShowCorrection OR IsCrMemoIncludedInVatLedg("Document No.",ReportType::Received)) THEN
+                        InsertCustLE(CustomerLedgerEntry,TempVendorLedgerEntry,DatePeriod,ReportType,ShowCorrection);
+                  END;
+              UNTIL NEXT = 0;
+          END;
+        UNTIL Customer.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE IsVATinfoAvaliable@1210003(VendorLE@1210000 : Record 25) : Boolean;
+    BEGIN
+      IF (VendorLE."Vendor VAT Invoice No." = '') OR
+         (VendorLE."Vendor VAT Invoice Date" = 0D) OR
+         (VendorLE."Vendor VAT Invoice Rcvd Date" = 0D)
+      THEN
+        EXIT(FALSE);
+
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE IsCrMemoIncludedInVatLedg@1210012(DocumentNo@1210000 : Code[20];ReportType@1210001 : 'Received,Issued') : Boolean;
+    BEGIN
+      CASE ReportType OF
+        ReportType::Issued:
+          EXIT(IsPurchCrMemoIncludedInVatLedg(DocumentNo));
+        ReportType::Received:
+          EXIT(IsSalesCrMemoIncludedInVatLedg(DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE IsCrMemoCorrection@1210013(DocumentNo@1210001 : Code[20];ReportType@1210000 : 'Received,Issued') : Boolean;
+    BEGIN
+      CASE ReportType OF
+        ReportType::Issued:
+          EXIT(IsPurchCrMemoCorrection(DocumentNo));
+        ReportType::Received:
+          EXIT(IsSalesCrMemoCorrection(DocumentNo));
+      END;
+    END;
+
+    LOCAL PROCEDURE IsSalesCrMemoIncludedInVatLedg@1210036(DocumentNo@1210001 : Code[20]) : Boolean;
+    VAR
+      SalesCrMemoHdr@1210000 : Record 114;
+    BEGIN
+      IF SalesCrMemoHdr.GET(DocumentNo) THEN
+        EXIT(SalesCrMemoHdr."Include In Purch. VAT Ledger");
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE IsPurchCrMemoIncludedInVatLedg@1210025(DocumentNo@1210001 : Code[20]) : Boolean;
+    VAR
+      PurchCrMemoHdr@1210000 : Record 124;
+    BEGIN
+      IF PurchCrMemoHdr.GET(DocumentNo) THEN
+        EXIT(PurchCrMemoHdr."Include In Sales VAT Ledger");
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE IsSalesCrMemoCorrection@1210018(DocumentNo@1210001 : Code[20]) : Boolean;
+    VAR
+      SalesCrMemoHdr@1210000 : Record 114;
+    BEGIN
+      IF SalesCrMemoHdr.GET(DocumentNo) THEN
+        EXIT(SalesCrMemoHdr.Correction);
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE IsPurchCrMemoCorrection@1210017(DocumentNo@1210001 : Code[20]) : Boolean;
+    VAR
+      PurchCrMemoHdr@1210000 : Record 124;
+    BEGIN
+      IF PurchCrMemoHdr.GET(DocumentNo) THEN
+        EXIT(PurchCrMemoHdr.Correction);
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE InsertVendLE@1210039(VAR VendorLedgerEntry@1210000 : Record 25;VAR TempVendorLedgerEntry@1210001 : Record 25;DatePeriod@1210002 : Record 2000000007;ReportType@1210003 : 'Received,Issued';ShowCorrection@1210004 : Boolean);
+    VAR
+      AmountLCY@1210005 : Decimal;
+      AmountFCY@1210006 : Decimal;
+      AppliedAmountLCY@1210008 : Decimal;
+      AppliedAmountFCY@1210007 : Decimal;
+    BEGIN
+      TempVendorLedgerEntry.INIT;
+
+      LastEntryNo += 1;
+      TempVendorLedgerEntry."Entry No." := LastEntryNo;
+      TempVendorLedgerEntry."Payroll Ledger Entry No." := VendorLedgerEntry."Entry No.";
+      TempVendorLedgerEntry."Document Type" := VendorLedgerEntry."Document Type";
+      TempVendorLedgerEntry."Vendor VAT Invoice Rcvd Date" := VendorLedgerEntry."Vendor VAT Invoice Rcvd Date";
+      TempVendorLedgerEntry."Vendor VAT Invoice Date" := VendorLedgerEntry."Vendor VAT Invoice Date";
+
+      IF VendorLedgerEntry."Document Type" <> VendorLedgerEntry."Document Type"::Payment THEN
+        TempVendorLedgerEntry."Document No." := VendorLedgerEntry."Document No."
+      ELSE
+        IF VendorLedgerEntry.Prepayment THEN BEGIN
+          TempVendorLedgerEntry."Document Type" := TempVendorLedgerEntry."Document Type"::Invoice;
+          TempVendorLedgerEntry."Document No." :=
+            GetPurchPrepaymentSourceDocNo(VendorLedgerEntry."Vendor VAT Invoice No.",VendorLedgerEntry."Vendor No.");
+        END ELSE
+          TempVendorLedgerEntry."Document No." := VendorLedgerEntry."Document No.";
+      TempVendorLedgerEntry."Vendor VAT Invoice No." := VendorLedgerEntry."Vendor VAT Invoice No.";
+
+      TempVendorLedgerEntry."Vendor No." := VendorLedgerEntry."Vendor No.";
+
+      GetInitialVendAmounts(AmountLCY,AmountFCY,VendorLedgerEntry."Entry No.",VendorLedgerEntry."Vendor No.");
+
+      IF (TempVendorLedgerEntry."Document Type" <> TempVendorLedgerEntry."Document Type"::"Credit Memo") AND ShowCorrection THEN BEGIN
+        CalcVendAppliedEntriesAmount(
+          AppliedAmountLCY,AppliedAmountFCY,
+          VendorLedgerEntry."Entry No.",VendorLedgerEntry."Vendor No.",
+          DatePeriod."Period End",ReportType,ShowCorrection);
+
+        AmountLCY := ABS(ROUND(AmountLCY + AppliedAmountLCY,0.01));
+        AmountFCY := ABS(ROUND(AmountFCY + AppliedAmountLCY,0.01));
+      END;
+
+      TempVendorLedgerEntry."Purchase (LCY)" := ABS(ROUND(AmountLCY,0.01));
+      TempVendorLedgerEntry."Inv. Discount (LCY)" := ABS(ROUND(AmountFCY,0.01));
+      TempVendorLedgerEntry."Currency Code" := VendorLedgerEntry."Currency Code";
+      TempVendorLedgerEntry."VAT Entry Type" := VendorLedgerEntry."VAT Entry Type";
+
+      IF TempVendorLedgerEntry."Purchase (LCY)" > 0 THEN
+        TempVendorLedgerEntry.INSERT;
+    END;
+
+    LOCAL PROCEDURE InsertCustLE@1210005(VAR CustLedgerEntry@1210000 : Record 21;VAR TempVendorLedgerEntry@1210002 : Record 25;DatePeriod@1210004 : Record 2000000007;ReportType@1210005 : 'Received,Issued';ShowCorrection@1210006 : Boolean);
+    VAR
+      SalesCrMemoHeader@1210001 : Record 114;
+      SalesInvoiceHeader@1210003 : Record 112;
+      AmountLCY@1210007 : Decimal;
+      AmountFCY@1210008 : Decimal;
+      AppliedAmountLCY@1210009 : Decimal;
+      AppliedAmountFCY@1210010 : Decimal;
+    BEGIN
+      TempVendorLedgerEntry.INIT;
+
+      LastEntryNo += 1;
+      TempVendorLedgerEntry."Entry No." := LastEntryNo;
+      TempVendorLedgerEntry."Payroll Ledger Entry No." := CustLedgerEntry."Entry No.";
+      TempVendorLedgerEntry."Document Type" := CustLedgerEntry."Document Type";
+
+      IF CustLedgerEntry."Document Type" <> CustLedgerEntry."Document Type"::Payment THEN
+        TempVendorLedgerEntry."Document No." := CustLedgerEntry."Document No."
+      ELSE
+        IF CustLedgerEntry.Prepayment THEN BEGIN
+          TempVendorLedgerEntry."Document Type" := TempVendorLedgerEntry."Document Type"::Invoice;
+          TempVendorLedgerEntry."Document No." := CustLedgerEntry."Prepayment Document No.";
+        END ELSE
+          TempVendorLedgerEntry."Document No." := CustLedgerEntry."Document No.";
+      TempVendorLedgerEntry."Vendor VAT Invoice Rcvd Date" := CustLedgerEntry."Posting Date";
+
+      GetInitialCustAmounts(AmountLCY,AmountFCY,CustLedgerEntry."Entry No.",CustLedgerEntry."Customer No.");
+
+      IF (CustLedgerEntry."Document Type" <> CustLedgerEntry."Document Type"::"Credit Memo") AND ShowCorrection THEN BEGIN
+        CalcCustAppliedEntriesAmount(
+          AppliedAmountLCY,AppliedAmountFCY,
+          CustLedgerEntry."Entry No.",CustLedgerEntry."Customer No.",
+          DatePeriod."Period End",ReportType,ShowCorrection);
+
+        AmountLCY := ABS(ROUND(AmountLCY + AppliedAmountLCY,0.01));
+        AmountFCY := ABS(ROUND(AmountFCY + AppliedAmountLCY,0.01));
+      END;
+
+      TempVendorLedgerEntry."Purchase (LCY)" := ABS(ROUND(AmountLCY,0.01));
+      TempVendorLedgerEntry."Inv. Discount (LCY)" := ABS(ROUND(AmountFCY,0.01));
+      TempVendorLedgerEntry."Currency Code" := CustLedgerEntry."Currency Code";
+
+      TempVendorLedgerEntry."Vendor No." := CustLedgerEntry."Customer No.";
+
+      CASE CustLedgerEntry."Document Type" OF
+        CustLedgerEntry."Document Type"::Invoice:
+          IF SalesInvoiceHeader.GET(CustLedgerEntry."Document No.") THEN
+            TempVendorLedgerEntry."Vendor VAT Invoice Date" := SalesInvoiceHeader."Shipment Date";
+        CustLedgerEntry."Document Type"::"Credit Memo":
+          IF SalesCrMemoHeader.GET(CustLedgerEntry."Document No.") THEN
+            TempVendorLedgerEntry."Vendor VAT Invoice Date" := SalesCrMemoHeader."Posting Date";
+      END;
+
+      TempVendorLedgerEntry."VAT Entry Type" := CustLedgerEntry."VAT Entry Type";
+      IF TempVendorLedgerEntry."Purchase (LCY)" > 0 THEN
+        TempVendorLedgerEntry.INSERT;
+    END;
+
+    LOCAL PROCEDURE GetInitialVendAmounts@1210014(VAR AmountLCY@1210004 : Decimal;VAR AmountFCY@1210003 : Decimal;EntryNo@1210001 : Integer;VendorNo@1210002 : Code[20]) : Decimal;
+    VAR
+      DetailedVendLedgerEntry@1210000 : Record 380;
+    BEGIN
+      WITH DetailedVendLedgerEntry DO BEGIN
+        SETRANGE("Entry Type","Entry Type"::"Initial Entry");
+        SETRANGE("Vendor Ledger Entry No.",EntryNo);
+        SETRANGE("Vendor No.",VendorNo);
+        IF FINDFIRST THEN BEGIN
+          AmountLCY := "Amount (LCY)";
+          IF "Currency Code" <> '' THEN
+            AmountFCY := Amount;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcVendAppliedEntriesAmount@1210016(VAR AmountLCY@1210008 : Decimal;VAR AmountFCY@1210007 : Decimal;EntryNo@1210001 : Integer;VendorNo@1210002 : Code[20];PostingDate@1210003 : Date;ReportType@1210005 : 'Received,Issued';ShowCorrection@1210006 : Boolean);
+    VAR
+      DetailedVendLedgerEntry@1210000 : Record 380;
+      VendorLedgerEntry@1210004 : Record 25;
+    BEGIN
+      WITH DetailedVendLedgerEntry DO BEGIN
+        SETRANGE("Entry Type","Entry Type"::Application);
+        SETRANGE("Vendor Ledger Entry No.",EntryNo);
+        SETRANGE("Vendor No.",VendorNo);
+        SETRANGE("Posting Date",0D,PostingDate);
+        SETRANGE("Initial Document Type","Initial Document Type"::Invoice);
+
+        IF FINDSET THEN
+          REPEAT
+            IF VendorLedgerEntry.GET("Applied Vend. Ledger Entry No.") THEN
+              CASE VendorLedgerEntry."Document Type" OF
+                VendorLedgerEntry."Document Type"::"Credit Memo":
+                  IF NOT IsCrMemoIncludedInVatLedg(VendorLedgerEntry."Document No.",ReportType::Issued) THEN
+                    IF IsCrMemoCorrection(VendorLedgerEntry."Document No.",ReportType::Issued) AND ShowCorrection THEN BEGIN
+                      AmountLCY += "Amount (LCY)";
+                      AmountFCY += Amount;
+                    END;
+                VendorLedgerEntry."Document Type"::Payment:
+                  IF "Prepmt. Diff." THEN BEGIN
+                    AmountLCY += "Amount (LCY)";
+                    AmountFCY += Amount;
+                  END
+              END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetInitialCustAmounts@1210015(VAR AmountLCY@1210003 : Decimal;VAR AmountFCY@1210004 : Decimal;EntryNo@1210001 : Integer;VendorNo@1210002 : Code[20]) : Decimal;
+    VAR
+      DetailedCustLedgerEntry@1210000 : Record 379;
+    BEGIN
+      WITH DetailedCustLedgerEntry DO BEGIN
+        SETRANGE("Entry Type","Entry Type"::"Initial Entry");
+        SETRANGE("Cust. Ledger Entry No.",EntryNo);
+        SETRANGE("Customer No.",VendorNo);
+
+        IF FINDFIRST THEN BEGIN
+          AmountLCY := "Amount (LCY)";
+          IF "Currency Code" <> '' THEN
+            AmountFCY := Amount;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcCustAppliedEntriesAmount@1210075(VAR AmountLCY@1210007 : Decimal;VAR AmountFCY@1210008 : Decimal;EntryNo@1210001 : Integer;VendorNo@1210002 : Code[20];PostingDate@1210003 : Date;ReportType@1210005 : 'Received,Issued';ShowCorrection@1210006 : Boolean);
+    VAR
+      DetailedCustLedgerEntry@1210000 : Record 379;
+      CustomerLedgerEntry@1210004 : Record 21;
+    BEGIN
+      WITH DetailedCustLedgerEntry DO BEGIN
+        SETRANGE("Entry Type","Entry Type"::Application);
+        SETRANGE("Cust. Ledger Entry No.",EntryNo);
+        SETRANGE("Customer No.",VendorNo);
+        SETRANGE("Posting Date",0D,PostingDate);
+        SETRANGE("Initial Document Type","Initial Document Type"::Invoice);
+
+        IF FINDSET THEN
+          REPEAT
+            IF CustomerLedgerEntry.GET("Applied Cust. Ledger Entry No.") THEN
+              CASE CustomerLedgerEntry."Document Type" OF
+                CustomerLedgerEntry."Document Type"::"Credit Memo":
+                  IF NOT IsCrMemoIncludedInVatLedg(CustomerLedgerEntry."Document No.",ReportType::Received) THEN
+                    IF IsCrMemoCorrection(CustomerLedgerEntry."Document No.",ReportType::Received) AND ShowCorrection THEN BEGIN
+                      AmountLCY += "Amount (LCY)";
+                      AmountFCY += Amount;
+                    END;
+                CustomerLedgerEntry."Document Type"::Payment:
+                  IF "Prepmt. Diff." THEN BEGIN
+                    AmountLCY += "Amount (LCY)";
+                    AmountFCY += Amount;
+                  END;
+              END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetName@1210006(No@1210000 : Code[20];EntryType@1210001 : 'Purchase,Sale') : Text[250];
+    VAR
+      LocRepMgt@1210004 : Codeunit 12401;
+    BEGIN
+      IF EntryType = EntryType::Sale THEN
+        EXIT(LocRepMgt.GetCustName(No));
+
+      EXIT(LocRepMgt.GetVendorName(No));
+    END;
+
+    LOCAL PROCEDURE GetCVType@1210029(EntryType@1210001 : 'Purchase,Sale') : Integer;
+    VAR
+      CVType@1210000 : 'Vendor,Customer';
+    BEGIN
+      CASE EntryType OF
+        EntryType::Purchase:
+          EXIT(CVType::Vendor);
+        EntryType::Sale:
+          EXIT(CVType::Customer);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetPurchPrepaymentSourceDocNo@1210026(VendorInvoiceNo@1210001 : Code[20];VendorNo@1210002 : Code[20]) : Code[20];
+    VAR
+      PurchInvHeader@1210000 : Record 122;
+    BEGIN
+      PurchInvHeader.SETRANGE("Vendor Invoice No.",VendorInvoiceNo);
+      PurchInvHeader.SETRANGE("Buy-from Vendor No.",VendorNo);
+
+      IF PurchInvHeader.FINDFIRST THEN
+        EXIT(PurchInvHeader."No.");
+    END;
+
+    LOCAL PROCEDURE IsVATAgent@1210011(EntryNo@1210000 : Integer) : Boolean;
+    VAR
+      VATEntry@1210001 : Record 254;
+    BEGIN
+      VATEntry.SETRANGE("CV Ledg. Entry No.",EntryNo);
+      IF VATEntry.FINDFIRST THEN
+        EXIT(VATEntry."VAT Agent");
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE InsertVATAgent@1210019(VAR VendorLedgerEntry@1210000 : Record 25;VAR TempVendorLedgerEntry@1210001 : Record 25;DatePeriod@1210002 : Record 2000000007;ReportType@1210003 : 'Received,Issued';ShowCorrection@1210004 : Boolean);
+    VAR
+      AmountLCY@1210005 : Decimal;
+      VATEntry@1210009 : Record 254;
+    BEGIN
+      VATEntry.SETRANGE("CV Ledg. Entry No.",VendorLedgerEntry."Entry No.");
+      VATEntry.SETRANGE("Posting Date",DatePeriod."Period Start",DatePeriod."Period End");
+      IF NOT VATEntry.FINDFIRST THEN
+        EXIT;
+      IF NOT VATEntry."VAT Agent" THEN
+        EXIT;
+
+      TempVendorLedgerEntry.INIT;
+
+      LastEntryNo += 1;
+      TempVendorLedgerEntry."Entry No." := LastEntryNo;
+      TempVendorLedgerEntry."Payroll Ledger Entry No." := VendorLedgerEntry."Entry No.";
+      TempVendorLedgerEntry."Document Type" := VendorLedgerEntry."Document Type"::Invoice;
+      TempVendorLedgerEntry."Vendor No." := VendorLedgerEntry."Vendor No.";
+      TempVendorLedgerEntry."Currency Code" := VendorLedgerEntry."Currency Code";
+
+      TempVendorLedgerEntry."Vendor VAT Invoice Rcvd Date" := VendorLedgerEntry."Posting Date";
+      TempVendorLedgerEntry."Document No." := VATEntry."Document No.";
+      TempVendorLedgerEntry."Vendor VAT Invoice No." := VATEntry."Document No.";
+
+      IF (VATEntry.Amount <> 0) OR (VATEntry.Base <> 0) THEN
+        AmountLCY := VATEntry.Base + VATEntry.Amount
+      ELSE
+        AmountLCY := VATEntry."Unrealized Base" + VATEntry."Unrealized Amount";
+
+      TempVendorLedgerEntry."Purchase (LCY)" := ABS(ROUND(AmountLCY,0.01));
+
+      IF TempVendorLedgerEntry."Purchase (LCY)" > 0 THEN
+        TempVendorLedgerEntry.INSERT;
+    END;
+
+    LOCAL PROCEDURE IsCorrectiveDocument@1210044(VAR CorrVATEntry@1210000 : Record 254;CVNo@1210004 : Code[20];DocType@1210005 : Option;DocNo@1210006 : Code[20];EntryType@1210001 : 'Purchase,Sale') : Boolean;
+    BEGIN
+      IF EntryType = EntryType::Sale THEN
+        CorrVATEntry.SETRANGE(Type,CorrVATEntry.Type::Sale)
+      ELSE
+        CorrVATEntry.SETRANGE(Type,CorrVATEntry.Type::Purchase);
+      CorrVATEntry.SETRANGE("Bill-to/Pay-to No.",CVNo);
+      CorrVATEntry.SETRANGE("Document Type",DocType);
+      CorrVATEntry.SETRANGE("Document No.",DocNo);
+      IF CorrVATEntry.FINDFIRST THEN
+        EXIT(CorrVATEntry."Corrective Doc. Type" <> CorrVATEntry."Corrective Doc. Type"::" ");
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetCVVATRegKPP@1210069(CVNo@1210000 : Code[20];CVType@1210004 : 'Vendor,Customer';VATLedgerType@1210005 : Option) VATRegNoKPP : Text;
+    VAR
+      Cust@1210002 : Record 18;
+      Vend@1210003 : Record 23;
+      CompanyInformation@1210001 : Record 79;
+      VATLedger@1210006 : Record 12404;
+    BEGIN
+      VATRegNoKPP := '';
+      IF CVType = CVType::Customer THEN
+        IF VATLedgerType = VATLedger.Type::Purchase THEN BEGIN
+          CompanyInformation.GET;
+          VATRegNoKPP := GetVATRegKPP(CompanyInformation."VAT Registration No.",CompanyInformation."KPP Code");
+        END ELSE BEGIN
+          Cust.GET(CVNo);
+          VATRegNoKPP := GetVATRegKPP(Cust."VAT Registration No.",Cust."KPP Code");
+        END
+      ELSE
+        IF VATLedgerType = VATLedger.Type::Sales THEN BEGIN
+          CompanyInformation.GET;
+          VATRegNoKPP := GetVATRegKPP(CompanyInformation."VAT Registration No.",CompanyInformation."KPP Code");
+        END ELSE BEGIN
+          Vend.GET(CVNo);
+          VATRegNoKPP := GetVATRegKPP(Vend."VAT Registration No.",Vend."KPP Code")
+        END;
+    END;
+
+    PROCEDURE GetVATRegKPP@1210004(VATRegNo@1210000 : Code[20];KPPCode@1210001 : Code[10]) VATRegNoKPP : Text;
+    BEGIN
+      VATRegNoKPP := VATRegNo;
+      IF KPPCode <> '' THEN BEGIN
+        IF VATRegNoKPP <> '' THEN
+          VATRegNoKPP := VATRegNoKPP + ' / ' + KPPCode
+        ELSE
+          VATRegNoKPP := KPPCode;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetDocAmounts@1210076(VAR AmtInclVATText@1210006 : Text[30];VAR VATAmtText@1210000 : Text[30];VAR Column@1210009 : ' ,Decrease,Increase';DocType@1210001 : Option;DocNo@1210002 : Code[20];EntryType@1210012 : 'Purchase,Sale';VATExempt@1210008 : Boolean);
+    VAR
+      SalesInvHeader@1210003 : Record 112;
+      SalesCrMemoHeader@1210004 : Record 114;
+      PurchInvHeader@1210010 : Record 122;
+      PurchCrMemoHeader@1210011 : Record 124;
+      VATEntry@1210005 : Record 254;
+      LocRepMgt@1210013 : Codeunit 12401;
+      Sign@1210007 : Integer;
+      AmtInclVAT@1210018 : Decimal;
+      VATAmount@1210019 : Decimal;
+    BEGIN
+      AmtInclVATText := '';
+      VATAmtText := '';
+      Column := Column::" ";
+      Sign := 1;
+      IF EntryType = EntryType::Sale THEN BEGIN
+        CASE DocType OF
+          VATEntry."Document Type"::Invoice:
+            IF SalesInvHeader.GET(DocNo) THEN BEGIN
+              CalcSalesInvAmount(AmtInclVAT,VATAmount,SalesInvHeader."No.");
+              IF SalesInvHeader."Corrective Document" AND
+                 (SalesInvHeader."Corrective Doc. Type" = SalesInvHeader."Corrective Doc. Type"::Correction)
+              THEN
+                Column := Column::Increase;
+            END;
+          VATEntry."Document Type"::"Credit Memo":
+            IF SalesCrMemoHeader.GET(DocNo) THEN BEGIN
+              IF SalesCrMemoHeader."Corrective Document" AND
+                 (SalesCrMemoHeader."Corrective Doc. Type" = SalesCrMemoHeader."Corrective Doc. Type"::Correction)
+              THEN
+                Column := Column::Decrease
+              ELSE
+                Sign := -1;
+              CalcSalesCrMemoAmount(AmtInclVAT,VATAmount,SalesCrMemoHeader."No.");
+            END;
+        END;
+      END ELSE
+        CASE DocType OF
+          VATEntry."Document Type"::Invoice:
+            IF PurchInvHeader.GET(DocNo) THEN BEGIN
+              CalcPurchInvAmount(AmtInclVAT,VATAmount,PurchInvHeader."No.");
+              IF PurchInvHeader."Corrective Document" AND
+                 (PurchInvHeader."Corrective Doc. Type" = PurchInvHeader."Corrective Doc. Type"::Correction)
+              THEN
+                Column := Column::Increase;
+            END;
+          VATEntry."Document Type"::"Credit Memo":
+            IF PurchCrMemoHeader.GET(DocNo) THEN BEGIN
+              IF PurchCrMemoHeader."Corrective Document" AND
+                 (PurchCrMemoHeader."Corrective Doc. Type" = PurchCrMemoHeader."Corrective Doc. Type"::Correction)
+              THEN
+                Column := Column::Decrease
+              ELSE
+                Sign := -1;
+              CalcPurchCrMemoAmount(AmtInclVAT,VATAmount,PurchCrMemoHeader."No.");
+            END;
+        END;
+      AmtInclVATText := FORMAT(Sign * AmtInclVAT);
+      IF VATExempt THEN
+        LocRepMgt.FormatVATExemptLine(VATAmtText,VATAmtText)
+      ELSE
+        VATAmtText := FORMAT(Sign * VATAmount);
+    END;
+
+    LOCAL PROCEDURE GetCurrencyInfo@1210050(CurrencyCode@1210002 : Code[10]) : Text[40];
+    VAR
+      GLSetup@1210000 : Record 98;
+      Currency@1210001 : Record 4;
+      CurrencyDescription@1210003 : Text[40];
+    BEGIN
+      CurrencyDescription := '';
+      IF CurrencyCode = '' THEN BEGIN
+        GLSetup.GET;
+        CurrencyCode := GLSetup."LCY Code";
+      END;
+
+      IF Currency.GET(CurrencyCode) THEN BEGIN
+        CurrencyDescription :=
+          LOWERCASE(COPYSTR(Currency.Description,1,1)) + COPYSTR(Currency.Description,2);
+        IF Currency."RU Bank Digital Code" <> '' THEN BEGIN
+          IF CurrencyDescription <> '' THEN
+            CurrencyDescription := CurrencyDescription + '; ' + Currency."RU Bank Digital Code"
+          ELSE
+            CurrencyDescription := Currency."RU Bank Digital Code";
+        END;
+      END;
+      EXIT(CurrencyDescription);
+    END;
+
+    LOCAL PROCEDURE GetCorrVendVATInvNo@1210008(VAR OrigVATInvNo@1210000 : Code[30];VAR CorrVATInvNo@1210001 : Code[30];VendLedgEntryNo@1210002 : Integer;EntryType@1210004 : 'Purchase,Sale';PrintRevision@1210009 : Boolean);
+    VAR
+      PurchInvHeader@1210005 : Record 122;
+      PurchCrMemoHeader@1210006 : Record 124;
+      OrigPurchInvHeader@1210003 : Record 122;
+      VendLedgEntry@1210007 : Record 25;
+    BEGIN
+      IF EntryType = EntryType::Purchase THEN
+        IF VendLedgEntry.GET(VendLedgEntryNo) THEN
+          CASE VendLedgEntry."Document Type" OF
+            VendLedgEntry."Document Type"::Invoice:
+              IF PurchInvHeader.GET(VendLedgEntry."Document No.") THEN
+                IF PurchInvHeader."Corrective Document" THEN BEGIN
+                  IF (VendLedgEntry."Vendor VAT Invoice No." <> '') AND
+                     (PurchInvHeader."Corrective Doc. Type" =
+                      PurchInvHeader."Corrective Doc. Type"::Correction)
+                  THEN
+                    CorrVATInvNo := VendLedgEntry."Vendor VAT Invoice No.";
+                  IF (PurchInvHeader."Corrective Doc. Type" =
+                      PurchInvHeader."Corrective Doc. Type"::Correction) OR
+                     ((PurchInvHeader."Corrective Doc. Type" =
+                       PurchInvHeader."Corrective Doc. Type"::Revision) AND
+                      PrintRevision)
+                  THEN
+                    IF PurchInvHeader."Original Doc. Type" =
+                       PurchInvHeader."Original Doc. Type"::Invoice
+                    THEN BEGIN
+                      OrigPurchInvHeader.GET(PurchInvHeader."Original Doc. No.");
+                      OrigPurchInvHeader.CALCFIELDS("Vendor VAT Invoice No.");
+                      IF OrigPurchInvHeader."Vendor VAT Invoice No." <> '' THEN
+                        OrigVATInvNo := OrigPurchInvHeader."Vendor VAT Invoice No."
+                      ELSE
+                        OrigVATInvNo := OrigPurchInvHeader."No.";
+                    END ELSE BEGIN
+                      VendLedgEntry.SETCURRENTKEY("Document Type","Document No.");
+                      VendLedgEntry.SETRANGE("Document Type",PurchInvHeader."Original Doc. Type");
+                      VendLedgEntry.SETRANGE("Document No.",PurchInvHeader."Original Doc. No.");
+                      IF VendLedgEntry.FINDFIRST THEN BEGIN
+                        IF VendLedgEntry."Vendor VAT Invoice No." <> '' THEN
+                          OrigVATInvNo := VendLedgEntry."Vendor VAT Invoice No."
+                        ELSE
+                          OrigVATInvNo := VendLedgEntry."Document No.";
+                      END;
+                      VendLedgEntry.RESET;
+                    END;
+                END;
+            VendLedgEntry."Document Type"::"Credit Memo":
+              IF PurchCrMemoHeader.GET(VendLedgEntry."Document No.") THEN
+                IF PurchCrMemoHeader."Corrective Document" THEN BEGIN
+                  IF (VendLedgEntry."Vendor VAT Invoice No." <> '') AND
+                     (PurchCrMemoHeader."Corrective Doc. Type" =
+                      PurchCrMemoHeader."Corrective Doc. Type"::Correction)
+                  THEN
+                    CorrVATInvNo := VendLedgEntry."Vendor VAT Invoice No.";
+                  IF (PurchCrMemoHeader."Corrective Doc. Type" =
+                      PurchCrMemoHeader."Corrective Doc. Type"::Correction) OR
+                     ((PurchCrMemoHeader."Corrective Doc. Type" =
+                       PurchCrMemoHeader."Corrective Doc. Type"::Revision) AND
+                      PrintRevision)
+                  THEN
+                    IF PurchCrMemoHeader."Original Doc. Type" =
+                       PurchCrMemoHeader."Original Doc. Type"::Invoice
+                    THEN BEGIN
+                      OrigPurchInvHeader.GET(PurchCrMemoHeader."Original Doc. No.");
+                      OrigPurchInvHeader.CALCFIELDS("Vendor VAT Invoice No.");
+                      IF OrigPurchInvHeader."Vendor VAT Invoice No." <> '' THEN
+                        OrigVATInvNo := OrigPurchInvHeader."Vendor VAT Invoice No."
+                      ELSE
+                        OrigVATInvNo := OrigPurchInvHeader."No.";
+                    END ELSE BEGIN
+                      VendLedgEntry.SETCURRENTKEY("Document Type","Document No.");
+                      VendLedgEntry.SETRANGE("Document Type",PurchCrMemoHeader."Original Doc. Type");
+                      VendLedgEntry.SETRANGE("Document No.",PurchCrMemoHeader."Original Doc. No.");
+                      IF VendLedgEntry.FINDFIRST THEN BEGIN
+                        IF VendLedgEntry."Vendor VAT Invoice No." <> '' THEN
+                          OrigVATInvNo := VendLedgEntry."Vendor VAT Invoice No."
+                        ELSE
+                          OrigVATInvNo := VendLedgEntry."Document No.";
+                      END;
+                      VendLedgEntry.RESET;
+                    END;
+                END;
+          END;
+    END;
+
+    LOCAL PROCEDURE GetEntryType@1210009(VAR EntryType@1210003 : 'Purchase,Sale';IsCrMemo@1210000 : Boolean;DocNo@1210001 : Code[20];ReportType@1210002 : 'Received,Issued');
+    BEGIN
+      IF ReportType = ReportType::Received THEN BEGIN
+        IF IsCrMemo AND IsCrMemoIncludedInVatLedg(DocNo,ReportType) THEN
+          EntryType := EntryType::Sale
+        ELSE
+          EntryType := EntryType::Purchase;
+      END ELSE BEGIN
+        IF NOT (IsCrMemo AND IsCrMemoIncludedInVatLedg(DocNo,ReportType)) THEN
+          EntryType := EntryType::Sale
+        ELSE
+          EntryType := EntryType::Purchase;
+      END;
+    END;
+
+    PROCEDURE GetVATInvJnlLineValues@1210002(VendLedgEntry@1210015 : Record 25;VAR VATLedgerLine@1210005 : Record 12405;LineNo@1210014 : Integer;ReportType@1210007 : 'Received,Issued';VAR AmtInclVATText@1210004 : Text[30];VAR VATAmtText@1210003 : Text[30];VAR Column@1210002 : ' ,Decrease,Increase';VAR VATInvRcvdDate@1210001 : Date;VAR VATEntryType@1210000 : Code[15];VAR CurrDescr@1210006 : Text[40];VAR VATRegNoKPP@1210026 : Text);
+    VAR
+      VATEntry@1210010 : Record 254;
+      VATLedger@1210027 : Record 12404;
+      VATLedgMgt@1210016 : Codeunit 12423;
+      LocRepMgt@1210012 : Codeunit 12401;
+      EntryType@1210008 : 'Purchase,Sale';
+      Corrective@1210009 : Boolean;
+      VATExempt@1210011 : Boolean;
+      VATAgent@1210013 : Boolean;
+      DocumentNo@1210025 : Code[30];
+      DocumentDate@1210024 : Date;
+      CorrectionNo@1210023 : Code[30];
+      CorrectionDate@1210022 : Date;
+      RevisionNo@1210021 : Code[20];
+      RevisionDate@1210020 : Date;
+      RevisionOfCorrNo@1210019 : Code[20];
+      RevisionOfCorrDate@1210018 : Date;
+      PrintRevision@1210017 : Boolean;
+    BEGIN
+      WITH VendLedgEntry DO BEGIN
+        VATAgent := IsVATAgent("Payroll Ledger Entry No.");
+        GetEntryType(
+          EntryType,"Document Type" = "Document Type"::"Credit Memo","Document No.",ReportType);
+        IF VATAgent THEN
+          EntryType := EntryType::Purchase;
+        Corrective :=
+          IsCorrectiveDocument(
+            VATEntry,"Vendor No.","Document Type","Document No.",EntryType);
+        VATExempt :=
+          LocRepMgt.VATExemptLine(VATEntry."VAT Bus. Posting Group",VATEntry."VAT Prod. Posting Group");
+        GetDocAmounts(
+          AmtInclVATText,VATAmtText,Column,"Document Type","Document No.",EntryType,VATExempt);
+        IF Corrective THEN
+          VATLedgMgt.GetCorrDocProperties(
+            VATEntry,DocumentNo,DocumentDate,CorrectionNo,CorrectionDate,
+            RevisionNo,RevisionDate,RevisionOfCorrNo,RevisionOfCorrDate,PrintRevision);
+        IF NOT Corrective OR
+           (((RevisionNo <> '') OR (RevisionOfCorrNo <> '')) AND NOT PrintRevision)
+        THEN BEGIN
+          IF ReportType = ReportType::Received THEN
+            DocumentNo := "Vendor VAT Invoice No."
+          ELSE
+            DocumentNo := "Document No.";
+          DocumentDate := "Vendor VAT Invoice Date";
+        END;
+
+        GetCorrVendVATInvNo(DocumentNo,CorrectionNo,"Payroll Ledger Entry No.",EntryType,PrintRevision);
+
+        VATLedgerLine.INIT;
+        VATLedgerLine."Line No." := LineNo;
+        VATLedgerLine."Document No." := DocumentNo;
+        VATLedgerLine."Document Date" := DocumentDate;
+        VATLedgerLine."Correction No." := CorrectionNo;
+        VATLedgerLine."Correction Date" := CorrectionDate;
+        VATLedgerLine."Revision No." := RevisionNo;
+        VATLedgerLine."Revision Date" := RevisionDate;
+        VATLedgerLine."Revision of Corr. No." := RevisionOfCorrNo;
+        VATLedgerLine."Revision of Corr. Date" := RevisionOfCorrDate;
+        VATLedgerLine."Print Revision" := PrintRevision;
+        IF NOT VATAgent THEN
+          VATLedgerLine."C/V Name" :=
+            COPYSTR(GetName("Vendor No.",EntryType),1,MAXSTRLEN(VATLedgerLine."C/V Name"))
+        ELSE
+          VATLedgerLine."C/V Name" :=
+            COPYSTR(LocRepMgt.GetCompanyName,1,MAXSTRLEN(VATLedgerLine."C/V Name"));
+        VATInvRcvdDate := "Vendor VAT Invoice Rcvd Date";
+        VATEntryType := "VAT Entry Type";
+        CurrDescr := GetCurrencyInfo("Currency Code");
+        VATRegNoKPP := GetCVVATRegKPP("Vendor No.",GetCVType(EntryType),VATLedger.Type::Purchase);
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcSalesInvAmount@1210022(VAR AmtInclVAT@1210002 : Decimal;VAR VATAmount@1210001 : Decimal;DocumentNo@1210000 : Code[20]);
+    VAR
+      SalesInvLine@1210003 : Record 113;
+    BEGIN
+      WITH SalesInvLine DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        IF FINDSET THEN
+          REPEAT
+            AmtInclVAT += "Amount Including VAT";
+            VATAmount += "Amount Including VAT" - Amount;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcSalesCrMemoAmount@1210023(VAR AmtInclVAT@1210002 : Decimal;VAR VATAmount@1210001 : Decimal;DocumentNo@1210000 : Code[20]);
+    VAR
+      SalesCrMemoLine@1210003 : Record 115;
+    BEGIN
+      WITH SalesCrMemoLine DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        IF FINDSET THEN
+          REPEAT
+            AmtInclVAT += "Amount Including VAT";
+            VATAmount += "Amount Including VAT" - Amount;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcPurchInvAmount@1210024(VAR AmtInclVAT@1210001 : Decimal;VAR VATAmount@1210002 : Decimal;DocumentNo@1210000 : Code[20]);
+    VAR
+      PurchInvLine@1210003 : Record 123;
+    BEGIN
+      WITH PurchInvLine DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        IF FINDSET THEN
+          REPEAT
+            AmtInclVAT += "Amount Including VAT";
+            VATAmount += "Amount Including VAT" - Amount;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CalcPurchCrMemoAmount@1210030(VAR AmtInclVAT@1210002 : Decimal;VAR VATAmount@1210001 : Decimal;DocumentNo@1210000 : Code[20]);
+    VAR
+      PurchCrMemoLine@1210003 : Record 125;
+    BEGIN
+      WITH PurchCrMemoLine DO BEGIN
+        SETRANGE("Document No.",DocumentNo);
+        IF FINDSET THEN
+          REPEAT
+            AmtInclVAT += "Amount Including VAT";
+            VATAmount += "Amount Including VAT" - Amount;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

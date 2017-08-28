@@ -1,0 +1,301 @@
+OBJECT Codeunit 50016 Load Operation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.10.13;
+    Time=16:19:53;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=BEGIN
+            // Проверки обеспечиающие контроль правильного программного запуска
+            MovingDataSetup.GET;
+            IF "Type Processing" <> "Type Processing"::"Cons. Source" THEN
+              ERROR(Text001);
+            ConsSource.CHANGECOMPANY("Company No.");
+            ConsSource.GET(Processor);
+            ConsSource.TESTFIELD("Export Cons. Source");
+
+            IF ConsSource."Import Format" <> ConsSource."Import Format"::FromExtSystem THEN
+              ERROR(Text001);
+            IF ConsSource."Use External File" THEN
+              ERROR(Text001);
+            ConsSource.TESTFIELD("External System");
+
+            Company.GET("Company No.");
+            IF Company."Legal Entity Id" = '' THEN BEGIN
+              isOK := FALSE;
+              EXIT;
+            END;
+            PreBuffer.SETCURRENTKEY(Status,"Id External System","Id Legal Entity");
+            PreBuffer.SETRANGE("Id Legal Entity",Company."Legal Entity Id");
+            PreBuffer.SETRANGE("Id External System",ConsSource."External System");
+            PreBuffer.SETRANGE(Status,PreBuffer.Status::New);
+
+            isOK := NOT PreBuffer.ISEMPTY;
+
+            IF ("Processing Mode" = "Processing Mode"::Test) OR
+               (NOT isOK) THEN
+              EXIT;
+
+            IF "Company No." <> COMPANYNAME THEN
+              ERROR(Text002,ConsSource.Code);
+
+            IF GUIALLOWED THEN BEGIN
+              Indicator.OPEN(Text55001 +
+                             Text55002 +
+                             Text55003 +
+                             Text55004);
+              iCount := PreBuffer.COUNT;
+              i := 0;
+              Indicator.UPDATE(2, iCount);
+            END;
+
+            CountCanceled := 0;
+            CountProcessed := 0;
+
+            IF "Cons. Register" = 0 THEN BEGIN
+              ConsRegister.RESET;
+              ConsRegister.SETRANGE("Cons. Source Code", Processor);
+              IF ConsRegister.FINDLAST THEN
+                "Cons. Register" := ConsRegister."No." + 1
+              ELSE
+                "Cons. Register" := 1;
+              ConsRegister.INIT;
+            END ELSE
+              ConsRegister.GET("Cons. Register",Processor);
+
+            IF NOT PreBuffer.FIND('-') THEN BEGIN
+              isOK := FALSE;
+              EXIT;
+            END;
+            REPEAT
+              IF GUIALLOWED THEN BEGIN
+                i +=1 ;
+                Indicator.UPDATE(1, ROUND((i/iCount)*10000, 1));
+                Indicator.UPDATE(3, i);
+              END;
+
+              isRepeat := FALSE;
+              REPEAT
+                isOK := TRUE;
+                RecRefPreBuffer.GETTABLE(PreBuffer);
+                Rec."Record ID" := RecRefPreBuffer.RECORDID;
+                IF NOT CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",Rec) THEN BEGIN
+
+                  IF NOT isRepeat AND PreBuffer.GET(PreBuffer."Entry No.") THEN BEGIN
+                    SLEEP(MovingDataSetup."Timeout with Blocking (m.sec)");
+                    isRepeat := TRUE;
+                  END ELSE BEGIN
+                    isRepeat := FALSE;
+                    EXIT;
+                  END;
+                END ELSE
+                  isRepeat := FALSE;
+              UNTIL NOT isRepeat;
+
+              isRepeat := FALSE;
+              REPEAT
+                PreBuffer.GET(PreBuffer."Entry No.");
+                RecRefPreBuffer.GETTABLE(PreBuffer);
+                Rec."Record ID" := RecRefPreBuffer.RECORDID;
+                IF NOT CODEUNIT.RUN(CODEUNIT::"Load One Operation",Rec) THEN BEGIN
+
+                  IF NOT isRepeat AND PreBuffer.GET(PreBuffer."Entry No.") THEN BEGIN
+                    SLEEP(MovingDataSetup."Timeout with Blocking (m.sec)");
+                    isRepeat := TRUE;
+                  END ELSE BEGIN
+                    //PreBuffer2.GET(PreBuffer."Entry No.");
+                    //PreBuffer2.VALIDATE(Status,PreBuffer2.Status::"Processing Canceled");
+                    //PreBuffer2.MODIFY(TRUE);
+
+                    ErrorJournal.AddLastError1("Company No.",ErrorJournal."Error Group"::Load,ErrorJournal.Type::Warning,
+                                               Processor,"Cons. Register",
+                                               PreBuffer2.TABLECAPTION,RecRefPreBuffer,"Line No.");
+                    isRepeat := FALSE;
+                  END;
+                END ELSE
+                  isRepeat := FALSE;
+              UNTIL NOT isRepeat;
+
+              //NC S1245 > PCH
+              iProc += 1;
+              IF (ConsRegister."From Posting Date" = 0D) OR
+                 (PreBuffer."Document Date" < ConsRegister."From Posting Date") THEN
+                ConsRegister."From Posting Date" := PreBuffer."Document Date";
+              IF (ConsRegister."To Posting Date" = 0D) OR
+                 (PreBuffer."Document Date" > ConsRegister."To Posting Date") THEN
+                ConsRegister."To Posting Date" := PreBuffer."Document Date";
+              //NC S1245 < PCH
+              PreBuffer2.GET(PreBuffer."Entry No.");
+              IF PreBuffer2.Status = PreBuffer2.Status::"Processing Canceled" THEN
+                CountCanceled += 1
+              ELSE IF PreBuffer2.Status = PreBuffer2.Status::"Processing Complete" THEN
+                CountProcessed += 1;
+              PreBuffer2."Consolidation Register" := "Cons. Register";
+              PreBuffer2."Cons. Source Code" := Processor;
+              PreBuffer2.MODIFY(TRUE);
+              COMMIT;
+            UNTIL PreBuffer.NEXT = 0;
+
+
+            ConsRegister."No." := "Cons. Register";
+            ConsRegister."Cons. Source Code" := Processor;
+            ConsRegister."Consolidation Date" := TODAY;
+            ConsRegister."Consolidation Time" := TIME;
+            ConsRegister."User ID" := USERID;
+            ConsRegister."From Entry No." := 0;
+            ConsRegister."To Entry No." := 0;
+            ConsRegister."From Entry No." := "Begin Entry No.";
+            ConsRegister."To Entry No." := "Last Entry No.";
+            //NC S1245 > PCH
+            //ConsRegister."Total Entries In Session" := iCount;
+            ConsRegister."Total Entries In Session" := iProc;
+            //NC S1245 < PCH
+            ConsRegister."Total Success Loaded In Sess" := CountProcessed;
+            ConsRegister."Total Unloaded In Session" := CountCanceled;
+            ConsRegister."Id Legal Entity" := Company."Legal Entity Id";
+            IF NOT   ConsRegister.INSERT(TRUE) THEN
+              ConsRegister.MODIFY(TRUE);
+
+            IF GUIALLOWED THEN
+              Indicator.CLOSE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TableCheckBlocked@1000000007 : Codeunit 50010;
+      ErrorJournal@1101495000 : Record 50023;
+      TextError@1101495001 : Text[250];
+      Text001@1101495002 : TextConst 'ENU=Incorrect startup parameters.;RUS=Неправильные параметры запуска.';
+      ConsSource@1101495003 : Record 50001;
+      PreBuffer@1101495004 : Record 50007;
+      PreBuffer2@1000000006 : Record 50007;
+      Company@1101495005 : Record 2000000006;
+      RecRefPreBuffer@1101495006 : RecordRef;
+      Text002@1101495007 : TextConst 'ENU=Processing ischtochnika consolidation %1 must run in your company;RUS=Обработка исчточника консолидации %1 должна запускаться в своей фирме';
+      Text003@1000000008 : TextConst 'ENU=You can not start the download. As legal persons loading.;RUS=Нельзя запустить загрузку. В юрлице идет загрузка.';
+      ConsRegister@1101495009 : Record 50005;
+      Indicator@1101495010 : Dialog;
+      iCount@1101495011 : Integer;
+      i@1101495012 : Integer;
+      TextEDB01@1000000011 : TextConst 'ENU=In the process of implementation %1 unclassified error occurred. %2 Processing stopped.;RUS=В процессе выполнения %1 возникла ошибка. %2 Обработка прекращена.';
+      Text55001@1000000000 : TextConst 'ENU=Loading entries from Buffer Load To Buffer Process... \;RUS=Загрузка данных из буфера загрузки в буфер обработки... \';
+      Text55002@1000000001 : TextConst 'ENU=Total Entries      #2##### \;RUS=Общее число строк  #2##### \';
+      Text55003@1000000002 : TextConst 'ENU=Processed          #3##### \;RUS=Обработано         #3##### \';
+      Text55004@1000000003 : TextConst 'ENU=Progress:          @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Процент выполнения:@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      CountCanceled@1000000004 : Integer;
+      CountProcessed@1000000005 : Integer;
+      isRepeat@1000000009 : Boolean;
+      MovingDataSetup@1000000010 : Record 50064;
+      iProc@1101495008 : Integer;
+
+    PROCEDURE LoadFromPredBuffer@1101495000(ConsSource@1101495000 : Record 50001);
+    VAR
+      JobProcStatusTemp@1101495001 : TEMPORARY Record 50063;
+      JobProc@1000000000 : Record 50062;
+      JobProcStatus@1000000001 : Record 50063;
+    BEGIN
+      {
+      JobProcStatusTemp."Company No." := COMPANYNAME;
+      JobProcStatusTemp."Line No." := 0;
+      JobProcStatusTemp.Blocked := FALSE;
+      JobProcStatusTemp.Process := '';
+      JobProcStatusTemp.Description := '';
+      JobProcStatusTemp."Auto Start" := FALSE;
+      JobProcStatusTemp.Dependency := 0;
+      JobProcStatusTemp."Type Processing" := JobProcStatusTemp."Type Processing"::"Cons. Source";
+      JobProcStatusTemp.Processor := ConsSource.Code;
+      JobProcStatusTemp."Status Monitor" := JobProcStatusTemp."Status Monitor"::"Loading Buffer";
+      JobProcStatusTemp."Import Format" := ConsSource."Import Format";
+      JobProcStatusTemp."External Source" := ConsSource."External System";
+      JobProcStatusTemp."Name Service NAS" := '';
+      JobProcStatusTemp."Transaction No." := 0;
+      JobProcStatusTemp.Status := JobProcStatusTemp.Status::"Processing Begin";
+      JobProcStatusTemp."Time Status" := CREATEDATETIME(TODAY,TIME);
+      JobProcStatusTemp."Cons. Register" := 0;
+      //JobProcStatusTemp."Object No."
+      JobProcStatusTemp."Processing Mode" := JobProcStatusTemp."Processing Mode"::Load;
+      //JobProcStatusTemp."Record ID"
+
+      CODEUNIT.RUN(CODEUNIT::"Load Operation",JobProcStatusTemp);
+
+      //MESSAGE('Ваполнено без ошибок: %1 \ Созданы операции в буфере: %2 .. %3',JobProcStatusTemp.isOK,
+      //                                                                         JobProcStatusTemp."Begin Entry No.",
+      //                                                                         JobProcStatusTemp."Last Entry No.");
+      }
+
+      ConsSource.TESTFIELD("Import Format",ConsSource."Import Format"::FromExtSystem);
+      ConsSource.TESTFIELD("Use External File",FALSE);
+
+
+      JobProc.RESET;
+      JobProc.INIT;
+      JobProc.VALIDATE("Company No.",COMPANYNAME);
+      JobProc.VALIDATE(Blocked,FALSE);
+      JobProc.VALIDATE("Type Processing",JobProc."Type Processing"::"Cons. Source");
+      JobProc.VALIDATE(Processor,ConsSource.Code);
+      JobProc.VALIDATE("Import Format",JobProc."Import Format"::FromExtSystem);
+      JobProc.VALIDATE("External Source",ConsSource."External System");
+      JobProc."Auto Start" := FALSE;
+      JobProc."Name Service NAS" := '';
+      JobProc."Name Server NAS" := '';
+      JobProc."Status Monitor" := JobProc."Status Monitor"::"Loading Buffer";
+      JobProc."Data Check" := TRUE;
+      JobProc."Check Uniqueness" := TRUE;
+
+      // Проверка на загрузку операций в юрлице
+      IF NOT JobProcStatus.IsCheckUniq(JobProc,STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                  JobProcStatus.Status::Working)) THEN
+        ERROR(Text003,ConsSource."Company Name");
+
+      JobProcStatus.AddJob(JobProc);
+      JobProcStatus.Status := JobProcStatus.Status::Scheduled;
+      JobProcStatus."Transaction No." := JobProcStatus.GetNewTransactionNo;
+      JobProcStatus."Processing Mode" := JobProcStatusTemp."Processing Mode"::Load;
+      JobProcStatus.MODIFY;
+      COMMIT;
+
+      CODEUNIT.RUN(CODEUNIT::"Run Job Process",JobProcStatus);
+
+      JobProcStatus.GET(JobProcStatus."Line No.");
+    END;
+
+    BEGIN
+    {
+      NC MDB02 PCH Создан CU
+      ПАРАМЕТРЫ:
+        "Company No."
+        "Line No."
+        Blocked
+        Process
+        Description
+        "Auto Start"
+        Dependency
+        "Type Processing" - Ист. Консолидации
+        Processor - Код Ист. Консолидации
+        "Status Monitor" - не исп.
+        "Import Format" - 0 - Загрузка из Внеш. Системы
+        "External Source" - ID внешней системы
+        "Transaction No."
+        "Object No." - не используется
+        "Processing Mode" - Test - проверка наличия записей, Load - загрузка
+        "Record ID" - не используется
+      ВОЗВРАТ:
+        isOK - ОК
+        "Cons. Register" - регистр в котором произошла загрузка
+        Status - ???
+        "Time Status" - ???
+        "Begin Entry No."
+        "Last Entry No."
+      NC S1245 PCH заполнение статистики
+    }
+    END.
+  }
+}
+

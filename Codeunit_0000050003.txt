@@ -1,0 +1,494 @@
+OBJECT Codeunit 50003 ImportBufferMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01.12.09;
+    Time=18:16:13;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text00001@1210000 : TextConst 'RUS=Обратитесь к разработчикам. Ошибка алгоритма';
+      Indicator@1210001 : Dialog;
+      j@1210002 : Integer;
+      AllCount@1210003 : Integer;
+
+    PROCEDURE ImportBufferFromPreBuffer@1210000(StartDate@1210000 : Date;EndDate@1210001 : Date;StructureUnit@1210002 : Code[20];ConsSourceCode@1000000000 : Code[20];UseComparsionCheck@1000000001 : Boolean;RegisterNo@1000000002 : Integer);
+    VAR
+      PreBuffer@1210003 : Record 50007;
+      Buffer@1210004 : Record 50008;
+      EntryNo@1210005 : Integer;
+    BEGIN
+      //NC PIF001 > DP
+
+      Indicator.OPEN('Загрузка данных из предбуфера в буфер'   + '\' +
+                     'Общее число строк  ' +   '#2#####' + '\' +
+                     'Обработано         ' +   '#3#####' + '\' +
+                     'Процент выполнения:' + '@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+
+      InitEntryNo(EntryNo, ConsSourceCode);
+      //NC PIF001 > DP 20.06.07
+      //NC PIF001 > DP 26.11.07
+      {
+      PreBuffer.SETCURRENTKEY("Structure Unit",
+                           "Document Type",
+                           "Document No.",
+                           "Document Date",
+                           "Document ID",
+                           "Operation No.",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      }
+      //NC MDB01 > MP
+      {
+      PreBuffer.SETCURRENTKEY("Document ID",
+                           "Operation No.",
+                           "Document Date",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      }
+      //NC MDB01 < MP
+      //NC PIF001 < DP 26.11.07
+      //NC PIF001 < DP 20.06.07
+
+      //NC PIF001 > DP 26.11.07
+      {
+      PreBuffer.SETRANGE("Document Date", StartDate, EndDate);
+      PreBuffer.SETRANGE("Structure Unit", StructureUnit);
+      }
+      //NC PIF001 < DP 26.11.07
+      //NC MDB01 > MP
+      {
+      PreBuffer.SETCURRENTKEY("Cons. Source Code","Entry No.");
+      }
+      //NC MDB01 < MP
+
+      AllCount := PreBuffer.COUNT;
+      j:= 0;
+      Indicator.UPDATE(2, AllCount);
+
+      //NC PIF001 > DP 20.06.07
+      //NC PIF001 > DP 26.11.07
+      {
+      Buffer.SETCURRENTKEY("Structure Unit",
+                           "Document Type",
+                           "Document No.",
+                           "Document Date",
+                           "Document ID",
+                           "Operation No.",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      }
+      Buffer.SETCURRENTKEY("Document ID",
+                           "Operation No.",
+                           "Document Date",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      //NC PIF001 < DP 26.11.07
+      //NC PIF001 < DP 20.06.07
+
+      WITH PreBuffer DO BEGIN
+        IF FINDSET THEN
+          REPEAT
+            j +=1 ;
+            Indicator.UPDATE(1, ROUND((j/AllCount)*10000, 1));
+            Indicator.UPDATE(3, j);
+            //NC PIF001 > DP 26.11.07
+            {
+            Buffer.SETRANGE("Structure Unit", "Structure Unit");
+            Buffer.SETRANGE("Document Type", "Document Type");
+            Buffer.SETRANGE("Document No.", "Document No.");
+            Buffer.SETRANGE("Document Date", "Document Date");
+            }
+            //NC PIF001 < DP 26.11.07
+            IF UseComparsionCheck THEN BEGIN
+              //NC MDB01 > MP
+              {
+              Buffer.SETRANGE("Cons. Source Code","Cons. Source Code");
+              }
+              //NC MDB01 < MP
+              //NC PIF001 > DP 20.06.07
+              Buffer.SETRANGE("Document ID","Document ID");
+              //NC PIF001 < DP 20.06.07
+              Buffer.SETRANGE("Operation No.", "Operation No.");
+              Buffer.SETRANGE(Removed, FALSE);
+              Buffer.SETRANGE("Remove Oper. No", 0);
+              Buffer.SETRANGE(Reposted, FALSE);
+              IF Buffer.FINDLAST THEN BEGIN
+                IF NOT IsEqualBufferPreBuffer(Buffer, PreBuffer) THEN BEGIN
+                  //Cтрока в предбуфере изменена
+                  IF (Buffer."Export Consolidation Register" > 0) OR (Buffer."Source Operation No." > 0) OR
+                     (Buffer."FA Operation Exported") THEN BEGIN
+                    //Найденная строка в буфере уже перенесена в Navision или является изменяющей или выгружена операция по ОС
+                    Buffer.Reposted := TRUE;
+                    Buffer.MODIFY;
+                    //NC MDB01 > MP
+                    {
+                    PreBuffer."Source Operation No." := Buffer."Entry No.";
+                    }
+                    //NC MDB01 < MP
+                  END ELSE BEGIN
+                    //найденная строка в буфере еще не переносилась в Navision
+                    Buffer.DELETE;
+                  END;
+                  CopyPreBuffer2Buffer(PreBuffer, Buffer, EntryNo,RegisterNo);
+                END;
+              END ELSE BEGIN
+                //нет такой строки в буфере
+                CopyPreBuffer2Buffer(PreBuffer, Buffer, EntryNo,RegisterNo);
+              END;
+            END ELSE BEGIN
+              CopyPreBuffer2Buffer(PreBuffer, Buffer, EntryNo,RegisterNo);
+            END;
+          UNTIL NEXT = 0;
+
+        //PreBuffer.DELETEALL;
+      END;
+      Indicator.CLOSE;
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE InitEntryNo@1210040(VAR EntryNo@1210000 : Integer;ConsSourceCode@1210002 : Code[20]);
+    VAR
+      Buffer@1210001 : Record 50008;
+    BEGIN
+      //NC PIF001 > DP
+      Buffer.RESET;
+      //Buffer.SETCURRENTKEY("Structure Unit");
+      Buffer.SETRANGE("Cons. Source Code", ConsSourceCode);
+      IF Buffer.FINDLAST THEN
+        EntryNo := Buffer."Entry No." + 1
+      ELSE
+        EntryNo := 1;
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE IsEqualBufferPreBuffer@1210171(Buffer@1210003 : Record 50008;PreBuffer@1210004 : Record 50007) Equal : Boolean;
+    VAR
+      RecordRef1@1210001 : RecordRef;
+      RecordRef2@1210000 : RecordRef;
+      FieldRef1@1210002 : FieldRef;
+      FieldRef2@1210006 : FieldRef;
+      i@1210005 : Integer;
+      IsCompare@1210007 : Boolean;
+    BEGIN
+      //NC PIF001 > DP
+      //Возвращает TRUE, если строки одинаковые, FALSE в обратном случае
+      RecordRef1.GETTABLE(Buffer);
+      RecordRef2.GETTABLE(PreBuffer);
+
+      FOR i := 1 TO RecordRef2.FIELDCOUNT DO BEGIN  //Важно, что RecordRef2, так в буфере больше полей, чем в предбуфере
+        IsCompare := TRUE;
+        FieldRef1 := RecordRef1.FIELDINDEX(i);
+        FieldRef2 := RecordRef2.FIELDINDEX(i);
+
+
+        CASE FieldRef1.NUMBER OF
+          //NC PIF001 > DP 17.04.07
+          {
+          2,201,202,120,121,122,127,203,204,261,123,128,124:
+          }
+          2,201,202,206,120,121,122,127,203,204,261,123,128,124,125,12,501,502,503,
+          234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,
+          251,252,253,254,255,259,260,265,266,270,271,275,276,280,281,285,286:
+          //NC PIF001 < DP 17.04.07
+            BEGIN
+              IsCompare := FALSE;
+            END
+        END;
+
+        IF IsCompare THEN
+          IF FieldRef1.VALUE <> FieldRef2.VALUE THEN
+            EXIT(FALSE)
+      END;
+      EXIT(TRUE);
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE CopyPreBuffer2Buffer@1210030(VAR PreBuffer@1210001 : Record 50007;VAR Buffer@1210000 : Record 50008;VAR EntryNo@1210002 : Integer;RegisterNo@1000000000 : Integer);
+    BEGIN
+      //NC PIF001 > DP
+      Buffer.TRANSFERFIELDS(PreBuffer);
+      Buffer."Entry No." := EntryNo;
+      Buffer."Consolidation Register" := RegisterNo;
+      Buffer.INSERT(TRUE);
+      EntryNo += 1;
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE CopyBuffer2BufferRem@1210047(VAR Buffer@1210000 : Record 50008;VAR Buffer2@1210001 : Record 50008;VAR EntryNo@1210002 : Integer;RegisterNo@1210003 : Integer);
+    BEGIN
+      //NC PIF001 > DP
+      Buffer2.COPY(Buffer);
+      Buffer2."Entry No." := EntryNo;
+      Buffer2.Removed := TRUE;
+      Buffer2."Source Operation No." := Buffer."Entry No.";
+      Buffer2."Remove Oper. No" := 0;
+      Buffer2."Export Consolidation Register" := 0;
+      Buffer2."Consolidation Register" := RegisterNo;
+      //NC PIF001 > DP
+      Buffer2."FA Operation Exported" := FALSE;
+      Buffer2."FA Operation Processed" := FALSE;
+      //NC PIF001 < DP
+      Buffer2.INSERT(TRUE);
+      EntryNo += 1;
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE ComparePreBufferwithBuffer@1210044(StartDate@1210000 : Date;EndDate@1210001 : Date;StructureUnit@1210002 : Code[20];RegNo@1210008 : Integer;ConsSourceCode@1000000000 : Code[20]);
+    VAR
+      PreBuffer@1210003 : Record 50007;
+      Buffer@1210004 : Record 50008;
+      EntryNo@1210005 : Integer;
+      Buffer1@1210006 : Record 50008;
+      Buffer2@1210007 : Record 50008;
+    BEGIN
+      //NC PIF001 > DP
+      //Поиск проводок в буфере, которые отсутсвуют в файле загрузки
+      InitEntryNo(EntryNo, ConsSourceCode);
+      //NC PIF001 > DP 20.06.07
+      //NC PIF001 > DP 26.11.07
+      {
+      Buffer.SETCURRENTKEY("Structure Unit",
+                           "Document Type",
+                           "Document No.",
+                           "Document Date",
+                           "Document ID",
+                           "Operation No.",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      }
+      Buffer.SETCURRENTKEY("Document ID",
+                           "Operation No.",
+                           "Document Date",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+
+      //NC PIF001 < DP 26.11.07
+      //NC PIF001 < DP 20.06.07
+      Buffer.SETRANGE("Document Date", StartDate, EndDate);
+      //NC PIF001 > DP 26.11.07
+      {
+      Buffer.SETRANGE("Structure Unit", StructureUnit);
+      }
+      Buffer.SETRANGE("Cons. Source Code", ConsSourceCode);
+      //NC PIF001 < DP 26.11.07
+      Buffer.SETRANGE(Removed, FALSE);
+      Buffer.SETRANGE("Remove Oper. No", 0);
+      Buffer.SETRANGE(Reposted, FALSE);
+
+      Indicator.OPEN('Сравнение буфера и предбуфера'   + '\' +
+                     'Общее число строк  ' +   '#2#####' + '\' +
+                     'Обработано         ' +   '#3#####' + '\' +
+                     'Процент выполнения:' + '@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+      AllCount := Buffer.COUNT;
+      j:= 0;
+      Indicator.UPDATE(2, AllCount);
+
+      //NC PIF001 > DP 20.06.07
+      //NC PIF001 > DP 26.11.07
+      {
+      PreBuffer.SETCURRENTKEY("Structure Unit",
+                           "Document Type",
+                           "Document No.",
+                           "Document Date",
+                           "Document ID",
+                           "Operation No.",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      }
+      //NC MDB01 > MP
+      {
+      PreBuffer.SETCURRENTKEY("Document ID",
+                           "Operation No.",
+                           "Document Date",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      }
+      //NC MDB01 < MP
+      //NC PIF001 < DP 26.11.07
+      //NC PIF001 < DP 20.06.07
+
+
+      WITH Buffer DO BEGIN
+        IF FIND('-') THEN
+          REPEAT
+            j +=1 ;
+            Indicator.UPDATE(1, ROUND((j/AllCount)*10000, 1));
+            Indicator.UPDATE(3, j);
+            //NC PIF001 > DP 26.11.07
+            {
+            PreBuffer.SETRANGE("Structure Unit", "Structure Unit");
+            PreBuffer.SETRANGE("Document Type", "Document Type");
+            PreBuffer.SETRANGE("Document No.", "Document No.");
+            PreBuffer.SETRANGE("Document Date", "Document Date");
+            }
+            //NC MDB01 > MP
+            {
+            PreBuffer.SETRANGE("Cons. Source Code","Cons. Source Code");
+            }
+            //NC MDB01 < MP
+            //NC PIF001 < DP 26.11.07
+            //NC PIF001 > DP 20.06.07
+            PreBuffer.SETRANGE("Document ID","Document ID");
+            //NC PIF001 < DP 20.06.07
+            PreBuffer.SETRANGE("Operation No.", "Operation No.");
+            IF NOT PreBuffer.FIND('+') THEN BEGIN
+              IF "Export Consolidation Register"  = 0 THEN  BEGIN
+                //нет в предбуфере, и в nav не переносилась
+                DELETE;
+              END ELSE BEGIN
+                //такой записи нет в файле. Создаем удаляющую строку и в исходной ставим ссылку на нее.
+               "Remove Oper. No" := EntryNo;
+                MODIFY;
+                CopyBuffer2BufferRem(Buffer,Buffer2, EntryNo, RegNo);
+              END;
+            END;
+          UNTIL NEXT = 0;
+      END;
+
+      Indicator.CLOSE;
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE "NCF > PIF010"@1000000001();
+    BEGIN
+    END;
+
+    PROCEDURE LoadBufferFromPrebuffer@1000000000(VAR ConsolidationSource@1000000000 : Record 50001);
+    VAR
+      GLBuffer@1000000001 : Record 50008;
+      Prebuffer@1000000002 : Record 50007;
+      ConsSource@1000000010 : Code[20];
+      RegisterNo@1000000009 : Integer;
+      H1_StructureUnit@1000000008 : Text[20];
+      H2_ImportDate@1000000007 : Date;
+      H3_ImportTime@1000000006 : Time;
+      H4_StartDate@1000000005 : Date;
+      H5_EndDate@1000000004 : Date;
+      EntryFrom@1000000003 : Integer;
+      EntryTo@1000000011 : Integer;
+    BEGIN
+      Prebuffer.RESET;
+      Prebuffer.FINDFIRST;
+      //NC MDB01 > MP
+      {
+      H4_StartDate := Prebuffer."Begining Date";
+      H5_EndDate := Prebuffer."Ending Date";
+      }
+      //NC MDB01 < MP
+      H1_StructureUnit := Prebuffer."Structure Unit";
+      RegisterNo := GetNextRegisterNo(ConsolidationSource.Code);
+      GLBuffer.SETCURRENTKEY("Document ID",
+                           "Operation No.",
+                           "Document Date",
+                           Removed,
+                           "Remove Oper. No",
+                           Reposted);
+      GLBuffer.SETRANGE("Cons. Source Code",ConsolidationSource.Code);
+      GLBuffer.SETRANGE("Document Date",H4_StartDate,H5_EndDate);
+
+      EntryFrom := FindLastBufferEntry(ConsolidationSource.Code) + 1;
+      IF GLBuffer.FINDSET THEN BEGIN
+        ImportBufferFromPreBuffer(H4_StartDate, H5_EndDate, H1_StructureUnit, ConsolidationSource.Code,TRUE,RegisterNo);
+        ComparePreBufferwithBuffer(H4_StartDate, H5_EndDate, H1_StructureUnit, RegisterNo, ConsolidationSource.Code);
+      END ELSE BEGIN
+        ImportBufferFromPreBuffer(H4_StartDate, H5_EndDate, H1_StructureUnit, ConsolidationSource.Code,FALSE,RegisterNo);
+      END;
+
+      EntryTo := FindLastBufferEntry(ConsolidationSource.Code);
+      CreateConsRegister(ConsolidationSource.Code,EntryFrom, EntryTo,H4_StartDate,H5_EndDate,RegisterNo);
+      ConsolidationSource."Last Consolidation Date" := TODAY;
+      ConsolidationSource."Last Consolidation Time" := TIME;
+      ConsolidationSource."Last G/L Entry No." := EntryTo;
+      ConsolidationSource.MODIFY;
+    END;
+
+    PROCEDURE FindLastBufferEntry@1210016(ConsSourceCode@1210001 : Code[20]) LastEntyNo : Integer;
+    VAR
+      Buffer@1210000 : Record 50008;
+    BEGIN
+      //NC PIF001 > DP
+      Buffer.SETRANGE("Cons. Source Code", ConsSourceCode);
+      IF Buffer.FINDLAST THEN
+        EXIT(Buffer."Entry No.");
+      EXIT(0);
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE CreateConsRegister@1000000007(ConsSource@1000000004 : Code[20];FromEntryNo@1000000002 : Integer;ToEntryNo@1000000003 : Integer;FromDate@1000000000 : Date;ToDate@1000000001 : Date;RegisterNo1@1210002 : Integer);
+    VAR
+      ConsolSource1@1000000008 : Record 50001;
+      ConsolidationSetup@1210000 : Record 50000;
+      ConsRegister@1210001 : Record 50005;
+    BEGIN
+      //NC PIF001 > DP
+
+      IF FromEntryNo > ToEntryNo THEN
+        FromEntryNo := ToEntryNo;
+      ConsRegister.INIT;
+      ConsRegister."No." := RegisterNo1;
+      ConsRegister."Cons. Source Code" := ConsSource;
+      ConsRegister."Consolidation Date" := TODAY;
+      //NC PIF010 > MP
+      ConsRegister."Consolidation Time" := TIME;
+      //NC PIF010 < MP
+      ConsRegister."User ID" := USERID;
+      ConsRegister."From Entry No." := FromEntryNo;
+      ConsRegister."To Entry No." := ToEntryNo;
+      ConsRegister."From Posting Date" := FromDate;
+      ConsRegister."To Posting Date" := ToDate;
+      ConsolidationSetup.GET;
+      ConsolSource1.GET(ConsSource);
+      ConsRegister."Gen. Journal Template" := ConsolidationSetup."Gen. Jnl. Template";
+      ConsRegister."Gen. Journal Batch" := ConsolSource1."Gen. Journal Batch";
+      ConsRegister."Closed Period Journal Template" := ConsolidationSetup."Gen. Jnl. Template";
+      ConsRegister."Closed Period Journal Batch" := ConsolSource1."Closed Period Journal Batch";
+      ConsRegister."Reposted Journal Template" :=  ConsolidationSetup."Gen. Jnl. Template";
+      ConsRegister."Reposted Journal Batch" := ConsolSource1."Reposted Journal Batch";
+      ConsRegister."Removed Journal Template" := ConsolidationSetup."Gen. Jnl. Template";
+      ConsRegister."Removed Journal Batch" := ConsolSource1."Removed Journal Batch";
+      //ConsRegister."Load from File" := CurrDataport.FILENAME;
+      ConsRegister.INSERT(TRUE);
+      //NC PIF001 < DP
+    END;
+
+    PROCEDURE GetNextRegisterNo@1000000006(ConsSource@1210000 : Code[20]) : Integer;
+    VAR
+      ConsRegister@1000000002 : Record 50005;
+    BEGIN
+      ConsRegister.RESET;
+      ConsRegister.SETRANGE("Cons. Source Code", ConsSource);
+      IF ConsRegister.FINDLAST THEN
+        EXIT(ConsRegister."No." + 1);
+      EXIT(1);
+      //NC PIF001 < DP
+    END;
+
+    BEGIN
+    {
+      NC PIF001 AK Функции по загрузке операций в буфер
+      NC MP 20.06.07 В механизм сравнения добавлен анализ по ID Документа
+    }
+    END.
+  }
+}
+

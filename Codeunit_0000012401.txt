@@ -1,0 +1,1291 @@
+OBJECT Codeunit 12401 Local Report Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15.06.17;
+    Time=18:13:06;
+    Modified=Yes;
+    Version List=NAVRU10.00.00.15601,NOS-26;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text004@1004 : TextConst 'ENU=must be greater than 0;RUS=должно быть больше 0';
+      Text005@1005 : TextConst 'ENU=must be less than 0;RUS=должно быть меньше 0';
+      Employee@1210002 : Record 5200;
+      CompanyInfo@1210008 : Record 79;
+      DocumentSignature@1210005 : Record 12420;
+      PostedDocumentSignature@1210006 : Record 12421;
+      Text008@1470001 : TextConst 'ENU=%1 BIC %2 corr. account %3 %4 %5 bank account %6;RUS=%1 БИК %2, к/с %3 %4 %5, р/с %6';
+      Text009@1210000 : TextConst 'ENU=", tel.: ";RUS=", тел.: "';
+      Text010@1210001 : TextConst 'ENU=", fax: ";RUS=", факс: "';
+      Text011@1210003 : TextConst 'ENU=. S/a %1 in %2, i/a %3 BIC %4;RUS=. Р/с %1 в %2, к/с %3 БИК %4';
+      Text013@1210009 : TextConst 'ENU=%1 No. %2;RUS=%1 ном. %2';
+      Text014@1210010 : TextConst 'ENU=%1 from %2;RUS=%1 из %2';
+      Text015@1210011 : TextConst 'ENU=without VAT;RUS=без НДС';
+      DecimalFractionSerarator@1210012 : Text[1];
+      SalesHeaderTypeOffset@1210004 : Integer;
+      AAAATxt@1210007 : TextConst '@@@={Locked};ENU=AAAA;RUS=AAAA';
+      KKKKTxt@1210013 : TextConst '@@@={Locked};ENU=KKKK;RUS=KKKK';
+
+    PROCEDURE RefreshDecimalPoints@1(VAR MaxDecimalPoints@1000 : Integer;Value@1001 : Decimal);
+    VAR
+      Text@1002 : Text[30];
+      ZeroRight@1003 : Integer;
+    BEGIN
+      IF Value = 0 THEN
+        EXIT;
+      IF DecimalFractionSerarator = '' THEN BEGIN
+        Text := FORMAT(0.01);
+        DecimalFractionSerarator := COPYSTR(Text,2,1);
+      END;
+      Text := FORMAT(Value);
+      ZeroRight := STRPOS(Text,DecimalFractionSerarator);
+      IF ZeroRight = 0 THEN
+        EXIT;
+      ZeroRight := STRLEN(Text) - ZeroRight;
+      IF ZeroRight > MaxDecimalPoints THEN
+        MaxDecimalPoints := ZeroRight;
+    END;
+
+    PROCEDURE FormatReportValue@2(Value@1000 : Decimal;DecPoint@1001 : Decimal) : Text[100];
+    VAR
+      RoundingFactor@1002 : Decimal;
+    BEGIN
+      IF DecPoint = 0 THEN
+        EXIT(FORMAT(ROUND(Value,1),0,'<Sign><Integer Thousand>'));
+      RoundingFactor := POWER(10,0 - DecPoint);
+      EXIT(
+        FORMAT(
+          ROUND(Value,RoundingFactor),0,STRSUBSTNO('<Sign><Integer Thousand><Decimals,%1>',DecPoint + 1)));
+    END;
+
+    PROCEDURE FormatAmount@1210037(DecValue@1210000 : Decimal) : Text;
+    BEGIN
+      EXIT(FORMAT(DecValue,0,'<Precision,2:2><Sign><Integer><Decimals><comma,.>'));
+    END;
+
+    PROCEDURE CheckAttributes@7(GenJnlLine@1000 : Record 81;VAR DocAmount@1001 : Decimal;VAR PayerCode@1002 : ARRAY [5] OF Code[20];VAR PayerText@1003 : ARRAY [6] OF Text[100];VAR BenefeciaryCode@1004 : ARRAY [5] OF Code[20];VAR BenefeciaryText@1005 : ARRAY [6] OF Text[130]);
+    VAR
+      CompanyInfo@1006 : Record 79;
+      Customer@1007 : Record 18;
+      Vendor@1008 : Record 23;
+      VendorBank@1009 : Record 288;
+      CustomerBank@1010 : Record 287;
+      BankAccount@1011 : Record 270;
+      BankAccount1@1210000 : Record 270;
+      CodeIndex@1012 : ',INN,BIC,Corresp. Account,Current Account,KPP';
+      TextIndex@1013 : ',Name,Name2,Bank,Bank2,City,Branch';
+    BEGIN
+      CLEAR(PayerCode);
+      CLEAR(PayerText);
+      CLEAR(BenefeciaryCode);
+      CLEAR(BenefeciaryCode);
+      CLEAR(DocAmount);
+
+      CompanyInfo.GET;
+
+      WITH GenJnlLine DO BEGIN
+        TESTFIELD("Bal. Account Type","Bal. Account Type"::"Bank Account");
+        BankAccount.GET("Bal. Account No.");
+        IF BankAccount."Currency Code" = '' THEN
+          DocAmount := "Amount (LCY)"
+        ELSE BEGIN
+          TESTFIELD("Currency Code",BankAccount."Currency Code");
+          DocAmount := Amount;
+        END;
+
+        CASE "Account Type" OF
+          "Account Type"::"G/L Account":
+            IF NOT BankAccount."Use Client-Bank" THEN
+              FIELDERROR("Account Type");
+          "Account Type"::Customer:
+            IF Customer.GET("Account No.") THEN
+              IF CustomerBank.GET("Account No.","Beneficiary Bank Code") THEN BEGIN
+                IF (Amount > 0) AND ("Document Type" <> "Document Type"::Refund) THEN
+                  FIELDERROR(Amount,Text005);
+                BenefeciaryCode[CodeIndex::INN] := DELCHR(Customer."VAT Registration No.",'<>',' ');
+                BenefeciaryCode[CodeIndex::KPP] := DELCHR(Customer."KPP Code",'<>',' ');
+                BenefeciaryText[TextIndex::Name] := DELCHR(Customer.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Name2] := DELCHR(Customer."Name 2",'<>',' ');
+                BenefeciaryCode[CodeIndex::"Current Account"] := DELCHR(CustomerBank."Bank Account No.",'<>',' ');
+                BenefeciaryCode[CodeIndex::BIC] := DELCHR(CustomerBank.BIC,'<>',' ');
+                BenefeciaryCode[CodeIndex::"Corresp. Account"] := DELCHR(CustomerBank."Bank Corresp. Account No.",'<>',' ');
+                BenefeciaryText[TextIndex::Bank] := DELCHR(CustomerBank.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Bank2] := DELCHR(CustomerBank."Name 2",'<>',' ');
+                ManageAbbrCity(BenefeciaryText[TextIndex::City],CustomerBank.City,CustomerBank."Abbr. City");
+                BenefeciaryText[TextIndex::Branch] := DELCHR(CustomerBank."Bank Branch No.",'<>',' ');
+              END;
+          "Account Type"::Vendor:
+            IF Vendor.GET("Account No.") THEN
+              IF VendorBank.GET("Account No.","Beneficiary Bank Code") THEN BEGIN
+                IF Amount < 0 THEN
+                  FIELDERROR(Amount,Text004);
+                IF (Vendor."Vendor Type" = Vendor."Vendor Type"::Person) AND
+                   (VendorBank."Bank Branch No." <> '')
+                THEN
+                  BenefeciaryCode[CodeIndex::INN] := DELCHR(VendorBank."VAT Registration No.",'<>',' ')
+                ELSE
+                  BenefeciaryCode[CodeIndex::INN] := DELCHR(Vendor."VAT Registration No.",'<>',' ');
+                BenefeciaryCode[CodeIndex::KPP] := DELCHR(Vendor."KPP Code",'<>',' ');
+                IF (Vendor."Vendor Type" = Vendor."Vendor Type"::Person) AND
+                   (VendorBank."Bank Branch No." <> '')
+                THEN BEGIN
+                  BenefeciaryText[TextIndex::Name] := DELCHR(VendorBank."Bank Branch No.",'<>',' ');
+                  BenefeciaryText[TextIndex::Name2] := '';
+                  BenefeciaryText[TextIndex::Branch] := '';
+                END ELSE BEGIN
+                  BenefeciaryText[TextIndex::Name] := DELCHR(Vendor.Name,'<>',' ');
+                  BenefeciaryText[TextIndex::Name2] := DELCHR(Vendor."Name 2",'<>',' ');
+                  BenefeciaryText[TextIndex::Branch] := DELCHR(VendorBank."Bank Branch No.",'<>',' ');
+                END;
+                BenefeciaryCode[CodeIndex::"Current Account"] := DELCHR(VendorBank."Bank Account No.",'<>',' ');
+                BenefeciaryCode[CodeIndex::BIC] := DELCHR(VendorBank.BIC,'<>',' ');
+                BenefeciaryCode[CodeIndex::"Corresp. Account"] := DELCHR(VendorBank."Bank Corresp. Account No.",'<>',' ');
+                BenefeciaryText[TextIndex::Bank] := DELCHR(VendorBank.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Bank2] := DELCHR(VendorBank."Name 2",'<>',' ');
+                ManageAbbrCity(BenefeciaryText[TextIndex::City],VendorBank.City,VendorBank."Abbr. City");
+              END;
+          "Account Type"::"Bank Account":
+            IF BankAccount1.GET("Account No.") THEN BEGIN
+              BenefeciaryCode[CodeIndex::INN] := DELCHR(CompanyInfo."VAT Registration No.",'<>',' ');
+              BenefeciaryCode[CodeIndex::KPP] := DELCHR(CompanyInfo."KPP Code",'<>',' ');
+              BenefeciaryText[TextIndex::Name] := DELCHR(CompanyInfo.Name,'<>',' ');
+              BenefeciaryCode[CodeIndex::"Current Account"] := DELCHR(BankAccount1."Bank Account No.",'<>',' ');
+              BenefeciaryCode[CodeIndex::BIC] := DELCHR(BankAccount1."Bank BIC",'<>',' ');
+              BenefeciaryCode[CodeIndex::"Corresp. Account"] := DELCHR(BankAccount1."Bank Corresp. Account No.",'<>',' ');
+              BenefeciaryText[TextIndex::Bank] := DELCHR(BankAccount1.Name,'<>',' ');
+              BenefeciaryText[TextIndex::Bank2] := DELCHR(BankAccount1."Name 2",'<>',' ');
+              ManageAbbrCity(BenefeciaryText[TextIndex::City],BankAccount1.City,BankAccount1."Abbr. City");
+              BenefeciaryText[TextIndex::Branch] := DELCHR(BankAccount1."Bank Branch No.",'<>',' ');
+            END;
+        END;
+        PayerCode[CodeIndex::INN] := DELCHR(CompanyInfo."VAT Registration No.",'<>',' ');
+        PayerCode[CodeIndex::KPP] := DELCHR(CompanyInfo."KPP Code",'<>',' ');
+        PayerText[TextIndex::Name] := DELCHR(CompanyInfo.Name,'<>',' ');
+        PayerText[TextIndex::Name2] := DELCHR(CompanyInfo."Name 2",'<>',' ');
+        PayerCode[CodeIndex::"Current Account"] := DELCHR(BankAccount."Bank Account No.",'<>',' ');
+        PayerCode[CodeIndex::BIC] := DELCHR(BankAccount."Bank BIC",'<>',' ');
+        PayerCode[CodeIndex::"Corresp. Account"] := DELCHR(BankAccount."Bank Corresp. Account No.",'<>',' ');
+        PayerText[TextIndex::Bank] := DELCHR(BankAccount.Name,'<>',' ');
+        PayerText[TextIndex::Bank2] := DELCHR(BankAccount."Name 2",'<>',' ');
+        ManageAbbrCity(PayerText[TextIndex::City],BankAccount.City,BankAccount."Abbr. City");
+        PayerText[TextIndex::Branch] := DELCHR(BankAccount."Bank Branch No.",'<>',' ');
+      END;
+    END;
+
+    PROCEDURE PostedCheckAttributes@4(CheckLedgerEntries@1000 : Record 272;VAR PayerCode@1001 : ARRAY [4] OF Code[20];VAR PayerText@1002 : ARRAY [6] OF Text[100];VAR BenefeciaryCode@1003 : ARRAY [4] OF Code[20];VAR BenefeciaryText@1004 : ARRAY [6] OF Text[130]);
+    VAR
+      CompanyInfo@1005 : Record 79;
+      Vendor@1006 : Record 23;
+      VendorBank@1007 : Record 288;
+      Customer@1008 : Record 18;
+      CustomerBank@1009 : Record 287;
+      BankAccount@1010 : Record 270;
+      BankAccount1@1210000 : Record 270;
+      CodeIndex@1470001 : ',VATRegNo,BIC,CorrAccNo,BankAccNo';
+      TextIndex@1470000 : ',Name,Name2,Bank,Bank2,City,Branch';
+    BEGIN
+      CLEAR(PayerCode);
+      CLEAR(PayerText);
+      CLEAR(BenefeciaryCode);
+      CLEAR(BenefeciaryCode);
+
+      CompanyInfo.GET;
+
+      WITH CheckLedgerEntries DO BEGIN
+        BankAccount.GET("Bank Account No.");
+
+        CASE "Bal. Account Type" OF
+          "Bal. Account Type"::Customer:
+            IF Customer.GET("Bal. Account No.") THEN
+              IF CustomerBank.GET("Bal. Account No.","Beneficiary Bank Code") THEN BEGIN
+                IF Amount > 0 THEN
+                  FIELDERROR(Amount,Text005);
+                BenefeciaryCode[CodeIndex::VATRegNo] := DELCHR(Customer."VAT Registration No.",'<>',' ');
+                BenefeciaryText[TextIndex::Name] := DELCHR(Customer.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Name2] := DELCHR(Customer."Name 2",'<>',' ');
+                BenefeciaryCode[CodeIndex::BankAccNo] := DELCHR(CustomerBank."Bank Account No.",'<>',' ');
+                BenefeciaryCode[CodeIndex::BIC] := DELCHR(CustomerBank.BIC,'<>',' ');
+                BenefeciaryCode[CodeIndex::CorrAccNo] := DELCHR(CustomerBank."Bank Corresp. Account No.",'<>',' ');
+                BenefeciaryText[TextIndex::Bank] := DELCHR(CustomerBank.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Bank2] := DELCHR(CustomerBank."Name 2",'<>',' ');
+                ManageAbbrCity(BenefeciaryText[TextIndex::City],CustomerBank.City,CustomerBank."Abbr. City");
+                BenefeciaryText[TextIndex::Branch] := DELCHR(CustomerBank."Bank Branch No.",'<>',' ');
+              END;
+          "Bal. Account Type"::Vendor:
+            IF Vendor.GET("Bal. Account No.") THEN
+              IF VendorBank.GET("Bal. Account No.","Beneficiary Bank Code") THEN BEGIN
+                IF Amount > 0 THEN
+                  FIELDERROR(Amount,Text004);
+                BenefeciaryCode[CodeIndex::VATRegNo] := DELCHR(Vendor."VAT Registration No.",'<>',' ');
+                BenefeciaryText[TextIndex::Name] := DELCHR(Vendor.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Name2] := DELCHR(Vendor."Name 2",'<>',' ');
+                BenefeciaryCode[CodeIndex::BankAccNo] := DELCHR(VendorBank."Bank Account No.",'<>',' ');
+                BenefeciaryCode[CodeIndex::BIC] := DELCHR(VendorBank.BIC,'<>',' ');
+                BenefeciaryCode[CodeIndex::CorrAccNo] := DELCHR(VendorBank."Bank Corresp. Account No.",'<>',' ');
+                BenefeciaryText[TextIndex::Bank] := DELCHR(VendorBank.Name,'<>',' ');
+                BenefeciaryText[TextIndex::Bank2] := DELCHR(VendorBank."Name 2",'<>',' ');
+                ManageAbbrCity(BenefeciaryText[TextIndex::City],VendorBank.City,VendorBank."Abbr. City");
+                BenefeciaryText[TextIndex::Branch] := DELCHR(VendorBank."Bank Branch No.",'<>',' ');
+              END;
+          "Bal. Account Type"::"Bank Account":
+            IF BankAccount1.GET("Bal. Account No.") THEN BEGIN
+              BenefeciaryCode[CodeIndex::VATRegNo] := DELCHR(CompanyInfo."VAT Registration No.",'<>',' ');
+              BenefeciaryText[TextIndex::Name] := DELCHR(CompanyInfo.Name,'<>',' ');
+              BenefeciaryCode[CodeIndex::BankAccNo] := DELCHR(BankAccount1."Bank Account No.",'<>',' ');
+              BenefeciaryCode[CodeIndex::BIC] := DELCHR(BankAccount1."Bank BIC",'<>',' ');
+              BenefeciaryCode[CodeIndex::CorrAccNo] := DELCHR(BankAccount1."Bank Corresp. Account No.",'<>',' ');
+              BenefeciaryText[TextIndex::Bank] := DELCHR(BankAccount1.Name,'<>',' ');
+              BenefeciaryText[TextIndex::Bank2] := DELCHR(BankAccount1."Name 2",'<>',' ');
+              ManageAbbrCity(BenefeciaryText[TextIndex::City],BankAccount1.City,BankAccount1."Abbr. City");
+              BenefeciaryText[TextIndex::Branch] := DELCHR(BankAccount1."Bank Branch No.",'<>',' ');
+            END;
+        END;
+        PayerCode[CodeIndex::VATRegNo] := DELCHR(CompanyInfo."VAT Registration No.",'<>',' ');
+        PayerText[TextIndex::Name] := DELCHR(CompanyInfo.Name,'<>',' ');
+        PayerText[TextIndex::Name2] := DELCHR(CompanyInfo."Name 2",'<>',' ');
+        PayerCode[CodeIndex::BankAccNo] := DELCHR(BankAccount."Bank Account No.",'<>',' ');
+        PayerCode[CodeIndex::BIC] := DELCHR(BankAccount."Bank BIC",'<>',' ');
+        PayerCode[CodeIndex::CorrAccNo] := DELCHR(BankAccount."Bank Corresp. Account No.",'<>',' ');
+        PayerText[TextIndex::Bank] := DELCHR(BankAccount.Name,'<>',' ');
+        PayerText[TextIndex::Bank2] := DELCHR(BankAccount."Name 2",'<>',' ');
+        ManageAbbrCity(PayerText[TextIndex::City],BankAccount.City,BankAccount."Abbr. City");
+        PayerText[TextIndex::Branch] := DELCHR(BankAccount."Bank Branch No.",'<>',' ');
+      END;
+    END;
+
+    PROCEDURE GetCustInfo@1210004(SalesHeaderType@1210011 : 'Quote,Order,Invoice,Credit Memo,Posted Shipment,Posted Invoice,Posted Credit Memo,Return Order,Posted Return Receipt';SalesHeaderNo@1210010 : Code[20];What@1210000 : 'Name,Address';Type@1210002 : 'Sell,Ship,Bill') : Text[250];
+    VAR
+      SalesHeader@1210005 : Record 36;
+      SalesShptHeader@1210006 : Record 110;
+      SalesInvHeader@1210007 : Record 112;
+      SalesCrMemoHeader@1210008 : Record 114;
+      ReturnRcptHeader@1210009 : Record 6660;
+      FullName@1210003 : Text[250];
+      FullAddress@1210001 : Text[250];
+    BEGIN
+      FullName := '';
+      FullAddress := '';
+      IF SalesHeaderTypeOffset <> 0 THEN
+        SalesHeaderType := SalesHeaderType + SalesHeaderTypeOffset;
+      CASE SalesHeaderType OF
+        // Sales Header
+        SalesHeaderType::Quote,
+        SalesHeaderType::Order,
+        SalesHeaderType::Invoice,
+        SalesHeaderType::"Credit Memo",
+        SalesHeaderType::"Return Order":
+          BEGIN
+            IF SalesHeaderTypeOffset <> 0 THEN
+              SalesHeader.GET(SalesHeaderType - SalesHeaderTypeOffset,SalesHeaderNo)
+            ELSE
+              SalesHeader.GET(SalesHeaderType,SalesHeaderNo);
+            CASE Type OF
+              Type::Sell:
+                BEGIN
+                  FullName := GetCustName(SalesHeader."Sell-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesHeader."Sell-to Post Code",SalesHeader."Sell-to City",
+                      SalesHeader."Sell-to Address",SalesHeader."Sell-to Address 2");
+                END;
+              Type::Ship:
+                BEGIN
+                  FullName :=
+                    GetShipToAddrName(
+                      SalesHeader."Sell-to Customer No.",
+                      SalesHeader."Ship-to Code",
+                      SalesHeader."Ship-to Name",
+                      SalesHeader."Ship-to Name 2");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesHeader."Ship-to Post Code",SalesHeader."Ship-to City",
+                      SalesHeader."Ship-to Address",SalesHeader."Ship-to Address 2");
+                END;
+              Type::Bill:
+                BEGIN
+                  FullName := GetCustName(SalesHeader."Bill-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesHeader."Bill-to Post Code",SalesHeader."Bill-to City",
+                      SalesHeader."Bill-to Address",SalesHeader."Bill-to Address 2");
+                END;
+            END;
+          END;
+        // Sales Shipment
+        SalesHeaderType::"Posted Shipment":
+          BEGIN
+            SalesShptHeader.GET(SalesHeaderNo);
+            CASE Type OF
+              Type::Sell:
+                BEGIN
+                  FullName := GetCustName(SalesShptHeader."Sell-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesShptHeader."Sell-to Post Code",SalesShptHeader."Sell-to City",
+                      SalesShptHeader."Sell-to Address",SalesShptHeader."Sell-to Address 2");
+                END;
+              Type::Ship:
+                BEGIN
+                  FullName :=
+                    GetShipToAddrName(
+                      SalesShptHeader."Sell-to Customer No.",
+                      SalesShptHeader."Ship-to Code",
+                      SalesShptHeader."Ship-to Name",
+                      SalesShptHeader."Ship-to Name 2");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesShptHeader."Ship-to Post Code",SalesShptHeader."Ship-to City",
+                      SalesShptHeader."Ship-to Address",SalesShptHeader."Ship-to Address 2");
+                END;
+              Type::Bill:
+                BEGIN
+                  FullName := GetCustName(SalesShptHeader."Bill-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesShptHeader."Bill-to Post Code",SalesShptHeader."Bill-to City",
+                      SalesShptHeader."Bill-to Address",SalesShptHeader."Bill-to Address 2");
+                END;
+            END;
+          END;
+        // Sales Invoice
+        SalesHeaderType::"Posted Invoice":
+          BEGIN
+            SalesInvHeader.GET(SalesHeaderNo);
+            CASE Type OF
+              Type::Sell:
+                BEGIN
+                  FullName := GetCustName(SalesInvHeader."Sell-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesInvHeader."Sell-to Post Code",SalesInvHeader."Sell-to City",
+                      SalesInvHeader."Sell-to Address",SalesInvHeader."Sell-to Address 2");
+                END;
+              Type::Ship:
+                BEGIN
+                  FullName :=
+                    GetShipToAddrName(
+                      SalesInvHeader."Sell-to Customer No.",
+                      SalesInvHeader."Ship-to Code",
+                      SalesInvHeader."Ship-to Name",
+                      SalesInvHeader."Ship-to Name 2");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesInvHeader."Ship-to Post Code",SalesInvHeader."Ship-to City",
+                      SalesInvHeader."Ship-to Address",SalesInvHeader."Ship-to Address 2");
+                END;
+              Type::Bill:
+                BEGIN
+                  FullName := GetCustName(SalesInvHeader."Bill-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesInvHeader."Bill-to Post Code",SalesInvHeader."Bill-to City",
+                      SalesInvHeader."Bill-to Address",SalesInvHeader."Bill-to Address 2");
+                END;
+            END;
+          END;
+        // Sales Credit Memo
+        SalesHeaderType::"Posted Credit Memo":
+          BEGIN
+            SalesCrMemoHeader.GET(SalesHeaderNo);
+            CASE Type OF
+              Type::Sell:
+                BEGIN
+                  FullName := GetCustName(SalesCrMemoHeader."Sell-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesCrMemoHeader."Sell-to Post Code",SalesCrMemoHeader."Sell-to City",
+                      SalesCrMemoHeader."Sell-to Address",SalesCrMemoHeader."Sell-to Address 2");
+                END;
+              Type::Ship:
+                BEGIN
+                  FullName :=
+                    GetShipToAddrName(
+                      SalesCrMemoHeader."Sell-to Customer No.",
+                      SalesCrMemoHeader."Ship-to Code",
+                      SalesCrMemoHeader."Ship-to Name",
+                      SalesCrMemoHeader."Ship-to Name 2");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesCrMemoHeader."Ship-to Post Code",SalesCrMemoHeader."Ship-to City",
+                      SalesCrMemoHeader."Ship-to Address",SalesCrMemoHeader."Ship-to Address 2");
+                END;
+              Type::Bill:
+                BEGIN
+                  FullName := GetCustName(SalesCrMemoHeader."Bill-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      SalesCrMemoHeader."Bill-to Post Code",SalesCrMemoHeader."Bill-to City",
+                      SalesCrMemoHeader."Bill-to Address",SalesCrMemoHeader."Bill-to Address 2");
+                END;
+            END;
+          END;
+        // Return Receipt
+        SalesHeaderType::"Posted Return Receipt":
+          BEGIN
+            ReturnRcptHeader.GET(SalesHeaderNo);
+            CASE Type OF
+              Type::Sell:
+                BEGIN
+                  FullName := GetCustName(ReturnRcptHeader."Sell-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      ReturnRcptHeader."Sell-to Post Code",ReturnRcptHeader."Sell-to City",
+                      ReturnRcptHeader."Sell-to Address",ReturnRcptHeader."Sell-to Address 2");
+                END;
+              Type::Ship:
+                BEGIN
+                  FullName :=
+                    GetShipToAddrName(
+                      ReturnRcptHeader."Sell-to Customer No.",
+                      ReturnRcptHeader."Ship-to Code",
+                      ReturnRcptHeader."Ship-to Name",
+                      ReturnRcptHeader."Ship-to Name 2");
+                  FullAddress :=
+                    GetFullAddr(
+                      ReturnRcptHeader."Ship-to Post Code",ReturnRcptHeader."Ship-to City",
+                      ReturnRcptHeader."Ship-to Address",ReturnRcptHeader."Ship-to Address 2");
+                END;
+              Type::Bill:
+                BEGIN
+                  FullName := GetCustName(ReturnRcptHeader."Bill-to Customer No.");
+                  FullAddress :=
+                    GetFullAddr(
+                      ReturnRcptHeader."Bill-to Post Code",ReturnRcptHeader."Bill-to City",
+                      ReturnRcptHeader."Bill-to Address",ReturnRcptHeader."Bill-to Address 2");
+                END;
+            END;
+          END;
+      END;
+
+      CASE What OF
+        What::Name:
+          EXIT(FullName);
+        What::Address:
+          EXIT(FullAddress);
+        ELSE
+          EXIT('');
+      END;
+    END;
+
+    PROCEDURE GetFullAddr@1470002(PostCode@1470004 : Code[20];City@1470005 : Text[30];Address@1470006 : Text[50];Address2@1470007 : Text[50]) FullAddr : Text[250];
+    BEGIN
+      IF PostCode <> '' THEN
+        FullAddr := PostCode + ', ';
+      IF City <> '' THEN
+        FullAddr := FullAddr + City + ', ';
+      IF Address <> '' THEN
+        FullAddr := FullAddr + Address;
+      IF Address2 <> '' THEN
+        FullAddr := FullAddr + ', ' + Address2;
+    END;
+
+    PROCEDURE GetEmpName@1210002(EmployeeNo@1210000 : Code[20]) : Text[50];
+    BEGIN
+      IF EmployeeNo <> '' THEN BEGIN
+        Employee.GET(EmployeeNo);
+        EXIT(Employee."Last Name" + ' ' + Employee.Initials);
+      END;
+    END;
+
+    PROCEDURE GetEmpDepartment@1210003(EmployeeNo@1210000 : Code[20]) : Text[50];
+    BEGIN
+      IF EmployeeNo <> '' THEN BEGIN
+        Employee.GET(EmployeeNo);
+        EXIT(Employee."Org. Unit Name");
+      END;
+    END;
+
+    PROCEDURE GetEmpPosition@1210001(EmployeeNo@1210000 : Code[20]) : Text[50];
+    BEGIN
+      IF EmployeeNo <> '' THEN BEGIN
+        Employee.GET(EmployeeNo);
+        EXIT(Employee."Job Title");
+      END;
+    END;
+
+    PROCEDURE GetCompanyName@1210000() : Text[250];
+    VAR
+      CompanyInfo@1210000 : Record 79;
+    BEGIN
+      WITH CompanyInfo DO BEGIN
+        GET;
+        IF "Full Name" <> '' THEN
+          EXIT("Full Name");
+
+        IF "Name 2" = '' THEN
+          EXIT(Name);
+
+        EXIT(Name + ' ' + DELCHR("Name 2",'<'));
+      END;
+    END;
+
+    PROCEDURE GetCompanyAddress@1210006() Addr : Text[200];
+    VAR
+      CompanyInfo@1210000 : Record 79;
+    BEGIN
+      WITH CompanyInfo DO BEGIN
+        GET;
+        Addr := STRSUBSTNO('%1 %2, ',"Post Code",City);
+        IF "Address 2" = '' THEN
+          Addr := Addr + Address
+        ELSE
+          Addr := Addr + Address + ' ' + DELCHR("Address 2",'<');
+      END;
+    END;
+
+    PROCEDURE GetLegalAddress@1210009() Addr : Text[200];
+    VAR
+      CompanyAddress@1210000 : Record 12425;
+    BEGIN
+      WITH CompanyAddress DO BEGIN
+        SETRANGE("Address Type","Address Type"::Legal);
+        IF FINDFIRST THEN BEGIN
+          Addr := STRSUBSTNO('%1 %2, ',"Post Code",City);
+          IF "Address 2" = '' THEN
+            Addr := Addr + Address
+          ELSE
+            Addr := Addr + Address + ' ' + DELCHR("Address 2",'<');
+        END;
+      END;
+    END;
+
+    PROCEDURE GetUoMDesc@1210005(UoMCode@1210000 : Code[10]) : Text[30];
+    VAR
+      UoM@1210001 : Record 204;
+    BEGIN
+      IF UoM.GET(UoMCode) THEN
+        EXIT(UoM.Description);
+    END;
+
+    PROCEDURE GetCompanyBank@1470000() : Text[250];
+    VAR
+      CompanyInfo@1470000 : Record 79;
+    BEGIN
+      CompanyInfo.GET;
+      WITH CompanyInfo DO
+        EXIT(
+          STRSUBSTNO(
+            Text008,
+            "Bank Name",
+            "Bank BIC",
+            "Bank Corresp. Account No.",
+            "Bank City",
+            "Bank Branch No.",
+            "Bank Account No."));
+    END;
+
+    PROCEDURE ManageAbbrCity@1470001(VAR CityText@1470000 : Text[130];City@1470001 : Text[30];AbbrCity@1470002 : Text[1]);
+    BEGIN
+      CityText := DELCHR(City,'<>',' ');
+      IF AbbrCity <> '' THEN
+        CityText := AbbrCity + '. ' + CityText;
+    END;
+
+    PROCEDURE GetCompanyPhoneFax@1210007() PhoneFaxNo : Text[250];
+    VAR
+      CompanyInfo@1210000 : Record 79;
+    BEGIN
+      CompanyInfo.GET;
+      IF CompanyInfo."Phone No." <> '' THEN
+        PhoneFaxNo := Text009 + CompanyInfo."Phone No.";
+      IF CompanyInfo."Fax No." <> '' THEN
+        PhoneFaxNo += Text010 + CompanyInfo."Fax No.";
+    END;
+
+    PROCEDURE GetCompanyBankAttrib@1210012() BankAttributes : Text[250];
+    VAR
+      CompanyInfo@1210000 : Record 79;
+    BEGIN
+      CompanyInfo.GET;
+      IF (CompanyInfo."Bank Account No." <> '') AND
+         (CompanyInfo."Bank Name" <> '') AND
+         (CompanyInfo."Bank Corresp. Account No." <> '') AND
+         (CompanyInfo."Bank BIC" <> '')
+      THEN
+        BankAttributes :=
+          STRSUBSTNO(
+            Text011,
+            CompanyInfo."Bank Account No.",
+            CompanyInfo."Bank Name",
+            CompanyInfo."Bank Corresp. Account No.",
+            CompanyInfo."Bank BIC");
+    END;
+
+    PROCEDURE GetCustName@1210040(CustNo@1210001 : Code[20]) : Text[250];
+    VAR
+      Customer@1210000 : Record 18;
+    BEGIN
+      WITH Customer DO BEGIN
+        GET(CustNo);
+        IF "Full Name" <> '' THEN
+          EXIT("Full Name");
+
+        IF "Name 2" = '' THEN
+          EXIT(Name);
+
+        EXIT(Name + ' ' + DELCHR("Name 2",'<'));
+      END;
+    END;
+
+    PROCEDURE GetCustPhoneFax@1210019(CustomerNo@1210001 : Code[20]) PhoneFaxNo : Text[250];
+    VAR
+      Customer@1210000 : Record 18;
+    BEGIN
+      Customer.GET(CustomerNo);
+      IF Customer."Phone No." <> '' THEN
+        PhoneFaxNo := Text009 + Customer."Phone No.";
+      IF Customer."Fax No." <> '' THEN
+        PhoneFaxNo += Text010 + Customer."Fax No.";
+    END;
+
+    PROCEDURE GetCustBankAttrib@1210022(CustomerNo@1210001 : Code[20];AgreementNo@1210003 : Code[20]) BankAttributes : Text[250];
+    VAR
+      Customer@1210000 : Record 18;
+      CustBankAccount@1210002 : Record 287;
+      CustomerAgreement@1210004 : Record 14902;
+      BankCode@1210005 : Code[20];
+    BEGIN
+      Customer.GET(CustomerNo);
+      IF AgreementNo <> '' THEN BEGIN
+        CustomerAgreement.GET(CustomerNo,AgreementNo);
+        BankCode := CustomerAgreement."Default Bank Code";
+      END ELSE
+        BankCode := Customer."Default Bank Code";
+      IF BankCode <> '' THEN BEGIN
+        CustBankAccount.GET(Customer."No.",BankCode);
+        IF (CustBankAccount."Bank Account No." <> '') AND
+           (CustBankAccount.Name <> '') AND
+           (CustBankAccount."Bank Corresp. Account No." <> '') AND
+           (CustBankAccount.BIC <> '')
+        THEN
+          BankAttributes :=
+            STRSUBSTNO(
+              Text011,
+              CustBankAccount."Bank Account No.",
+              CustBankAccount.Name + ' ' + CustBankAccount."Name 2",
+              CustBankAccount."Bank Corresp. Account No.",
+              CustBankAccount.BIC);
+      END;
+    END;
+
+    PROCEDURE SetSalesHeaderTypeOffset@1210008(SalesHeaderTypeOffset2@1210000 : Integer);
+    BEGIN
+      SalesHeaderTypeOffset := SalesHeaderTypeOffset2;
+    END;
+
+    PROCEDURE GetSalesConsignerOKPOCode@1210010(ConsignerNo@1210000 : Code[20]) : Code[10];
+    VAR
+      Vendor@1210001 : Record 23;
+      CompanyInfo@1210002 : Record 79;
+    BEGIN
+      IF ConsignerNo <> '' THEN BEGIN
+        Vendor.GET(ConsignerNo);
+        EXIT(Vendor."OKPO Code");
+      END;
+      CompanyInfo.GET;
+      EXIT(CompanyInfo."OKPO Code");
+    END;
+
+    PROCEDURE GetCustOKPOCode@1210013(CustNo@1210000 : Code[20]) : Code[10];
+    VAR
+      Customer@1210001 : Record 18;
+    BEGIN
+      Customer.GET(CustNo);
+      EXIT(Customer."OKPO Code")
+    END;
+
+    PROCEDURE GetShipToAddrName@1210041(CustNo@1210001 : Code[20];ShipToCode@1210002 : Code[10];ShipToName@1210003 : Text[50];ShipToName2@1210004 : Text[50]) : Text[250];
+    VAR
+      ShipToAddress@1210000 : Record 222;
+    BEGIN
+      WITH ShipToAddress DO
+        IF GET(CustNo,ShipToCode) THEN BEGIN
+          IF "Full Name" <> '' THEN
+            EXIT("Full Name");
+
+          IF "Name 2" = '' THEN
+            EXIT(Name);
+
+          EXIT(Name + ' ' + DELCHR("Name 2",'<'));
+        END;
+
+      IF ShipToName2 = '' THEN
+        EXIT(ShipToName);
+
+      EXIT(ShipToName + ' ' + DELCHR(ShipToName2,'<'));
+    END;
+
+    PROCEDURE GetVendorName@1210016(VendorNo@1210001 : Code[20]) : Text[250];
+    VAR
+      Vendor@1210000 : Record 23;
+    BEGIN
+      WITH Vendor DO BEGIN
+        GET(VendorNo);
+        IF "Full Name" <> '' THEN
+          EXIT("Full Name");
+
+        IF "Name 2" = '' THEN
+          EXIT(Name);
+
+        EXIT(Name + ' ' + DELCHR("Name 2",'<'));
+      END;
+    END;
+
+    PROCEDURE GetVendorAddress@1210020(VendorNo@1210001 : Code[20]) Addr : Text[200];
+    VAR
+      Vendor@1210002 : Record 23;
+    BEGIN
+      WITH Vendor DO BEGIN
+        GET(VendorNo);
+        Addr := STRSUBSTNO('%1 %2, ',"Post Code",City);
+        IF "Address 2" = '' THEN
+          Addr := Addr + Address
+        ELSE
+          Addr := Addr + Address + ' ' + DELCHR("Address 2",'<');
+      END;
+    END;
+
+    PROCEDURE GetVendBankAttrib@1210011(VendorNo@1210001 : Code[20]) BankAttributes : Text[250];
+    VAR
+      Vendor@1210000 : Record 23;
+      VendBankAccount@1210002 : Record 288;
+    BEGIN
+      Vendor.GET(VendorNo);
+      IF Vendor."Default Bank Code" <> '' THEN BEGIN
+        VendBankAccount.GET(Vendor."No.",Vendor."Default Bank Code");
+        IF (VendBankAccount."Bank Account No." <> '') AND
+           (VendBankAccount.Name <> '') AND
+           (VendBankAccount."Bank Corresp. Account No." <> '') AND
+           (VendBankAccount.BIC <> '')
+        THEN
+          BankAttributes :=
+            STRSUBSTNO(
+              Text011,
+              VendBankAccount."Bank Account No.",
+              VendBankAccount.Name + ' ' + VendBankAccount."Name 2",
+              VendBankAccount."Bank Corresp. Account No.",
+              VendBankAccount.BIC);
+      END;
+    END;
+
+    PROCEDURE GetVendPhoneFax@1210014(VendorNo@1210001 : Code[20]) PhoneFaxNo : Text[250];
+    VAR
+      Vendor@1210000 : Record 23;
+    BEGIN
+      Vendor.GET(VendorNo);
+      IF Vendor."Phone No." <> '' THEN
+        PhoneFaxNo := Text009 + Vendor."Phone No.";
+      IF Vendor."Fax No." <> '' THEN
+        PhoneFaxNo += Text010 + Vendor."Fax No.";
+    END;
+
+    PROCEDURE GetRespCenterName@1210025(RespCenterNo@1210001 : Code[10]) : Text[100];
+    VAR
+      ResponsibilityCenter@1210000 : Record 5714;
+    BEGIN
+      WITH ResponsibilityCenter DO BEGIN
+        GET(RespCenterNo);
+        IF "Name 2" = '' THEN
+          EXIT(Name);
+
+        EXIT(Name + ' ' + DELCHR("Name 2",'<'));
+      END;
+    END;
+
+    PROCEDURE GetRespCenterAddress@1210024(RespCenterNo@1210000 : Code[10]) Addr : Text[200];
+    VAR
+      ResponsibilityCenter@1210001 : Record 5714;
+    BEGIN
+      WITH ResponsibilityCenter DO BEGIN
+        GET(RespCenterNo);
+        Addr := STRSUBSTNO('%1 %2, ',"Post Code",City);
+        IF "Address 2" = '' THEN
+          Addr := Addr + Address
+        ELSE
+          Addr := Addr + Address + ' ' + DELCHR("Address 2",'<');
+      END;
+    END;
+
+    PROCEDURE GetRespCenterPhoneFax@1210023(RespCenterNo@1210002 : Code[10]) PhoneFaxNo : Text[250];
+    VAR
+      ResponsibilityCenter@1210001 : Record 5714;
+    BEGIN
+      ResponsibilityCenter.GET(RespCenterNo);
+      IF ResponsibilityCenter."Phone No." <> '' THEN
+        PhoneFaxNo := Text009 + ResponsibilityCenter."Phone No.";
+      IF ResponsibilityCenter."Fax No." <> '' THEN
+        PhoneFaxNo += Text010 + ResponsibilityCenter."Fax No.";
+    END;
+
+    PROCEDURE GetOKEICode@1210015(UnitOfMeasureCode@1210001 : Code[10]) OKEICode : Code[3];
+    VAR
+      UnitOfMeasure@1210000 : Record 204;
+    BEGIN
+      IF UnitOfMeasure.GET(UnitOfMeasureCode) THEN
+        OKEICode := UnitOfMeasure."OKEI Code";
+    END;
+
+    PROCEDURE GetReleasedByName@1210026(PostedDocument@1210000 : Boolean;TableID@1210001 : Integer;DocumentType@1210002 : Integer;DocumentNo@1210003 : Code[20]) : Text[250];
+    VAR
+      EmployeePosition@1210005 : Text[250];
+      EmployeeName@1210004 : Text[250];
+      EmployeeSignAuthorityDoc@1210006 : Text[100];
+    BEGIN
+      IF GetDocSignEmplInfo(
+           PostedDocument,
+           TableID,
+           DocumentType,
+           DocumentNo,
+           DocumentSignature."Employee Type"::ReleasedBy,
+           EmployeePosition,
+           EmployeeName,
+           EmployeeSignAuthorityDoc)
+      THEN
+        EXIT(EmployeeName);
+
+      CompanyInfo.GET;
+      EXIT(CompanyInfo."Director Name");
+    END;
+
+    PROCEDURE GetDirectorName@1210032(PostedDocument@1210000 : Boolean;TableID@1210001 : Integer;DocumentType@1210002 : Integer;DocumentNo@1210003 : Code[20]) : Text[250];
+    VAR
+      EmployeePosition@1210005 : Text[250];
+      EmployeeName@1210004 : Text[250];
+      EmployeeSignAuthorityDoc@1210006 : Text[100];
+    BEGIN
+      IF GetDocSignEmplInfo(
+           PostedDocument,
+           TableID,
+           DocumentType,
+           DocumentNo,
+           DocumentSignature."Employee Type"::Director,
+           EmployeePosition,
+           EmployeeName,
+           EmployeeSignAuthorityDoc)
+      THEN
+        EXIT(EmployeeName);
+
+      CompanyInfo.GET;
+      EXIT(CompanyInfo."Director Name");
+    END;
+
+    PROCEDURE GetAccountantName@1210021(PostedDocument@1210003 : Boolean;TableID@1210002 : Integer;DocumentType@1210001 : Integer;DocumentNo@1210000 : Code[20]) : Text[250];
+    VAR
+      EmployeePosition@1210004 : Text[250];
+      EmployeeName@1210005 : Text[250];
+      EmployeeSignAuthorityDoc@1210006 : Text[100];
+    BEGIN
+      IF GetDocSignEmplInfo(
+           PostedDocument,
+           TableID,
+           DocumentType,
+           DocumentNo,
+           DocumentSignature."Employee Type"::Accountant,
+           EmployeePosition,
+           EmployeeName,
+           EmployeeSignAuthorityDoc)
+      THEN
+        EXIT(EmployeeName);
+
+      CompanyInfo.GET;
+      EXIT(CompanyInfo."Accountant Name");
+    END;
+
+    PROCEDURE GetPassedByName@1210017(PostedDocument@1210003 : Boolean;TableID@1210002 : Integer;DocumentType@1210001 : Integer;DocumentNo@1210000 : Code[20]) : Text[250];
+    VAR
+      EmployeePosition@1210006 : Text[250];
+      EmployeeName@1210005 : Text[250];
+      EmployeeSignAuthorityDoc@1210004 : Text[100];
+    BEGIN
+      GetDocSignEmplInfo(
+        PostedDocument,
+        TableID,
+        DocumentType,
+        DocumentNo,
+        DocumentSignature."Employee Type"::PassedBy,
+        EmployeePosition,
+        EmployeeName,
+        EmployeeSignAuthorityDoc);
+
+      EXIT(EmployeeName);
+    END;
+
+    PROCEDURE GetResponsibleName@1210018(PostedDocument@1210003 : Boolean;TableID@1210002 : Integer;DocumentType@1210001 : Integer;DocumentNo@1210000 : Code[20]) : Text[250];
+    VAR
+      EmployeePosition@1210006 : Text[250];
+      EmployeeName@1210005 : Text[250];
+      EmployeeSignAuthorityDoc@1210004 : Text[100];
+    BEGIN
+      GetDocSignEmplInfo(
+        PostedDocument,
+        TableID,
+        DocumentType,
+        DocumentNo,
+        DocumentSignature."Employee Type"::Responsible,
+        EmployeePosition,
+        EmployeeName,
+        EmployeeSignAuthorityDoc);
+
+      EXIT(EmployeeName);
+    END;
+
+    PROCEDURE GetDocSignEmplInfo@1210029(PostedDocument@1210003 : Boolean;TableID@1210002 : Integer;DocumentType@1210001 : Integer;DocumentNo@1210000 : Code[20];EmployeeType@1210004 : Integer;VAR EmployeeJobTitle@1210005 : Text[250];VAR EmployeeName@1210006 : Text[250];VAR EmployeeSignAuthorityDoc@1210007 : Text[100]) : Boolean;
+    BEGIN
+      IF PostedDocument THEN BEGIN
+        IF PostedDocumentSignature.GET(TableID,DocumentType,DocumentNo,EmployeeType) THEN BEGIN
+          EmployeeJobTitle := PostedDocumentSignature."Employee Job Title";
+          EmployeeName := PostedDocumentSignature."Employee Name";
+          EmployeeSignAuthorityDoc :=
+            GetSignAuthorityDoc(
+              PostedDocumentSignature."Warrant Description",
+              PostedDocumentSignature."Warrant No.",
+              PostedDocumentSignature."Warrant Date");
+          EXIT(TRUE);
+        END;
+      END ELSE
+        IF DocumentSignature.GET(TableID,DocumentType,DocumentNo,EmployeeType) THEN BEGIN
+          EmployeeJobTitle := DocumentSignature."Employee Job Title";
+          EmployeeName := DocumentSignature."Employee Name";
+          EmployeeSignAuthorityDoc :=
+            GetSignAuthorityDoc(
+              DocumentSignature."Warrant Description",
+              DocumentSignature."Warrant No.",
+              DocumentSignature."Warrant Date");
+          EXIT(TRUE);
+        END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetConsignerInfo@1210028(ConsignorNo@1210000 : Code[20];ResponsibilityCenter@1210001 : Code[10]) : Text[1024];
+    BEGIN
+      IF ConsignorNo <> '' THEN
+        EXIT(
+          GetVendorName(ConsignorNo) + ' ' +
+          GetVendorAddress(ConsignorNo) +
+          GetVendPhoneFax(ConsignorNo) +
+          GetVendBankAttrib(ConsignorNo));
+
+      IF ResponsibilityCenter <> '' THEN
+        EXIT(
+          GetRespCenterName(ResponsibilityCenter) + ' ' +
+          GetRespCenterAddress(ResponsibilityCenter) +
+          GetRespCenterPhoneFax(ResponsibilityCenter) +
+          GetCompanyBankAttrib);
+
+      CompanyInfo.GET;
+      EXIT(
+        GetCompanyName + ' ' +
+        CompanyInfo."Ship-to Address" + ' ' + CompanyInfo."Ship-to Address 2" +
+        GetCompanyPhoneFax +
+        GetCompanyBankAttrib);
+    END;
+
+    PROCEDURE GetPayerInfo@1210031(DocumentType@1210000 : Integer;DocumentNo@1210001 : Code[20];CustomerNo@1210003 : Code[20];AgreementNo@1210002 : Code[20]) : Text[1024];
+    BEGIN
+      EXIT(
+        GetCustInfo(DocumentType,DocumentNo,0,2) + ' ' +
+        GetCustInfo(DocumentType,DocumentNo,1,2) +
+        GetCustPhoneFax(CustomerNo) +
+        GetCustBankAttrib(CustomerNo,AgreementNo));
+    END;
+
+    PROCEDURE GetConsigneeInfo@1210030(DocumentType@1210002 : Integer;DocumentNo@1210001 : Code[20];CustomerNo@1210000 : Code[20]) : Text[1024];
+    BEGIN
+      EXIT(
+        GetCustInfo(DocumentType,DocumentNo,0,1) + ' ' +
+        GetCustInfo(DocumentType,DocumentNo,1,1) +
+        GetCustPhoneFax(CustomerNo) +
+        GetCustBankAttrib(CustomerNo,''));
+    END;
+
+    PROCEDURE GetSignAuthorityDoc@1210033(WarrantDescription@1210000 : Text[30];WarrantNumber@1210001 : Text[20];WarrantDate@1210002 : Date) SignAuthorityDoc : Text[100];
+    BEGIN
+      SignAuthorityDoc := WarrantDescription;
+
+      IF WarrantNumber <> '' THEN
+        SignAuthorityDoc :=
+          STRSUBSTNO(
+            Text013,
+            SignAuthorityDoc,
+            WarrantNumber);
+
+      IF WarrantDate <> 0D THEN
+        SignAuthorityDoc :=
+          STRSUBSTNO(
+            Text014,
+            SignAuthorityDoc,
+            WarrantDate);
+    END;
+
+    PROCEDURE GetVATLedgerAmounInclVATFCY@1210055(VatLedgerLine@1210001 : Record 12405) : Text;
+    VAR
+      PartialText@1210000 : Text;
+    BEGIN
+      PartialText := '';
+      IF VatLedgerLine.Partial THEN
+        PartialText := LOWERCASE(VatLedgerLine.FIELDCAPTION(Partial));
+      EXIT(
+        FormatCompoundExpr(
+          FormatAmount(VatLedgerLine."Amount Including VAT"),PartialText));
+    END;
+
+    PROCEDURE GetVATLedgerItemRealizeDate@1210038(VATLedgerLine@1210000 : Record 12405) : Date;
+    BEGIN
+      WITH VATLedgerLine DO BEGIN
+        IF Prepayment AND ("C/V Type" = "C/V Type"::Customer) AND ("Document Type" = "Document Type"::Invoice) THEN
+          EXIT("Real. VAT Entry Date");
+        EXIT("Unreal. VAT Entry Date");
+      END;
+    END;
+
+    PROCEDURE GetVATLedgerXMLFileName@1210042(VATLedgerType@1210001 : Option;AddSheet@1210003 : Boolean) Result : Text;
+    VAR
+      CompanyInformation@1210000 : Record 79;
+      VATLedger@1210002 : Record 12404;
+    BEGIN
+      CompanyInformation.GET;
+      Result := 'NO_NDS.';
+
+      IF VATLedgerType = VATLedger.Type::Sales THEN
+        Result += FORMAT(9)
+      ELSE
+        Result += FORMAT(8);
+
+      IF AddSheet THEN
+        Result += FORMAT(1);
+
+      // Add "_AAAA_KKKK_" value, where AAAA - admin SONO, KKKK - recipient SONO
+      Result += '_';
+      IF CompanyInformation."Admin. Tax Authority SONO" <> '' THEN
+        Result += CompanyInformation."Admin. Tax Authority SONO"
+      ELSE
+        Result += AAAATxt;
+      Result += '_';
+      IF CompanyInformation."Recipient Tax Authority SONO" <> '' THEN
+        Result += CompanyInformation."Recipient Tax Authority SONO"
+      ELSE
+        Result += KKKKTxt;
+      Result += '_';
+
+      Result += FORMAT(CompanyInformation."VAT Registration No."); // INN
+      IF STRLEN(CompanyInformation."VAT Registration No.") = 10 THEN  // The company is an organization
+        Result += FORMAT(CompanyInformation."KPP Code");
+      Result += '_' + FORMAT(TODAY,8,'<Year4><Month,2><Day,2>'); // Date format YYYYMMDD
+      Result += '_N'; // Iteration number; added to create unique file names
+    END;
+
+    PROCEDURE VATExemptLine@1210039(VATBusPostingGr@1210000 : Code[10];VATProdPostingGr@1210001 : Code[10]) : Boolean;
+    VAR
+      VATPostingSetup@1210002 : Record 325;
+    BEGIN
+      IF VATPostingSetup.GET(VATBusPostingGr,VATProdPostingGr) THEN
+        EXIT(VATPostingSetup."VAT Exempt");
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE FormatVATExemptLine@1210044(VAR VATPct@1210000 : Text;VAR VATAmount@1210001 : Text);
+    BEGIN
+      VATPct := Text015;
+      VATAmount := Text015;
+    END;
+
+    PROCEDURE FormatTextValue@1210043(TextValue@1210000 : Text) : Text;
+    BEGIN
+      IF DELCHR(TextValue,'=',' ') = '' THEN
+        EXIT('-');
+
+      EXIT(TextValue);
+    END;
+
+    PROCEDURE FormatCompoundExpr@1210054(Expr1@1210000 : Text;Expr2@1210001 : Text) : Text;
+    VAR
+      ResultExpr@1210002 : Text;
+    BEGIN
+      ResultExpr := '';
+      IF Expr1 <> '' THEN
+        ResultExpr := Expr1;
+      IF Expr2 <> '' THEN BEGIN
+        IF ResultExpr <> '' THEN
+          ResultExpr := ResultExpr + '; ' + Expr2
+        ELSE
+          ResultExpr := Expr2;
+      END;
+      EXIT(ResultExpr);
+    END;
+
+    PROCEDURE IsVATAgentVendor@1210027(CVNo@1210000 : Code[20];CVType@1210003 : 'Vendor,Customer') : Boolean;
+    VAR
+      Vendor@1210001 : Record 23;
+    BEGIN
+      IF CVType = CVType::Vendor THEN
+        IF Vendor.GET(CVNo) THEN
+          EXIT(Vendor."VAT Agent");
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsForeignCurrency@1210036(CurrencyCode@1210000 : Code[10]) : Boolean;
+    VAR
+      GeneralLedgerSetup@1210002 : Record 98;
+    BEGIN
+      IF CurrencyCode = '' THEN
+        EXIT(FALSE);
+      GeneralLedgerSetup.GET;
+      EXIT(GeneralLedgerSetup."LCY Code" <> CurrencyCode);
+    END;
+
+    PROCEDURE IsConventionalCurrency@1210035(CurrencyCode@1210000 : Code[10]) : Boolean;
+    VAR
+      Currency@1210001 : Record 4;
+    BEGIN
+      IF Currency.GET(CurrencyCode) THEN
+        EXIT(Currency.Conventional);
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE IsCustomerPrepayment@1210045(VATLedgerLine@1210000 : Record 12405) : Boolean;
+    BEGIN
+      WITH VATLedgerLine DO
+        EXIT(Prepayment AND ("C/V Type" = "C/V Type"::Customer) AND ("Document Type" = "Document Type"::Invoice));
+    END;
+
+    PROCEDURE HasRelationalCurrCode@1210034(CurrencyCode@1210000 : Code[10];DocDate@1210003 : Date) : Boolean;
+    VAR
+      Currency@1210001 : Record 4;
+      CurrencyExchangeRate@1210002 : Record 330;
+    BEGIN
+      IF Currency.GET(CurrencyCode) THEN BEGIN
+        CurrencyExchangeRate.SETRANGE("Currency Code",CurrencyCode);
+        CurrencyExchangeRate.SETRANGE("Starting Date",0D,DocDate);
+        IF CurrencyExchangeRate.FINDLAST THEN
+          EXIT(CurrencyExchangeRate."Relational Currency Code" <> '');
+      END;
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE "NCF>"@1101495002();
+    BEGIN
+    END;
+
+    PROCEDURE GetCustPGFilter@1000000002(GLAccFilter@1210004 : Text[1000];VAR PGFilter1@1210003 : Text[1000];VAR PGFilter2@1210002 : Text[1000]);
+    VAR
+      rGLAcc@1210001 : Record 15;
+      rCustPG@1210000 : Record 92;
+    BEGIN
+      //NC OAM005 > DP
+      PGFilter1 := '';
+      PGFilter2 := '';
+
+      IF GLAccFilter = '' THEN
+        EXIT;
+
+      CLEAR(rGLAcc);
+      CLEAR(rCustPG);
+
+      rGLAcc.SETFILTER("No.", GLAccFilter);
+      IF rGLAcc.FINDSET(FALSE, FALSE) THEN REPEAT
+
+        rCustPG.SETRANGE("Receivables Account", rGLAcc."No.");
+        IF rCustPG.FINDSET(FALSE, FALSE) THEN REPEAT
+          IF PGFilter1 = '' THEN
+            PGFilter1 := rCustPG.Code
+          ELSE
+            PGFilter1 += '|' + rCustPG.Code;
+        UNTIL rCustPG.NEXT = 0;
+        rCustPG.SETRANGE("Receivables Account");
+
+        rCustPG.SETRANGE("Prepayment Account", rGLAcc."No.");
+        IF rCustPG.FINDSET(FALSE, FALSE) THEN REPEAT
+          IF PGFilter2 = '' THEN
+            PGFilter2 := rCustPG.Code
+          ELSE
+            PGFilter2 += '|' + rCustPG.Code;
+        UNTIL rCustPG.NEXT = 0;
+        rCustPG.SETRANGE("Prepayment Account");
+
+      UNTIL rGLAcc.NEXT = 0;
+
+      IF PGFilter1 = '' THEN
+        PGFilter1 := '!--NONE--!';
+      IF PGFilter2 = '' THEN
+        PGFilter2 := '!--NONE--!';
+      //NC OAM005 < DP
+    END;
+
+    PROCEDURE GetVendPGFilter@1000000001(GLAccFilter@1210004 : Text[1000];VAR PGFilter1@1210003 : Text[1000];VAR PGFilter2@1210002 : Text[1000]);
+    VAR
+      rGLAcc@1210001 : Record 15;
+      rVendPG@1210000 : Record 93;
+    BEGIN
+      //NC OAM005 > DP
+      PGFilter1 := '';
+      PGFilter2 := '';
+
+      IF GLAccFilter = '' THEN
+        EXIT;
+
+      CLEAR(rGLAcc);
+      CLEAR(rVendPG);
+
+      rGLAcc.SETFILTER("No.", GLAccFilter);
+      IF rGLAcc.FINDSET(FALSE, FALSE) THEN REPEAT
+
+        rVendPG.SETRANGE("Payables Account", rGLAcc."No.");
+        IF rVendPG.FINDSET(FALSE, FALSE) THEN REPEAT
+          IF PGFilter1 = '' THEN
+            PGFilter1 := rVendPG.Code
+          ELSE
+            PGFilter1 += '|' + rVendPG.Code;
+        UNTIL rVendPG.NEXT = 0;
+        rVendPG.SETRANGE("Payables Account");
+
+        rVendPG.SETRANGE("Prepayment Account", rGLAcc."No.");
+        IF rVendPG.FINDSET(FALSE, FALSE) THEN REPEAT
+          IF PGFilter2 = '' THEN
+            PGFilter2 := rVendPG.Code
+          ELSE
+            PGFilter2 += '|' + rVendPG.Code;
+        UNTIL rVendPG.NEXT = 0;
+        rVendPG.SETRANGE("Prepayment Account");
+
+      UNTIL rGLAcc.NEXT = 0;
+
+      IF PGFilter1 = '' THEN
+        PGFilter1 := '!--NONE--!';
+      IF PGFilter2 = '' THEN
+        PGFilter2 := '!--NONE--!';
+      //NC OAM005 < DP
+    END;
+
+    PROCEDURE wdFindReplaceExecute@1000000008(VAR wdFind@1000000006 : Automation "{00020905-0000-0000-C000-000000000046} 8.0:{000209B0-0000-0000-C000-000000000046}:Unknown Automation Server.Find";FindWhat@1000000004 : Text[250];ReplaceWith@1000000005 : Text[250]);
+    VAR
+      FlagTrue@1000000000 : Boolean;
+      FlagFalse@1000000001 : Boolean;
+      Wrap@1000000002 : Integer;
+      Replace@1000000003 : Integer;
+    BEGIN
+      FlagTrue := TRUE;
+      FlagFalse := FALSE;
+      Wrap := 1;
+      Replace := 2;
+      wdFind.ClearFormatting;
+      wdFind.Replacement.ClearFormatting;
+      wdFind.ExecuteOld(FindWhat,FlagTrue,FlagFalse,FlagFalse,FlagFalse,FlagFalse,FlagFalse,Wrap,FlagFalse,ReplaceWith,Replace);
+    END;
+
+    BEGIN
+    {
+      NC OAM005 DP Добавлены функции GetCustPGFilter, GetVendPGFilter
+    }
+    END.
+  }
+}
+

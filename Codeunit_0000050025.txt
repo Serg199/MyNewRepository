@@ -1,0 +1,215 @@
+OBJECT Codeunit 50025 Run NAS Proc
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06.11.14;
+    Time=16:45:50;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50067;
+    SingleInstance=Yes;
+    OnRun=BEGIN
+            NASStatus.GET("Company No.","Name Service NAS");
+            NASStatus.Status := NASStatus.Status::Working;
+            NASStatus."Time Status" := CURRENTDATETIME;
+            NASStatus.MODIFY;
+            COMMIT;
+
+            MovingDataSetup.GET;
+            DateExpImp := TODAY;
+            TimeExpImp := TIME;
+
+            IF ISCLEAR(Timer) THEN
+              CREATE(Timer);
+
+            Timer.Enabled := FALSE;
+            IF MovingDataSetup."Interval Check NAS_LOAD" = 0 THEN
+              Timer.Interval := 1000
+            ELSE
+              Timer.Interval := MovingDataSetup."Interval Check NAS_LOAD";
+            Timer.Enabled := TRUE;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Txt001@1210000 : TextConst 'RUS=Ошибка таймера %1';
+      MovingDataSetup@1210001 : Record 50064;
+      NASStatus@1000000000 : Record 50067;
+      Timer@1210002 : Automation "{3B311C81-140E-11D5-8B18-00D0590B4EC5} 1.0:{3B311C92-140E-11D5-8B18-00D0590B4EC5}:Unknown Automation Server.Unknown Class" WITHEVENTS;
+      DateExpImp@1210004 : Date;
+      TimeExpImp@1210003 : Time;
+      Supervisor@1000000001 : Codeunit 50020;
+      TextEDB01@1000000002 : TextConst 'ENU=In the process of implementation %1 error occurred. %2 Processing stopped.;RUS=В процессе выполнения %1 возникла ошибка. %2 Обработка прекращена.';
+
+    PROCEDURE fn_LinkJobFailCons@1000000000(p_recJobProcStatus@1000000000 : Record 50063) : Boolean;
+    VAR
+      l_recJobProcStatus@1000000001 : Record 50063;
+      l_recCompany@1000000002 : Record 2000000006;
+    BEGIN
+      //NC MIO20,MIO83 > PCH
+      //TDRANCS-1196 >
+      // проверка зависимости на консолидирующей компании при пакетном запуске
+      IF p_recJobProcStatus.Dependency = 0
+        THEN EXIT(FALSE);
+      IF NOT l_recJobProcStatus.GET(p_recJobProcStatus.Dependency)
+        THEN EXIT(FALSE);
+      IF NOT l_recCompany.GET(p_recJobProcStatus."Company No.")
+        THEN EXIT(FALSE);
+
+      IF l_recCompany."Company Type" = l_recCompany."Company Type"::"2" THEN BEGIN
+        IF p_recJobProcStatus.Processor = FORMAT(CODEUNIT::RunPeriodicAcivity) THEN BEGIN
+          l_recJobProcStatus.RESET;
+          IF p_recJobProcStatus."Line No." - p_recJobProcStatus.Dependency > 1 THEN
+            l_recJobProcStatus.SETRANGE("Line No.",p_recJobProcStatus.Dependency,p_recJobProcStatus."Line No." - 1)
+          ELSE
+            l_recJobProcStatus.SETRANGE("Line No.",p_recJobProcStatus.Dependency);
+          l_recJobProcStatus.SETRANGE(Status,l_recJobProcStatus.Status::"Error Reported",l_recJobProcStatus.Status::Canceled);
+          IF l_recJobProcStatus.FINDSET THEN
+            EXIT(TRUE)
+          ELSE
+            EXIT(FALSE);
+        END ELSE BEGIN
+          IF l_recJobProcStatus.Status IN [l_recJobProcStatus.Status::"Error Reported",l_recJobProcStatus.Status::Canceled] THEN
+            EXIT(TRUE)
+          ELSE
+            EXIT(FALSE);
+        END;
+      END ELSE
+        EXIT(FALSE);
+      //NC MIO20,MIO83 < PCH
+    END;
+
+    EVENT Timer@1210002::Timer@1(Milliseconds@1210000 : Integer);
+    VAR
+      JobProcStatus@1000000000 : Record 50063;
+      JobProcStatus2@1000000003 : Record 50063;
+      JobProcStatusTemp@1000000002 : TEMPORARY Record 50063;
+      RecRefNASStatus@1000000001 : RecordRef;
+      ErrorJournal@1000000004 : Record 50023;
+      TextError@1000000005 : Text[250];
+      RecRefJobProcStatus@1000000006 : RecordRef;
+      isSkip@1000000007 : Boolean;
+    BEGIN
+      //NC MIO83 > PCH
+      Timer.Enabled := FALSE;
+      //NC MIO83 < PCH
+      MovingDataSetup.GET;
+      IF (DateExpImp = 0D) OR (TimeExpImp = 0T) OR
+        (TIME - TimeExpImp > MovingDataSetup."Interval Check NAS_LOAD") OR
+        (DateExpImp <> TODAY) THEN BEGIN
+
+        //NC MIO20,MIO83 > PCH
+        JobProcStatus.RESET;
+        JobProcStatus.SETRANGE("Auto Start",TRUE);
+        JobProcStatus.SETRANGE("Company No.",NASStatus."Company No.");
+        JobProcStatus.SETRANGE("Name Service NAS",NASStatus."Name Service NAS");
+        JobProcStatus.SETRANGE(Status,JobProcStatus.Status::Planed);
+        IF JobProcStatus.FINDSET THEN REPEAT
+          IF fn_LinkJobFailCons(JobProcStatus) THEN BEGIN
+            JobProcStatus2.GET(JobProcStatus."Line No.");
+            JobProcStatus2.Status := JobProcStatus2.Status::Canceled;
+            JobProcStatus2."Time Status" := CURRENTDATETIME;
+            //NC MIO83 > PCH
+            {
+            JobProcStatus2."Reason Cancel" := 'LINKED JOB FAILED';
+            }
+            //NC MIO83 < PCH
+            JobProcStatus2.MODIFY;
+          END;
+          COMMIT;
+        UNTIL JobProcStatus.NEXT = 0;
+        //NC MIO20,MIO83 < PCH
+
+        JobProcStatus.RESET;
+        JobProcStatus.SETRANGE("Auto Start",TRUE);
+        JobProcStatus.SETRANGE("Company No.",NASStatus."Company No.");
+        JobProcStatus.SETRANGE("Name Service NAS",NASStatus."Name Service NAS");
+        JobProcStatus.SETRANGE(Status,JobProcStatus.Status::Scheduled);
+        IF Supervisor.JobProcTestBlock(JobProcStatus) THEN BEGIN
+          IF JobProcStatus.FIND('-') THEN REPEAT
+            isSkip := FALSE;
+            IF (JobProcStatus.Dependency <> 0) AND
+               JobProcStatus2.GET(JobProcStatus.Dependency) THEN
+              IF JobProcStatus2.Status IN [JobProcStatus2.Status::"Error Reported",JobProcStatus2.Status::Canceled] THEN BEGIN
+                JobProcStatus2.GET(JobProcStatus."Line No.");
+                JobProcStatus2.Status := JobProcStatus2.Status::Canceled;
+                JobProcStatus2."Time Status" := CURRENTDATETIME;
+                JobProcStatus2.MODIFY;
+                isSkip := TRUE;
+              END;
+
+            //NC MIO20,MIO83 > PCH
+            IF fn_LinkJobFailCons(JobProcStatus) THEN BEGIN
+              JobProcStatus2.GET(JobProcStatus."Line No.");
+              JobProcStatus2.Status := JobProcStatus2.Status::Canceled;
+              JobProcStatus2."Time Status" := CURRENTDATETIME;
+              //NC MIO83 > PCH
+              {
+              JobProcStatus2."Reason Cancel" := 'LINKED JOB FAILED';
+              }
+              //NC MIO83 < PCH
+              JobProcStatus2.MODIFY;
+              isSkip := TRUE;
+            END;
+            //NC MIO20,MIO83 < PCH
+
+            IF NOT isSkip THEN
+              IF NOT CODEUNIT.RUN(CODEUNIT::"Run Job Process",JobProcStatus) THEN BEGIN
+                JobProcStatus2.GET(JobProcStatus."Line No.");
+                JobProcStatus2.Status := JobProcStatus2.Status::"Error Reported";
+                JobProcStatus2."Time Status" := CURRENTDATETIME;
+                JobProcStatus2.MODIFY;
+
+                RecRefJobProcStatus.GETTABLE(JobProcStatus2);
+                ErrorJournal.AddLastError1('',ErrorJournal."Error Group"::System,ErrorJournal.Type::Error,
+                                           '',0,
+                                           JobProcStatus.Description,RecRefJobProcStatus,JobProcStatus."Line No.");
+              END;
+            COMMIT;
+          UNTIL JobProcStatus.NEXT = 0;
+
+          //отработала
+          IF NASStatus."NAS Mode" = NASStatus."NAS Mode"::Flexible THEN BEGIN
+
+            RecRefNASStatus.GETTABLE(NASStatus);
+            JobProcStatusTemp."Company No." := NASStatus."Company No.";
+            JobProcStatusTemp."Record ID" := RecRefNASStatus.RECORDID;
+            IF CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp) THEN BEGIN
+              NASStatus.GET(NASStatus."Company No.",NASStatus."Name Service NAS");
+              NASStatus.Status := NASStatus.Status::"Competed Successfully";
+              NASStatus.MODIFY;
+              COMMIT;
+
+              Timer.Enabled(FALSE);
+            END;
+          END;
+
+        END;
+        DateExpImp := TODAY;
+        TimeExpImp := TIME;
+
+      END;
+      //NC MIO83 > PCH
+      Timer.Enabled := TRUE;
+      //NC MIO83 < PCH
+    END;
+
+    EVENT Timer@1210002::TimerError@2(ErrorString@1210000 : Text[1024]);
+    BEGIN
+      ERROR(Txt001,ErrorString);
+    END;
+
+    BEGIN
+    {
+      NC MDM02 PCH Создан CU
+      NC MIO83 PCH помечен кусочек MIO20 для переноса на прод
+    }
+    END.
+  }
+}
+

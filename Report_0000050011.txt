@@ -1,0 +1,717 @@
+OBJECT Report 50011 Adjust Exchange Rates2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27.03.17;
+    Time=14:18:01;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rimd,
+                TableData 25=rimd,
+                TableData 86=rimd,
+                TableData 254=rimd,
+                TableData 379=rimd,
+                TableData 380=rimd;
+    CaptionML=[ENU=Adjust Exchange Rates;
+               RUS=Коррекция курсовых разниц];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  //NC TEST > PCH
+                  Log.WriteLogFile('Корректировка ДОВ',TRUE,FALSE,1);
+                  //NC TEST < PCH
+
+                  IF EndDateReq = 0D THEN
+                    EndDate := 31129999D
+                  ELSE
+                    EndDate := EndDateReq;
+                  {IF (NOT AdjCust) AND (NOT AdjVend) AND (NOT AdjBank) AND AdjGLAcc THEN
+                    IF NOT CONFIRM(Text001 + Text004,FALSE) THEN
+                      ERROR(Text005);}
+
+                  SourceCodeSetup.GET;
+
+                  IF ExchRateAdjReg.FIND('+') THEN
+                    ExchRateAdjReg.INIT;
+
+                  GLSetup.GET;
+
+                  IF AdjGLAcc THEN BEGIN
+                    GLSetup.TESTFIELD("Additional Reporting Currency");
+
+                    Currency3.GET(GLSetup."Additional Reporting Currency");
+                    Currency3.TESTFIELD("Realized G/L Gains Account");
+                    "G/L Account".GET(Currency3."Realized G/L Gains Account");
+                    "G/L Account".TESTFIELD(
+                      "Exchange Rate Adjustment",
+                      "G/L Account"."Exchange Rate Adjustment"::"No Adjustment");
+
+                    Currency3.TESTFIELD("Realized G/L Losses Account");
+                    "G/L Account".GET(Currency3."Realized G/L Losses Account");
+                    "G/L Account".TESTFIELD(
+                      "Exchange Rate Adjustment",
+                      "G/L Account"."Exchange Rate Adjustment"::"No Adjustment");
+
+                    AddCurrCurrencyFactor :=
+                      CurrExchRate2.ExchangeRateAdjmt(PostingDate,GLSetup."Additional Reporting Currency");
+                  END;
+                  GLAmtTotal := 0;
+                  GLAddCurrBalAtDateTotal := 0;
+                  GLBalAtDateBase := 0;
+
+                  GetSelectedDims;
+                  GetNewSelectedDims;
+                END;
+
+    OnPostReport=BEGIN
+                   //UpdateAnalysisView.UpdateAll(0,TRUE);
+                   //NC TEST > PCH
+                   //NC TEST > PCH
+                   Log.WriteLogFile('COUNT GLE Prececced' + FORMAT(TestCount),FALSE,FALSE,0);
+                   Log.WriteLogFile('Корректировка ДОВ',FALSE,TRUE,1);
+                   //NC TEST < PCH
+                   //NC TEST < PCH
+                 END;
+
+  }
+  DATASET
+  {
+    { 6710;    ;DataItem;                    ;
+               DataItemTable=Table15;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(Exchange Rate Adjustment=FILTER(Adjust Amount..Adjust Additional-Currency Amount));
+               OnPreDataItem=BEGIN
+                               IF TestMode THEN
+                                 CurrReport.BREAK;
+
+                               IF NOT AdjGLAcc THEN
+                                 CurrReport.BREAK;
+
+                               Window.OPEN(
+                                 Text014 +
+                                 Text015);
+
+                               GLAccNoTotal := "G/L Account".COUNT;
+                               SETRANGE("Date Filter",StartDate,EndDate);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  GLAccNo := GLAccNo + 1;
+                                  Window.UPDATE(1,ROUND(GLAccNo / GLAccNoTotal * 10000,1));
+                                  IF "Exchange Rate Adjustment" = "Exchange Rate Adjustment"::"No Adjustment" THEN
+                                    CurrReport.SKIP;
+
+                                  {CALCFIELDS("Balance at Date","Add.-Currency Balance at Date");
+                                  CASE "Exchange Rate Adjustment" OF
+                                    "Exchange Rate Adjustment"::"Adjust Amount":
+                                      PostGLAccAdjmt(
+                                        "No.","Exchange Rate Adjustment"::"Adjust Amount",
+                                        ROUND(
+                                          CurrExchRate2.ExchangeAmtFCYToLCYAdjmt(
+                                            PostingDate,GLSetup."Additional Reporting Currency",
+                                            "Add.-Currency Balance at Date",AddCurrCurrencyFactor) -
+                                          "Balance at Date"),
+                                        "Balance at Date",
+                                        "Add.-Currency Balance at Date");
+                                    "Exchange Rate Adjustment"::"Adjust Additional-Currency Amount":
+                                      PostGLAccAdjmt(
+                                        "No.","Exchange Rate Adjustment"::"Adjust Additional-Currency Amount",
+                                        ROUND(
+                                          CurrExchRate2.ExchangeAmtLCYToFCY(
+                                            PostingDate,GLSetup."Additional Reporting Currency",
+                                            "Balance at Date",AddCurrCurrencyFactor) -
+                                          "Add.-Currency Balance at Date",
+                                          Currency3."Amount Rounding Precision"),
+                                        "Balance at Date",
+                                        "Add.-Currency Balance at Date");
+                                  END;}
+                                END;
+
+               OnPostDataItem=BEGIN
+                                //NC PIF001 > DP Сохранение корреспонденции
+                                {
+                                IF AdjGLAcc THEN BEGIN
+                                  GenJnlLine."Document No." := PostingDocNo;
+                                  GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                                  GenJnlLine."Posting Date" := PostingDate;
+                                  GenJnlLine."Source Code" := SourceCodeSetup."Exchange Rate Adjmt.";
+
+                                  IF GLAmtTotal <> 0 THEN BEGIN
+                                    IF -GLAmtTotal > 0 THEN
+                                      GenJnlLine."Account No." := Currency3."Realized G/L Losses Account"
+                                    ELSE
+                                      GenJnlLine."Account No." := Currency3."Realized G/L Gains Account";
+                                    GenJnlLine.Description :=
+                                      STRSUBSTNO(
+                                        PostingDescription,
+                                        GLSetup."Additional Reporting Currency",
+                                        GLAddCurrBalAtDateTotal);
+                                    GenJnlLine."Additional-Currency Posting" := GenJnlLine."Additional-Currency Posting"::"Amount Only";
+                                    GenJnlLine."Currency Code" := '';
+                                    GenJnlLine.Amount := -GLAmtTotal;
+                                    GenJnlLine."Amount (LCY)" := -GLAmtTotal;
+                                    //GetJnlLineDefDim(GenJnlLine,TempJnlLineDim);
+                                    TempJnlLineDim.DELETEALL;
+                                    CopySelectedDimToJnlLineDim(TempSelectedDimPosNew,TempJnlLineDim,GenJnlLine);
+                                    PostGenJnlLine(GenJnlLine,TempJnlLineDim);
+                                  END;
+                                  IF GLAddCurrAmtTotal <> 0 THEN BEGIN
+                                    IF -GLAddCurrAmtTotal > 0 THEN
+                                      GenJnlLine."Account No." := Currency3."Realized G/L Losses Account"
+                                    ELSE
+                                      GenJnlLine."Account No." := Currency3."Realized G/L Gains Account";
+                                    GenJnlLine.Description :=
+                                      STRSUBSTNO(
+                                        PostingDescription,'',
+                                        GLBalAtDateTotal);
+                                    GenJnlLine."Additional-Currency Posting" := GenJnlLine."Additional-Currency Posting"::"Additional-Currency Amount Only";
+                                    GenJnlLine."Currency Code" := GLSetup."Additional Reporting Currency";
+                                    GenJnlLine.Amount := -GLAddCurrAmtTotal;
+                                    GenJnlLine."Amount (LCY)" := 0;
+                                    //GetJnlLineDefDim(GenJnlLine,TempJnlLineDim);
+                                    TempJnlLineDim.DELETEALL;
+                                    CopySelectedDimToJnlLineDim(TempSelectedDimPosNew,TempJnlLineDim,GenJnlLine);
+                                    PostGenJnlLine(GenJnlLine,TempJnlLineDim);
+                                  END;
+
+                                  WITH ExchRateAdjReg DO BEGIN
+                                    "No." := "No." + 1;
+                                    "Creation Date" := PostingDate;
+                                    "Account Type" := "Account Type"::"G/L Account";
+                                    "Posting Group" := '';
+                                    "Currency Code" := GLSetup."Additional Reporting Currency";
+                                    "Currency Factor" := CurrExchRate2."Adjustment Exch. Rate Amount";
+                                    "Adjusted Base" := 0;
+                                    "Adjusted Base (LCY)" := GLBalAtDateBase;
+                                    "Adjusted Amt. (LCY)" := GLAmtTotal;
+                                    "Adjusted Base (Add.-Curr.)" := GLAddCurrBalAtDateBase;
+                                    "Adjusted Amt. (Add.-Curr.)" := GLAddCurrAmtTotal;
+                                    INSERT;
+                                  END;
+                                END;
+                                }
+                                //NC PIF001 < DP
+                              END;
+                               }
+
+    { 7069;1   ;DataItem;                    ;
+               DataItemTable=Table17;
+               DataItemTableView=SORTING(G/L Account No.,Posting Date);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Posting Date",StartDate,PostingDate);
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  EntryNo@1000000002 : Integer;
+                                  TempDimBuf@1000000001 : TEMPORARY Record 360;
+                                  TempDimBuf2@1000000000 : TEMPORARY Record 360;
+                                BEGIN
+                                  //NC TEST > PCH
+                                  TestCount += 1;
+                                  //NC TEST < PCH
+
+                                  TotalAmount := TotalAmount + Amount;
+                                  GetGLEntryDimensions("G/L Entry"."Entry No.",TempDimBuf);
+
+                                  TempDimBuf2.DELETEALL;
+                                  IF TempSelectedDimPos.FIND('-') THEN
+                                    REPEAT
+                                      IF TempDimBuf.GET(DATABASE::"G/L Entry","G/L Entry"."Entry No.",TempSelectedDimPos."Dimension Code")
+                                      THEN BEGIN
+                                        TempDimBuf2."Table ID" := TempDimBuf."Table ID";
+                                        TempDimBuf2."Dimension Code" := TempDimBuf."Dimension Code";
+                                        TempDimBuf2."Dimension Value Code" := TempDimBuf."Dimension Value Code";
+                                        TempDimBuf2.INSERT;
+                                      END;
+                                    UNTIL TempSelectedDimPos.NEXT = 0;
+
+                                  EntryNo := DimBufMgt.GetDimensionId(TempDimBuf2);
+
+                                  EntryNoAmountBuf.RESET;
+                                  EntryNoAmountBuf."Business Unit Code" := '';
+                                  EntryNoAmountBuf."Entry No." := EntryNo;
+                                  IF EntryNoAmountBuf.FIND THEN BEGIN
+                                    EntryNoAmountBuf.Amount := EntryNoAmountBuf.Amount + Amount; //Сумма
+                                    EntryNoAmountBuf.Amount2 := EntryNoAmountBuf.Amount2 + "Additional-Currency Amount"; //Сумма ДОВ
+                                    EntryNoAmountBuf.MODIFY;
+                                  END ELSE BEGIN
+                                    EntryNoAmountBuf.Amount := Amount;
+                                    EntryNoAmountBuf.Amount2 := "Additional-Currency Amount";
+                                    EntryNoAmountBuf.INSERT;
+                                  END;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                EntryNoAmountBuf.RESET;
+                                MaxEntry := EntryNoAmountBuf.COUNT;
+                                EntryCount := 0;
+
+                                IF EntryNoAmountBuf.FINDSET(FALSE,FALSE) THEN
+                                  REPEAT
+                                    EntryCount := EntryCount + 1;
+                                    IF (EntryNoAmountBuf.Amount <> 0) OR (EntryNoAmountBuf.Amount2 <> 0) THEN BEGIN
+                                      DimBufMgt.RetrieveDimensions(EntryNoAmountBuf."Entry No.",TempDimBuf2);
+
+                                      CASE "G/L Account"."Exchange Rate Adjustment" OF
+                                        "G/L Account"."Exchange Rate Adjustment"::"Adjust Amount":
+                                           PostGLAccAdjmt(
+                                             "G/L Account"."No.","G/L Account"."Exchange Rate Adjustment"::"Adjust Amount",
+                                             ROUND(
+                                              CurrExchRate2.ExchangeAmtFCYToLCYAdjmt(
+                                                PostingDate,GLSetup."Additional Reporting Currency",
+                                                EntryNoAmountBuf.Amount2,AddCurrCurrencyFactor) -
+                                                EntryNoAmountBuf.Amount),
+                                            EntryNoAmountBuf.Amount,
+                                            EntryNoAmountBuf.Amount2);
+                                        "G/L Account"."Exchange Rate Adjustment"::"Adjust Additional-Currency Amount":
+                                           PostGLAccAdjmt(
+                                            "G/L Account"."No.","G/L Account"."Exchange Rate Adjustment"::"Adjust Additional-Currency Amount",
+                                            ROUND(
+                                              CurrExchRate2.ExchangeAmtLCYToFCY(
+                                                PostingDate,GLSetup."Additional Reporting Currency",
+                                                EntryNoAmountBuf.Amount,AddCurrCurrencyFactor) -
+                                              EntryNoAmountBuf.Amount2,
+                                              Currency3."Amount Rounding Precision"),
+                                            EntryNoAmountBuf.Amount,
+                                            EntryNoAmountBuf.Amount2);
+                                      END;
+                                    END;
+                                  UNTIL EntryNoAmountBuf.NEXT = 0;
+                                EntryNoAmountBuf.DELETEALL;
+                                //Window.CLOSE;
+                              END;
+
+               DataItemLink=G/L Account No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=%1 must be entered.;RUS=%1 должно быть введено.';
+      Text001@1001 : TextConst 'ENU="Do you want to adjust general ledger entries for currency fluctuations without adjusting customer, vendor and bank ledger entries? This may result in incorrect currency adjustments to payables, receivables and bank accounts.\\ ";RUS="Вы хотите скорректировать финансовые операции на суммы курсовых эффектов без коррекции операций клиентов, поставщиков и банковских счетов? Это может привести к некорректным результатам.\\ "';
+      Text004@1004 : TextConst 'ENU=Do you wish to continue?;RUS=Вы хотите продолжить?';
+      Text005@1005 : TextConst 'ENU=The adjustment of exchange rates has been canceled.;RUS=Коррекция курсовых разниц отменена.';
+      Text006@1006 : TextConst 'ENU=Adjusting exchange rates...\\;RUS=Коррекция курсовых разниц...\\';
+      Text007@1007 : TextConst 'ENU=Bank Account    @1@@@@@@@@@@@@@\\;RUS=Банк. Счет      @1@@@@@@@@@@@@@\\';
+      Text008@1008 : TextConst 'ENU=Customer        @2@@@@@@@@@@@@@\;RUS=Клиент          @2@@@@@@@@@@@@@\';
+      Text009@1009 : TextConst 'ENU=Vendor          @3@@@@@@@@@@@@@\;RUS=Поставщик       @3@@@@@@@@@@@@@\';
+      Text010@1010 : TextConst 'ENU=Adjustment      #4#############;RUS=Коррекция       #4#############';
+      Text011@1011 : TextConst 'ENU=No currencies have been found.;RUS=Валюты не найдены.';
+      Text012@1012 : TextConst 'ENU=Adjusting VAT Entries...\\;RUS=Коррекция НДС Операций...\\';
+      Text013@1013 : TextConst 'ENU=VAT Entry    @1@@@@@@@@@@@@@;RUS=НДС Операция @1@@@@@@@@@@@@@';
+      Text014@1014 : TextConst 'ENU=Adjusting general ledger...\\;RUS=Коррекция финансовых операций...\\';
+      Text015@1015 : TextConst 'ENU=G/L Account    @1@@@@@@@@@@@@@;RUS=Фин. Счет      @1@@@@@@@@@@@@@';
+      Text016@1016 : TextConst 'ENU=Exchange Rate Adjmt. of %1 %2;RUS=Корр. Курс. Разницы для %1 %2';
+      Text017@1017 : TextConst 'ENU="%1 on %2 %3 must be %4. When this %2 is used in %5, the exchange rate adjustment is defined in the %6 field in the %7. %2 %3 is used in the %8 field in the %5. ";RUS="%1 в %2 %3 должно быть %4. Когда это %2 используется в %5, курс обмена определяется в поле %6 в %7. %2 %3 используется в поле %8 в %5. "';
+      ExchRateAdjReg@1021 : Record 86;
+      GenJnlLine@1024 : Record 81;
+      SourceCodeSetup@1025 : Record 242;
+      Currency2@1028 : TEMPORARY Record 4;
+      Currency3@1029 : Record 4;
+      CurrExchRate@1030 : Record 330;
+      CurrExchRate2@1031 : Record 330;
+      GLSetup@1032 : Record 98;
+      TempDimBuf@1049 : TEMPORARY Record 360;
+      TempJnlLineDim@1050 : TEMPORARY Record 356;
+      TempEntryNoAmountBuf@1079 : TEMPORARY Record 386;
+      GenJnlPostLine@1039 : Codeunit 12;
+      UpdateAnalysisView@1002 : Codeunit 410;
+      DimMgt@1077 : Codeunit 408;
+      DimBufMgt@1078 : Codeunit 411;
+      Window@1040 : Dialog;
+      TotalAdjAmount@1041 : Decimal;
+      GainsAmount@1042 : Decimal;
+      LossesAmount@1043 : Decimal;
+      PostingDate@1044 : Date;
+      PostingDescription@1045 : Text[50];
+      AdjBase@1046 : Decimal;
+      AdjBaseLCY@1047 : Decimal;
+      AdjAmount@1048 : Decimal;
+      GLAccNo@1057 : Decimal;
+      GLAccNoTotal@1058 : Decimal;
+      GLAmtTotal@1059 : Decimal;
+      GLAddCurrAmtTotal@1060 : Decimal;
+      GLBalAtDateTotal@1061 : Decimal;
+      GLAddCurrBalAtDateTotal@1062 : Decimal;
+      GLBalAtDateBase@1063 : Decimal;
+      GLAddCurrBalAtDateBase@1064 : Decimal;
+      PostingDocNo@1065 : Code[20];
+      StartDate@1066 : Date;
+      EndDate@1067 : Date;
+      EndDateReq@1068 : Date;
+      Correction@1069 : Boolean;
+      OK@1070 : Boolean;
+      AdjGLAcc@1072 : Boolean;
+      AddCurrCurrencyFactor@1073 : Decimal;
+      Text018@1080 : TextConst 'ENU=This posting date cannot be entered because it does not occur within the adjustment period. Reenter the posting date.;RUS=Эту дату учета установить нельзя, поскольку она не входит в период корректировки. Введите другую дату.';
+      FirstEntry@1084 : Boolean;
+      AdjCust@1210002 : Boolean;
+      AdjVend@1210001 : Boolean;
+      AdjBank@1210000 : Boolean;
+      Text12401@1210003 : TextConst 'ENU=You must determine period;RUS=Определите период расчета.';
+      AdjBalance@1210006 : Decimal;
+      TestMode@1210007 : Boolean;
+      TotalAmount@1210010 : Decimal;
+      TotalAmountPos@1210009 : Decimal;
+      TotalAmountNeg@1210008 : Decimal;
+      ColumnDimPos@1000000003 : Text[250];
+      Text12402@1000000004 : TextConst 'ENU=Dimensions;RUS=Измерения';
+      ColumnDimNeg@1000000006 : Text[250];
+      DimSelectionBuf@1210015 : Record 368;
+      SelectedDim@1210014 : Record 369;
+      TempSelectedDimPos@1210013 : TEMPORARY Record 369;
+      TempSelectedDimNeg@1210012 : TEMPORARY Record 369;
+      BalAccType@1210016 : 'None,Real,Unreal';
+      "NCV>"@1000000000 : Integer;
+      EntryNoAmountBuf@1000000001 : TEMPORARY Record 386;
+      MaxEntry@1000000002 : Integer;
+      EntryCount@1000000005 : Integer;
+      JnlLineDim@1000000007 : Record 356;
+      TempSelectedDimPosNew@1000000008 : TEMPORARY Record 369;
+      TempDimBuf2@1000000009 : TEMPORARY Record 360;
+      "TEST>"@1101495004 : Integer;
+      Log@1101495003 : Codeunit 50014;
+      TestCount@1101495002 : Integer;
+      "TEST<"@1101495001 : Integer;
+
+    LOCAL PROCEDURE PostGLAccAdjmt@23(GLAccNo@1000 : Code[20];ExchRateAdjmt@1001 : Integer;Amount@1002 : Decimal;BalanceAtDate@1003 : Decimal;AddCurrBalanceAtDate@1004 : Decimal);
+    BEGIN
+      GenJnlLine.INIT;
+      CASE ExchRateAdjmt OF
+        "G/L Account"."Exchange Rate Adjustment"::"Adjust Amount":
+          BEGIN
+            GenJnlLine."Additional-Currency Posting" := GenJnlLine."Additional-Currency Posting"::"Amount Only";
+            GenJnlLine."Currency Code" := '';
+            GenJnlLine.Amount := Amount;
+            GenJnlLine."Amount (LCY)" := GenJnlLine.Amount;
+            GLAmtTotal := GLAmtTotal + GenJnlLine.Amount;
+            GLAddCurrBalAtDateTotal := GLAddCurrBalAtDateTotal + AddCurrBalanceAtDate;
+            GLBalAtDateBase := GLBalAtDateBase + BalanceAtDate;
+          END;
+        "G/L Account"."Exchange Rate Adjustment"::"Adjust Additional-Currency Amount":
+          BEGIN
+            GenJnlLine."Additional-Currency Posting" := GenJnlLine."Additional-Currency Posting"::"Additional-Currency Amount Only";
+            GenJnlLine."Currency Code" := GLSetup."Additional Reporting Currency";
+            GenJnlLine.Amount := Amount;
+            GenJnlLine."Amount (LCY)" := 0;
+            GLAddCurrAmtTotal := GLAddCurrAmtTotal + GenJnlLine.Amount;
+            GLBalAtDateTotal := GLBalAtDateTotal + BalanceAtDate;
+            GLAddCurrBalAtDateBase := GLAddCurrBalAtDateBase + AddCurrBalanceAtDate;
+          END;
+      END;
+      IF GenJnlLine.Amount <> 0 THEN BEGIN
+        GenJnlLine."Document No." := PostingDocNo;
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+        GenJnlLine."Account No." := GLAccNo;
+        //NC PIF001 > DP
+        IF GenJnlLine.Amount < 0 THEN
+          GenJnlLine."Bal. Account No." := Currency3."Realized G/L Losses Account"
+        ELSE
+          GenJnlLine."Bal. Account No." := Currency3."Realized G/L Gains Account";
+        //NC PIF001 < DP
+        GenJnlLine."Posting Date" := PostingDate;
+        CASE GenJnlLine."Additional-Currency Posting" OF
+          GenJnlLine."Additional-Currency Posting"::"Amount Only":
+            BEGIN
+              GenJnlLine.Description :=
+                STRSUBSTNO(
+                  PostingDescription,
+                  GLSetup."Additional Reporting Currency",
+                  AddCurrBalanceAtDate);
+            END;
+          GenJnlLine."Additional-Currency Posting"::"Additional-Currency Amount Only":
+            BEGIN
+              GenJnlLine.Description :=
+                STRSUBSTNO(
+                  PostingDescription,
+                  '',
+                  BalanceAtDate);
+            END;
+        END;
+        GenJnlLine."System-Created Entry" := TRUE;
+        GenJnlLine."Source Code" := SourceCodeSetup."Exchange Rate Adjmt.";
+        GetJnlLineDefDim(GenJnlLine,TempJnlLineDim);
+        //NC PIF001 > DP Исправлена ошибка?
+        {
+        GetTempJnlLineDim(TempJnlLineDim,GenJnlLine,BalAccType::None,'',Amount > 0);
+        }
+        //GetTempJnlLineDim(TempJnlLineDim,GenJnlLine,BalAccType::None,GLSetup."Additional Reporting Currency",Amount > 0);
+        //NC PIF001 < DP
+
+        TempJnlLineDim.DELETEALL;
+        TempDimBuf2.DELETEALL;
+        DimBufMgt.RetrieveDimensions(EntryNoAmountBuf."Entry No.",TempDimBuf2);
+        DimMgt.MoveDimBufToJnlLineDim(
+          TempDimBuf2,TempJnlLineDim,DATABASE::"Gen. Journal Line",
+          GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name",GenJnlLine."Line No.");
+
+        GenJnlLine."Shortcut Dimension 1 Code" := '';
+        //IF GenJnlLine.FIELDACTIVE(GenJnlLine."Global Dimension 1 Code") AND ClosePerGlobalDim1 THEN BEGIN
+        IF TempDimBuf2.GET(
+             0,EntryNoAmountBuf."Entry No.",GLSetup."Global Dimension 1 Code")
+        THEN
+           GenJnlLine."Shortcut Dimension 1 Code" := TempDimBuf2."Dimension Value Code";
+        //END;
+
+        GenJnlLine."Shortcut Dimension 2 Code" := '';
+        //IF GenJnlLine.FIELDACTIVE(GenJnlLine."Global Dimension 2 Code") AND ClosePerGlobalDim2 THEN BEGIN
+        IF TempDimBuf2.GET(
+             0,EntryNoAmountBuf."Entry No.",GLSetup."Global Dimension 2 Code")
+        THEN
+          GenJnlLine."Shortcut Dimension 2 Code" := TempDimBuf2."Dimension Value Code";
+        //     END;
+        //IF NOT (GenJnlLine."Amount (LCY)" = 0) THEN BEGIN
+          //DimMgt.CopyJnlLineDimToJnlLineDim1(TempJnlLineDim,JnlLineDim);
+          CopySelectedDimToJnlLineDim(TempSelectedDimPosNew,TempJnlLineDim,GenJnlLine);
+        //END;
+        PostGenJnlLine(GenJnlLine,TempJnlLineDim);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckExchRateAdjustment@6(AccNo@1000 : Code[10];SetupTableName@1001 : Text[100];SetupFieldName@1002 : Text[100]);
+    VAR
+      GLAcc@1003 : Record 15;
+      GLSetup@1004 : Record 98;
+    BEGIN
+      IF AccNo = '' THEN
+        EXIT;
+      GLAcc.GET(AccNo);
+      IF GLAcc."Exchange Rate Adjustment" <> GLAcc."Exchange Rate Adjustment"::"No Adjustment" THEN BEGIN
+        GLAcc."Exchange Rate Adjustment" := GLAcc."Exchange Rate Adjustment"::"No Adjustment";
+        ERROR(
+          Text017,
+          GLAcc.FIELDCAPTION("Exchange Rate Adjustment"),GLAcc.TABLECAPTION,
+          GLAcc."No.",GLAcc."Exchange Rate Adjustment",
+          SetupTableName,GLSetup.FIELDCAPTION("VAT Exchange Rate Adjustment"),
+          GLSetup.TABLECAPTION,SetupFieldName);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetJnlLineDefDim@11(VAR GenJnlLine@1000 : Record 81;VAR TempJnlLineDim@1001 : Record 356);
+    VAR
+      TableID@1002 : ARRAY [10] OF Integer;
+      No@1003 : ARRAY [10] OF Code[20];
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        CASE "Account Type" OF
+          "Account Type"::"G/L Account": TableID[1] := DATABASE::"G/L Account";
+          "Account Type"::"Bank Account": TableID[1] := DATABASE::"Bank Account";
+        END;
+        No[1] := "Account No.";
+        DimMgt.GetDefaultDimID(TableID,No,"Source Code","Shortcut Dimension 1 Code","Shortcut Dimension 2 Code");
+      END;
+      DimMgt.GetJnlLineDefaultDim(TempJnlLineDim);
+    END;
+
+    LOCAL PROCEDURE CopyJnlLineDimToDimBuf@18(VAR JnlLineDim@1000 : Record 356;VAR DimBuf@1001 : Record 360);
+    BEGIN
+      IF JnlLineDim.FIND('-') THEN
+        REPEAT
+          DimBuf."Table ID" := JnlLineDim."Table ID";
+          DimBuf."Entry No." := 0;
+          DimBuf."Dimension Code" := JnlLineDim."Dimension Code";
+          DimBuf."Dimension Value Code" := JnlLineDim."Dimension Value Code";
+          DimBuf."Line No." := JnlLineDim."Journal Line No.";
+          DimBuf.INSERT;
+        UNTIL JnlLineDim.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE GetDimCombID@21(VAR DimBuf@1000 : Record 360) : Integer;
+    VAR
+      DimEntryNo@1001 : Integer;
+    BEGIN
+      DimEntryNo := DimBufMgt.FindDimensions(DimBuf);
+      IF DimEntryNo = 0 THEN
+        DimEntryNo := DimBufMgt.InsertDimensions(DimBuf);
+      EXIT(DimEntryNo);
+    END;
+
+    LOCAL PROCEDURE PostGenJnlLine@8(VAR GenJnlLine@1000 : Record 81;VAR JnlLineDim@1001 : Record 356);
+    BEGIN
+      GenJnlLine."Shortcut Dimension 1 Code" := GetGlobalDimVal(GLSetup."Global Dimension 1 Code",JnlLineDim);
+      GenJnlLine."Shortcut Dimension 2 Code" := GetGlobalDimVal(GLSetup."Global Dimension 2 Code",JnlLineDim);
+      GenJnlPostLine.RunWithCheck(GenJnlLine,TempJnlLineDim);
+    END;
+
+    LOCAL PROCEDURE GetGlobalDimVal@16(GlobalDimCode@1000 : Code[20];VAR JnlLineDim@1001 : Record 356) : Code[20];
+    VAR
+      DimVal@1002 : Code[20];
+    BEGIN
+      IF GlobalDimCode = '' THEN
+        DimVal := ''
+      ELSE BEGIN
+        JnlLineDim.SETRANGE("Dimension Code",GlobalDimCode);
+        IF JnlLineDim.FIND('-') THEN
+          DimVal := JnlLineDim."Dimension Value Code"
+        ELSE
+          DimVal := '';
+        JnlLineDim.SETRANGE("Dimension Code");
+      END;
+      EXIT(DimVal);
+    END;
+
+    PROCEDURE CheckPostingDate@19();
+    BEGIN
+      IF PostingDate < StartDate THEN
+        ERROR(Text018);
+      IF PostingDate > EndDateReq THEN
+        ERROR(Text018);
+    END;
+
+    PROCEDURE GetTempJnlLineDim@1210000(VAR TempJnlLineDim@1210000 : Record 356;VAR GenJnlLine@1210002 : Record 81;BalAccType@1210009 : 'None,Real,Unreal';CurrencyCode@1470000 : Code[10];Gains@1470001 : Boolean);
+    VAR
+      LedgEntryDim@1210008 : Record 355;
+      DimMgt@1210007 : Codeunit 408;
+      AdjCurrency@1470002 : Record 4;
+    BEGIN
+      IF (GenJnlLine."Amount (LCY)" = 0) AND (GenJnlLine.Amount = 0) THEN
+        EXIT;
+
+      IF BalAccType <> BalAccType::None THEN
+        GenJnlLine."Bal. Account Type" := GenJnlLine."Bal. Account Type"::"G/L Account";
+      AdjCurrency.GET(CurrencyCode);
+      IF Gains THEN
+        CASE BalAccType OF
+          BalAccType::Real:BEGIN
+            AdjCurrency.TESTFIELD("Realized Gains Acc.");
+            GenJnlLine."Bal. Account No." := AdjCurrency."Realized Gains Acc.";
+          END;
+          BalAccType::Unreal:BEGIN
+            AdjCurrency.TESTFIELD("Unrealized Gains Acc.");
+            GenJnlLine."Bal. Account No." := AdjCurrency."Unrealized Gains Acc.";
+          END;
+          BalAccType::None:;
+        END
+      ELSE
+        CASE BalAccType OF
+          BalAccType::Real:BEGIN
+            AdjCurrency.TESTFIELD("Realized Losses Acc.");
+            GenJnlLine."Bal. Account No." := AdjCurrency."Realized Losses Acc.";
+          END;
+          BalAccType::Unreal:BEGIN
+            AdjCurrency.TESTFIELD("Unrealized Losses Acc.");
+            GenJnlLine."Bal. Account No." := AdjCurrency."Unrealized Losses Acc.";
+          END;
+          BalAccType::None:;
+        END;
+
+      IF Gains THEN
+        CopySelectedDimToJnlLineDim(TempSelectedDimPos,TempJnlLineDim,GenJnlLine)
+      ELSE
+        CopySelectedDimToJnlLineDim(TempSelectedDimNeg,TempJnlLineDim,GenJnlLine);
+    END;
+
+    PROCEDURE CopySelectedDimToJnlLineDim@1210002(VAR SelectedDim@1210000 : Record 369;VAR JnlLineDim@1210001 : Record 356;VAR GenJnlLine@1210002 : Record 81);
+    BEGIN
+      IF SelectedDim.FIND('-') THEN
+        REPEAT
+          JnlLineDim.INIT;
+          JnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+          JnlLineDim."Journal Template Name" := GenJnlLine."Journal Template Name";
+          JnlLineDim."Journal Batch Name" := GenJnlLine."Journal Batch Name";
+          JnlLineDim."Journal Line No." := GenJnlLine."Line No.";
+          JnlLineDim."Dimension Code" := SelectedDim."Dimension Code";
+          JnlLineDim."Dimension Value Code" := SelectedDim."New Dimension Value Code";
+          IF NOT JnlLineDim.INSERT THEN
+            JnlLineDim.MODIFY;
+          IF SelectedDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+            GenJnlLine."Shortcut Dimension 1 Code" := SelectedDim."New Dimension Value Code";
+          IF SelectedDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+            GenJnlLine."Shortcut Dimension 2 Code" := SelectedDim."New Dimension Value Code";
+        UNTIL SelectedDim.NEXT = 0;
+    END;
+
+    PROCEDURE GetSelectedDims@1210001();
+    BEGIN
+      IF ColumnDimPos <> '' THEN
+        DimSelectionBuf.CompareDimText(3,REPORT::"Adjust Exchange Rates2",'',ColumnDimPos,Text12402);
+      IF ColumnDimNeg <> '' THEN
+        DimSelectionBuf.CompareDimText(3,-REPORT::"Adjust Exchange Rates2",'',ColumnDimNeg,Text12402);
+      SelectedDim.GetSelectedDim(USERID,3,REPORT::"Adjust Exchange Rates2",'',TempSelectedDimPos);
+      SelectedDim.GetSelectedDim(USERID,3,-REPORT::"Adjust Exchange Rates2",'',TempSelectedDimNeg);
+      TempSelectedDimPos.SETFILTER("New Dimension Value Code",'=%1','');
+      TempSelectedDimNeg.SETFILTER("New Dimension Value Code",'=%1','');
+    END;
+
+    LOCAL PROCEDURE CustLedgEntryToCVLedgEntry@1470000(EntryNo@1470001 : Integer;VAR CVLedgEntry@1470002 : Record 382;AdjmtAmount@1470003 : Decimal);
+    VAR
+      CustLedgEntry@1470000 : Record 21;
+    BEGIN
+      WITH CustLedgEntry DO BEGIN
+        GET(EntryNo);
+        CVLedgEntry."Document No." := "Document No.";
+        CVLedgEntry."Document Type" := "Document Type";
+        CVLedgEntry."Bal. Account Type" := 1;
+        CVLedgEntry."Bal. Account No." := "Customer No.";
+        CVLedgEntry.Prepayment := Prepayment;
+      END;
+    END;
+
+    PROCEDURE VendLedgEntryToCVLedgEntry@1470001(EntryNo@1470002 : Integer;VAR CVLedgEntry@1470000 : Record 382;AdjmtAmount@1470003 : Decimal);
+    VAR
+      VendLedgEntry@1470001 : Record 25;
+    BEGIN
+      WITH VendLedgEntry DO BEGIN
+        GET(EntryNo);
+        CVLedgEntry."Document No." := "Document No.";
+        CVLedgEntry."Document Type" := "Document Type";
+        CVLedgEntry."Bal. Account Type" := 2;
+        CVLedgEntry."Bal. Account No." := "Vendor No.";
+        CVLedgEntry.Prepayment := Prepayment;
+      END;
+    END;
+
+    PROCEDURE GetNewSelectedDims@1000000000();
+    BEGIN
+      IF ColumnDimPos <> '' THEN
+        DimSelectionBuf.CompareDimText(3,REPORT::"Adjust Exchange Rates2",'',ColumnDimPos,Text12402);
+      IF ColumnDimNeg <> '' THEN
+        DimSelectionBuf.CompareDimText(3,-REPORT::"Adjust Exchange Rates2",'',ColumnDimNeg,Text12402);
+      SelectedDim.GetSelectedDim(USERID,3,REPORT::"Adjust Exchange Rates2",'',TempSelectedDimPosNew);
+      SelectedDim.GetSelectedDim(USERID,3,-REPORT::"Adjust Exchange Rates2",'',TempSelectedDimNeg);
+      TempSelectedDimPosNew.SETFILTER("New Dimension Value Code",'<>%1','');
+      TempSelectedDimNeg.SETFILTER("New Dimension Value Code",'<>%1','');
+    END;
+
+    LOCAL PROCEDURE GetGLEntryDimensions@1000000001(EntryNo@1000 : Integer;VAR DimBuf@1001 : TEMPORARY Record 360);
+    VAR
+      LedgEntryDim@1002 : Record 355;
+    BEGIN
+      DimBuf.DELETEALL;
+      LedgEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+      LedgEntryDim.SETRANGE("Entry No.",EntryNo);
+      IF LedgEntryDim.FIND('-') THEN
+        REPEAT
+          DimBuf."Table ID" := LedgEntryDim."Table ID";
+          DimBuf."Entry No." := LedgEntryDim."Entry No.";
+          DimBuf."Dimension Code" := LedgEntryDim."Dimension Code";
+          DimBuf."Dimension Value Code" := LedgEntryDim."Dimension Value Code";
+          DimBuf.INSERT;
+        UNTIL LedgEntryDim.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      NC MP 19.10.07 Доработан стандартный отчет для возможности коррекции фин. счетов в разрезе аналитик
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

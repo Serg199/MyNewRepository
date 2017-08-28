@@ -1,0 +1,372 @@
+OBJECT Codeunit 415 Release Purchase Document
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVW110.00,NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    TableNo=38;
+    OnRun=BEGIN
+            PurchaseHeader.COPY(Rec);
+            Code;
+            Rec := PurchaseHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1010 : TextConst 'ENU=There is nothing to release for the document of type %1 with the number %2.;RUS=Для документа типа %1 с номером %2 нет никаких выпусков.';
+      PurchSetup@1002 : Record 312;
+      InvtSetup@1000 : Record 313;
+      PurchaseHeader@1007 : Record 38;
+      WhsePurchRelease@1004 : Codeunit 5772;
+      Text002@1005 : TextConst 'ENU=This document can only be released when the approval process is complete.;RUS=Этот документ можно выпустить только по окончании процесса утверждения.';
+      Text003@1006 : TextConst 'ENU=The approval process must be cancelled or completed to reopen this document.;RUS=Чтобы повторно открыть этот документ, необходимо отменить или завершить процесс утверждения.';
+      Text005@1001 : TextConst 'ENU=There are unpaid prepayment invoices that are related to the document of type %1 with the number %2.;RUS=С документом типа %1 с номером %2 связаны неоплаченные авансовые накладные.';
+      Text046@1210001 : TextConst 'ENU=The %1 does not match the quantity defined in item tracking.;RUS=%1 не соответствует кол-ву, указанному при трассировке товаров.';
+      Text12401@1210000 : TextConst 'ENU=Item Tracking does not match for line %1, %2 %3, %4 %5;RUS=Трассировка товаров не соответствует для строки %1, %2 %3, %4 %5';
+      PreviewMode@1008 : Boolean;
+
+    LOCAL PROCEDURE Code@11() LinesWereModified : Boolean;
+    VAR
+      PurchLine@1006 : Record 39;
+      TempVATAmountLine0@1005 : TEMPORARY Record 290;
+      TempVATAmountLine1@1004 : TEMPORARY Record 290;
+      PrepaymentMgt@1003 : Codeunit 441;
+      NotOnlyDropShipment@1002 : Boolean;
+      PostingDate@1001 : Date;
+      PrintPostedDocuments@1000 : Boolean;
+    BEGIN
+      WITH PurchaseHeader DO BEGIN
+        IF Status = Status::Released THEN
+          EXIT;
+
+        OnBeforeReleasePurchaseDoc(PurchaseHeader,PreviewMode);
+        IF NOT PreviewMode THEN
+          OnCheckPurchaseReleaseRestrictions;
+
+        TESTFIELD("Buy-from Vendor No.");
+        TestAgreement(PurchaseHeader);
+
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETFILTER(Type,'>0');
+        PurchLine.SETFILTER(Quantity,'<>0');
+        IF NOT PurchLine.FIND('-') THEN
+          ERROR(Text001,"Document Type","No.");
+        InvtSetup.GET;
+        IF InvtSetup."Location Mandatory" THEN BEGIN
+          PurchLine.SETRANGE(Type,PurchLine.Type::Item);
+          IF PurchLine.FIND('-') THEN
+            REPEAT
+              IF NOT PurchLine.IsServiceItem THEN
+                PurchLine.TESTFIELD("Location Code");
+            UNTIL PurchLine.NEXT = 0;
+          PurchLine.SETFILTER(Type,'>0');
+        END;
+        PurchLine.SETRANGE("Drop Shipment",FALSE);
+        NotOnlyDropShipment := PurchLine.FIND('-');
+        PurchLine.SETRANGE("Drop Shipment");
+        TestTrackingSpecification(PurchaseHeader,PurchLine);
+        PurchLine.RESET;
+
+        PurchSetup.GET;
+        IF PurchSetup."Calc. Inv. Discount" THEN BEGIN
+          PostingDate := "Posting Date";
+          PrintPostedDocuments := "Print Posted Documents";
+          CODEUNIT.RUN(CODEUNIT::"Purch.-Calc.Discount",PurchLine);
+          LinesWereModified := TRUE;
+          GET("Document Type","No.");
+          "Print Posted Documents" := PrintPostedDocuments;
+          IF PostingDate <> "Posting Date" THEN
+            VALIDATE("Posting Date",PostingDate);
+        END;
+
+        IF PrepaymentMgt.TestPurchasePrepayment(PurchaseHeader) AND ("Document Type" = "Document Type"::Order) THEN BEGIN
+          Status := Status::"Pending Prepayment";
+          MODIFY(TRUE);
+          EXIT;
+        END;
+        Status := Status::Released;
+
+        PurchLine.SetPurchHeader(PurchaseHeader);
+        PurchLine.CalcVATAmountLines(0,PurchaseHeader,PurchLine,TempVATAmountLine0);
+        PurchLine.CalcVATAmountLines(1,PurchaseHeader,PurchLine,TempVATAmountLine1);
+        LinesWereModified := LinesWereModified OR
+          PurchLine.UpdateVATOnLines(0,PurchaseHeader,PurchLine,TempVATAmountLine0) OR
+          PurchLine.UpdateVATOnLines(1,PurchaseHeader,PurchLine,TempVATAmountLine1);
+
+        MODIFY(TRUE);
+
+        IF NotOnlyDropShipment THEN
+          IF "Document Type" IN ["Document Type"::Order,"Document Type"::"Return Order"] THEN
+            WhsePurchRelease.Release(PurchaseHeader);
+
+        OnAfterReleasePurchaseDoc(PurchaseHeader,PreviewMode);
+      END;
+    END;
+
+    PROCEDURE Reopen@1(VAR PurchHeader@1000 : Record 38);
+    BEGIN
+      OnBeforeReopenPurchaseDoc(PurchHeader);
+
+      WITH PurchHeader DO BEGIN
+        IF Status = Status::Open THEN
+          EXIT;
+        IF "Document Type" IN ["Document Type"::Order,"Document Type"::"Return Order"] THEN
+          WhsePurchRelease.Reopen(PurchHeader);
+        Status := Status::Open;
+
+        MODIFY(TRUE);
+      END;
+
+      OnAfterReopenPurchaseDoc(PurchHeader);
+    END;
+
+    PROCEDURE PerformManualRelease@2(VAR PurchHeader@1002 : Record 38);
+    VAR
+      PrepaymentMgt@1001 : Codeunit 441;
+      ApprovalsMgmt@1000 : Codeunit 1535;
+    BEGIN
+      WITH PurchHeader DO
+        IF ("Document Type" = "Document Type"::Order) AND PrepaymentMgt.TestPurchasePayment(PurchHeader) THEN BEGIN
+          IF Status <> Status::"Pending Prepayment" THEN BEGIN
+            Status := Status::"Pending Prepayment";
+            MODIFY;
+            COMMIT;
+          END;
+          ERROR(STRSUBSTNO(Text005,"Document Type","No."));
+        END;
+
+      IF ApprovalsMgmt.IsPurchaseApprovalsWorkflowEnabled(PurchHeader) AND (PurchHeader.Status = PurchHeader.Status::Open) THEN
+        ERROR(Text002);
+
+      CODEUNIT.RUN(CODEUNIT::"Release Purchase Document",PurchHeader);
+    END;
+
+    PROCEDURE PerformManualReopen@3(VAR PurchHeader@1002 : Record 38);
+    BEGIN
+      IF PurchHeader.Status = PurchHeader.Status::"Pending Approval" THEN
+        ERROR(Text003);
+
+      Reopen(PurchHeader);
+    END;
+
+    PROCEDURE TestAgreement@1210000(PurchHeader@1210001 : Record 38);
+    VAR
+      Vend@1210000 : Record 23;
+    BEGIN
+      IF (PurchHeader."Document Type" = PurchHeader."Document Type"::Quote) OR
+        (PurchHeader."Document Type" = PurchHeader."Document Type"::"Blanket Order")
+      THEN
+        EXIT;
+
+      Vend.GET(PurchHeader."Buy-from Vendor No.");
+      CASE Vend."Agreement Posting" OF
+        Vend."Agreement Posting"::Mandatory:
+          PurchHeader.TESTFIELD("Agreement No.");
+        Vend."Agreement Posting"::"No Agreement":
+          PurchHeader.TESTFIELD("Agreement No.",'');
+      END;
+    END;
+
+    PROCEDURE TestTrackingSpecification@1210046(PurchHeader@1210003 : Record 38;VAR PurchLine@1210019 : Record 39);
+    VAR
+      PurchLineToCheck@1000 : Record 39;
+      ReservationEntry@1001 : Record 337;
+      Item@1016 : Record 27;
+      ItemTrackingCode@1009 : Record 6502;
+      CDTrackingSetup@1210002 : Record 12410;
+      CreateReservEntry@1004 : Codeunit 99000830;
+      ItemTrackingManagement@1015 : Codeunit 6500;
+      ErrorFieldCaption@1018 : Text[250];
+      SignFactor@1005 : Integer;
+      PurchLineQtyHandled@1022 : Decimal;
+      PurchLineQtyToHandle@1023 : Decimal;
+      TrackingQtyHandled@1021 : Decimal;
+      TrackingQtyToHandle@1003 : Decimal;
+      Inbound@1010 : Boolean;
+      SNRequired@1011 : Boolean;
+      LotRequired@1012 : Boolean;
+      CDRequired@1210000 : Boolean;
+      SNInfoRequired@1013 : Boolean;
+      LotInfoRequired@1014 : Boolean;
+      CDInfoRequired@1210001 : Boolean;
+      CheckPurchLine@1008 : Boolean;
+    BEGIN
+      // if a PurchaseLine is posted with ItemTracking then the whole quantity of
+      // the regarding PurchaseLine has to be post with Item-Tracking
+
+      IF NOT
+        ((PurchHeader."Document Type" = PurchHeader."Document Type"::Order) OR
+         (PurchHeader."Document Type" = PurchHeader."Document Type"::"Return Order"))
+      THEN
+        EXIT;
+
+      TrackingQtyToHandle := 0;
+      TrackingQtyHandled := 0;
+
+      PurchLineToCheck.COPY(PurchLine);
+      PurchLineToCheck.SETRANGE(Type,PurchLineToCheck.Type::Item);
+      IF PurchHeader."Document Type" = PurchHeader."Document Type"::Order THEN BEGIN
+        PurchLineToCheck.SETFILTER("Qty. to Receive",'<>%1',0);
+        ErrorFieldCaption := PurchLineToCheck.FIELDCAPTION("Qty. to Receive");
+      END ELSE BEGIN
+        PurchLineToCheck.SETFILTER("Return Qty. to Ship",'<>%1',0);
+        ErrorFieldCaption := PurchLineToCheck.FIELDCAPTION("Return Qty. to Ship");
+      END;
+
+      IF PurchLineToCheck.FINDSET THEN BEGIN
+        ReservationEntry."Source Type" := DATABASE::"Purchase Line";
+        ReservationEntry."Source Subtype" := PurchHeader."Document Type";
+        SignFactor := CreateReservEntry.SignFactor(ReservationEntry);
+        REPEAT
+          // Only Item where no SerialNo or LotNo is required
+          Item.GET(PurchLineToCheck."No.");
+          IF Item."Item Tracking Code" <> '' THEN BEGIN
+            Inbound := (PurchLineToCheck.Quantity * SignFactor) > 0;
+            ItemTrackingCode.Code := Item."Item Tracking Code";
+            IF CDTrackingSetup.GET(Item."Item Tracking Code",PurchLineToCheck."Location Code") THEN;
+            ItemTrackingManagement.GetItemTrackingSettings(ItemTrackingCode,CDTrackingSetup,
+              0,
+              Inbound,
+              SNRequired,
+              LotRequired,
+              CDRequired,
+              SNInfoRequired,
+              LotInfoRequired,
+              CDInfoRequired);
+            CheckPurchLine := CDRequired AND CDTrackingSetup."CD Purchase Check on Release";
+            IF CheckPurchLine THEN
+              IF NOT GetTrackingQuantities(PurchLineToCheck,0,TrackingQtyToHandle,TrackingQtyHandled) THEN
+                IF PurchHeader."Document Type" = PurchHeader."Document Type"::Order THEN
+                  ERROR(Text12401,
+                    PurchLineToCheck."Line No.",FORMAT(PurchLineToCheck.Type),PurchLineToCheck."No.",
+                    PurchLineToCheck.FIELDCAPTION("Qty. to Receive"),PurchLineToCheck."Qty. to Receive")
+                ELSE
+                  ERROR(Text12401,
+                    PurchLineToCheck."Line No.",FORMAT(PurchLineToCheck.Type),PurchLineToCheck."No.",
+                    PurchLineToCheck.FIELDCAPTION("Qty. to Receive"),PurchLineToCheck."Return Qty. to Ship")
+          END ELSE
+            CheckPurchLine := FALSE;
+
+          TrackingQtyToHandle := 0;
+          TrackingQtyHandled := 0;
+
+          IF CheckPurchLine THEN BEGIN
+            GetTrackingQuantities(PurchLineToCheck,1,TrackingQtyToHandle,TrackingQtyHandled);
+            TrackingQtyToHandle := TrackingQtyToHandle * SignFactor;
+            TrackingQtyHandled := TrackingQtyHandled * SignFactor;
+            IF PurchHeader."Document Type" = PurchHeader."Document Type"::Order THEN BEGIN
+              PurchLineQtyToHandle := PurchLineToCheck."Qty. to Receive (Base)";
+              PurchLineQtyHandled := PurchLineToCheck."Qty. Received (Base)";
+            END ELSE BEGIN
+              PurchLineQtyToHandle := PurchLineToCheck."Return Qty. to Ship (Base)";
+              PurchLineQtyHandled := PurchLineToCheck."Return Qty. Shipped (Base)";
+            END;
+            IF ((TrackingQtyHandled + TrackingQtyToHandle) <> (PurchLineQtyHandled + PurchLineQtyToHandle)) OR
+               (TrackingQtyToHandle <> PurchLineQtyToHandle)
+            THEN
+              ERROR(STRSUBSTNO(Text046,ErrorFieldCaption));
+          END;
+        UNTIL PurchLineToCheck.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetTrackingQuantities@47(PurchLine@1000 : Record 39;FunctionType@1002 : 'CheckTrackingExists,GetQty';VAR TrackingQtyToHandle@1003 : Decimal;VAR TrackingQtyHandled@1005 : Decimal) : Boolean;
+    VAR
+      TrackingSpecification@1004 : Record 336;
+      ReservEntry@1001 : Record 337;
+    BEGIN
+      WITH TrackingSpecification DO BEGIN
+        SETCURRENTKEY("Source ID","Source Type","Source Subtype","Source Batch Name",
+          "Source Prod. Order Line","Source Ref. No.");
+        SETRANGE("Source Type",DATABASE::"Purchase Line");
+        SETRANGE("Source Subtype",PurchLine."Document Type");
+        SETRANGE("Source ID",PurchLine."Document No.");
+        SETRANGE("Source Batch Name",'');
+        SETRANGE("Source Prod. Order Line",0);
+        SETRANGE("Source Ref. No.",PurchLine."Line No.");
+      END;
+      WITH ReservEntry DO BEGIN
+        SETCURRENTKEY(
+          "Source ID","Source Ref. No.","Source Type","Source Subtype",
+          "Source Batch Name","Source Prod. Order Line");
+        SETRANGE("Source ID",PurchLine."Document No.");
+        SETRANGE("Source Ref. No.",PurchLine."Line No.");
+        SETRANGE("Source Type",DATABASE::"Purchase Line");
+        SETRANGE("Source Subtype",PurchLine."Document Type");
+        SETRANGE("Source Batch Name",'');
+        SETRANGE("Source Prod. Order Line",0);
+      END;
+
+      CASE FunctionType OF
+        FunctionType::CheckTrackingExists:
+          BEGIN
+            TrackingSpecification.SETRANGE(Correction,FALSE);
+            IF NOT TrackingSpecification.ISEMPTY THEN
+              EXIT(TRUE);
+            ReservEntry.SETFILTER("Serial No.",'<>%1','');
+            IF NOT ReservEntry.ISEMPTY THEN
+              EXIT(TRUE);
+            ReservEntry.SETRANGE("Serial No.");
+            ReservEntry.SETFILTER("Lot No.",'<>%1','');
+            IF NOT ReservEntry.ISEMPTY THEN
+              EXIT(TRUE);
+            ReservEntry.SETRANGE("Lot No.");
+            ReservEntry.SETFILTER("CD No.",'<>%1','');
+            IF NOT ReservEntry.ISEMPTY THEN
+              EXIT(TRUE);
+          END;
+        FunctionType::GetQty:
+          BEGIN
+            TrackingSpecification.CALCSUMS("Quantity Handled (Base)");
+            TrackingQtyHandled := TrackingSpecification."Quantity Handled (Base)";
+            IF ReservEntry.FINDSET THEN
+              REPEAT
+                IF (ReservEntry."Lot No." <> '') OR (ReservEntry."Serial No." <> '') OR
+                  (ReservEntry."CD No." <> '')
+                THEN
+                  TrackingQtyToHandle := TrackingQtyToHandle + ReservEntry."Qty. to Handle (Base)";
+              UNTIL ReservEntry.NEXT = 0;
+          END;
+      END;
+    END;
+
+    PROCEDURE ReleasePurchaseHeader@8(VAR PurchHdr@1000 : Record 38;Preview@1001 : Boolean) LinesWereModified : Boolean;
+    BEGIN
+      PreviewMode := Preview;
+      PurchaseHeader.COPY(PurchHdr);
+      LinesWereModified := Code;
+      PurchHdr := PurchaseHeader;
+    END;
+
+    [Integration]
+    LOCAL PROCEDURE OnBeforeReleasePurchaseDoc@5(VAR PurchaseHeader@1000 : Record 38;PreviewMode@1001 : Boolean);
+    BEGIN
+    END;
+
+    [Integration]
+    LOCAL PROCEDURE OnAfterReleasePurchaseDoc@4(VAR PurchaseHeader@1000 : Record 38;PreviewMode@1001 : Boolean);
+    BEGIN
+    END;
+
+    [Integration]
+    LOCAL PROCEDURE OnBeforeReopenPurchaseDoc@6(VAR PurchaseHeader@1000 : Record 38);
+    BEGIN
+    END;
+
+    [Integration]
+    LOCAL PROCEDURE OnAfterReopenPurchaseDoc@7(VAR PurchaseHeader@1000 : Record 38);
+    BEGIN
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

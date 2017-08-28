@@ -1,0 +1,228 @@
+OBJECT Report 17377 Create Salary Indexation Docs.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Salary Indexation Docs.;
+               RUS=Создание документов индексации зарплаты];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  ValidateCoefficient;
+
+                  IF HROrderDate = 0D THEN
+                    ERROR(Text002,Text003);
+
+                  IF HROrderNo = '' THEN
+                    ERROR(Text002,Text004);
+
+                  IF StartingDate = 0D THEN
+                    ERROR(Text002,Text005);
+                END;
+
+  }
+  DATASET
+  {
+    { 6670;    ;DataItem;                    ;
+               DataItemTable=Table12422;
+               OnPostDataItem=BEGIN
+                                IF LineNo > 0 THEN BEGIN
+                                  GroupOrderHeader."Document Type" := GroupOrderHeader."Document Type"::Transfer;
+                                  GroupOrderHeader."Document Date" := HROrderDate;
+                                  GroupOrderHeader."Posting Date" := StartingDate;
+                                  GroupOrderHeader.INSERT(TRUE);
+
+                                  TempGroupOrderLine.FINDSET;
+                                  REPEAT
+                                    GroupOrderLine.TRANSFERFIELDS(TempGroupOrderLine);
+                                    GroupOrderLine."Document No." := GroupOrderHeader."No.";
+                                    GroupOrderLine.INSERT;
+                                  UNTIL TempGroupOrderLine.NEXT = 0;
+
+                                  StaffListOrderHeader."Document Date" := HROrderDate;
+                                  StaffListOrderHeader."Posting Date" := StartingDate;
+                                  StaffListOrderHeader."HR Order No." := HROrderNo;
+                                  StaffListOrderHeader."HR Order Date" := HROrderDate;
+                                  StaffListOrderHeader.INSERT(TRUE);
+
+                                  TempStaffListOrderLine.FINDSET;
+                                  REPEAT
+                                    StaffListOrderLine.TRANSFERFIELDS(TempStaffListOrderLine);
+                                    StaffListOrderLine."Document No." := StaffListOrderHeader."No.";
+                                    StaffListOrderLine.INSERT;
+                                  UNTIL TempStaffListOrderLine.NEXT = 0;
+
+                                  MESSAGE(Text006,GroupOrderHeader."No.");
+                                END;
+                              END;
+
+               ReqFilterFields=Code }
+
+    { 7528;1   ;DataItem;                    ;
+               DataItemTable=Table5200;
+               DataItemTableView=SORTING(Org. Unit Code,Job Title Code,Status);
+               DataItemLink=Org. Unit Code=FIELD(Code) }
+
+    { 2194;2   ;DataItem;                    ;
+               DataItemTable=Table17360;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(Contract Type=CONST(Labor Contract),
+                                       Status=CONST(Approved));
+               OnAfterGetRecord=VAR
+                                  SupplNo@1210002 : Code[10];
+                                  NewPositionNo@1210001 : Code[20];
+                                  LastPositionNo@1210000 : Code[20];
+                                  PositionRate@1210003 : Decimal;
+                                BEGIN
+                                  LastPositionNo := Employee."Position No.";
+                                  Position.GET(LastPositionNo);
+                                  NewPositionNo := Position.CopyPosition(StartingDate);
+
+                                  Position.GET(NewPositionNo);
+                                  Position.VALIDATE("Base Salary",ROUND(Position."Base Salary" * Coefficient));
+                                  Position.VALIDATE("Budgeted Salary",ROUND(Position."Budgeted Salary" * Coefficient));
+                                  Position.MODIFY;
+
+                                  Position.Approve(TRUE);
+
+                                  LaborContractLine.SETRANGE("Contract No.","No.");
+                                  LaborContractLine.SETRANGE("Operation Type",LaborContractLine."Operation Type"::Transfer);
+                                  IF LaborContractLine.FINDLAST THEN
+                                    SupplNo := INCSTR(LaborContractLine."Supplement No.")
+                                  ELSE
+                                    SupplNo := '1';
+                                  LaborContractLine.SETRANGE("Operation Type");
+                                  LaborContractLine.SETRANGE(Status,LaborContractLine.Status::Approved);
+                                  LaborContractLine.FINDLAST;
+                                  PositionRate := LaborContractLine."Position Rate";
+
+                                  LaborContractLine.INIT;
+                                  LaborContractLine."Contract No." := "No.";
+                                  LaborContractLine."Operation Type" := LaborContractLine."Operation Type"::Transfer;
+                                  LaborContractLine."Supplement No." := SupplNo;
+                                  LaborContractLine."Order Date" := HROrderDate;
+                                  LaborContractLine."Order No." := HROrderNo;
+                                  LaborContractLine.VALIDATE("Starting Date",StartingDate);
+                                  LaborContractLine.VALIDATE("Position No.",NewPositionNo);
+                                  LaborContractLine.VALIDATE("Position Rate",PositionRate);
+                                  LaborContractLine.INSERT;
+
+                                  LaborContractMgt.CreateContractTerms(LaborContractLine,TRUE);
+
+                                  LineNo := LineNo + 10000;
+
+                                  TempGroupOrderLine.INIT;
+                                  TempGroupOrderLine."Document Type" := TempGroupOrderLine."Document Type"::Transfer;
+                                  TempGroupOrderLine."Line No." := LineNo;
+                                  TempGroupOrderLine."Employee No." := Employee."No.";
+                                  TempGroupOrderLine.VALIDATE("Contract No.","No.");
+                                  TempGroupOrderLine.VALIDATE("Supplement No.",SupplNo);
+                                  TempGroupOrderLine.INSERT;
+
+                                  TempStaffListOrderLine."Line No." := LineNo;
+                                  TempStaffListOrderLine.Type := TempStaffListOrderLine.Type::Position;
+                                  TempStaffListOrderLine.Action := TempStaffListOrderLine.Action::Close;
+                                  TempStaffListOrderLine.Code := LastPositionNo;
+                                  TempStaffListOrderLine.INSERT;
+                                END;
+
+               DataItemLink=No.=FIELD(Contract No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Coefficient;
+                             RUS=Коэффициент];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Coefficient;
+                  OnValidate=BEGIN
+                               ValidateCoefficient;
+                             END;
+                              }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=HR Order No.;
+                             RUS=Номер кадрового приказа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=HROrderNo }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=HR Order Date;
+                             RUS=Дата кадрового приказа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=HROrderDate }
+
+      { 1210006;2;Field     ;
+                  CaptionML=[ENU=Starting Date;
+                             RUS=Дата начала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=StartingDate }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      LaborContractLine@1210001 : Record 17361;
+      Position@1210003 : Record 17370;
+      GroupOrderHeader@1210012 : Record 17366;
+      GroupOrderLine@1210013 : Record 17367;
+      TempGroupOrderLine@1210019 : TEMPORARY Record 17367;
+      StaffListOrderHeader@1210017 : Record 17373;
+      StaffListOrderLine@1210018 : Record 17374;
+      TempStaffListOrderLine@1210020 : TEMPORARY Record 17374;
+      LaborContractMgt@1210016 : Codeunit 17370;
+      HROrderNo@1210004 : Code[20];
+      HROrderDate@1210005 : Date;
+      StartingDate@1210006 : Date;
+      Coefficient@1210002 : Decimal;
+      Text001@1210007 : TextConst 'ENU=Coefficient cannot be %1.;RUS=Коэффициент не может быть %1.';
+      Text002@1210008 : TextConst 'ENU=%1 must be filled in.;RUS=%1 должно быть заполнено.';
+      Text003@1210009 : TextConst 'ENU=HR Order Date;RUS=Дата кадрового приказа';
+      Text004@1210010 : TextConst 'ENU=HR Order No.;RUS=Номер кадрового приказа';
+      Text005@1210011 : TextConst 'ENU=Starting Date;RUS=Дата начала';
+      LineNo@1210014 : Integer;
+      Text006@1210015 : TextConst 'ENU=Group Order %1 has been created.;RUS=Групповой приказ %1 создан.';
+      Text007@1210000 : TextConst 'ENU=Coefficient cannot be negative.;RUS=Коэффициент не может быть отрицательным.';
+
+    PROCEDURE ValidateCoefficient@1210000();
+    BEGIN
+      IF Coefficient = 0 THEN
+        ERROR(Text001,Coefficient);
+
+      IF Coefficient < 0 THEN
+        ERROR(Text007);
+
+      IF Coefficient = 1 THEN
+        ERROR(Text001,Coefficient);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

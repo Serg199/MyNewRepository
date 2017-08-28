@@ -1,0 +1,350 @@
+OBJECT Codeunit 14951 FA-14 Helper
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1210007 : Record 79;
+      Director@1210009 : Record 5200;
+      Vendor@1210010 : Record 23;
+      FAPostingGroup@1210013 : Record 5606;
+      FALocation@1210012 : Record 5609;
+      FirstFA@1210011 : Record 5600;
+      PurchLineWithLCYAmt@1210020 : TEMPORARY Record 39;
+      FASetup@1210014 : Record 5603;
+      FAComment@1210024 : Record 12478;
+      PostedFAComment@1210027 : Record 12479;
+      DocSignature@1210016 : Record 12420;
+      PostedDocSignature@1210015 : Record 12421;
+      ExcelReportBuilderMgr@1210000 : Codeunit 14930;
+      LocalReportManagement@1210001 : Codeunit 12401;
+      DocSignMgt@1210019 : Codeunit 12420;
+      Reason@1210006 : ARRAY [5] OF Text;
+      Conclusion@1210005 : ARRAY [5] OF Text;
+      Appendix@1210004 : ARRAY [5] OF Text;
+      Complect@1210003 : ARRAY [5] OF Text;
+      Package@1210002 : ARRAY [5] OF Text;
+      DirectorPos@1210008 : Text[50];
+      AppendixLine@1210023 : ARRAY [5] OF Text[80];
+      DefectLine@1210022 : ARRAY [5] OF Text[80];
+      Price@1210026 : Decimal;
+      Amount@1210025 : Decimal;
+      Members@1210033 : ARRAY [5,2] OF Text;
+
+    PROCEDURE FillReportUnpostedHeader@1210000(PurchaseHeader@1210001 : Record 38;FirstPurchLine@1210000 : Record 39);
+    VAR
+      FAComment@1210002 : Record 12478;
+      FASetup@1210006 : Record 5603;
+    BEGIN
+      CompanyInfo.GET;
+      Vendor.GET(PurchaseHeader."Buy-from Vendor No.");
+      FASetup.GET;
+
+      FAPostingGroup.GET(FirstPurchLine."Posting Group");
+      FirstFA.GET(FirstPurchLine."No.");
+
+      IF FASetup."FA Location Mandatory" THEN
+        FALocation.GET(FirstPurchLine."FA Location Code");
+      GetDirectorPos;
+      GetFAComments(FAComment."Document Type"::"Purchase Invoice",PurchaseHeader."No.");
+
+      CheckSignature(
+        1,DocSignature."Employee Type"::Chairman,PurchaseHeader);
+      CheckSignature(2,DocSignature."Employee Type"::Member1,PurchaseHeader);
+      CheckSignature(3,DocSignature."Employee Type"::Member2,PurchaseHeader);
+      CheckSignature(4,DocSignature."Employee Type"::ReceivedBy,PurchaseHeader);
+      CheckSignature(5,DocSignature."Employee Type"::StoredBy,PurchaseHeader);
+      CalcAmounts(PurchaseHeader);
+
+      FillReportHeaderSection(
+        PurchaseHeader."No.",PurchaseHeader."Document Date",PurchaseHeader."Posting Date");
+    END;
+
+    PROCEDURE FillReportPostedHeader@1210008(PurchaseInvHeader@1210001 : Record 122;FirstPurchInvLine@1210000 : Record 123);
+    VAR
+      FASetup@1210006 : Record 5603;
+    BEGIN
+      CompanyInfo.GET;
+      Vendor.GET(PurchaseInvHeader."Buy-from Vendor No.");
+      FASetup.GET;
+
+      FAPostingGroup.GET(FirstPurchInvLine."Posting Group");
+      FirstFA.GET(FirstPurchInvLine."No.");
+
+      IF FASetup."FA Location Mandatory" THEN
+        FALocation.GET(FirstPurchInvLine."FA Location Code");
+      GetDirectorPos;
+      GetPostedFAComments(PostedFAComment."Document Type"::"Purchase Invoice",PurchaseInvHeader."No.");
+
+      CheckPostedDocSignature(
+        1,PostedDocSignature."Employee Type"::Chairman,PurchaseInvHeader);
+      CheckPostedDocSignature(2,PostedDocSignature."Employee Type"::Member1,PurchaseInvHeader);
+      CheckPostedDocSignature(3,PostedDocSignature."Employee Type"::Member2,PurchaseInvHeader);
+      CheckPostedDocSignature(4,PostedDocSignature."Employee Type"::ReceivedBy,PurchaseInvHeader);
+      CheckPostedDocSignature(5,PostedDocSignature."Employee Type"::StoredBy,PurchaseInvHeader);
+
+      FillReportHeaderSection(
+        PurchaseInvHeader."No.",PurchaseInvHeader."Document Date",PurchaseInvHeader."Posting Date");
+    END;
+
+    PROCEDURE GetFAComments@1210001(DocumentType@1210001 : Option;DocumentNo@1210002 : Code[20]);
+    VAR
+      TempFADocHeader@1210000 : Record 12470;
+      FAComment@1210003 : Record 12478;
+    BEGIN
+      WITH TempFADocHeader DO BEGIN
+        "No." := DocumentNo;
+        "Document Type" := DocumentType;
+        GetFAComments(Reason,FAComment.Type::Reason);
+        GetFAComments(Package,FAComment.Type::Package);
+        GetFAComments(Complect,FAComment.Type::Complect);
+        GetFAComments(Conclusion,FAComment.Type::Conclusion);
+        GetFAComments(Appendix,FAComment.Type::Appendix);
+      END;
+    END;
+
+    PROCEDURE GetPostedFAComments@1210011(DocumentType@1210002 : Option;DocumentNo@1210001 : Code[20]);
+    VAR
+      TempPostFADocHeader@1210000 : Record 12471;
+    BEGIN
+      WITH TempPostFADocHeader DO BEGIN
+        "No." := DocumentNo;
+        "Document Type" := DocumentType;
+        GetFAComments(Reason,PostedFAComment.Type::Reason);
+        GetFAComments(Package,PostedFAComment.Type::Package);
+        GetFAComments(Complect,PostedFAComment.Type::Complect);
+        GetFAComments(Conclusion,PostedFAComment.Type::Conclusion);
+        GetFAComments(Appendix,PostedFAComment.Type::Appendix);
+      END;
+    END;
+
+    PROCEDURE FillReportHeaderSection@1210002(DocumentNo@1210002 : Code[20];DocumentDate@1210001 : Date;PostingDate@1210000 : Date);
+    BEGIN
+      ExcelReportBuilderMgr.AddSection('ReportHeader');
+      ExcelReportBuilderMgr.AddDataToSection('acquireCompanyName',LocalReportManagement.GetCompanyName);
+      ExcelReportBuilderMgr.AddDataToSection('acquireCompanyAddress',CompanyInfo."Phone No." + ' ' + CompanyInfo."Fax No.");
+      ExcelReportBuilderMgr.AddDataToSection('acquireBank',LocalReportManagement.GetCompanyBank);
+      ExcelReportBuilderMgr.AddDataToSection('acquirecodeOKPO',CompanyInfo."OKPO Code");
+      ExcelReportBuilderMgr.AddDataToSection('Reason',Reason[1]);
+      ExcelReportBuilderMgr.AddDataToSection('DocumentNo',DocumentNo);
+      ExcelReportBuilderMgr.AddDataToSection('DocumentDate',FORMAT(DocumentDate,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('ChiefPost',DirectorPos);
+      ExcelReportBuilderMgr.AddDataToSection('ChiefName',CompanyInfo."Director Name");
+      ExcelReportBuilderMgr.AddDataToSection('ActNumber',DocumentNo);
+      ExcelReportBuilderMgr.AddDataToSection('ActDate',FORMAT(DocumentDate,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('DateToBusinessAccounting',FORMAT(PostingDate,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('ControlAccount',FAPostingGroup."Acquisition Cost Account");
+      ExcelReportBuilderMgr.AddDataToSection('DeprCode',FirstFA."Depreciation Code");
+      ExcelReportBuilderMgr.AddDataToSection('AssetGroup',FirstFA."Depreciation Group");
+      ExcelReportBuilderMgr.AddDataToSection('deliverCompanyName',Vendor.Name + ' ' + Vendor."Name 2");
+      ExcelReportBuilderMgr.AddDataToSection('deliverCompanyAddress',Vendor."Phone No." + ' ' + Vendor."Fax No.");
+      ExcelReportBuilderMgr.AddDataToSection('Make',FirstFA.Manufacturer);
+      ExcelReportBuilderMgr.AddDataToSection('ReceivingEnd',FALocation.Name);
+      ExcelReportBuilderMgr.AddDataToSection('deliverCodeOKPO',Vendor."OKPO Code");
+    END;
+
+    PROCEDURE GetDirectorPos@1210003();
+    BEGIN
+      IF Director.GET(CompanyInfo."Director No.") THEN
+        DirectorPos := Director.GetJobTitleName
+      ELSE
+        DirectorPos := '';
+    END;
+
+    PROCEDURE CheckSignature@1470002(MemberNo@1210002 : Integer;EmpType@1470001 : Integer;PurchaseHeader@1210000 : Record 38);
+    VAR
+      DocSign@1210001 : Record 12420;
+    BEGIN
+      DocSignMgt.GetDocSign(
+        DocSign,DATABASE::"Purchase Header",
+        PurchaseHeader."Document Type",PurchaseHeader."No.",EmpType,TRUE);
+      Members[MemberNo,1] := DocSign."Employee Job Title";
+      Members[MemberNo,2] := DocSign."Employee Name";
+    END;
+
+    PROCEDURE CheckPostedDocSignature@1210017(MemberNo@1210002 : Integer;EmpType@1470001 : Integer;PurchaseInvHeader@1210000 : Record 122);
+    VAR
+      PostedDocSign@1210001 : Record 12421;
+    BEGIN
+      DocSignMgt.GetPostedDocSign(
+        PostedDocSign,DATABASE::"Purch. Inv. Header",
+        0,PurchaseInvHeader."No.",EmpType,FALSE);
+      Members[MemberNo,1] := PostedDocSign."Employee Job Title";
+      Members[MemberNo,2] := PostedDocSign."Employee Name";
+    END;
+
+    PROCEDURE CalcAmounts@1210009(PurchHeader@1210003 : Record 38);
+    VAR
+      PurchLine@1210001 : Record 39;
+      PurchasePosting@1210000 : Codeunit 90;
+      TotalAmount@1210008 : Decimal;
+      TotalAmountInclVAT@1210007 : Decimal;
+      TotalAmountLCY@1210006 : Decimal;
+      TotalAmountInclVATLCY@1210005 : Decimal;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETFILTER(Type,'>0');
+        PurchLine.SETFILTER(Quantity,'<>0');
+
+        PurchasePosting.SumPurchLines2Ex(PurchHeader,PurchLineWithLCYAmt,PurchLine,0,
+          TotalAmount,TotalAmountInclVAT,TotalAmountLCY,TotalAmountInclVATLCY);
+      END;
+    END;
+
+    PROCEDURE InitReportTemplate@1210006();
+    BEGIN
+      FASetup.GET;
+      FASetup.TESTFIELD("FA-14 Template Code");
+      ExcelReportBuilderMgr.InitTemplate(FASetup."FA-14 Template Code");
+      ExcelReportBuilderMgr.SetSheet('Sheet1');
+    END;
+
+    PROCEDURE ExportData@1210010(FileName@1210000 : Text);
+    BEGIN
+      IF FileName <> '' THEN
+        ExcelReportBuilderMgr.ExportDataToClientFile(FileName)
+      ELSE
+        ExcelReportBuilderMgr.ExportData;
+    END;
+
+    PROCEDURE AddPageHeader@1210004();
+    BEGIN
+      ExcelReportBuilderMgr.SetSheet('Sheet2');
+      ExcelReportBuilderMgr.AddSection('PageHeader');
+    END;
+
+    PROCEDURE FillReportBody@1210005(PurchaseLine@1210000 : Record 39);
+    VAR
+      TempFADocLine@1210002 : Record 12477;
+      FixedAsset@1210001 : Record 5600;
+    BEGIN
+      AddBodySection;
+
+      IF FASetup."FA Location Mandatory" THEN
+        PurchaseLine.TESTFIELD("FA Location Code");
+      IF FASetup."Employee No. Mandatory" THEN
+        PurchaseLine.TESTFIELD("Employee No.");
+
+      FixedAsset.GET(PurchaseLine."No.");
+      PurchaseLine.TESTFIELD("Depreciation Book Code");
+      PurchaseLine.TESTFIELD("Posting Group");
+      IF FixedAsset."Factory No." = '' THEN
+        FixedAsset."Factory No." := PurchaseLine."No.";
+
+      CLEAR(DefectLine);
+      CLEAR(AppendixLine);
+      TempFADocLine."Document No." := PurchaseLine."Document No.";
+      TempFADocLine."Document Type" := FAComment."Document Type"::"Purchase Invoice";
+      TempFADocLine.GetFAComments(DefectLine,FAComment.Type::Defect);
+      TempFADocLine.GetFAComments(AppendixLine,FAComment.Type::Appendix);
+      IF PurchLineWithLCYAmt.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.") THEN BEGIN
+        IF PurchLineWithLCYAmt.Quantity <> 0 THEN
+          Price := ROUND(PurchLineWithLCYAmt.Amount / PurchLineWithLCYAmt.Quantity,0.01);
+        Amount := PurchLineWithLCYAmt.Amount;
+      END;
+
+      ExcelReportBuilderMgr.AddDataToSection('AssetName',PurchaseLine.Description);
+      ExcelReportBuilderMgr.AddDataToSection('AssetWorksNumber',FixedAsset."Factory No.");
+      ExcelReportBuilderMgr.AddDataToSection('AssetModel',FixedAsset.Manufacturer);
+      ExcelReportBuilderMgr.AddDataToSection('UnitOfMeasure',PurchaseLine."Unit of Measure");
+      ExcelReportBuilderMgr.AddDataToSection('Quantity',FORMAT(PurchaseLine.Quantity,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('AmountPrice',FORMAT(Price,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('AmountCost',FORMAT(Amount,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('QtyToReceive',FORMAT(PurchaseLine."Qty. to Receive",0,3));
+
+      ExcelReportBuilderMgr.AddDataToSection('DefectFound',DefectLine[1]);
+      ExcelReportBuilderMgr.AddDataToSection('Comment',AppendixLine[1]);
+    END;
+
+    PROCEDURE FillPostedReportBody@1210012(PurchaseInvLine@1210000 : Record 123);
+    VAR
+      TempPostFADocLine@1210002 : Record 12472;
+      FixedAsset@1210001 : Record 5600;
+    BEGIN
+      AddBodySection;
+
+      IF FASetup."FA Location Mandatory" THEN
+        PurchaseInvLine.TESTFIELD("FA Location Code");
+      IF FASetup."Employee No. Mandatory" THEN
+        PurchaseInvLine.TESTFIELD("Employee No.");
+
+      FixedAsset.GET(PurchaseInvLine."No.");
+      PurchaseInvLine.TESTFIELD("Depreciation Book Code");
+      PurchaseInvLine.TESTFIELD("Posting Group");
+
+      IF FixedAsset."Factory No." = '' THEN
+        FixedAsset."Factory No." := PurchaseInvLine."No.";
+
+      CLEAR(DefectLine);
+      CLEAR(AppendixLine);
+      TempPostFADocLine."Document No." := PurchaseInvLine."Document No.";
+      TempPostFADocLine."Document Type" := PostedFAComment."Document Type"::"Purchase Invoice";
+      TempPostFADocLine.GetFAComments(DefectLine,PostedFAComment.Type::Defect);
+      TempPostFADocLine.GetFAComments(AppendixLine,PostedFAComment.Type::Appendix);
+
+      ExcelReportBuilderMgr.AddDataToSection('AssetName',PurchaseInvLine.Description);
+      ExcelReportBuilderMgr.AddDataToSection('AssetWorksNumber',FixedAsset."Factory No.");
+      ExcelReportBuilderMgr.AddDataToSection('AssetModel',FixedAsset.Manufacturer);
+      ExcelReportBuilderMgr.AddDataToSection('UnitOfMeasure',PurchaseInvLine."Unit of Measure");
+      ExcelReportBuilderMgr.AddDataToSection('Quantity',FORMAT(PurchaseInvLine.Quantity,0,3));
+      ExcelReportBuilderMgr.AddDataToSection('AmountPrice',
+        FORMAT(ROUND(PurchaseInvLine."Amount (LCY)" / PurchaseInvLine.Quantity),0,3));
+      ExcelReportBuilderMgr.AddDataToSection('AmountCost',FORMAT(PurchaseInvLine."Amount (LCY)",0,3));
+      ExcelReportBuilderMgr.AddDataToSection('QtyToReceive',FORMAT(PurchaseInvLine.Quantity,0,3));
+
+      ExcelReportBuilderMgr.AddDataToSection('DefectFound',DefectLine[1]);
+      ExcelReportBuilderMgr.AddDataToSection('Comment',AppendixLine[1]);
+    END;
+
+    PROCEDURE FillReportFooter@1210007();
+    BEGIN
+      IF NOT ExcelReportBuilderMgr.TryAddSection('ReportFooter') THEN BEGIN
+        ExcelReportBuilderMgr.AddPagebreak;
+        ExcelReportBuilderMgr.AddSection('ReportFooter');
+      END;
+
+      ExcelReportBuilderMgr.AddDataToSection('PackageDefect',Package[1]);
+      ExcelReportBuilderMgr.AddDataToSection('Complect',Complect[1]);
+      ExcelReportBuilderMgr.AddDataToSection('Consclusion',Conclusion[1] + ' ' + Conclusion[2]);
+      ExcelReportBuilderMgr.AddDataToSection('DocumentsAttached',Appendix[1] + Appendix[2]);
+
+      ExcelReportBuilderMgr.AddDataToSection('ChairManJobTitle',Members[1,1]);
+      ExcelReportBuilderMgr.AddDataToSection('ChairManName',Members[1,2]);
+      ExcelReportBuilderMgr.AddDataToSection('Member1JobTitle',Members[2,1]);
+      ExcelReportBuilderMgr.AddDataToSection('Member1Name',Members[2,2]);
+      ExcelReportBuilderMgr.AddDataToSection('Member2JobTitle',Members[3,1]);
+      ExcelReportBuilderMgr.AddDataToSection('Member2Name',Members[3,2]);
+      ExcelReportBuilderMgr.AddDataToSection('ReceivedByJobTitle',Members[4,1]);
+      ExcelReportBuilderMgr.AddDataToSection('ReceivedByName',Members[4,2]);
+      ExcelReportBuilderMgr.AddDataToSection('StoredByJobTitle',Members[5,1]);
+      ExcelReportBuilderMgr.AddDataToSection('StoredByName',Members[5,2]);
+      ExcelReportBuilderMgr.AddDataToSection('ChiefAccountantName',CompanyInfo."Accountant Name");
+    END;
+
+    PROCEDURE AddBodySection@1210013();
+    BEGIN
+      IF NOT ExcelReportBuilderMgr.TryAddSection('BODY') THEN BEGIN
+        ExcelReportBuilderMgr.AddPagebreak;
+        ExcelReportBuilderMgr.AddSection('PageHeader');
+        ExcelReportBuilderMgr.AddSection('BODY');
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

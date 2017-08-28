@@ -1,0 +1,839 @@
+OBJECT Codeunit 423 Change Log Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11.07.17;
+    Time=16:13:32;
+    Modified=Yes;
+    Version List=NAVW110.00.00.15052,NOS-26;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 402=r,
+                TableData 403=r,
+                TableData 404=r,
+                TableData 405=ri;
+    SingleInstance=Yes;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ChangeLogSetup@1000 : Record 402;
+      ChangeLogSetupTable@1003 : Record 403;
+      TempChangeLogSetupTable@1002 : TEMPORARY Record 403;
+      ChangeLogSetupField@1004 : Record 404;
+      TempChangeLogSetupField@1005 : TEMPORARY Record 404;
+      TempField@1006 : TEMPORARY Record 2000000041;
+      ChangeLogSetupRead@1001 : Boolean;
+      LogEmployeePortalActivity@1101495001 : Boolean;
+      LogEmployeePortalUser@1101495000 : Code[20];
+      g_recMDSetup@1101495002 : Record 50064;
+
+    PROCEDURE GetDatabaseTableTriggerSetup@11(TableID@1004 : Integer;VAR LogInsert@1003 : Boolean;VAR LogModify@1002 : Boolean;VAR LogDelete@1001 : Boolean;VAR LogRename@1000 : Boolean);
+    BEGIN
+      IF COMPANYNAME = '' THEN
+        EXIT;
+
+      IF TableID = DATABASE::"Change Log Entry" THEN
+        EXIT;
+
+      IF TableID IN
+         [DATABASE::User,
+          DATABASE::"User Property",
+          DATABASE::"Access Control",
+          DATABASE::"Permission Set",
+          DATABASE::Permission,
+          DATABASE::"Change Log Setup",
+          DATABASE::"Change Log Setup (Table)",
+          DATABASE::"Change Log Setup (Field)"]
+      THEN BEGIN
+        LogInsert := TRUE;
+        LogModify := TRUE;
+        LogDelete := TRUE;
+        LogRename := TRUE;
+        EXIT;
+      END;
+
+      IF NOT ChangeLogSetupRead THEN BEGIN
+        IF ChangeLogSetup.GET THEN;
+        ChangeLogSetupRead := TRUE;
+      END;
+
+      IF NOT ChangeLogSetup."Change Log Activated" THEN
+        EXIT;
+
+      IF NOT TempChangeLogSetupTable.GET(TableID) THEN BEGIN
+        IF NOT ChangeLogSetupTable.GET(TableID) THEN BEGIN
+          TempChangeLogSetupTable.INIT;
+          TempChangeLogSetupTable."Table No." := TableID;
+        END ELSE
+          TempChangeLogSetupTable := ChangeLogSetupTable;
+        TempChangeLogSetupTable.INSERT;
+      END;
+
+      WITH TempChangeLogSetupTable DO BEGIN
+        LogInsert := "Log Insertion" <> "Log Insertion"::" ";
+        LogModify := "Log Modification" <> "Log Modification"::" ";
+        LogRename := "Log Modification" <> "Log Modification"::" ";
+        LogDelete := "Log Deletion" <> "Log Deletion"::" ";
+      END;
+    END;
+
+    LOCAL PROCEDURE IsLogActive@2(TableNumber@1000 : Integer;FieldNumber@1001 : Integer;TypeOfChange@1002 : 'Insertion,Modification,Deletion') : Boolean;
+    BEGIN
+      IF TableNumber IN
+         [DATABASE::User,
+          DATABASE::"User Property",
+          DATABASE::"Access Control",
+          DATABASE::"Permission Set",
+          DATABASE::Permission,
+          DATABASE::"Change Log Setup",
+          DATABASE::"Change Log Setup (Table)",
+          DATABASE::"Change Log Setup (Field)"]
+      THEN
+        EXIT(TRUE);
+
+      IF NOT ChangeLogSetupRead THEN BEGIN
+        IF ChangeLogSetup.GET THEN;
+        ChangeLogSetupRead := TRUE;
+      END;
+      IF NOT ChangeLogSetup."Change Log Activated" THEN
+        EXIT(FALSE);
+      IF NOT TempChangeLogSetupTable.GET(TableNumber) THEN BEGIN
+        IF NOT ChangeLogSetupTable.GET(TableNumber) THEN BEGIN
+          TempChangeLogSetupTable.INIT;
+          TempChangeLogSetupTable."Table No." := TableNumber;
+        END ELSE
+          TempChangeLogSetupTable := ChangeLogSetupTable;
+        TempChangeLogSetupTable.INSERT;
+      END;
+
+      WITH TempChangeLogSetupTable DO
+        CASE TypeOfChange OF
+          TypeOfChange::Insertion:
+            IF "Log Insertion" = "Log Insertion"::"Some Fields" THEN
+              EXIT(IsFieldLogActive(TableNumber,FieldNumber,TypeOfChange))
+            ELSE
+              EXIT("Log Insertion" = "Log Insertion"::"All Fields");
+          TypeOfChange::Modification:
+            IF "Log Modification" = "Log Modification"::"Some Fields" THEN
+              EXIT(IsFieldLogActive(TableNumber,FieldNumber,TypeOfChange))
+            ELSE
+              EXIT("Log Modification" = "Log Modification"::"All Fields");
+          TypeOfChange::Deletion:
+            IF "Log Deletion" = "Log Deletion"::"Some Fields" THEN
+              EXIT(IsFieldLogActive(TableNumber,FieldNumber,TypeOfChange))
+            ELSE
+              EXIT("Log Deletion" = "Log Deletion"::"All Fields");
+        END;
+    END;
+
+    LOCAL PROCEDURE IsFieldLogActive@6(TableNumber@1000 : Integer;FieldNumber@1001 : Integer;TypeOfChange@1002 : 'Insertion,Modification,Deletion') : Boolean;
+    BEGIN
+      IF FieldNumber = 0 THEN
+        EXIT(TRUE);
+
+      IF NOT TempChangeLogSetupField.GET(TableNumber,FieldNumber) THEN BEGIN
+        IF NOT ChangeLogSetupField.GET(TableNumber,FieldNumber) THEN BEGIN
+          TempChangeLogSetupField.INIT;
+          TempChangeLogSetupField."Table No." := TableNumber;
+          TempChangeLogSetupField."Field No." := FieldNumber;
+        END ELSE
+          TempChangeLogSetupField := ChangeLogSetupField;
+        TempChangeLogSetupField.INSERT;
+      END;
+
+      WITH TempChangeLogSetupField DO
+        CASE TypeOfChange OF
+          TypeOfChange::Insertion:
+            EXIT("Log Insertion");
+          TypeOfChange::Modification:
+            EXIT("Log Modification");
+          TypeOfChange::Deletion:
+            EXIT("Log Deletion");
+        END;
+    END;
+
+    LOCAL PROCEDURE InsertLogEntry@8(VAR FldRef@1000 : FieldRef;VAR xFldRef@1001 : FieldRef;VAR RecRef@1004 : RecordRef;TypeOfChange@1002 : 'Insertion,Modification,Deletion';IsReadable@1008 : Boolean);
+    VAR
+      ChangeLogEntry@1003 : Record 405;
+      KeyFldRef@1005 : FieldRef;
+      KeyRef1@1006 : KeyRef;
+      i@1007 : Integer;
+    BEGIN
+      ChangeLogEntry.CHANGECOMPANY(RecRef.CURRENTCOMPANY);
+      ChangeLogEntry.INIT;
+      ChangeLogEntry."Date and Time" := CURRENTDATETIME;
+      ChangeLogEntry.Time := DT2TIME(ChangeLogEntry."Date and Time");
+
+      //NC MAU01 > MP
+      ChangeLogEntry."Company Name" := COMPANYNAME;
+      //NC MAU01 < MP
+
+      ChangeLogEntry."User ID" := USERID;
+
+      ChangeLogEntry."Table No." := RecRef.NUMBER;
+      ChangeLogEntry."Field No." := FldRef.NUMBER;
+      ChangeLogEntry."Type of Change" := TypeOfChange;
+      IF (RecRef.NUMBER = DATABASE::"User Property") AND (FldRef.NUMBER IN [2..5]) THEN BEGIN // Password like
+        ChangeLogEntry."Old Value" := '*';
+        ChangeLogEntry."New Value" := '*';
+      END ELSE BEGIN
+        IF TypeOfChange <> TypeOfChange::Insertion THEN
+          IF IsReadable THEN
+            ChangeLogEntry."Old Value" := FORMAT(xFldRef.VALUE,0,9)
+          ELSE
+            ChangeLogEntry."Old Value" := '';
+        IF TypeOfChange <> TypeOfChange::Deletion THEN
+          ChangeLogEntry."New Value" := FORMAT(FldRef.VALUE,0,9);
+      END;
+
+      ChangeLogEntry."Record ID" := RecRef.RECORDID;
+      ChangeLogEntry."Primary Key" := RecRef.GETPOSITION(FALSE);
+
+      KeyRef1 := RecRef.KEYINDEX(1);
+      FOR i := 1 TO KeyRef1.FIELDCOUNT DO BEGIN
+        KeyFldRef := KeyRef1.FIELDINDEX(i);
+
+        CASE i OF
+          1:
+            BEGIN
+              ChangeLogEntry."Primary Key Field 1 No." := KeyFldRef.NUMBER;
+              ChangeLogEntry."Primary Key Field 1 Value" := FORMAT(KeyFldRef.VALUE,0,9);
+            END;
+          2:
+            BEGIN
+              ChangeLogEntry."Primary Key Field 2 No." := KeyFldRef.NUMBER;
+              ChangeLogEntry."Primary Key Field 2 Value" := FORMAT(KeyFldRef.VALUE,0,9);
+            END;
+          3:
+            BEGIN
+              ChangeLogEntry."Primary Key Field 3 No." := KeyFldRef.NUMBER;
+              ChangeLogEntry."Primary Key Field 3 Value" := FORMAT(KeyFldRef.VALUE,0,9);
+            END;
+        END;
+      END;
+      ChangeLogEntry.INSERT;
+    END;
+
+    PROCEDURE LogInsertion@1(VAR RecRef@1000 : RecordRef);
+    VAR
+      FldRef@1003 : FieldRef;
+      i@1002 : Integer;
+    BEGIN
+      IF RecRef.ISTEMPORARY THEN
+        EXIT;
+
+      IF NOT IsLogActive(RecRef.NUMBER,0,0) THEN
+        EXIT;
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef := RecRef.FIELDINDEX(i);
+        IF HasValue(FldRef) THEN
+          IF IsNormalField(RecRef.NUMBER,FldRef.NUMBER) THEN
+            IF IsLogActive(RecRef.NUMBER,FldRef.NUMBER,0) THEN
+              InsertLogEntry(FldRef,FldRef,RecRef,0,TRUE);
+      END;
+    END;
+
+    PROCEDURE LogModification@3(VAR RecRef@1000 : RecordRef);
+    VAR
+      xRecRef@1001 : RecordRef;
+      FldRef@1003 : FieldRef;
+      xFldRef@1004 : FieldRef;
+      i@1002 : Integer;
+      IsReadable@1005 : Boolean;
+    BEGIN
+      IF RecRef.ISTEMPORARY THEN
+        EXIT;
+
+      IF NOT IsLogActive(RecRef.NUMBER,0,1) THEN
+        EXIT;
+
+      xRecRef.OPEN(RecRef.NUMBER);
+      IF xRecRef.READPERMISSION THEN BEGIN
+        IsReadable := TRUE;
+        IF NOT xRecRef.GET(RecRef.RECORDID) THEN
+          EXIT;
+      END;
+
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef := RecRef.FIELDINDEX(i);
+        xFldRef := xRecRef.FIELDINDEX(i);
+        IF IsNormalField(RecRef.NUMBER,FldRef.NUMBER) THEN
+          IF FORMAT(FldRef.VALUE) <> FORMAT(xFldRef.VALUE) THEN
+            IF IsLogActive(RecRef.NUMBER,FldRef.NUMBER,1) THEN
+              InsertLogEntry(FldRef,xFldRef,RecRef,1,IsReadable);
+      END;
+    END;
+
+    PROCEDURE LogRename@9(VAR RecRef@1000 : RecordRef;VAR xRecRefParam@1001 : RecordRef);
+    VAR
+      xRecRef@1005 : RecordRef;
+      FldRef@1003 : FieldRef;
+      xFldRef@1004 : FieldRef;
+      i@1002 : Integer;
+    BEGIN
+      IF RecRef.ISTEMPORARY THEN
+        EXIT;
+
+      IF NOT IsLogActive(RecRef.NUMBER,0,1) THEN
+        EXIT;
+
+      xRecRef.OPEN(xRecRefParam.NUMBER,FALSE,RecRef.CURRENTCOMPANY);
+      xRecRef.GET(xRecRefParam.RECORDID);
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef := RecRef.FIELDINDEX(i);
+        xFldRef := xRecRef.FIELDINDEX(i);
+        IF IsNormalField(RecRef.NUMBER,FldRef.NUMBER) THEN
+          IF FORMAT(FldRef.VALUE) <> FORMAT(xFldRef.VALUE) THEN
+            IF IsLogActive(RecRef.NUMBER,FldRef.NUMBER,1) THEN
+              InsertLogEntry(FldRef,xFldRef,RecRef,1,TRUE);
+      END;
+    END;
+
+    PROCEDURE LogDeletion@4(VAR RecRef@1000 : RecordRef);
+    VAR
+      FldRef@1001 : FieldRef;
+      i@1002 : Integer;
+    BEGIN
+      IF RecRef.ISTEMPORARY THEN
+        EXIT;
+
+      IF NOT IsLogActive(RecRef.NUMBER,0,2) THEN
+        EXIT;
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef := RecRef.FIELDINDEX(i);
+        IF HasValue(FldRef) THEN
+          IF IsNormalField(RecRef.NUMBER,FldRef.NUMBER) THEN
+            IF IsLogActive(RecRef.NUMBER,FldRef.NUMBER,2) THEN
+              InsertLogEntry(FldRef,FldRef,RecRef,2,TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE IsNormalField@12(TableNumber@1001 : Integer;FieldNumber@1002 : Integer) : Boolean;
+    VAR
+      Field@1000 : Record 2000000041;
+    BEGIN
+      GetField(TableNumber,FieldNumber,Field);
+      EXIT(Field.Class = TempField.Class::Normal);
+    END;
+
+    LOCAL PROCEDURE GetField@7(TableNumber@1001 : Integer;FieldNumber@1002 : Integer;VAR Field2@1003 : Record 2000000041);
+    VAR
+      Field@1000 : Record 2000000041;
+    BEGIN
+      IF NOT TempField.GET(TableNumber,FieldNumber) THEN BEGIN
+        Field.GET(TableNumber,FieldNumber);
+        TempField := Field;
+        TempField.INSERT;
+      END;
+      Field2 := TempField;
+    END;
+
+    LOCAL PROCEDURE HasValue@10(FldRef@1000 : FieldRef) : Boolean;
+    VAR
+      Field@1102601000 : Record 2000000041;
+      HasValue@1001 : Boolean;
+      Int@1002 : Integer;
+      Dec@1003 : Decimal;
+      D@1007 : Date;
+      T@1008 : Time;
+    BEGIN
+      EVALUATE(Field.Type,FORMAT(FldRef.TYPE));
+
+      CASE Field.Type OF
+        Field.Type::Boolean:
+          HasValue := FldRef.VALUE;
+        Field.Type::Option:
+          HasValue := TRUE;
+        Field.Type::Integer:
+          BEGIN
+            Int := FldRef.VALUE;
+            HasValue := Int <> 0;
+          END;
+        Field.Type::Decimal:
+          BEGIN
+            Dec := FldRef.VALUE;
+            HasValue := Dec <> 0;
+          END;
+        Field.Type::Date:
+          BEGIN
+            D := FldRef.VALUE;
+            HasValue := D <> 0D;
+          END;
+        Field.Type::Time:
+          BEGIN
+            T := FldRef.VALUE;
+            HasValue := T <> 0T;
+          END;
+        Field.Type::BLOB:
+          HasValue := FALSE;
+        ELSE
+          HasValue := FORMAT(FldRef.VALUE) <> '';
+      END;
+
+      EXIT(HasValue);
+    END;
+
+    PROCEDURE InitChangeLog@5();
+    BEGIN
+      ChangeLogSetupRead := FALSE;
+      TempChangeLogSetupField.DELETEALL;
+      TempChangeLogSetupTable.DELETEALL;
+    END;
+
+    PROCEDURE EvaluateTextToFieldRef@28(InputText@1001 : Text;VAR FieldRef@1000 : FieldRef) : Boolean;
+    VAR
+      IntVar@1002 : Integer;
+      DecimalVar@1003 : Decimal;
+      DateVar@1004 : Date;
+      TimeVar@1005 : Time;
+      DateTimeVar@1006 : DateTime;
+      BoolVar@1007 : Boolean;
+      DurationVar@1008 : Duration;
+      BigIntVar@1009 : BigInteger;
+      GUIDVar@1010 : GUID;
+      DateFormulaVar@1012 : DateFormula;
+    BEGIN
+      IF (FORMAT(FieldRef.CLASS) = 'FlowField') OR (FORMAT(FieldRef.CLASS) = 'FlowFilter') THEN
+        EXIT(TRUE);
+
+      CASE FORMAT(FieldRef.TYPE) OF
+        'Integer','Option':
+          IF EVALUATE(IntVar,InputText) THEN BEGIN
+            FieldRef.VALUE := IntVar;
+            EXIT(TRUE);
+          END;
+        'Decimal':
+          IF EVALUATE(DecimalVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := DecimalVar;
+            EXIT(TRUE);
+          END;
+        'Date':
+          IF EVALUATE(DateVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := DateVar;
+            EXIT(TRUE);
+          END;
+        'Time':
+          IF EVALUATE(TimeVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := TimeVar;
+            EXIT(TRUE);
+          END;
+        'DateTime':
+          IF EVALUATE(DateTimeVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := DateTimeVar;
+            EXIT(TRUE);
+          END;
+        'Boolean':
+          IF EVALUATE(BoolVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := BoolVar;
+            EXIT(TRUE);
+          END;
+        'Duration':
+          IF EVALUATE(DurationVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := DurationVar;
+            EXIT(TRUE);
+          END;
+        'BigInteger':
+          IF EVALUATE(BigIntVar,InputText) THEN BEGIN
+            FieldRef.VALUE := BigIntVar;
+            EXIT(TRUE);
+          END;
+        'GUID':
+          IF EVALUATE(GUIDVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := GUIDVar;
+            EXIT(TRUE);
+          END;
+        'Code','Text':
+          BEGIN
+            IF STRLEN(InputText) > FieldRef.LENGTH THEN BEGIN
+              FieldRef.VALUE := PADSTR(InputText,FieldRef.LENGTH);
+              EXIT(FALSE);
+            END;
+            FieldRef.VALUE := InputText;
+            EXIT(TRUE);
+          END;
+        'DateFormula':
+          IF EVALUATE(DateFormulaVar,InputText,9) THEN BEGIN
+            FieldRef.VALUE := DateFormulaVar;
+            EXIT(TRUE);
+          END;
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE "NCV>"@1101495001();
+    BEGIN
+    END;
+
+    PROCEDURE ClearTempChangeLogSetupTable@1101495000();
+    BEGIN
+      //NC MDR01 > MP
+      TempChangeLogSetupTable.RESET;
+      TempChangeLogSetupTable.DELETEALL;
+      //NC MDR01 < MP
+    END;
+
+    PROCEDURE Notify@1000000002(p_Mode@1000000007 : 'Insert,Modify,Delete,Rename';VAR p_RecRef@1000000010 : RecordRef;VAR p_xRecRef@1000000009 : RecordRef);
+    VAR
+      NotifLog@1000000002 : Record 50145;
+      NotifSetup@1000000006 : Record 50143;
+      FilterSetup@1000000003 : Record 50144;
+      Message1@1000000008 : Text[1024];
+      Message2@1000000025 : Text[1024];
+      FldRef1@1000000014 : FieldRef;
+      FldRef2@1000000013 : FieldRef;
+      i@1000000017 : Integer;
+      j@1000000004 : Integer;
+      ToLog@1000000015 : Boolean;
+      ToSkip@1000000005 : Boolean;
+      OptionString@1000000020 : Text[250];
+      bigTXT@1000000021 : BigText;
+      OutStream@1000000023 : OutStream;
+      KeyRef1@1000000024 : KeyRef;
+      TempTableRef@1000000001 : RecordRef;
+      xTempTableRef@1000000000 : RecordRef;
+      Obj@1000000011 : Record 2000000001;
+      CompanyText@1000000012 : Text[75];
+    BEGIN
+      //TDRANCS-1165
+
+      //TDRANCS-2424>
+      IF g_recMDSetup.GET THEN;
+      IF g_recMDSetup."Notification Off" THEN
+        EXIT;
+      //TDRANCS-2424<
+
+      IF p_RecRef.NUMBER = 0 THEN
+        EXIT;
+
+      IF (p_Mode IN [p_Mode::Modify,p_Mode::Rename]) AND (p_xRecRef.ISEMPTY = TRUE) THEN
+        EXIT;
+
+      NotifSetup.RESET;                                       // Настройки оповещений
+      NotifSetup.SETRANGE("Table No.", p_RecRef.NUMBER);
+      IF NOT NotifSetup.FINDFIRST THEN
+        EXIT;
+
+      TempTableRef.OPEN(p_RecRef.NUMBER, TRUE);          // Копии Rec и xRec для проверки условий синхронизации
+      FOR i := 1 TO p_RecRef.FIELDCOUNT DO BEGIN         // Заполнение временной таблицы копией Rec
+        FldRef1 := p_RecRef.FIELDINDEX(i);
+        IF FORMAT(FldRef1.CLASS) = 'Normal' THEN BEGIN
+          FldRef2 := TempTableRef.FIELDINDEX(i);
+          FldRef2.VALUE := FldRef1.VALUE;
+        END;
+      END;
+      TempTableRef.INSERT;
+
+
+      IF p_Mode <> p_Mode::Insert THEN BEGIN
+        xTempTableRef.OPEN(p_xRecRef.NUMBER, TRUE);
+        FOR i := 1 TO p_xRecRef.FIELDCOUNT DO BEGIN        // Заполнение временной таблицы копией xRec
+          FldRef1 := p_xRecRef.FIELDINDEX(i);
+          IF FORMAT(FldRef1.CLASS) = 'Normal' THEN BEGIN
+            FldRef2 := xTempTableRef.FIELDINDEX(i);
+            FldRef2.VALUE := FldRef1.VALUE;
+          END;
+        END;
+        xTempTableRef.INSERT;
+      END;
+
+      Obj.SETRANGE(Type,0);
+      Obj.SETRANGE("Company Name",COMPANYNAME);
+      Obj.SETRANGE(ID, p_RecRef.NUMBER);
+      IF Obj.FINDFIRST THEN
+        CompanyText := COMPANYNAME+'. '
+      ELSE
+        CompanyText := '';
+      CompanyText := CompanyText + 'Таблица: "'+ p_RecRef.CAPTION +'".';
+
+      REPEAT
+        FilterSetup.RESET;
+        FilterSetup.SETRANGE("Alert No.", NotifSetup."Alert No.");
+        FilterSetup.SETRANGE("Table No.", NotifSetup."Table No.");
+
+        IF FilterSetup.FINDFIRST THEN REPEAT             // Проверка условия отбора записей для оповещений на копии Rec
+          FldRef1 := TempTableRef.FIELD(FilterSetup."Field No.");
+          FldRef1.SETFILTER(FilterSetup."Filter Text");
+        UNTIL FilterSetup.NEXT= 0;
+
+        ToLog := TempTableRef.FINDFIRST;
+
+        IF p_Mode <> p_Mode::Insert THEN BEGIN
+          IF FilterSetup.FINDFIRST THEN REPEAT          // Проверка условия отбора записей для оповещений на копии xRec
+            FldRef1 := xTempTableRef.FIELD(FilterSetup."Field No.");
+            FldRef1.SETFILTER(FilterSetup."Filter Text");
+          UNTIL FilterSetup.NEXT= 0;
+
+          ToLog := xTempTableRef.FINDFIRST;
+        END;
+
+        IF ToLog THEN BEGIN                             // Запись в журнал сообщений
+          NotifLog.INIT;
+          NotifLog."Time Created" := CURRENTDATETIME;
+          NotifLog."E-mail" := NotifSetup."E-mail Addresses";
+          NotifLog.Subject := NotifSetup.Subject;
+          NotifLog.User := USERID;
+
+          Message1 := NotifSetup.Message + ' '+ CompanyText;
+
+          CASE p_Mode OF
+           p_Mode::Insert: Message1 += ' Добавлена запись';
+           p_Mode::Modify: Message1 += ' Изменена запись';
+           p_Mode::Delete: Message1 += ' Удалена запись';
+           p_Mode::Rename: Message1 += ' Переименована запись';
+          END;
+
+          IF p_Mode = p_Mode::Rename THEN                     // Первичный ключ добавляем в текст сообщения
+            KeyRef1 := p_xRecRef.KEYINDEX(1)
+          ELSE
+            KeyRef1 := p_RecRef.KEYINDEX(1);
+
+          FOR i := 1 TO KeyRef1.FIELDCOUNT DO BEGIN
+            FldRef1 := KeyRef1.FIELDINDEX(i);
+            IF FORMAT(FldRef1.TYPE) <> 'Option' THEN
+              Message1 := Message1+' ['+FldRef1.NAME+']="'+FORMAT(FldRef1.VALUE)+'",'
+            ELSE BEGIN
+              EVALUATE(j, FORMAT(FldRef1.VALUE));
+              j:=j+1;
+              Message1 := Message1+' ['+FldRef1.NAME+']="'+SELECTSTR(j, FldRef1.OPTIONSTRING)+'",';
+            END;
+          END;
+          Message1 := COPYSTR(Message1,1,STRLEN(Message1)-1) + '.';
+
+          CASE p_Mode OF
+           p_Mode::Insert: Message1 += ' Поля:';
+           p_Mode::Modify: Message1 += ' Изменения:';
+           p_Mode::Rename: Message1 += ' Новая запись:';
+          END;
+
+          Message2 := '';
+
+          IF p_Mode = p_Mode::Rename THEN BEGIN              //Новые значения ключевых полей
+            KeyRef1 := p_RecRef.KEYINDEX(1);
+            FOR i := 1 TO KeyRef1.FIELDCOUNT DO BEGIN
+              FldRef1 := KeyRef1.FIELDINDEX(i);
+              IF FORMAT(FldRef1.TYPE) <> 'Option' THEN
+                Message2 := Message2+' ['+FldRef1.NAME+']="'+FORMAT(FldRef1.VALUE)+'",'
+              ELSE BEGIN
+                EVALUATE(j, FORMAT(FldRef1.VALUE));
+                j:=j+1;
+                Message2 := Message2+' ['+FldRef1.NAME+']="'+SELECTSTR(j, FldRef1.OPTIONSTRING)+'",';
+              END;
+            END;
+            Message2 := COPYSTR(Message2,1,STRLEN(Message2)-1) + '.';
+          END;
+
+          IF p_Mode IN [p_Mode::Insert,p_Mode::Modify] THEN
+            FOR i := 1 TO p_RecRef.FIELDCOUNT DO BEGIN    // Значение измененных полей
+              FldRef1 := p_RecRef.FIELDINDEX(i);
+
+              ToSkip := FALSE;
+              KeyRef1 := p_RecRef.KEYINDEX(1);           // Исключаем поля, входящие в первичный ключ
+              FOR j := 1 TO KeyRef1.FIELDCOUNT DO BEGIN
+                FldRef2 := KeyRef1.FIELDINDEX(j);
+                IF FldRef1.NUMBER = FldRef2.NUMBER THEN
+                  ToSkip := TRUE;
+              END;
+
+              IF (NOT ToSkip) AND (FORMAT(FldRef1.CLASS)='Normal') THEN BEGIN
+                IF p_Mode = p_Mode::Insert THEN BEGIN           // Для новой записи пишем все заполненные поля
+                  //NC NOS-26 > AAP
+                  //IF HasValue(FldRef1.VALUE) AND (FORMAT(FldRef1.TYPE) <> 'BLOB') THEN BEGIN
+                  IF HasValue(FldRef1) AND (FORMAT(FldRef1.TYPE) <> 'BLOB') THEN BEGIN
+                  //NC NOS-26 < AAP
+
+                    IF FORMAT(FldRef1.TYPE) <> 'Option' THEN
+                      Message2 := Message2+' ['+FldRef1.NAME+']="'+FORMAT(FldRef1.VALUE)+'",'
+                    ELSE BEGIN
+                      EVALUATE(j, FORMAT(FldRef1.VALUE));
+                      j:=j+1;
+                      Message2 := Message2+' ['+FldRef1.NAME+']="'+SELECTSTR(j, FldRef1.OPTIONSTRING)+'",';
+                    END;
+
+                  END;
+                END
+                ELSE BEGIN                                  // Ищем измененные поля
+                  FldRef2 := p_xRecRef.FIELDINDEX(i);
+                  IF FldRef1.VALUE <> FldRef2.VALUE THEN BEGIN
+                    IF FORMAT(FldRef1.TYPE) <> 'Option' THEN
+                      Message2 := Message2+' ['+FldRef1.NAME+']="'+FORMAT(FldRef1.VALUE)+'",'
+                    ELSE BEGIN
+                      EVALUATE(j, FORMAT(FldRef1.VALUE));
+                      j:=j+1;
+                      Message2 := Message2+' ['+FldRef1.NAME+']="'+SELECTSTR(j, FldRef1.OPTIONSTRING)+'",';
+                    END;
+                  END;
+                END;
+              END;
+            END;
+
+          IF (Message2 <> '') OR (p_Mode = p_Mode::Delete) THEN BEGIN
+             IF Message2 <> '' THEN
+               Message2 := COPYSTR(Message2,1,STRLEN(Message2)-1) + '.';
+            Message1 := Message1 + Message2;
+            Message1 := COPYSTR(Message1,1,1024);
+            NotifLog.Message1 := COPYSTR(Message1,1,250);
+            NotifLog.Message2 := COPYSTR(Message1,251,250);
+            NotifLog.Body.CREATEOUTSTREAM(OutStream);
+            CLEAR(bigTXT);
+            //NC NOS-26 > AAP
+            //Message1 := fn_ASCII_ANSI(Message1);
+            //NC NOS-26 < AAP
+            bigTXT.ADDTEXT(Message1);
+            bigTXT.WRITE(OutStream);
+            NotifLog.INSERT();
+          END;
+        END;
+      UNTIL NotifSetup.NEXT = 0;
+    END;
+
+    PROCEDURE fn_ASCII_ANSI@1000000021(p_txtStr@1000000000 : Text[1024]) : Text[1024];
+    VAR
+      l_txtANSIstr@1000000001 : Text[100];
+      l_txtASCIIstr@1000000002 : Text[100];
+    BEGIN
+      //TDRANCS-1165
+      l_txtASCIIstr:=' АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя№|';
+      l_txtANSIstr:= ' └┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀рстуфхцчшщъыьэюяЁёЄєЇїЎў°∙·√№¤■ N ';
+      l_txtANSIstr[66]:=185;
+      l_txtANSIstr[67]:=160;
+      EXIT(CONVERTSTR(p_txtStr, l_txtASCIIstr, l_txtANSIstr));
+    END;
+
+    PROCEDURE fn_LogModification@1000000001(VAR RecRef@1000 : RecordRef;VAR xRecRef@1001 : RecordRef;p_txtCompanyName@1000000000 : Text[30]);
+    VAR
+      FldRef@1003 : FieldRef;
+      xFldRef@1004 : FieldRef;
+      i@1002 : Integer;
+    BEGIN
+      //TDRANCS-1642>
+      IF NOT IsLogActive(RecRef.NUMBER,0,1) THEN
+        EXIT;
+      FOR i := 1 TO RecRef.FIELDCOUNT DO BEGIN
+        FldRef := RecRef.FIELDINDEX(i);
+        xFldRef := xRecRef.FIELDINDEX(i);
+        IF IsNormalField(RecRef.NUMBER,FldRef.NUMBER) THEN
+          IF FORMAT(FldRef.VALUE) <> FORMAT(xFldRef.VALUE) THEN
+            IF IsLogActive(RecRef.NUMBER,FldRef.NUMBER,1) THEN
+              fn_InsertLogEntry(FldRef,xFldRef,RecRef,1,p_txtCompanyName);
+      END;
+    END;
+
+    LOCAL PROCEDURE fn_InsertLogEntry@1000000003(VAR FldRef@1000 : FieldRef;VAR xFldRef@1001 : FieldRef;VAR RecRef@1004 : RecordRef;TypeOfChange@1002 : 'Insertion,Modification,Deletion';p_txtCompanyName@1000000000 : Text[30]);
+    VAR
+      ChangeLogEntry@1003 : Record 405;
+      KeyFldRef@1005 : FieldRef;
+      KeyRef1@1006 : KeyRef;
+      i@1007 : Integer;
+    BEGIN
+      //TDRANCS-1642>
+      ChangeLogEntry.INIT;
+      ChangeLogEntry."Date and Time" := CURRENTDATETIME;
+      ChangeLogEntry.Time := DT2TIME(ChangeLogEntry."Date and Time");
+
+      ChangeLogEntry."Company Name" := p_txtCompanyName;
+
+
+      IF NOT LogEmployeePortalActivity THEN
+        ChangeLogEntry."User ID" := USERID
+      ELSE
+        ChangeLogEntry."User ID" := LogEmployeePortalUser;
+      ChangeLogEntry."User ID" := USERID;
+
+      ChangeLogEntry."Table No." := RecRef.NUMBER;
+      ChangeLogEntry."Field No." := FldRef.NUMBER;
+      ChangeLogEntry."Type of Change" := TypeOfChange;
+      IF (RecRef.NUMBER = DATABASE::User) AND (FldRef.NUMBER = 2) THEN BEGIN // Password
+        ChangeLogEntry."Old Value" := '*';
+        ChangeLogEntry."New Value" := '*';
+      END ELSE BEGIN
+        IF TypeOfChange <> TypeOfChange::Insertion THEN
+          //NC NOS-26 > AAP
+          //ChangeLogEntry."Old Value" := FormatValue(xFldRef,RecRef.NUMBER);
+          ChangeLogEntry."Old Value" := FORMAT(xFldRef.VALUE,0,9);
+          //NC NOS-26 < AAP
+        IF TypeOfChange <> TypeOfChange::Deletion THEN
+          //NC NOS-26 > AAP
+          //ChangeLogEntry."New Value" := FormatValue(FldRef,RecRef.NUMBER);
+          ChangeLogEntry."New Value" := FORMAT(FldRef.VALUE,0,9);
+          //NC NOS-26 < AAP
+      END;
+
+      KeyRef1 := RecRef.KEYINDEX(1);
+      FOR i := 1 TO KeyRef1.FIELDCOUNT DO BEGIN
+        KeyFldRef := KeyRef1.FIELDINDEX(i);
+        IF i = 1 THEN
+          ChangeLogEntry."Primary Key" :=
+            //NC NOS-26 > AAP
+            //STRSUBSTNO('%1=%2',KeyFldRef.CAPTION,FormatValue(KeyFldRef,RecRef.NUMBER))
+            STRSUBSTNO('%1=%2',KeyFldRef.CAPTION,FORMAT(KeyFldRef.VALUE,0,9))
+            //NC NOS-26 < AAP
+        ELSE
+          IF MAXSTRLEN(ChangeLogEntry."Primary Key") >
+            STRLEN(ChangeLogEntry."Primary Key") +
+            //NC NOS-26 > AAP
+            //STRLEN(STRSUBSTNO(', %1=%2',KeyFldRef.CAPTION,FormatValue(KeyFldRef,RecRef.NUMBER)))
+            STRLEN(STRSUBSTNO(', %1=%2',KeyFldRef.CAPTION,FORMAT(KeyFldRef.VALUE,0,9)))
+            //NC NOS-26 < AAP
+          THEN
+            ChangeLogEntry."Primary Key" :=
+              COPYSTR(
+                ChangeLogEntry."Primary Key" +
+                //NC NOS-26 > AAP
+                //STRSUBSTNO(', %1=%2',KeyFldRef.CAPTION,FormatValue(KeyFldRef,RecRef.NUMBER)),
+                STRSUBSTNO(', %1=%2',KeyFldRef.CAPTION,FORMAT(KeyFldRef.VALUE,0,9)),
+                //NC NOS-26 < AAP
+                1,MAXSTRLEN(ChangeLogEntry."Primary Key"));
+
+        CASE i OF
+          1:
+            BEGIN
+              ChangeLogEntry."Primary Key Field 1 No." := KeyFldRef.NUMBER;
+              //NC NOS-26 > AAP
+              //ChangeLogEntry."Primary Key Field 1 Value" := FormatValue(KeyFldRef,RecRef.NUMBER);
+              ChangeLogEntry."Primary Key Field 1 Value" := FORMAT(KeyFldRef.VALUE,0,9);
+              //NC NOS-26 < AAP
+            END;
+          2:
+            BEGIN
+              ChangeLogEntry."Primary Key Field 2 No." := KeyFldRef.NUMBER;
+              //NC NOS-26 > AAP
+              //ChangeLogEntry."Primary Key Field 2 Value" := FormatValue(KeyFldRef,RecRef.NUMBER);
+              ChangeLogEntry."Primary Key Field 2 Value" := FORMAT(KeyFldRef.VALUE,0,9);
+              //NC NOS-26 < AAP
+            END;
+          3:
+            BEGIN
+              ChangeLogEntry."Primary Key Field 3 No." := KeyFldRef.NUMBER;
+              //NC NOS-26 > AAP
+              //ChangeLogEntry."Primary Key Field 3 Value" := FormatValue(KeyFldRef,RecRef.NUMBER);
+              ChangeLogEntry."Primary Key Field 3 Value" := FORMAT(KeyFldRef.VALUE,0,9);
+              //NC NOS-26 < AAP
+            END;
+        END;
+      END;
+      ChangeLogEntry.INSERT;
+    END;
+
+    BEGIN
+    {
+
+      NC MAU01 MP Изменения в коде
+      TDRANCS-1165>
+        added funcs Notify,fn_ASCII_ANSI
+      TDRANCS-1642>
+        created func fn_LogModification,fn_InsertLogEntry
+      TDRANCS-2211> Modified func Notify: Comanytext 50->75
+
+      NC NOS-26 AAP: modify functions Notify, fn_InsertLogEntry
+      TDRANCS-2424 Modified Notify()s
+    }
+    END.
+  }
+}
+

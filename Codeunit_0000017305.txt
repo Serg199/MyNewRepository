@@ -1,0 +1,555 @@
+OBJECT Codeunit 17305 Create Tax Calc. Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    TableNo=17315;
+    OnRun=BEGIN
+            Code("Starting Date","Ending Date","Section Code");
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text21000900@1000 : TextConst 'ENU=Search Table    #4############################\Begin period    #1##########\End period      #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Обработка       #4############################\Начало периода  #1##########\Конец периода   #2##########\@3@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      TaxCalcDimMgt@1001 : Codeunit 17304;
+      Text21000901@1002 : TextConst 'ENU=Illegal filter setting.;RUS=Недопустимое значение фильтра.';
+      Text21000902@1003 : TextConst 'ENU=Entry %1 %2 Line %3.;RUS=Операция %1 %2 Строка %3';
+      TaxRegTermMgt@1004 : Codeunit 17200;
+
+    PROCEDURE Code@1470000(DateBegin@1470002 : Date;DateEnd@1470001 : Date;TaxDifSectionCode@1470000 : Code[10]);
+    VAR
+      GLCorrEntry@1210007 : Record 12401;
+      GLCorrAnalysisView@1210001 : Record 14940;
+      GLCorrAnalysisViewEntry@1210002 : Record 14942;
+      TaxCalcHeader@1470003 : Record 17308;
+      TaxCalcLine@1470007 : Record 17310;
+      TempTaxCalcLine@1210004 : TEMPORARY Record 17310;
+      TaxCalcAccumul@1470006 : Record 17314;
+      TaxCalcAccumul0@1210006 : Record 17314;
+      TaxCalcSelectionSetup@1210000 : Record 17309;
+      TaxCalcMgt@1470004 : Codeunit 17303;
+      Wnd@1470005 : Dialog;
+    BEGIN
+      TaxCalcMgt.ValidateAbsenceGLEntriesDate(DateBegin,DateEnd,TaxDifSectionCode);
+
+      Wnd.OPEN(Text21000900);
+      Wnd.UPDATE(1,DateBegin);
+      Wnd.UPDATE(2,DateEnd);
+
+      CLEAR(TaxCalcDimMgt);
+
+      TaxCalcAccumul.RESET;
+      IF NOT TaxCalcAccumul.FINDLAST THEN
+        TaxCalcAccumul."Entry No." := 0;
+
+      TaxCalcAccumul.RESET;
+      TaxCalcAccumul.INIT;
+      TaxCalcAccumul."Section Code" := TaxDifSectionCode;
+      TaxCalcAccumul."Starting Date" := DateBegin;
+      TaxCalcAccumul."Ending Date" := DateEnd;
+
+      TaxCalcHeader.SETRANGE("Section Code",TaxDifSectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. G/L Entry");
+      IF TaxCalcHeader.FINDSET THEN
+        REPEAT
+          IF TaxCalcHeader."G/L Corr. Analysis View Code" <> '' THEN
+            GLCorrAnalysisView.GET(TaxCalcHeader."G/L Corr. Analysis View Code");
+          TaxCalcLine.SETRANGE("Section Code",TaxCalcHeader."Section Code");
+          TaxCalcLine.SETRANGE(Code,TaxCalcHeader."No.");
+          IF TaxCalcLine.FINDSET THEN
+            REPEAT
+              TempTaxCalcLine := TaxCalcLine;
+              IF TaxCalcLine."Expression Type" = TaxCalcLine."Expression Type"::SumField THEN BEGIN
+                TaxCalcSelectionSetup.RESET;
+                TaxCalcSelectionSetup.SETRANGE("Section Code",TaxCalcHeader."Section Code");
+                TaxCalcSelectionSetup.SETRANGE("Register No.",TaxCalcHeader."No.");
+                IF TaxCalcLine."Selection Line Code" <> '' THEN
+                  TaxCalcSelectionSetup.SETRANGE("Line Code",TaxCalcLine."Selection Line Code");
+                IF TaxCalcSelectionSetup.FINDSET THEN
+                  REPEAT
+                    IF TaxCalcHeader."G/L Corr. Analysis View Code" <> '' THEN BEGIN
+                      GLCorrAnalysisViewEntry.RESET;
+                      GLCorrAnalysisViewEntry.SETRANGE("G/L Corr. Analysis View Code",TaxCalcHeader."G/L Corr. Analysis View Code");
+                      GLCorrAnalysisViewEntry.SETRANGE("Posting Date",DateBegin,DateEnd);
+                      TaxCalcDimMgt.SetDimFilters2GLCorrAnViewEntr(
+                        GLCorrAnalysisViewEntry,
+                        GLCorrAnalysisView,
+                        TaxCalcSelectionSetup,
+                        TaxCalcLine);
+                      WITH TaxCalcSelectionSetup DO BEGIN
+                        IF "Account No." <> '' THEN
+                          GLCorrAnalysisViewEntry.SETFILTER("Debit Account No.","Account No.");
+                        IF "Bal. Account No." <> '' THEN
+                          GLCorrAnalysisViewEntry.SETFILTER("Credit Account No.","Bal. Account No.");
+                        GLCorrAnalysisViewEntry.CALCSUMS(Amount);
+                        TempTaxCalcLine.Value := TempTaxCalcLine.Value + GLCorrAnalysisViewEntry.Amount;
+                      END;
+                    END ELSE BEGIN
+                      GLCorrEntry.RESET;
+                      GLCorrEntry.SETCURRENTKEY("Debit Account No.","Credit Account No.");
+                      GLCorrEntry.SETRANGE("Posting Date",DateBegin,DateEnd);
+                      WITH TaxCalcSelectionSetup DO BEGIN
+                        IF "Account No." <> '' THEN
+                          GLCorrEntry.SETFILTER("Debit Account No.","Account No.");
+                        IF "Bal. Account No." <> '' THEN
+                          GLCorrEntry.SETFILTER("Credit Account No.","Bal. Account No.");
+                        GLCorrEntry.CALCSUMS(Amount);
+                        TempTaxCalcLine.Value := TempTaxCalcLine.Value + GLCorrEntry.Amount;
+                      END;
+                    END;
+                  UNTIL TaxCalcSelectionSetup.NEXT = 0;
+              END;
+
+              TempTaxCalcLine.INSERT;
+            UNTIL TaxCalcLine.NEXT = 0;
+
+          IF TempTaxCalcLine.FINDSET THEN
+            REPEAT
+              TaxCalcAccumul."Template Line Code" := TempTaxCalcLine."Line Code";
+              TaxCalcAccumul."Section Code" := TempTaxCalcLine."Section Code";
+              TaxCalcAccumul."Register No." := TempTaxCalcLine.Code;
+              TaxCalcAccumul.Indentation := TempTaxCalcLine.Indentation;
+              TaxCalcAccumul.Bold := TempTaxCalcLine.Bold;
+              TaxCalcAccumul.Description := TempTaxCalcLine.Description;
+              TaxCalcAccumul.Amount := TempTaxCalcLine.Value;
+              TaxCalcAccumul."Amount Period" := TempTaxCalcLine.Value;
+              TaxCalcAccumul."Template Line No." := TempTaxCalcLine."Line No.";
+              TaxCalcAccumul."Tax Diff. Amount (Base)" := TempTaxCalcLine."Tax Diff. Amount (Base)";
+              TaxCalcAccumul."Tax Diff. Amount (Tax)" := TempTaxCalcLine."Tax Diff. Amount (Tax)";
+              TaxCalcAccumul."Amount Date Filter" :=
+                TaxRegTermMgt.CalcIntervalDate(
+                  TaxCalcAccumul."Starting Date",
+                  TaxCalcAccumul."Ending Date",
+                  TempTaxCalcLine.Period);
+              TaxCalcAccumul.Amount := TaxCalcAccumul."Amount Period";
+              TaxCalcAccumul."Entry No." += 1;
+              TaxCalcAccumul.INSERT;
+              IF TempTaxCalcLine.Period <> '' THEN BEGIN
+                TaxCalcAccumul0 := TaxCalcAccumul;
+                TaxCalcAccumul0.RESET;
+                TaxCalcAccumul0.SETCURRENTKEY(
+                  "Section Code","Register No.","Template Line No.","Starting Date","Ending Date");
+                TaxCalcAccumul0.SETRANGE("Section Code",TaxCalcAccumul."Section Code");
+                TaxCalcAccumul0.SETRANGE("Register No.",TaxCalcAccumul."Register No.");
+                TaxCalcAccumul0.SETRANGE("Template Line No.",TaxCalcAccumul."Template Line No.");
+                TaxCalcAccumul0.SETFILTER("Starting Date",TaxCalcAccumul."Amount Date Filter");
+                TaxCalcAccumul0.SETFILTER("Ending Date",TaxCalcAccumul."Amount Date Filter");
+                TaxCalcAccumul0.CALCSUMS("Amount Period");
+                TaxCalcAccumul.Amount := TaxCalcAccumul0."Amount Period";
+                TaxCalcAccumul.MODIFY;
+              END;
+            UNTIL TempTaxCalcLine.NEXT = 0;
+
+          TempTaxCalcLine.DELETEALL;
+        UNTIL TaxCalcHeader.NEXT = 0;
+    END;
+
+    PROCEDURE BuildTaxCalcCorresp@3(DateBegin@1000 : Date;DateEnd@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      DebitGLAcc@1003 : Record 15;
+      CreditGLAcc@1004 : Record 15;
+      GLCorrespondEntry@1005 : Record 12401;
+      TaxCalcCorrespEntry@1006 : Record 17319;
+      TaxCalcHeader@1007 : Record 17308;
+      TaxCalcSelectionSetup@1008 : Record 17309;
+      TempTaxCalcDimFilter@1009 : TEMPORARY Record 17320;
+      TaxCalcMgt@1010 : Codeunit 17303;
+      Wnd@1011 : Dialog;
+      Total@1012 : Integer;
+      Procesing@1013 : Integer;
+    BEGIN
+      TaxCalcMgt.ValidateDateBeginDateEnd(DateBegin,DateEnd,SectionCode);
+
+      TaxCalcHeader.RESET;
+      TaxCalcHeader.SETRANGE("Section Code",SectionCode);
+      IF NOT TaxCalcHeader.FINDFIRST THEN
+        EXIT;
+
+      Wnd.OPEN(Text21000900);
+      Wnd.UPDATE(1,DateBegin);
+      Wnd.UPDATE(2,DateEnd);
+      Wnd.UPDATE(4,GLCorrespondEntry.TABLECAPTION);
+
+      TaxCalcSelectionSetup.RESET;
+      TaxCalcSelectionSetup.SETRANGE("Section Code",SectionCode);
+      Total := TaxCalcSelectionSetup.COUNT;
+      TaxCalcCorrespEntry."Section Code" := SectionCode;
+
+      DebitGLAcc.SETRANGE("Account Type",DebitGLAcc."Account Type"::Posting);
+      CreditGLAcc.SETRANGE("Account Type",CreditGLAcc."Account Type"::Posting);
+      REPEAT
+        TaxCalcCorrespEntry."Tax Register ID Totaling" := TaxCalcHeader."Register ID";
+        TaxCalcCorrespEntry."Register Type" := TaxCalcCorrespEntry."Register Type"::" ";
+        TaxCalcSelectionSetup.SETRANGE("Register No.",TaxCalcHeader."No.");
+
+        TaxCalcCorrespEntry."Register Type" := TaxCalcCorrespEntry."Register Type"::Item;
+        TaxCalcSelectionSetup.SETRANGE("Register Type",TaxCalcSelectionSetup."Register Type"::Item);
+        IF TaxCalcSelectionSetup.FINDSET THEN
+          REPEAT
+            Procesing += 1;
+            Wnd.UPDATE(3,ROUND((Procesing / Total) * 10000,1));
+            IF (TaxCalcSelectionSetup."Account No." <> '') OR (TaxCalcSelectionSetup."Bal. Account No." <> '') THEN
+              IF (TaxCalcSelectionSetup."Account No." = '') OR
+                 (TaxCalcSelectionSetup."Bal. Account No." = '')
+              THEN BEGIN
+                CopyDimValuefilter(TaxCalcSelectionSetup,TempTaxCalcDimFilter);
+                CreditGLAcc.SETFILTER("No.",'%1','');
+                DebitGLAcc.SETFILTER("No.",'%1','');
+                CASE TRUE OF
+                  TaxCalcSelectionSetup."Bal. Account No." = '':
+                    DebitGLAcc.SETFILTER("No.",TaxCalcSelectionSetup."Account No.");
+                  TaxCalcSelectionSetup."Account No." = '':
+                    CreditGLAcc.SETFILTER("No.",TaxCalcSelectionSetup."Bal. Account No.");
+                END;
+                TaxCalcCorrespEntry."Credit Account No." := '';
+                IF DebitGLAcc.FINDSET THEN
+                  REPEAT
+                    TaxCalcCorrespEntry."Debit Account No." := DebitGLAcc."No.";
+                    InsertTaxCalcCorrespondLine(
+                      TaxCalcCorrespEntry,TempTaxCalcDimFilter,TaxCalcSelectionSetup."Register No.",TaxCalcSelectionSetup."Line No.");
+                  UNTIL DebitGLAcc.NEXT = 0;
+                TaxCalcCorrespEntry."Debit Account No." := '';
+                IF CreditGLAcc.FINDSET THEN
+                  REPEAT
+                    TaxCalcCorrespEntry."Credit Account No." := CreditGLAcc."No.";
+                    InsertTaxCalcCorrespondLine(
+                      TaxCalcCorrespEntry,TempTaxCalcDimFilter,TaxCalcSelectionSetup."Register No.",TaxCalcSelectionSetup."Line No.");
+                  UNTIL CreditGLAcc.NEXT = 0;
+              END;
+          UNTIL TaxCalcSelectionSetup.NEXT = 0;
+
+      UNTIL TaxCalcHeader.NEXT = 0;
+      Wnd.CLOSE;
+    END;
+
+    PROCEDURE InsertTaxCalcCorrespondLine@5(VAR TaxCalcCorrespEntry@1000 : Record 17319;VAR TmpTaxCalcDimFilter@1001 : TEMPORARY Record 17320;TaxCalcNo@1002 : Code[10];TaxCalcSelectionSetupLineNo@1003 : Integer);
+    VAR
+      TaxCalcCorrEntry@1004 : Record 17319;
+      TaxCalcDimFilter@1005 : Record 17320;
+      TaxCalcHeader@1006 : Record 17308;
+    BEGIN
+      TaxCalcCorrEntry := TaxCalcCorrespEntry;
+      TmpTaxCalcDimFilter.RESET;
+      WITH TaxCalcCorrespEntry DO BEGIN
+        SETRANGE("Section Code","Section Code");
+        SETRANGE("Debit Account No.","Debit Account No.");
+        SETRANGE("Credit Account No.","Credit Account No.");
+        IF NOT FINDLAST THEN BEGIN
+          "Tax Register ID Totaling" := '';
+          "Where Used Register IDs" := '~';
+          INSERT(TRUE);
+        END;
+
+        IF STRPOS("Where Used Register IDs",'~' + TaxCalcCorrEntry."Tax Register ID Totaling" + '~') = 0 THEN
+          "Where Used Register IDs" :=
+            STRSUBSTNO('%1%2~',"Where Used Register IDs",TaxCalcCorrEntry."Tax Register ID Totaling")
+        ELSE BEGIN
+          IF TaxCalcCorrEntry."Starting Date" < "Starting Date" THEN
+            "Starting Date" := TaxCalcCorrEntry."Starting Date";
+          IF "Ending Date" < TaxCalcCorrEntry."Ending Date" THEN
+            "Ending Date" := TaxCalcCorrEntry."Ending Date";
+        END;
+        IF TmpTaxCalcDimFilter.FINDSET THEN BEGIN
+          IF STRPOS("Tax Register ID Totaling",'~' + TaxCalcCorrEntry."Tax Register ID Totaling" + '~') <> 0 THEN
+            ERROR(Text21000901);
+          CASE CheckDimValueFilter(TmpTaxCalcDimFilter,"Entry No.",TaxCalcNo,TaxCalcSelectionSetupLineNo) OF
+            -1:
+              ERROR(Text21000902,TaxCalcHeader.TABLECAPTION,TaxCalcNo,TaxCalcSelectionSetupLineNo);
+            1:
+              REPEAT
+                TaxCalcDimFilter := TmpTaxCalcDimFilter;
+                TaxCalcDimFilter."Corresp. Entry No." := "Entry No.";
+                TaxCalcDimFilter.INSERT;
+              UNTIL TmpTaxCalcDimFilter.NEXT = 0;
+          END;
+        END ELSE BEGIN
+          IF "Tax Register ID Totaling" = '' THEN
+            "Tax Register ID Totaling" := '~';
+          IF STRPOS("Tax Register ID Totaling",'~' + TaxCalcCorrEntry."Tax Register ID Totaling" + '~') = 0 THEN
+            "Tax Register ID Totaling" :=
+              STRSUBSTNO('%1%2~',"Tax Register ID Totaling",TaxCalcCorrEntry."Tax Register ID Totaling");
+        END;
+        MODIFY;
+      END;
+      TaxCalcCorrespEntry := TaxCalcCorrEntry;
+    END;
+
+    PROCEDURE CopyDimValuefilter@6(TaxCalcSelectionSetup@1000 : Record 17309;VAR TmpTaxCalcDimFilter@1001 : Record 17320);
+    VAR
+      TaxCalcDimFilter@1002 : Record 17313;
+    BEGIN
+      TmpTaxCalcDimFilter.DELETEALL;
+
+      TmpTaxCalcDimFilter."Section Code" := TaxCalcSelectionSetup."Section Code";
+      TmpTaxCalcDimFilter."Corresp. Entry No." := 0;
+
+      TaxCalcDimFilter.SETRANGE("Section Code",TaxCalcSelectionSetup."Section Code");
+      TaxCalcDimFilter.SETRANGE("Register No.",TaxCalcSelectionSetup."Register No.");
+      TaxCalcDimFilter.SETRANGE(Define,TaxCalcDimFilter.Define::"Entry Setup");
+      TaxCalcDimFilter.SETRANGE("Line No.",TaxCalcSelectionSetup."Line No.");
+      IF TaxCalcDimFilter.FINDSET THEN
+        REPEAT
+          TmpTaxCalcDimFilter."Connection Entry No." := TaxCalcDimFilter."Entry No.";
+          TmpTaxCalcDimFilter.INSERT;
+        UNTIL TaxCalcDimFilter.NEXT = 0;
+    END;
+
+    PROCEDURE CheckDimValueFilter@7(VAR TmpTaxCalcDimFilter@1000 : TEMPORARY Record 17320;TaxCalcCorrespEntryNo@1001 : Integer;TaxCalcNo@1002 : Code[10];TaxCalcSelectionSetupNo@1003 : Integer) : Integer;
+    VAR
+      TaxCalcDimFilter@1004 : Record 17320;
+      OldTaxCalcDimFilter@1005 : Record 17313;
+      NewTaxCalcDimFilter@1006 : Record 17313;
+      OldExist@1007 : Boolean;
+      NewExist@1008 : Boolean;
+    BEGIN
+      TaxCalcDimFilter.SETRANGE("Section Code",TmpTaxCalcDimFilter."Section Code");
+      TaxCalcDimFilter.SETRANGE("Corresp. Entry No.",TaxCalcCorrespEntryNo);
+      IF TaxCalcDimFilter.FIND('-') THEN BEGIN
+        NewTaxCalcDimFilter.SETCURRENTKEY("Section Code","Entry No.");
+        NewTaxCalcDimFilter.SETRANGE("Section Code",TmpTaxCalcDimFilter."Section Code");
+        NewTaxCalcDimFilter.SETRANGE("Register No.",TaxCalcNo);
+        NewTaxCalcDimFilter.SETRANGE(Define,NewTaxCalcDimFilter.Define::"Entry Setup");
+        NewTaxCalcDimFilter.SETRANGE("Line No.",TaxCalcSelectionSetupNo);
+        NewExist := NewTaxCalcDimFilter.FINDSET;
+        OldTaxCalcDimFilter.SETCURRENTKEY("Section Code","Entry No.");
+        OldTaxCalcDimFilter.SETRANGE("Section Code",TmpTaxCalcDimFilter."Section Code");
+        OldTaxCalcDimFilter.SETRANGE("Entry No.",TaxCalcDimFilter."Connection Entry No.");
+        OldExist := OldTaxCalcDimFilter.FINDSET;
+        WHILE OldExist AND NewExist DO
+          IF (OldTaxCalcDimFilter."Dimension Code" <> NewTaxCalcDimFilter."Dimension Code") OR
+             (OldTaxCalcDimFilter."Dimension Value Filter" <> NewTaxCalcDimFilter."Dimension Value Filter")
+          THEN
+            NewExist := NOT OldExist
+          ELSE BEGIN
+            NewExist := NewTaxCalcDimFilter.NEXT <> 0;
+            OldExist := TaxCalcDimFilter.NEXT <> 0;
+            IF OldExist THEN BEGIN
+              OldTaxCalcDimFilter.SETRANGE("Entry No.",TaxCalcDimFilter."Connection Entry No.");
+              OldExist := OldTaxCalcDimFilter.FINDFIRST;
+            END;
+          END;
+        IF OldExist <> NewExist THEN
+          EXIT(-1);
+        EXIT(0);
+      END;
+      EXIT(1);
+    END;
+
+    PROCEDURE CalcFieldsTaxCalcEntry@8(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxCalcHeader@1003 : Record 17308;
+      TaxCalcLine@1004 : Record 17310;
+      TaxCalcLine0@1005 : Record 17310;
+      TaxCalcEntry@1006 : Record 17315;
+      TaxCalcBufferEntry@1007 : Record 17316;
+      TaxCalcAccumul@1008 : Record 17314;
+      TaxCalcAccumul0@1009 : Record 17314;
+      TaxRegValueBuffer@1010 : TEMPORARY Record 223;
+      EntryNoAmountBuffer@1011 : TEMPORARY Record 386;
+      TaxCalcSelectionSetup@1012 : Record 17309;
+      TempTaxCalcLine@1013 : TEMPORARY Record 17310;
+      TempGLCorrespondEntry@1014 : TEMPORARY Record 12401;
+      TaxCalcRecordRef@1015 : RecordRef;
+      LinkAccumulateRecordRef@1016 : RecordRef;
+      RoundingAmount@1017 : Decimal;
+    BEGIN
+      TaxCalcHeader.SETRANGE("Section Code",SectionCode);
+      TaxCalcHeader.SETRANGE("Table ID",DATABASE::"Tax Calc. G/L Entry");
+      IF NOT TaxCalcHeader.FINDFIRST THEN
+        EXIT;
+
+      TaxCalcLine.SETRANGE("Section Code",SectionCode);
+      TaxCalcLine0.SETRANGE("Section Code",SectionCode);
+      TaxCalcLine0.SETRANGE("Date Filter",StartDate,EndDate);
+      TaxCalcEntry.SETRANGE("Section Code",SectionCode);
+      TaxCalcEntry.SETRANGE("Ending Date",EndDate);
+
+      LinkAccumulateRecordRef.OPEN(DATABASE::"Tax Calc. Accumulation");
+      WITH TaxCalcAccumul DO BEGIN
+        SETCURRENTKEY("Section Code","Register No.","Template Line No.");
+        SETRANGE("Section Code",SectionCode);
+        SETRANGE("Ending Date",EndDate);
+        LinkAccumulateRecordRef.SETVIEW(GETVIEW(FALSE));
+      END;
+
+      TaxCalcSelectionSetup.RESET;
+      TaxCalcSelectionSetup.SETRANGE("Section Code",SectionCode);
+
+      TempGLCorrespondEntry.SETCURRENTKEY("Debit Account No.","Credit Account No.");
+      TempGLCorrespondEntry.INSERT;
+
+      CLEAR(TaxCalcDimMgt);
+
+      REPEAT
+        TaxRegValueBuffer."Order No." := TaxCalcHeader."No.";
+        TaxCalcLine0.SETRANGE(Code,TaxCalcHeader."No.");
+        TaxCalcLine.SETRANGE(Code,TaxCalcHeader."No.");
+        TaxCalcLine.SETRANGE("Line Type",TaxCalcLine."Line Type"::CalcField);
+        TaxCalcLine.SETRANGE("Sum Field No.",0);
+        IF TaxCalcLine.FINDFIRST THEN BEGIN
+          TaxCalcAccumul.SETRANGE("Register No.",TaxCalcHeader."No.");
+          TaxCalcLine0.SETRANGE("Line Type",TaxCalcLine0."Line Type"::" ");
+          TaxCalcLine0.SETFILTER("Line Code",'<>''''');
+          IF TaxCalcLine0.FINDSET THEN
+            REPEAT
+              TaxCalcAccumul.SETRANGE("Template Line No.",TaxCalcLine0."Line No.");
+              TaxCalcAccumul.FINDFIRST;
+              TaxRegValueBuffer.Quantity := TaxCalcAccumul.Amount;
+              TaxRegValueBuffer."Order Line No." := TaxCalcLine0."Line No.";
+              TaxRegValueBuffer.INSERT;
+            UNTIL TaxCalcLine0.NEXT = 0;
+          TaxCalcLine0.SETRANGE("Line Type");
+          TaxCalcLine0.SETRANGE("Line Code");
+          TaxCalcRecordRef.GETTABLE(TaxCalcLine);
+          TaxCalcRecordRef.SETVIEW(TaxCalcLine0.GETVIEW(FALSE));
+          TaxRegTermMgt.CalculateTemplateEntry(
+            TaxCalcRecordRef,EntryNoAmountBuffer,LinkAccumulateRecordRef,TaxRegValueBuffer);
+          REPEAT
+            EntryNoAmountBuffer.GET('',TaxCalcLine."Line No.");
+            TaxCalcAccumul.SETRANGE("Template Line No.",TaxCalcLine."Line No.");
+            TaxCalcAccumul.FINDFIRST;
+            TaxCalcAccumul.Amount := EntryNoAmountBuffer.Amount;
+            TaxCalcAccumul.MODIFY;
+          UNTIL TaxCalcLine.NEXT = 0;
+          TaxRegValueBuffer.RESET;
+          TaxRegValueBuffer.DELETEALL;
+          EntryNoAmountBuffer.RESET;
+          EntryNoAmountBuffer.DELETEALL;
+        END;
+        TaxCalcLine.SETFILTER("Sum Field No.",'<>0');
+        IF TaxCalcLine.FINDFIRST THEN BEGIN
+          TaxCalcLine.SETRANGE("Sum Field No.");
+          TempTaxCalcLine.RESET;
+          TempTaxCalcLine.DELETEALL;
+          IF TaxCalcLine0.FINDSET THEN
+            REPEAT
+              IF TaxCalcLine0."Line Type" = TempTaxCalcLine."Line Type"::" " THEN
+                IF TaxCalcLine0."Sum Field No." IN
+                   [TaxCalcEntry.FIELDNO("Tax Amount")]
+                THEN BEGIN
+                  TempTaxCalcLine := TaxCalcLine0;
+                  TempTaxCalcLine.Value := 0;
+                  TempTaxCalcLine.INSERT;
+                END;
+            UNTIL TaxCalcLine0.NEXT = 0;
+          TaxCalcSelectionSetup.SETRANGE("Register No.",TaxCalcHeader."No.");
+          TaxCalcEntry.SETFILTER("Where Used Register IDs",'*~' + TaxCalcHeader."Register ID" + '~*');
+          IF TaxCalcEntry.FIND('-') THEN BEGIN
+            TaxCalcAccumul.SETRANGE("Register No.",TaxCalcHeader."No.");
+            TaxCalcLine.SETRANGE("Line Type",TaxCalcLine."Line Type"::" ");
+            TaxCalcLine.SETFILTER("Line Code",'<>%1','');
+            IF TaxCalcLine.FINDSET THEN
+              REPEAT
+                TaxCalcAccumul.SETRANGE("Template Line No.",TaxCalcLine."Line No.");
+                TaxCalcAccumul.FINDFIRST;
+                TaxRegValueBuffer.Quantity := TaxCalcAccumul.Amount;
+                TaxRegValueBuffer."Order Line No." := TaxCalcLine."Line No.";
+                TaxRegValueBuffer.INSERT;
+              UNTIL TaxCalcLine.NEXT = 0;
+            RoundingAmount := 0;
+            TaxCalcBufferEntry.INIT;
+            TaxCalcBufferEntry.Code := TaxCalcHeader."No.";
+            REPEAT
+              TaxCalcLine.SETRANGE("Line Type",TaxCalcLine."Line Type"::LineField);
+              TaxCalcLine.SETFILTER("Line Code",'<>%1','');
+              IF TaxCalcLine.FINDSET THEN
+                REPEAT
+                  CASE TaxCalcLine."Sum Field No." OF
+                    TaxCalcEntry.FIELDNO(Amount):
+                      TaxRegValueBuffer.Quantity := TaxCalcEntry.Amount;
+                    ELSE
+                      TaxRegValueBuffer.Quantity := 0;
+                  END;
+                  TaxRegValueBuffer."Order Line No." := TaxCalcLine."Line No.";
+                  IF NOT TaxRegValueBuffer.INSERT THEN
+                    TaxRegValueBuffer.MODIFY;
+                UNTIL TaxCalcLine.NEXT = 0;
+              TaxCalcRecordRef.GETTABLE(TaxCalcLine);
+              TaxCalcRecordRef.SETVIEW(TaxCalcLine0.GETVIEW(FALSE));
+              TaxRegTermMgt.CalculateTemplateEntry(
+                TaxCalcRecordRef,EntryNoAmountBuffer,LinkAccumulateRecordRef,TaxRegValueBuffer);
+              TaxCalcLine.SETRANGE("Line Type",TaxCalcLine."Line Type"::CalcField);
+              TaxCalcLine.SETRANGE("Line Code");
+              TaxCalcLine.FINDSET;
+              TaxCalcBufferEntry."Entry No." := TaxCalcEntry."Entry No.";
+              REPEAT
+                EntryNoAmountBuffer.GET('',TaxCalcLine."Line No.");
+                CASE TaxCalcLine."Sum Field No." OF
+                  TaxCalcEntry.FIELDNO("Tax Amount"):
+                    BEGIN
+                      TaxCalcBufferEntry."Tax Amount" := ROUND(EntryNoAmountBuffer.Amount + RoundingAmount);
+                      RoundingAmount :=
+                        EntryNoAmountBuffer.Amount + RoundingAmount - TaxCalcBufferEntry."Tax Amount";
+                    END;
+                  TaxCalcEntry.FIELDNO("Tax Factor"):
+                    TaxCalcBufferEntry."Tax Factor" := EntryNoAmountBuffer.Amount;
+                END;
+              UNTIL TaxCalcLine.NEXT = 0;
+              TaxCalcBufferEntry.INSERT;
+              EntryNoAmountBuffer.DELETEALL;
+
+              TempTaxCalcLine.RESET;
+              IF TempTaxCalcLine.FINDFIRST AND TaxCalcSelectionSetup.FIND('-') THEN BEGIN
+                TaxCalcDimMgt.SetTaxCalcEntryDim(SectionCode,
+                  TaxCalcEntry."Dimension 1 Value Code",TaxCalcEntry."Dimension 2 Value Code",
+                  TaxCalcEntry."Dimension 3 Value Code",TaxCalcEntry."Dimension 4 Value Code");
+                TempGLCorrespondEntry."Debit Account No." := TaxCalcEntry."Debit Account No.";
+                TempGLCorrespondEntry."Credit Account No." := TaxCalcEntry."Credit Account No.";
+                TempGLCorrespondEntry.MODIFY;
+                REPEAT
+                  IF (TaxCalcSelectionSetup."Account No." <> '') OR
+                     (TaxCalcSelectionSetup."Bal. Account No." <> '')
+                  THEN BEGIN
+                    IF TaxCalcSelectionSetup."Account No." <> '' THEN
+                      TempGLCorrespondEntry.SETFILTER("Debit Account No.",TaxCalcSelectionSetup."Account No.")
+                    ELSE
+                      TempGLCorrespondEntry.SETRANGE("Debit Account No.");
+                    IF TaxCalcSelectionSetup."Bal. Account No." <> '' THEN
+                      TempGLCorrespondEntry.SETFILTER("Credit Account No.",TaxCalcSelectionSetup."Bal. Account No.")
+                    ELSE
+                      TempGLCorrespondEntry.SETRANGE("Credit Account No.");
+                    IF TempGLCorrespondEntry.FIND THEN BEGIN
+                      TempTaxCalcLine.SETFILTER("Selection Line Code",'%1|%2','',TaxCalcSelectionSetup."Line Code");
+                      IF TempTaxCalcLine.FINDSET THEN
+                        REPEAT
+                          IF TaxCalcDimMgt.ValidateTaxCalcDimFilters(TempTaxCalcLine) THEN BEGIN
+                            CASE TempTaxCalcLine."Sum Field No." OF
+                              TaxCalcEntry.FIELDNO("Tax Amount"):
+                                TempTaxCalcLine.Value += TaxCalcBufferEntry."Tax Amount";
+                            END;
+                            TempTaxCalcLine.MODIFY;
+                          END;
+                        UNTIL TempTaxCalcLine.NEXT = 0;
+                    END;
+                  END;
+                UNTIL TaxCalcSelectionSetup.NEXT = 0;
+              END;
+            UNTIL TaxCalcEntry.NEXT = 0;
+          END;
+
+          TempTaxCalcLine.RESET;
+          TaxCalcAccumul0.SETRANGE("Section Code",TempTaxCalcLine."Section Code");
+          TaxCalcAccumul0.SETRANGE("Register No.",TempTaxCalcLine.Code);
+          IF TempTaxCalcLine.FINDSET THEN
+            REPEAT
+              TaxCalcAccumul0.SETRANGE("Template Line No.",TempTaxCalcLine."Line No.");
+              TaxCalcAccumul0.FINDFIRST;
+              TaxCalcAccumul0.Amount := TempTaxCalcLine.Value;
+              TaxCalcAccumul0.MODIFY;
+            UNTIL TempTaxCalcLine.NEXT = 0;
+        END;
+      UNTIL TaxCalcHeader.NEXT = 0;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

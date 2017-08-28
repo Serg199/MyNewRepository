@@ -1,0 +1,393 @@
+OBJECT Report 12400 Bank Payment Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Bank Payment Order;
+               RUS=Платежное поручение];
+    ProcessingOnly=Yes;
+    OnPostReport=BEGIN
+                   IF FileName <> '' THEN
+                     BankPaymentOrderHelper.ExportDataFile(FileName)
+                   ELSE
+                     BankPaymentOrderHelper.ExportData;
+                 END;
+
+  }
+  DATASET
+  {
+    { 7024;    ;DataItem;                    ;
+               DataItemTable=Table81;
+               DataItemTableView=SORTING(Journal Template Name,Journal Batch Name,Line No.)
+                                 ORDER(Ascending);
+               PrintOnlyIfDetail=No;
+               OnPreDataItem=BEGIN
+                               CompanyInfo.GET;
+                               BankPaymentOrderHelper.InitReportTemplate;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TESTFIELD("Bank Payment Type","Bank Payment Type"::"Computer Check");
+
+                                  IF Amount <= 0 THEN
+                                    FIELDERROR(Amount,LessThanZeroErr);
+
+                                  CASE PaymentDocType OF
+                                    PaymentDocType::"Payment Order":
+                                      BEGIN
+                                        TitleDoc := PayNoteTxt;
+                                        OKUD := '0401060';
+                                      END;
+                                    PaymentDocType::"Collection Payment Order":
+                                      BEGIN
+                                        TitleDoc := InkPayNoteTxt;
+                                        OKUD := '0401060';
+                                      END;
+                                    PaymentDocType::"Payment Requisition":
+                                      BEGIN
+                                        TitleDoc := PayingRequestTxt;
+                                        OKUD := '0401061';
+                                      END;
+                                    ELSE
+                                      CurrReport.BREAK;
+                                  END;
+
+                                  IF "Gen. Journal Line".KBK <> '' THEN
+                                    CompStat := COPYSTR(FORMAT("Gen. Journal Line"."Taxpayer Status"),1,2);
+
+                                  StdRepMgt.CheckAttributes("Gen. Journal Line",
+                                    DocAmount,PayerCode,PayerText,BenefCode,BenefText);
+
+                                  IF Currency.GET("Currency Code") THEN
+                                    IF Currency.Conventional THEN
+                                      DocAmount := "Amount (LCY)";
+
+                                  TaxPeriod := "Tax Period";
+
+                                  CASE PaymentDocType OF
+                                    PaymentDocType::"Payment Order":
+                                      BEGIN
+                                        IF "Account Type" = "Account Type"::Vendor THEN BEGIN
+                                          Vend.GET("Account No.");
+                                          IF Vend."Control Tax Organ" <> '' THEN
+                                            ContrTaxOrgan := '(' + Vend."Control Tax Organ" + ')';
+                                          IF Vend."Tax Authority Code" <> '' THEN
+                                            TaxPeriod := Vend."Tax Authority Code";
+                                        END;
+
+                                        IF ("Payer Vendor No." <> '') AND ("Payer Beneficiary Bank Code" <> '') THEN BEGIN
+                                          VendorPayer.GET("Payer Vendor No.");
+                                          VendorBankPayer.GET("Payer Vendor No.","Payer Beneficiary Bank Code");
+                                          BenefCode[1] := VendorPayer."VAT Registration No.";
+                                          BenefCode[2] := VendorBankPayer.BIC;
+                                          BenefCode[3] := VendorBankPayer."Bank Corresp. Account No.";
+                                          BenefCode[4] := VendorBankPayer."Bank Account No.";
+                                          BenefCode[4] := VendorPayer."KPP Code";
+                                          BenefText[1] := VendorPayer.Name;
+                                          BenefText[2] := VendorPayer."Name 2";
+                                          BenefText[3] := VendorBankPayer.Name;
+                                          BenefText[4] := VendorBankPayer."Name 2";
+                                          IF VendorBankPayer.City <> '' THEN
+                                            BenefText[5] := VendorBankPayer."Abbr. City" + '. ' + VendorBankPayer.City;
+                                          BenefText[6] := VendorBankPayer."Bank Branch No.";
+                                        END;
+                                      END;
+                                  END;
+
+                                  AmountInWords := LocMgt.Amount2Text(' ',ABS(DocAmount));
+
+                                  IF NOT "Check Printed" THEN
+                                    InsertCheckLedgerEntry("Gen. Journal Line");
+
+                                  "Document No." := LocMgt.DigitalPartCode("Document No.");
+
+                                  IF PaymentDocType = PaymentDocType::"Payment Order" THEN
+                                    BankMark := ReceiverBankMarksTxt
+                                  ELSE
+                                    BankMark := BankMarksTxt;
+                                END;
+
+               OnPostDataItem=VAR
+                                LineValue@1210000 : ARRAY [28] OF Text;
+                              BEGIN
+                                BankPaymentOrderHelper.FillHeader(OKUD);
+                                CASE PaymentDocType OF
+                                  PaymentDocType::"Payment Order",PaymentDocType::"Collection Payment Order":
+                                    BankPaymentOrderHelper.FillTitle(
+                                      OKUD,STRSUBSTNO(TitleDoc,"Document No."),'',"Document Date",FORMAT("Payment Method"),CompStat);
+                                  PaymentDocType::"Payment Requisition":
+                                    BankPaymentOrderHelper.FillRequestTitle(
+                                      OKUD,STRSUBSTNO(TitleDoc,"Document No."),'',"Document Date",FORMAT("Payment Method"),CompStat);
+                                  ELSE
+                                    CurrReport.BREAK;
+                                END;
+
+                                TransferLineValues(LineValue,"Gen. Journal Line");
+                                BankPaymentOrderHelper.FillBody(LineValue);
+                                BankPaymentOrderHelper.FillFooter(BankMark,"Payment Purpose");
+
+                                CASE PaymentDocType OF
+                                  PaymentDocType::"Collection Payment Order",PaymentDocType::"Payment Requisition":
+                                    BankPaymentOrderHelper.FillMarks;
+                                END;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  Name=PaymentDocType;
+                  CaptionML=[ENU=Payment Document Type;
+                             RUS=Тип платежного документа];
+                  OptionCaptionML=[ENU=Payment Order,Collection Payment Order,Payment Requisition;
+                                   RUS=Платежное поручение,Платежное поручение коллекции,Заявка на платеж];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PaymentDocType }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Test Print;
+                             RUS=Тестовая печать];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PrintTest }
+
+      { 1210001;2;Field     ;
+                  Name=SetPreview;
+                  CaptionML=[ENU=Preview;
+                             RUS=Просмотр];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Preview }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Vend@1210007 : Record 23;
+      BankAcc@1210010 : Record 270;
+      DocumentNoTxt@1210005 : TextConst '@@@={Locked};ENU=XXXXXXXXXX;RUS=XXXXXXXXXX';
+      PrintQst@1210004 : TextConst 'ENU=If %1 is not empty then it will be changed during posting %2\\Do you want to continue printing?;RUS=Если %1 не пустой, он будет изменен во время учета %2\\Продолжить печать?';
+      CanNotBeUsedErr@1210003 : TextConst '@@@=%1 - field caption, %2 - field value;ENU=Cannot be used if %1 %2;RUS=Не может быть использовано, если %1 %2';
+      BankMarksTxt@1210002 : TextConst '@@@=Must be translated: Отметки банка;ENU=Bank marks;RUS=Отметки банка';
+      CheckLedgEntry@1210012 : Record 272;
+      CompanyInfo@1210068 : Record 79;
+      VendorPayer@1210048 : Record 23;
+      VendorBankPayer@1210009 : Record 288;
+      Currency@1210022 : Record 4;
+      CheckManagement@1210014 : Codeunit 367;
+      LocMgt@1210015 : Codeunit 12400;
+      StdRepMgt@1210016 : Codeunit 12401;
+      NoSeriesMgt@1210055 : Codeunit 396;
+      BankPaymentOrderHelper@1210000 : Codeunit 14937;
+      DocAmount@1210017 : Decimal;
+      PrintTest@1210019 : Boolean;
+      PaymentDocType@1210020 : 'Payment Order,Collection Payment Order,Payment Requisition';
+      PayerCode@1210021 : ARRAY [5] OF Code[20];
+      BenefCode@1210026 : ARRAY [5] OF Code[20];
+      OKUD@1210031 : Code[10];
+      TitleDoc@1210032 : Text;
+      AmountInWords@1210033 : Text;
+      PayerText@1210039 : ARRAY [6] OF Text;
+      BenefText@1210044 : ARRAY [6] OF Text;
+      BankMark@1210045 : Text;
+      WrongDocumentNoErr@1210054 : TextConst 'ENU=The number of the document %1 does not match the input mask %2 or greater than the last number.;RUS=Номер документа %1 не соответствует входной маске %2 или превышает последний номер.';
+      LessThanZeroErr@1210053 : TextConst 'ENU=Cannot be less than 0;RUS=Не может быть меньше 0';
+      LastNo@1210056 : Code[20];
+      ReceiverBankMarksTxt@1210061 : TextConst '@@@=Must be translated: Отметки банка получателя;ENU=Marks of the beneficiary bank;RUS=Отметки банка получателя';
+      CompStat@1210065 : Text;
+      ContrTaxOrgan@1210066 : Text;
+      TaxPeriod@1210013 : Text;
+      FileName@1210018 : Text;
+      CodeIndex@1470001 : ',INN,BIC,CorrAccNo,BankAccNo,KPP';
+      TextIndex@1470000 : ',Name,Name2,Bank,Bank2,City,Branch';
+      PayNoteTxt@1210006 : TextConst '@@@=Must be translated: Платежное поручение;ENU=PAYMENT ORDER # %1;RUS=ПЛАТЕЖНОЕ ПОРУЧЕНИЕ # %1';
+      InkPayNoteTxt@1210008 : TextConst '@@@=Must be translated: Инкассовое\платежное поручение;ENU=COLLECTION\PAYMENT ORDER # %1;RUS=СБОР\ПЛАТЕЖНОЕ ПОРУЧЕНИЕ # %1';
+      PayingRequestTxt@1210011 : TextConst '@@@=Must be translated: Платежное требование;ENU=PAYMENT REQUEST # %1;RUS=ЗАПРОС НА ПЛАТЕЖ # %1';
+      Preview@1210001 : Boolean;
+
+    PROCEDURE FormatAmount@1(Amount@1210000 : Decimal) : Text[30];
+    BEGIN
+      IF ROUND(Amount,1) = Amount THEN
+        EXIT(FORMAT(Amount,0,1) + '-00');
+      IF ROUND(Amount,0.1) = Amount THEN
+        EXIT(CONVERTSTR(FORMAT(Amount,0,1) + '0','.,','--'));
+      EXIT(CONVERTSTR(FORMAT(Amount,0,1),'.,','--') );
+    END;
+
+    LOCAL PROCEDURE InsertCheckLedgerEntry@1210000(GenJournalLine@1210000 : Record 81);
+    BEGIN
+      WITH GenJournalLine DO
+        IF Preview OR PrintTest THEN BEGIN
+          IF "Document No." = '' THEN
+            "Document No." := DocumentNoTxt;
+
+          BankAcc.GET("Bal. Account No.");
+          IF (("Account Type" = "Account Type"::"Bank Account") OR
+              ("Bal. Account Type" = "Bal. Account Type"::"Bank Account")) AND
+             ((Amount < 0) OR (BankAcc."Account Type" = BankAcc."Account Type"::"Cash Account"))
+          THEN
+            TESTFIELD("Bank Payment Type");
+        END ELSE
+          IF "Bank Payment Type" <> "Bank Payment Type"::"Computer Check" THEN BEGIN
+            TESTFIELD("Document No.");
+            IF "Posting No. Series" <> '' THEN
+              IF NOT CONFIRM(PrintQst,
+                   FALSE,FIELDCAPTION("Posting No. Series"),FIELDCAPTION("Document No."))
+              THEN
+                ERROR('');
+          END ELSE BEGIN
+            IF "Posting No. Series" <> '' THEN
+              FIELDERROR("Posting No. Series",
+                STRSUBSTNO(CanNotBeUsedErr,
+                  FIELDCAPTION("Bank Payment Type"),"Bank Payment Type"));
+            BankAcc.GET("Bal. Account No.");
+            CASE PaymentDocType OF
+              PaymentDocType::"Payment Order":
+                BEGIN
+                  BankAcc.TESTFIELD("Bank Payment Order No. Series");
+                  IF "Document No." = '' THEN
+                    "Document No." := NoSeriesMgt.GetNextNo(BankAcc."Bank Payment Order No. Series",0D,TRUE)
+                  ELSE BEGIN
+                    LastNo := NoSeriesMgt.GetNextNo(BankAcc."Bank Payment Order No. Series",0D,FALSE);
+                    CLEAR(NoSeriesMgt);
+                    IF (DELCHR("Document No.",'<>','0123456789') <> DELCHR(LastNo,'<>','0123456789')) OR
+                       ("Document No." > LastNo)
+                    THEN
+                      ERROR(WrongDocumentNoErr,"Document No.",LastNo);
+                    IF "Document No." = LastNo THEN
+                      NoSeriesMgt.GetNextNo(BankAcc."Bank Payment Order No. Series",0D,TRUE);
+                  END;
+                  TESTFIELD("Document No.");
+                END;
+              PaymentDocType::"Collection Payment Order":
+                ;
+            END;
+            "Check Printed" := TRUE;
+            MODIFY(TRUE);
+            CheckLedgEntry.INIT;
+            CheckLedgEntry."Bank Account No." := "Bal. Account No.";
+            CheckLedgEntry."Posting Date" := "Posting Date";
+            CheckLedgEntry."Check Date" := "Document Date";
+            CheckLedgEntry."Document Type" := "Document Type";
+            CheckLedgEntry."Document No." := "Document No.";
+            CheckLedgEntry.Description :=
+              COPYSTR(Description,1,MAXSTRLEN(CheckLedgEntry.Description));
+            CheckLedgEntry.Description :=
+              COPYSTR(Description,1,MAXSTRLEN(CheckLedgEntry.Description));
+            CheckLedgEntry.Amount := -DocAmount;
+            CheckLedgEntry.Positive := (CheckLedgEntry.Amount > 0);
+            IF (CheckLedgEntry.Positive AND (NOT Correction)) OR
+               ((NOT CheckLedgEntry.Positive) AND Correction)
+            THEN
+              CheckLedgEntry."Debit Amount" := CheckLedgEntry.Amount
+            ELSE
+              CheckLedgEntry."Credit Amount" := -CheckLedgEntry.Amount;
+            CheckLedgEntry."Check No." := "Document No.";
+            CheckLedgEntry."Bank Payment Type" := "Bank Payment Type";
+            CheckLedgEntry."Entry Status" := CheckLedgEntry."Entry Status"::Printed;
+            CheckLedgEntry."Bal. Account Type" := "Account Type";
+            CheckLedgEntry."Bal. Account No." := "Account No.";
+            CheckLedgEntry."Beneficiary Bank Code" := "Beneficiary Bank Code";
+            CheckLedgEntry."Payment Purpose" := "Payment Purpose";
+            CheckLedgEntry."Payment Method" := "Payment Method";
+            CheckLedgEntry."Payment Before Date" := "Payment Date";
+            CheckLedgEntry."Payment Subsequence" := "Payment Subsequence";
+            CheckLedgEntry."Payment Code" := "Payment Code";
+            CheckLedgEntry."Payment Assignment" := "Payment Assignment";
+            CheckLedgEntry."Payment Type" := "Payment Type";
+            CheckLedgEntry."Payer BIC" := PayerCode[CodeIndex::BIC];
+            CheckLedgEntry."Payer Corr. Account No." := PayerCode[CodeIndex::CorrAccNo];
+            CheckLedgEntry."Payer Bank Account No." := PayerCode[CodeIndex::BankAccNo];
+            CheckLedgEntry."Payer Name" :=
+              COPYSTR(PayerText[TextIndex::Name],1,MAXSTRLEN(CheckLedgEntry."Payer Name"));
+            CheckLedgEntry."Payer Bank" :=
+              COPYSTR(PayerText[TextIndex::Bank],1,MAXSTRLEN(CheckLedgEntry."Payer Bank"));
+            CheckLedgEntry."Payer VAT Reg. No." := PayerCode[CodeIndex::INN];
+            CheckLedgEntry."Payer KPP" := PayerCode[CodeIndex::KPP];
+            CheckLedgEntry."Beneficiary BIC" := BenefCode[CodeIndex::BIC];
+            CheckLedgEntry."Beneficiary Corr. Acc. No." := BenefCode[CodeIndex::CorrAccNo];
+            CheckLedgEntry."Beneficiary Bank Acc. No." := BenefCode[CodeIndex::BankAccNo];
+            CheckLedgEntry."Beneficiary Name" :=
+              COPYSTR(BenefText[TextIndex::Name],1,MAXSTRLEN(CheckLedgEntry."Beneficiary Name"));
+            CheckLedgEntry."Beneficiary VAT Reg No." := BenefCode[CodeIndex::INN];
+            CheckLedgEntry."Beneficiary KPP" := BenefCode[CodeIndex::KPP];
+            CheckLedgEntry."Posting Group" := "Posting Group";
+            CheckLedgEntry.KBK := KBK;
+            CheckLedgEntry.OKATO := OKATO;
+            CheckLedgEntry."Period Code" := "Period Code";
+            CheckLedgEntry."Payment Reason Code" := "Payment Reason Code";
+            CheckLedgEntry."Reason Document No." := "Reason Document No.";
+            CheckLedgEntry."Reason Document Date" := "Reason Document Date";
+            CheckLedgEntry."Reason Document Type" := "Reason Document Type";
+            CheckLedgEntry."Tax Payment Type" := "Tax Payment Type";
+            CheckLedgEntry."Tax Period" := "Tax Period";
+            CheckLedgEntry."Taxpayer Status" := "Taxpayer Status";
+            CheckManagement.InsertCheck(CheckLedgEntry,RECORDID);
+          END;
+    END;
+
+    LOCAL PROCEDURE TransferLineValues@1210001(VAR LineValue@1210000 : ARRAY [28] OF Text;GenGnlLine@1210001 : Record 81);
+    BEGIN
+      LineValue[1] := AmountInWords;
+      LineValue[2] := PayerCode[CodeIndex::INN];
+      LineValue[3] := PayerCode[CodeIndex::KPP];
+      LineValue[4] := PayerText[TextIndex::Name] + ' ' + PayerText[TextIndex::Name2] + '\' + PayerText[TextIndex::Branch];
+      LineValue[5] := PayerText[TextIndex::Bank] + ' ' + PayerText[TextIndex::Bank2] + '\' + PayerText[TextIndex::City];
+      LineValue[6] := BenefText[TextIndex::Bank] + ' ' + BenefText[TextIndex::Bank2] + '\' + BenefText[TextIndex::City];
+      LineValue[7] := BenefCode[CodeIndex::INN];
+      LineValue[8] := BenefCode[CodeIndex::KPP];
+      LineValue[9] := BenefText[TextIndex::Name] + ' ' + BenefText[TextIndex::Name2] + '\' + BenefText[TextIndex::Branch];
+      LineValue[10] := ContrTaxOrgan;
+      LineValue[11] := FormatAmount(DocAmount);
+      LineValue[12] := PayerCode[CodeIndex::BankAccNo];
+      LineValue[13] := PayerCode[CodeIndex::BIC];
+      LineValue[14] := PayerCode[CodeIndex::CorrAccNo];
+      LineValue[15] := BenefCode[CodeIndex::BIC];
+      LineValue[16] := BenefCode[CodeIndex::CorrAccNo];
+      LineValue[17] := BenefCode[CodeIndex::BankAccNo];
+      LineValue[18] := GenGnlLine."Payment Type";
+      LineValue[19] := GenGnlLine."Payment Assignment";
+      LineValue[20] := GenGnlLine."Payment Code";
+      LineValue[21] := LocMgt.Date2Text(GenGnlLine."Payment Date");
+      LineValue[22] := GenGnlLine."Payment Subsequence";
+      LineValue[23] := GenGnlLine.KBK;
+      LineValue[24] := GenGnlLine.OKATO;
+      LineValue[25] := TaxPeriod;
+      LineValue[26] := GenGnlLine."Reason Document No.";
+      LineValue[27] := LocMgt.Date2Text(GenGnlLine."Reason Document Date");
+      LineValue[28] := GenGnlLine."Tax Payment Type";
+    END;
+
+    PROCEDURE SetFileNameSilent@1210002(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

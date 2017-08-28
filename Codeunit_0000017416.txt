@@ -1,0 +1,164 @@
+OBJECT Codeunit 17416 Payroll Application Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      VendLedgEntry@1210001 : Record 25;
+      VendEntrySetApplID@1210003 : Codeunit 111;
+      ApplyingVendLedgEntry@1210004 : Record 25;
+      VendEntryApply@1170000000 : Codeunit 227;
+      RemainingBalance@1210006 : Decimal;
+      ApplyRequired@1210005 : Boolean;
+
+    PROCEDURE ApplyEmployee@1210000(Employee@1210000 : Record 5200;PayrollPeriod@1210001 : Record 17426;PaymentDate@1170000000 : Date);
+    VAR
+      Person@1210003 : Record 17350;
+      Vend@1210002 : Record 23;
+    BEGIN
+      Person.GET(Employee."Person No.");
+      Vend.GET(Person."Vendor No.");
+      PayrollPeriod.TESTFIELD(Code);
+      PayrollPeriod.TESTFIELD("Ending Date");
+      PayrollPeriod.TESTFIELD("Starting Date");
+
+      ApplyRequired := FALSE;
+      RemainingBalance := 0;
+      VendLedgEntry.RESET;
+      VendLedgEntry.SETCURRENTKEY("Vendor No.",Open,Positive);
+      VendLedgEntry.SETRANGE("Vendor No.",Vend."No.");
+      VendLedgEntry.SETRANGE(Open,TRUE);
+      IF PaymentDate = 0D THEN
+        VendLedgEntry.SETRANGE("Posting Date",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date")
+      ELSE
+        VendLedgEntry.SETRANGE("Posting Date",PayrollPeriod."Starting Date",PaymentDate);
+      IF VendLedgEntry.FINDSET THEN
+        REPEAT
+          VendLedgEntry.CALCFIELDS("Remaining Amount");
+          IF VendLedgEntry."Remaining Amount" <> 0 THEN BEGIN
+            RemainingBalance := RemainingBalance + VendLedgEntry."Remaining Amount";
+            ApplyRequired := TRUE;
+          END;
+        UNTIL VendLedgEntry.NEXT = 0;
+
+      IF NOT ApplyRequired THEN
+        EXIT;
+
+      VendLedgEntry.SETRANGE(Positive,FALSE);
+      VendLedgEntry.FINDFIRST;
+      ApplyingVendLedgEntry.GET(VendLedgEntry."Entry No.");
+      ApplyingVendLedgEntry.CALCFIELDS(Amount,"Remaining Amount");
+      ApplyingVendLedgEntry."Applying Entry" := TRUE;
+      ApplyingVendLedgEntry."Applies-to ID" := ApplyingVendLedgEntry."Document No.";
+      ApplyingVendLedgEntry."Amount to Apply" := ApplyingVendLedgEntry."Remaining Amount";
+      CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",ApplyingVendLedgEntry);
+      COMMIT;
+
+      VendLedgEntry.SETRANGE(Positive,TRUE);
+      VendEntrySetApplID.SetApplId(
+        VendLedgEntry,ApplyingVendLedgEntry,ApplyingVendLedgEntry."Document No.");
+      VendLedgEntry."Entry No." := ApplyingVendLedgEntry."Entry No.";
+      PostApply(VendLedgEntry);
+    END;
+
+    PROCEDURE ApplyTaxAuthority@1210001(VAR PaymentVendLedgEntry@1210000 : Record 25;PayrollPeriod@1210014 : Record 17426;FromDate@1210001 : Date;ToDate@1210013 : Date);
+    VAR
+      PstdPayrollDocHeader@1210003 : Record 17416;
+      PstdPayrollDocLine@1210002 : Record 17417;
+      VendLedgEntry2@1210004 : Record 25;
+      VendLedgEntry3@1210007 : Record 25;
+      PayrollPostingGr@1210006 : Record 17401;
+      PayrollLedgEntry@1210008 : Record 17418;
+      NDFLAmount@1210010 : Decimal;
+      LastPayment@1210016 : Boolean;
+    BEGIN
+      PaymentVendLedgEntry.CALCFIELDS("Remaining Amount");
+      IF PaymentVendLedgEntry."Remaining Amount" = 0 THEN
+        EXIT;
+
+      ApplyingVendLedgEntry.GET(PaymentVendLedgEntry."Entry No.");
+      ApplyingVendLedgEntry.CALCFIELDS(Amount,"Remaining Amount");
+      ApplyingVendLedgEntry."Applying Entry" := TRUE;
+      ApplyingVendLedgEntry."Applies-to ID" := FORMAT(ApplyingVendLedgEntry."Entry No.");
+      ApplyingVendLedgEntry."Amount to Apply" := ApplyingVendLedgEntry."Remaining Amount";
+      CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",ApplyingVendLedgEntry);
+      COMMIT;
+
+      LastPayment := FALSE;
+
+      VendLedgEntry2.RESET;
+      VendLedgEntry2.SETCURRENTKEY("Vendor No.",Open,Positive);
+      VendLedgEntry2.SETRANGE("Vendor No.",PaymentVendLedgEntry."Vendor No.");
+      VendLedgEntry2.SETRANGE(Open,TRUE);
+      VendLedgEntry2.SETRANGE(Positive,TRUE);
+      VendLedgEntry2.SETRANGE("Posting Date",PayrollPeriod."Starting Date",PayrollPeriod."Ending Date");
+      IF VendLedgEntry2.COUNT = 1 THEN
+        LastPayment := TRUE;
+
+      VendLedgEntry2.SETRANGE(Positive,FALSE);
+      IF VendLedgEntry2.FINDSET THEN
+        REPEAT
+          IF LastPayment THEN BEGIN
+            VendLedgEntry3.GET(VendLedgEntry2."Entry No.");
+            VendLedgEntry3.CALCFIELDS("Remaining Amount");
+            VendLedgEntry3."Applies-to ID" := ApplyingVendLedgEntry."Applies-to ID";
+            VendLedgEntry3."Amount to Apply" := VendLedgEntry3."Remaining Amount";
+            VendLedgEntry3.MODIFY;
+          END ELSE BEGIN
+            NDFLAmount := 0;
+            PayrollLedgEntry.GET(VendLedgEntry2."Payroll Ledger Entry No.");
+            PstdPayrollDocLine.RESET;
+            PstdPayrollDocLine.SETCURRENTKEY("Employee No.","Period Code");
+            PstdPayrollDocLine.SETRANGE("Employee No.",PayrollLedgEntry."Employee No.");
+            PstdPayrollDocLine.SETRANGE("Period Code",PayrollPeriod.Code);
+            PstdPayrollDocLine.SETRANGE("Element Type",PstdPayrollDocLine."Element Type"::"Income Tax");
+            IF PstdPayrollDocLine.FIND('-') THEN
+              REPEAT
+                PstdPayrollDocHeader.GET(PstdPayrollDocLine."Document No.");
+                IF (FromDate <= PstdPayrollDocHeader."Posting Date") AND
+                   (PstdPayrollDocHeader."Posting Date" <= ToDate)
+                THEN
+                  IF PayrollPostingGr.GET(PstdPayrollDocLine."Posting Group") THEN
+                    IF PayrollPostingGr."Account No." = PaymentVendLedgEntry."Vendor No." THEN
+                      IF  PstdPayrollDocLine."Payroll Amount" <> 0 THEN
+                        NDFLAmount += PstdPayrollDocLine."Payroll Amount";
+              UNTIL PstdPayrollDocLine.NEXT = 0;
+            VendLedgEntry3.GET(VendLedgEntry2."Entry No.");
+            VendLedgEntry3."Applies-to ID" := ApplyingVendLedgEntry."Applies-to ID";
+            VendLedgEntry3.CALCFIELDS("Remaining Amount");
+            IF VendLedgEntry3."Remaining Amount" > NDFLAmount THEN
+              VendLedgEntry3."Amount to Apply" := VendLedgEntry3."Remaining Amount"
+            ELSE
+              VendLedgEntry3."Amount to Apply" := NDFLAmount;
+            VendLedgEntry3.MODIFY;
+          END;
+        UNTIL VendLedgEntry2.NEXT = 0;
+
+      PostApply(ApplyingVendLedgEntry);
+      COMMIT;
+    END;
+
+    PROCEDURE PostApply@1210031(VAR Rec@1210000 : Record 25);
+    VAR
+      VendLedgEntryToApply@1210001 : Record 25;
+    BEGIN
+      VendLedgEntryToApply.COPY(Rec);
+      VendEntryApply.RUN(VendLedgEntryToApply);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

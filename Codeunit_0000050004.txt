@@ -1,0 +1,1178 @@
+OBJECT Codeunit 50004 Transfer GL Entries To GJ
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.08.17;
+    Time=17:33:42;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLEntryCheck@1210000 : Record 17;
+      GLSetup@1210001 : Record 98;
+      GLSetup1@1101495003 : Record 98;
+      ConsSetup@1101495013 : Record 50000;
+      DimMgt@1210002 : Codeunit 408;
+      GLEntryTmp2@1000000000 : TEMPORARY Record 17;
+      IsReceiver@1101495000 : Boolean;
+      GenJournalLine1@1101495001 : Record 81;
+      GenJnlLine@1101495004 : Record 81;
+      CurrencyExchangeRate@1101495005 : Record 330;
+      BankAccountPG@1101495006 : Record 277;
+      DimensionSetEntry@1101495012 : Record 480;
+      dlgIndicator@1101495009 : Dialog;
+      intIndicatorCounter@1101495008 : Integer;
+      intIndicatorTotal@1101495007 : Integer;
+      TextDlg001@1101495010 : TextConst 'ENU=Unloading General Ledger Entry...\Processing @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;RUS=Выгрузка таблицы Фин. Книга Операций...\Выгрузка @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      IsProcess@1101495011 : Boolean;
+      g_boolSaveCurrFactor@1000000001 : Boolean;
+      CompanyToUse@1101495002 : Text[30];
+
+    PROCEDURE TransferLines@1210000(VAR GLEntryTmp1@1210000 : TEMPORARY Record 17;NewPostDate@1210001 : Date;Template@1210002 : Code[20];Batch@1210003 : Code[20];ReasonCode@1000000000 : Code[10];Storno@1000000001 : Boolean;p_boolSaveCurrFactor@1000000002 : Boolean;p_intRepeat@1000000004 : Integer);
+    VAR
+      BalGLEntry@1210004 : Record 17;
+      RemGLEntry@1101495000 : Record 17;
+      RepGLEntry@1101495001 : Record 17;
+      l_intCnt@1000000003 : Integer;
+    BEGIN
+      IF IsReceiver THEN BEGIN
+        dlgIndicator.OPEN(TextDlg001);
+        intIndicatorTotal := GLEntryTmp1.COUNT;
+        intIndicatorCounter := 1;
+      END;
+
+      //TDRANCS-1526>
+      g_boolSaveCurrFactor := p_boolSaveCurrFactor;
+      //TDRANCS-1526<
+
+      GLSetup.GET;
+      //GLEntryTmp1.RESET;
+
+      //NC NOS-26 > SPA
+      IF NOT IsReceiver THEN
+        ConsSetup.GET;
+      //NC NOS-26 < SPA
+
+      WITH GLEntryTmp1 DO BEGIN
+
+        GLEntryCheck.RESET;
+        GLEntryCheck.SETCURRENTKEY("Transaction No.");
+        SETCURRENTKEY("Transaction No.");
+        IF FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            IF IsReceiver THEN BEGIN
+              intIndicatorCounter += 1;
+              dlgIndicator.UPDATE(1, ROUND((intIndicatorCounter * 999) / intIndicatorTotal*9, 1));
+            END;
+
+           IsProcess := TRUE;
+           IF CheckRemRepBuffer(GLEntryTmp1) AND IsReceiver THEN
+             IsProcess := FALSE;
+           IF IsProcess THEN
+
+           IF NOT GLEntryTmp2.GET("Entry No.") THEN BEGIN
+             //NC 1666 > PCH
+             //TransferLine(GLEntryTmp,NewPostDate,Template,Batch,ReasonCode,Storno);
+             IF TransferLine(GLEntryTmp1,NewPostDate,Template,Batch,ReasonCode,Storno) THEN BEGIN
+             //NC 1666 < PCH
+             GetBalGLEntries(GLEntryTmp1,BalGLEntry);
+             IF BalGLEntry.FINDSET(FALSE,FALSE) THEN
+               REPEAT
+                 //NC 1666 > PCH
+                 IF NOT GLEntryTmp2.GET(BalGLEntry."Entry No.") THEN
+                 //NC 1666 < PCH
+                 TransferLine(BalGLEntry,NewPostDate,Template,Batch,ReasonCode,Storno)
+               UNTIL BalGLEntry.NEXT = 0;
+             //NC 1666 > PCH
+             END;
+             //NC 1666 < PCH
+
+
+           END;
+            //TDRANCS-1632>
+            l_intCnt := 1;
+            WHILE l_intCnt <> p_intRepeat DO BEGIN
+              l_intCnt += 1;
+              IF TransferLine(GLEntryTmp1,NewPostDate,Template,Batch,ReasonCode,Storno) THEN BEGIN
+                GetBalGLEntries(GLEntryTmp1,BalGLEntry);
+                IF BalGLEntry.FINDSET(FALSE,FALSE) THEN
+                  REPEAT
+                    TransferLine(BalGLEntry,NewPostDate,Template,Batch,ReasonCode,Storno)
+                  UNTIL BalGLEntry.NEXT = 0;
+              END;
+            END;
+            //TDRANCS-1632<
+          UNTIL NEXT = 0;
+      END;
+
+      IF IsReceiver THEN BEGIN
+        //NC NOS-26 > SPA
+        //InsertRoundingCorrectionLines(GenJnlLine,JnlLineDim);
+        InsertRoundingCorrectionLines(GenJnlLine);
+        //NC NOS-26 < SPA
+        dlgIndicator.CLOSE;
+      END;
+    END;
+
+    PROCEDURE TransferLine@1210010(VAR GLEntryTmp@1210000 : TEMPORARY Record 17;NewPostDate@1210004 : Date;Template@1210003 : Code[20];Batch@1210002 : Code[20];ReasonCode@1000000000 : Code[10];Storno@1000000001 : Boolean) : Boolean;
+    VAR
+      FILedgerEntry@1101495000 : Record 50106;
+      JournalBatch@1101495001 : Record 232;
+      CustLE@1101495002 : Record 21;
+      VendLE@1101495003 : Record 25;
+      BankAccountLE@1101495004 : Record 271;
+      IsCurrExch@1101495005 : Boolean;
+      VendPG@1101495006 : Record 93;
+      CustPG@1101495007 : Record 92;
+      NoSource@1101495008 : Boolean;
+      FAPG@1101495009 : Record 5606;
+      Currency@1101495010 : Record 4;
+      GLAccount@1101495011 : Record 15;
+      FALedgerEntry@1101495012 : Record 5601;
+      OriginalVATAmount@1101495015 : Decimal;
+      DebitOriginalVATAmount@1101495014 : Decimal;
+      CreditOriginalVATAmount@1101495013 : Decimal;
+      TempDimSetEntry@1101495016 : TEMPORARY Record 480;
+      l_dateP@1101495017 : Date;
+      l_dateSH@1101495018 : Date;
+    BEGIN
+      GenJnlLine.INIT;
+      GenJnlLine."Journal Template Name" := Template;
+      GenJnlLine."Journal Batch Name" := Batch;
+      GenJnlLine."Line No." := GetNextLineNo(Template,Batch);
+
+      //NC NCS-792.1 > DP
+      NoSource :=FALSE;
+      IsCurrExch := FALSE;
+      //NC NCS-792.1 < DP
+
+      //NC NCS-1107.2 > DP
+      //Не переносим окргление ДОВ, НДС по ОС
+      IF (((GLEntryTmp.Amount = 0) AND (GLEntryTmp."Original Amount" = 0)) OR
+         ((GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::"Fixed Asset") AND
+          (GLEntryTmp."FA Entry No." = 0) AND (GLEntryTmp."FA Entry Type" <> GLEntryTmp."FA Entry Type"::"Fixed Asset")))
+      THEN BEGIN
+        GLEntryTmp2.INIT;
+        GLEntryTmp2."Entry No." := GLEntryTmp."Entry No.";
+        IF GLEntryTmp2.INSERT THEN;
+        EXIT(TRUE);
+      END ELSE BEGIN
+      //NC NCS-1107.2 < DP
+
+        //TDRANCS-1854>
+        GenJnlLine."Due Date" := GLEntryTmp."Due Date";
+        //TDRANCS-1854<
+        IF GLEntryTmp."Source Type" <> GLEntryTmp."Source Type"::" " THEN BEGIN
+
+        //NC NCS-1099 > DP
+
+        IF GLAccount.GET(GLEntryTmp."G/L Account No.") AND GLAccount."Direct Posting"
+
+        //NC NCS-1099.1 > DP
+        AND (GLAccount."Source Posting Group" = '')
+        //NC NCS-1099.1 < DP
+
+        THEN BEGIN
+          GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+          GenJnlLine."Account No." := GLEntryTmp."G/L Account No.";
+          NoSource := TRUE;
+          //TDRANCS-1854>
+          GenJnlLine."Gen. Posting Type" := GLEntryTmp."Gen. Posting Type";
+          GenJnlLine."Gen. Bus. Posting Group" := GLEntryTmp."Gen. Bus. Posting Group";
+          GenJnlLine."Gen. Prod. Posting Group" := GLEntryTmp."Gen. Prod. Posting Group";
+          GenJnlLine."VAT Bus. Posting Group"  :=  GLEntryTmp."VAT Bus. Posting Group";
+          GenJnlLine.VALIDATE("VAT Prod. Posting Group", GLEntryTmp."VAT Prod. Posting Group");
+          //TDRANCS-1854<
+        END ELSE BEGIN
+        //NC NCS-1099 < DP
+
+          GenJnlLine."Account Type" := GLEntryTmp."Source Type";
+          GenJnlLine."Account No." := GLEntryTmp."Source No.";
+
+        //NC NCS-1099 > DP
+        END;
+        //NC NCS-1099 < DP
+
+        //NC NCS-1107 > DP
+        IF (GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::"Fixed Asset") AND
+          (GLEntryTmp."FA Entry No." <> 0) AND FALedgerEntry.GET(GLEntryTmp."FA Entry No.")
+        THEN
+
+          //NC NCS-1107.2> DP
+          IF GLEntryTmp."FA Entry Type" = GLEntryTmp."FA Entry Type"::"Fixed Asset" THEN BEGIN
+          //NC NCS-1107.2 < DP
+            FALedgerEntry.MoveToGenJnl(GenJnlLine);
+        //NC NCS-1107 < DP
+
+        //NC NCS-1107.2 > DP
+            OriginalVATAmount :=0;
+            DebitOriginalVATAmount :=0;
+            CreditOriginalVATAmount :=0;
+            GetOriginalVATAmount(GLEntryTmp."Source No.",
+                                GLEntryTmp."Transaction No.",
+                                OriginalVATAmount,
+                                DebitOriginalVATAmount,
+                                CreditOriginalVATAmount);
+
+            GenJnlLine."Gen. Posting Type" := GLEntryTmp."Gen. Posting Type";
+            GenJnlLine."Gen. Bus. Posting Group" := GLEntryTmp."Gen. Bus. Posting Group";
+            GenJnlLine."Gen. Prod. Posting Group" := GLEntryTmp."Gen. Prod. Posting Group";
+            GenJnlLine."VAT Bus. Posting Group"  :=  GLEntryTmp."VAT Bus. Posting Group";
+            GenJnlLine.VALIDATE("VAT Prod. Posting Group", GLEntryTmp."VAT Prod. Posting Group");
+            GenJnlLine."Currency Code" := GLEntryTmp."Original Currency Code";
+            GenJnlLine."Currency Factor" := GLEntryTmp."Original Currency Factor";
+
+            IF Storno THEN BEGIN
+              IF GLEntryTmp."Original Debit Amount" <> 0 THEN
+                GenJnlLine.VALIDATE("Debit Amount", -GLEntryTmp."Original Debit Amount" - DebitOriginalVATAmount);
+              IF GLEntryTmp."Original Credit Amount" <> 0 THEN
+                GenJnlLine.VALIDATE("Credit Amount", -GLEntryTmp."Original Credit Amount" - CreditOriginalVATAmount);
+            END ELSE BEGIN
+              IF GLEntryTmp."Original Debit Amount" <> 0 THEN
+                GenJnlLine.VALIDATE("Debit Amount", GLEntryTmp."Original Debit Amount" + DebitOriginalVATAmount);
+              IF GLEntryTmp."Original Credit Amount" <> 0 THEN
+                GenJnlLine.VALIDATE("Credit Amount", GLEntryTmp."Original Credit Amount" + CreditOriginalVATAmount);
+            END;
+          END;
+        //NC NCS-1107.2 < DP
+
+        NoSource := FALSE;
+
+        //NC M1 > DP
+        IF IsReceiver AND (GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::"Bank Account") THEN BEGIN
+          BankAccountPG.RESET;
+          BankAccountPG.SETRANGE("G/L Bank Account No.", GLEntryTmp."G/L Account No.");
+          IF NOT BankAccountPG.FINDFIRST THEN BEGIN
+            GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+            GenJnlLine."Account No." := GLEntryTmp."G/L Account No.";
+            NoSource :=TRUE;
+          END;
+        END;
+        //NC M1 < DP
+
+        //NC M1 > DP
+        IF IsReceiver AND (GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::Vendor) THEN BEGIN
+          VendPG.RESET;
+          VendPG.SETRANGE("Payables Account", GLEntryTmp."G/L Account No.");
+          IF NOT VendPG.FINDFIRST THEN BEGIN
+            GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+            GenJnlLine."Account No." := GLEntryTmp."G/L Account No.";
+            NoSource :=TRUE;
+          END;
+        END;
+
+        IF IsReceiver AND (GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::Customer) THEN BEGIN
+          CustPG.RESET;
+          CustPG.SETRANGE("Receivables Account",GLEntryTmp."G/L Account No.");
+          IF NOT CustPG.FINDFIRST THEN BEGIN
+            GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+            GenJnlLine."Account No." := GLEntryTmp."G/L Account No.";
+            NoSource :=TRUE;
+          END;
+        END;
+
+        IF IsReceiver AND (GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::"Fixed Asset") AND
+           (GLEntryTmp."Document Type" IN [GLEntryTmp."Document Type"::Invoice,GLEntryTmp."Document Type"::"Credit Memo"])
+        THEN BEGIN
+          FAPG.RESET;
+          FAPG.SETRANGE("Acquisition Cost Account", GLEntryTmp."G/L Account No.");
+          IF NOT FAPG.FINDFIRST THEN BEGIN
+            GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+            GenJnlLine."Account No." := GLEntryTmp."G/L Account No.";
+            NoSource :=TRUE;
+          END;
+        END;
+        //NC M1 < DP
+      END ELSE BEGIN
+        GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+        GenJnlLine."Account No." := GLEntryTmp."G/L Account No.";
+        NoSource := TRUE;
+      END;
+
+      IF NewPostDate = 0D THEN
+        GenJnlLine."Posting Date" := GLEntryTmp."Posting Date"
+      ELSE
+        GenJnlLine."Posting Date" := NewPostDate;
+
+      //NCS-2537>
+      l_dateP := GenJnlLine."Posting Date";
+        //TDRANCS-2565>
+        IF GenJnlLine."Posting Date" <> 0D THEN
+        //TDRANCS-2565<
+      GenJnlLine."Posting Date" := NORMALDATE(GenJnlLine."Posting Date");
+      //NCS-2537<
+
+      GenJnlLine."Document Type" := GLEntryTmp."Document Type";
+      GenJnlLine."Document No." := GLEntryTmp."Document No.";
+      GenJnlLine.Description := GLEntryTmp.Description;
+
+
+      //NC NCS-1107.2 > DP
+      IF GLEntryTmp."FA Entry Type"=GLEntryTmp."FA Entry Type"::" " THEN BEGIN
+      //NC NCS-1107.2 < DP
+        IF GLEntryTmp."Original Amount" <> 0 THEN BEGIN
+          GenJnlLine."Currency Code" := GLEntryTmp."Original Currency Code";
+          GenJnlLine."Currency Factor" := GLEntryTmp."Original Currency Factor";
+
+          //NC M1 > DP
+          IsCurrExch := FALSE;
+          IF IsReceiver THEN BEGIN
+            IF GLEntryTmp."Original Currency Code" = '' THEN
+              GenJnlLine."Currency Code" := GLSetup."LCY Code"
+            ELSE
+              IF GLEntryTmp."Original Currency Code" = GLSetup1."LCY Code" THEN
+                GenJnlLine."Currency Code" := ''
+              ELSE
+                GenJnlLine."Currency Code" := GLEntryTmp."Original Currency Code";
+
+            GenJnlLine."Currency Factor" := CurrencyExchangeRate.ExchangeRate(GenJnlLine."Posting Date",GenJnlLine."Currency Code");
+          END;
+          //NC M1 < DP
+
+          //TDRANCS-1526>
+          IF (NOT g_boolSaveCurrFactor) AND (NOT IsReceiver) THEN
+            GenJnlLine."Currency Factor" := CurrencyExchangeRate.ExchangeRate(GenJnlLine."Posting Date",GenJnlLine."Currency Code");
+          IF g_boolSaveCurrFactor THEN
+            GenJnlLine."Source Historical Date" := GLEntryTmp."Historical Date";
+          //TDRANCS-1526<
+
+          //TDRANCS-2537>
+          l_dateSH := GenJnlLine."Source Historical Date";
+            //TDRANCS-2565>
+          IF GenJnlLine."Source Historical Date" <> 0D THEN
+            //TDRANCS-2565<
+          GenJnlLine."Source Historical Date" := NORMALDATE(GenJnlLine."Source Historical Date");
+          IF g_boolSaveCurrFactor AND (l_dateSH <> GenJnlLine."Source Historical Date") THEN
+            GenJnlLine."Currency Factor" :=
+                CurrencyExchangeRate.ExchangeRate(GenJnlLine."Posting Date",GenJnlLine."Currency Code");
+          //TDRANCS-2537<
+
+          IF Storno THEN BEGIN
+            IF GLEntryTmp."Original Debit Amount" <> 0 THEN
+              GenJnlLine.VALIDATE("Debit Amount", -GLEntryTmp."Original Debit Amount");
+            IF GLEntryTmp."Original Credit Amount" <> 0 THEN
+              GenJnlLine.VALIDATE("Credit Amount", -GLEntryTmp."Original Credit Amount");
+          END ELSE BEGIN
+            IF GLEntryTmp."Original Debit Amount" <> 0 THEN
+              GenJnlLine.VALIDATE("Debit Amount", GLEntryTmp."Original Debit Amount");
+            IF GLEntryTmp."Original Credit Amount" <> 0 THEN
+              GenJnlLine.VALIDATE("Credit Amount", GLEntryTmp."Original Credit Amount");
+          END;
+        END ELSE
+          //NC M1 > DP
+          IF IsReceiver THEN
+            IsCurrExch := TRUE
+          ELSE
+          //NC M1 < DP
+
+          BEGIN
+            //NC M1 > DP
+            IsCurrExch := FALSE;
+            //NC M1 < DP
+            //GLEntryTmp.TESTFIELD("Original Currency Code");
+            IF GLEntryTmp."Original Currency Code" <> '' THEN BEGIN
+              IF Storno THEN BEGIN
+                IF GLEntryTmp."Debit Amount" <> 0 THEN
+                  GenJnlLine.VALIDATE("Debit Amount", -GLEntryTmp."Debit Amount");
+                IF GLEntryTmp."Credit Amount" <> 0 THEN
+                  GenJnlLine.VALIDATE("Credit Amount", -GLEntryTmp."Credit Amount");
+              END ELSE BEGIN
+                IF GLEntryTmp."Debit Amount" <> 0 THEN
+                  GenJnlLine.VALIDATE("Debit Amount", GLEntryTmp."Debit Amount");
+                IF GLEntryTmp."Credit Amount" <> 0 THEN
+                  GenJnlLine.VALIDATE("Credit Amount", GLEntryTmp."Credit Amount");
+              END;
+              GenJnlLine."Currency Index Entry" := TRUE;
+              GenJnlLine."Currency Index" := GLEntryTmp."Original Currency Code"
+            END;
+          END;
+      //NC NCS-1107.2 > DP
+      END;
+      //NC NCS-1107.2 < DP
+
+      //NC OAM44 > DP
+      IF JournalBatch.GET(Template, Batch) AND (JournalBatch."Posting No. Series" <> '') THEN
+        GenJnlLine."Posting No. Series" := JournalBatch."Posting No. Series";
+      //NC OAM44 < DP
+
+      GenJnlLine."Shortcut Dimension 1 Code" := GLEntryTmp."Global Dimension 1 Code";
+      GenJnlLine."Shortcut Dimension 2 Code" := GLEntryTmp."Global Dimension 2 Code";
+      GenJnlLine."Source Code" := GLEntryTmp."Source Code";
+      IF Storno THEN
+        GenJnlLine.Quantity := -GLEntryTmp.Quantity
+      ELSE
+        GenJnlLine.Quantity := GLEntryTmp.Quantity;
+      IF Storno THEN BEGIN
+        GenJnlLine."Debit Quantity" := -GLEntryTmp."Debit Quantity";
+        GenJnlLine."Credit Quantity" := -GLEntryTmp."Credit Quantity";
+      END ELSE BEGIN
+        GenJnlLine."Debit Quantity" := GLEntryTmp."Debit Quantity";
+        GenJnlLine."Credit Quantity" := GLEntryTmp."Credit Quantity";
+      END;
+      GenJnlLine."Document Date" := GLEntryTmp."Document Date";
+      GenJnlLine."External Document No." := GLEntryTmp."External Document No.";
+      GenJnlLine."Export Cons. Source Code" := GLEntryTmp."Export Cons. Source Code";
+      GenJnlLine."External Document Type" := GLEntryTmp."External Document Type";
+
+      //NC > MP 10.12.2010 По результатам статуса в журнал не переносим
+      {
+      GenJnlLine."External Document ID" := GLEntryTmp."External Document ID";
+      }
+      //NC < MP 10.12.2010 По результатам статуса в журнал не переносим
+      GenJnlLine."External Document Date" := GLEntryTmp."External Document Date";
+      //NC > MP 10.12.2010 По результатам статуса в журнал не переносим
+      {
+      GenJnlLine."External Operation No" := GLEntryTmp."External Operation No";
+      }
+      //NC < MP 10.12.2010 По результатам статуса в журнал не переносим
+      GenJnlLine."Special Correspondense" := GLEntryTmp."Special Correspondense";
+      IF ReasonCode <>'' THEN
+        GenJnlLine."Reason Code" := ReasonCode
+      ELSE
+        GenJnlLine."Reason Code" := GLEntryTmp."Reason Code";
+      {
+      GenJnlLine.Reposted := GLEntryTmp.Reposted;
+      GenJnlLine.Removed := GLEntryTmp.Removed;
+      }
+      GenJnlLine."FA Operation" := GLEntryTmp."FA Operation";
+
+      //NC APCOC-67 > DP
+      //GenJnlLine."Source Historical Date" := GLEntryTmp."Historical Date";
+      //NC APCOC-67 < DP
+
+      //GenJnlLine."Additional Currency Code" := GLSetup."Additional Reporting Currency";
+      //GenJnlLine."Additional Currency Amount" := GLEntryTmp."Additional-Currency Amount";
+      GenJnlLine."Begining Date" := GLEntryTmp."Source Posting Date";
+      GenJnlLine."Ending Date" := GLEntryTmp."Ending Date";
+      //GenJnlLine."Corresp. G/L Account No." := GLEntryTmp."Corresp. G/L Account No.";
+      GenJnlLine."Local G/L Account" := GLEntryTmp."Local G/L Account";
+
+      //NC S2036 > PCH
+      IF Storno AND GLSetup."Reverse Source Account" THEN
+        GenJnlLine."Source G/L Account No." := GLEntryTmp."Source G/L Account No.";
+      //NC S2036 < PCH
+      //NC S1893 > PCH
+      IF GLSetup."Use Bus.Unit for Separ. Trans." THEN
+        GenJnlLine."Business Unit Code" := GLEntryTmp."Business Unit Code"
+      ELSE
+      //NC S1893 < PCH
+      // TDRAAPCOC-114 >
+      //GenJnlLine."Business Unit Code" := GLEntryTmp."Business Unit Code";
+      GenJnlLine."Business Unit Code" := '';
+      // TDRAAPCOC-114 <
+
+      GenJnlLine."Financial Instrument No." := GLEntryTmp."Financial Instrument No.";
+      GenJnlLine."Source Entry No." := GLEntryTmp."Source Entry No.";
+      //GenJnlLine."Source G/L Account No." := GLEntryTmp."Source G/L Account No.";
+      //NC MTF02 > AKU
+      IF GLEntryTmp."Agreement No." <> '' THEN
+        GenJnlLine."Agreement No." := GLEntryTmp."Agreement No.";
+      IF GLEntryTmp."Source Type" = GLEntryTmp."Source Type"::"Fin. Instrument" THEN
+        IF FILedgerEntry.GET(GLEntryTmp."Entry No.") THEN BEGIN
+          GenJnlLine."FI Posting Group" := FILedgerEntry."FI Posting Group";
+          GenJnlLine."FI EntryType" := FILedgerEntry."FI EntryType";
+          GenJnlLine."Amount Type" := FILedgerEntry."Amount Type";
+          GenJnlLine."FI Portfolio" := FILedgerEntry."FI Portfolio";
+          GenJnlLine."FI Posting Book" := FILedgerEntry."FI Posting Book";
+          GenJnlLine."Short Position" := FILedgerEntry."Short Position";
+          GenJnlLine."Gen. Bus. Posting Group" := GLEntryTmp."Gen. Bus. Posting Group";
+          GenJnlLine."Gen. Prod. Posting Group" := GLEntryTmp."Gen. Prod. Posting Group";
+          GenJnlLine."VAT Bus. Posting Group" := GLEntryTmp."VAT Bus. Posting Group";
+          GenJnlLine."VAT Prod. Posting Group" := GLEntryTmp."VAT Prod. Posting Group";
+
+          GenJnlLine.Conversation := FILedgerEntry.Conversation;
+          IF FILedgerEntry."Amount Type" = FILedgerEntry."Amount Type"::Interest THEN
+            GenJnlLine.Quantity := FILedgerEntry."Cupon Quantity"
+          ELSE
+            GenJnlLine.Quantity := FILedgerEntry.Quantity;
+
+          IF Storno THEN BEGIN
+            GenJnlLine.Quantity := -GenJnlLine.Quantity;
+            GenJnlLine."Appl. to FI Entry No." := FILedgerEntry."Entry No.";
+          END;
+        END;
+
+      //IF Storno   //NC M1 > DP  OR IsReceiver   //NC M1 < DP THEN
+        IF NOT NoSource THEN BEGIN
+          CASE GLEntryTmp."Source Type" OF
+            GLEntryTmp."Source Type"::Customer :
+              //NC M1 > DP
+              BEGIN
+              //NC M1 < DP
+                IF CustLE.GET(GLEntryTmp."Entry No.") THEN
+
+              //NC M1 > DP
+                BEGIN
+              //NC M1 < DP
+
+                  GenJnlLine."Posting Group" := CustLE."Customer Posting Group";
+
+            //NC M1 > DP
+                //NC NCS-1099 > DP
+                {
+                IF IsReceiver THEN BEGIN
+                  GenJnlLine."Agreement Condition No." :=CustLE."Agreement Condition No.";
+                  GenJnlLine."Amount Type" := CustLE."Amount Type";
+                END;
+                }
+                GenJnlLine."Agreement Condition No." :=CustLE."Agreement Condition No.";
+                GenJnlLine."Amount Type" := CustLE."Amount Type";
+                //NC NCS-1099 < DP
+                //NC NCS-2374 > DP
+                GenJnlLine."Interest Accrual" := CustLE."Interest Accrual";
+                //NC NCS-2374 < DP
+
+              //NC NCS-792 > DP
+              {
+              END ELSE IsCurrExch :=TRUE ;
+              }
+              END ELSE IF GLEntryTmp."Original Currency Code"<>'' THEN
+                IF Currency.GET(GLEntryTmp."Original Currency Code") THEN
+
+                  //NC NCS-792.1 > DP
+                  {
+                  IF (Currency."Unrealized Gains Acc."=GLEntryTmp."G/L Account No.") OR
+                  (Currency."Unrealized Losses Acc."=GLEntryTmp."G/L Account No.") THEN
+                  }
+                  IF  GLEntryTmp."G/L Account No." IN [Currency."Unrealized Gains Acc.",
+                  Currency."Unrealized Losses Acc."] THEN
+                  //NC NCS-792.1 < DP
+
+                    IsCurrExch :=TRUE;
+              //NC NCS-792 > DP
+            END;
+
+            //NC M1 < DP
+
+          GLEntryTmp."Source Type"::Vendor :
+
+            //NC M1 > DP
+            BEGIN
+            //NC M1 < DP
+
+            IF VendLE.GET(GLEntryTmp."Entry No.") THEN
+
+            //NC M1 > DP
+              BEGIN
+            //NC M1 < DP
+
+              GenJnlLine."Posting Group" := VendLE."Vendor Posting Group";
+
+            //NC M1 > DP
+
+                //NC NCS-1099 > DP
+                {
+                IF IsReceiver THEN BEGIN
+                  GenJnlLine."Agreement Condition No." :=VendLE."Agreement Condition No.";
+                  GenJnlLine."Amount Type" := VendLE."Amount Type";
+                END;
+                }
+                GenJnlLine."Agreement Condition No." :=VendLE."Agreement Condition No.";
+                GenJnlLine."Amount Type" := VendLE."Amount Type";
+                //NC NCS-1099 < DP
+
+                //NC NCS-2374 > DP
+                GenJnlLine."Interest Accrual" := VendLE."Interest Accrual";
+                //NC NCS-2374 < DP
+
+              //NC NCS-792 > DP
+              {
+              END ELSE IsCurrExch :=TRUE ;
+              }
+              END ELSE IF GLEntryTmp."Original Currency Code"<>'' THEN
+                IF Currency.GET(GLEntryTmp."Original Currency Code") THEN
+
+                  //NC NCS-792.1 > DP
+                  {
+                  IF (Currency."Unrealized Gains Acc."=GLEntryTmp."G/L Account No.") OR
+                  (Currency."Unrealized Losses Acc."=GLEntryTmp."G/L Account No.") THEN
+                  }
+                  IF  GLEntryTmp."G/L Account No." IN [Currency."Unrealized Gains Acc.",
+                  Currency."Unrealized Losses Acc."] THEN
+                  //NC NCS-792.1 < DP
+
+                    IsCurrExch :=TRUE;
+              //NC NCS-792 > DP
+
+            END;
+
+          GLEntryTmp."Source Type"::"Bank Account" :
+            IF BankAccountLE.GET(GLEntryTmp."Entry No.") THEN
+              GenJnlLine."Posting Group" := BankAccountLE."Bank Acc. Posting Group";
+
+          //NC M1 < DP
+
+        END;
+        END;
+      //NC MTF02 < AKU
+
+      GenJnlLine.VALIDATE(Quantity);
+      IF GenJnlLine."Amount (LCY)" = 0 THEN
+        GenJnlLine."Allow Zero-Amount Posting" := TRUE;
+
+      //NC M2 > DP
+      IF IsReceiver THEN
+        DtlGenJnlLine(GLEntryTmp,GenJnlLine);
+      //NC M2 < DP
+
+      //NC NCS-2300.1 > DP
+      GenJnlLine."Modified By" := USERID;
+      GenJnlLine."Approved By" := '';
+      //NC NCS-2300.1 < DP
+
+      //NC M1 > DP
+      IF NOT IsCurrExch THEN BEGIN
+      //NC M1 < DP
+
+        //TDRANCS-2537>
+        GenJnlLine."Source Historical Date" := l_dateSH;
+        GenJnlLine."Posting Date" := l_dateP;
+        //TDRANCS-2537<
+        GenJnlLine.INSERT;
+
+
+        GLEntryTmp2.INIT;
+        GLEntryTmp2."Entry No." := GLEntryTmp."Entry No.";
+        IF GLEntryTmp2.INSERT THEN;
+
+        //NC NOS-26 > SPA
+        DimMgt.GetDimensionSet(TempDimSetEntry,GLEntryTmp."Dimension Set ID");
+        IF IsReceiver THEN BEGIN
+          //DimMgt.UpdateGenJnlLineDim(GenJnlLine, DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse))
+          GenJnlLine."Dimension Set ID" := DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse);
+          IF DimensionSetEntry.GET(GenJnlLine."Dimension Set ID",GLSetup1."Global Dimension 1 Code") THEN
+            GenJnlLine."Shortcut Dimension 1 Code" := DimensionSetEntry."Dimension Value Code";
+          IF DimensionSetEntry.GET(GenJnlLine."Dimension Set ID",GLSetup1."Global Dimension 2 Code") THEN
+            GenJnlLine."Shortcut Dimension 2 Code" := DimensionSetEntry."Dimension Value Code";
+          IF DimensionSetEntry.GET(GenJnlLine."Dimension Set ID",ConsSetup."Fin. Instrument Dimension Code") THEN
+            GenJnlLine."Financial Instrument No." := DimensionSetEntry."Dimension Value Code";
+        END ELSE
+          DimMgt.UpdateGenJnlLineDim(GenJnlLine, GLEntryTmp."Dimension Set ID");
+        GenJnlLine.MODIFY;
+        //NC NOS-26 < SPA
+
+      //GLEntryCheck.GET(GLEntryTmp."Entry No.");
+      //GLEntryCheck.MARK(TRUE);
+
+      //NC 1666 > PCH
+      EXIT(TRUE)
+      //NC 1666 < PCH
+      //NC M1 > DP
+      END ELSE BEGIN
+      EXIT(FALSE);
+      END;
+      //NC M1 < DP
+
+      //NC NCS-1107.2 > DP
+      END;
+      //NC NCS-1107.2 < DP
+    END;
+
+    PROCEDURE GetNextLineNo@1000000008(GenJnlTemplate@1000000001 : Code[20];GenJnlBatch@1000000000 : Code[20]) : Integer;
+    BEGIN
+      GenJournalLine1.SETFILTER("Journal Template Name", GenJnlTemplate);
+      GenJournalLine1.SETFILTER("Journal Batch Name", GenJnlBatch);
+      IF GenJournalLine1.RECORDLEVELLOCKING THEN
+        GenJournalLine1.LOCKTABLE;
+      IF GenJournalLine1.FIND('+') THEN
+        EXIT(GenJournalLine1."Line No." + 100)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE GetBalGLEntries@1210001(VAR SourceGLEntry@1210000 : Record 17;VAR BalGLEntry@1210001 : Record 17);
+    BEGIN
+      BalGLEntry.SETCURRENTKEY("Transaction No.","System-Created Entry");
+      BalGLEntry.SETRANGE("Transaction No.",SourceGLEntry."Transaction No.");
+      //NC NCS-792 > DP
+      {
+      IF NOT IsReceiver THEN
+      }
+      //NC NCS-792 < DP
+
+      // TD BMN 08.08.2012 смысл? BalGLEntry.SETRANGE("System-Created Entry",FALSE);
+
+      IF SourceGLEntry."Document Type" IN [SourceGLEntry."Document Type"::Invoice,SourceGLEntry."Document Type"::"Credit Memo"] THEN
+        BalGLEntry.SETRANGE("System-Created Entry");
+
+      BalGLEntry.SETFILTER("Entry No.",'<>%1',SourceGLEntry."Entry No.");
+    END;
+
+    PROCEDURE CheckAlreadyTransfered@1210005(EntryNo@1210000 : Integer) : Boolean;
+    BEGIN
+      {
+      GLEntryCheck.SETRANGE("Transaction No.",TransactionNo);
+      GLEntryCheck.MARKEDONLY(TRUE);
+      IF GLEntryCheck.FINDFIRST THEN BEGIN
+        GLEntryCheck.SETRANGE("Transaction No.");
+        GLEntryCheck.MARKEDONLY(FALSE);
+        EXIT(TRUE);
+      END;
+      GLEntryCheck.SETRANGE("Transaction No.");
+      GLEntryCheck.MARKEDONLY(FALSE);
+      EXIT(FALSE);
+      }
+      IF GLEntryTmp2.GET(EntryNo) THEN
+        EXIT(TRUE);
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE SetReceiverCompany@1101495000(NewCompanyName@1101495000 : Text[30]);
+    BEGIN
+      IsReceiver := FALSE;
+      IF NewCompanyName <> '' THEN BEGIN
+        GenJnlLine.CHANGECOMPANY(NewCompanyName);
+        //JnlLineDim.CHANGECOMPANY(NewCompanyName);
+        GenJournalLine1.CHANGECOMPANY(NewCompanyName);
+        GLSetup1.CHANGECOMPANY(NewCompanyName);
+        GLSetup1.GET;
+        CurrencyExchangeRate.CHANGECOMPANY(NewCompanyName);
+        CurrencyExchangeRate.SetNewCompany(NewCompanyName);
+        IsReceiver := TRUE;
+        //NC NOS-26 > SPA
+        CompanyToUse := NewCompanyName;
+        DimensionSetEntry.CHANGECOMPANY(NewCompanyName);
+        ConsSetup.CHANGECOMPANY(NewCompanyName);
+        ConsSetup.GET;
+        //NC NOS-26 < SPA
+      END;
+    END;
+
+    PROCEDURE InsertRoundingCorrectionLines@1210016(VAR locJnlLine@1210007 : Record 81);
+    VAR
+      DocBalanceAmount@1210004 : Decimal;
+      TmpGenJournalLine@1210005 : TEMPORARY Record 81;
+      Text000@1210000 : TextConst 'ENU=Rounding correction for Doc No. %1;RUS=Ошибка округления для Док. № %1';
+      TmpGenJournalLineInsert@1210001 : TEMPORARY Record 81;
+      GLAcc@1000000001 : Record 15;
+      DefDim@1000000002 : Record 352;
+      ConsolidationSource@1210002 : Record 50001;
+      iCurLineNo@1210008 : Integer;
+      SourceCodeSetup@1210009 : Record 242;
+      ConsSetup@1101495000 : Record 50000;
+      TempDimSetEntry@1101495001 : TEMPORARY Record 480;
+    BEGIN
+      ConsSetup.GET;
+      ConsolidationSource.GET(ConsSetup."Main Consolidation Source");
+      IF NOT ConsolidationSource."Cons. Balance" THEN
+        EXIT;
+
+      //TmpGenJournalLineInsert.DELETEALL;
+      CLEAR(TmpGenJournalLine);
+      DocBalanceAmount := 0;
+      iCurLineNo := locJnlLine.COUNT;
+      locJnlLine.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Posting Date","Document No.");
+      locJnlLine.FINDFIRST;
+      IF locJnlLine.FINDSET THEN
+        REPEAT
+          //Window.UPDATE(5, ROUND(locJnlLine."Line No." / iCurLineNo, 1) );
+          IF (locJnlLine."Posting Date" <> TmpGenJournalLine."Posting Date") OR
+             (locJnlLine."Document No." <> TmpGenJournalLine."Document No.") OR
+             (locJnlLine."Document Type" <> TmpGenJournalLine."Document Type")
+             //OR (locJnlLine."Business Unit Code" <> TmpGenJournalLine."Business Unit Code")
+          THEN BEGIN
+            // --- Балансирование по документам раздела >
+            IF (DocBalanceAmount <> 0) AND
+               (ABS(DocBalanceAmount) <= ConsolidationSource."Cons. Max Round. Amount")
+            THEN BEGIN
+               TmpGenJournalLineInsert := TmpGenJournalLine;
+               TmpGenJournalLineInsert."Line No." := TmpGenJournalLineInsert."Line No." + 1;
+               TmpGenJournalLineInsert."Account Type" := TmpGenJournalLineInsert."Account Type"::"G/L Account";
+               IF DocBalanceAmount > 0 THEN
+                 TmpGenJournalLineInsert."Account No." := ConsolidationSource."Exch. Rate Gains Acc."
+               ELSE
+                 TmpGenJournalLineInsert."Account No." := ConsolidationSource."Exch. Rate Losses Acc.";
+
+               TmpGenJournalLineInsert.VALIDATE("Currency Code",'');
+               TmpGenJournalLineInsert."Posting Group" :=  '';
+               TmpGenJournalLineInsert."Source No." := '';
+               TmpGenJournalLineInsert."Source Code" := SourceCodeSetup.Transformation;
+               TmpGenJournalLineInsert.VALIDATE(Amount, -DocBalanceAmount);
+               TmpGenJournalLineInsert.Description := STRSUBSTNO(Text000, TmpGenJournalLineInsert."Document No.");
+               TmpGenJournalLineInsert.INSERT;
+
+               // insert last line dims
+
+               //NC NOS-26 > SPA
+               IF IsReceiver THEN BEGIN
+                 // retrieving dimension set from the current company
+                 DimMgt.GetDimensionSet(TempDimSetEntry, TmpGenJournalLine."Dimension Set ID");
+
+                 // getting dimension set ID from the receiver company
+                 //DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+                 //  DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse));
+                 TmpGenJournalLineInsert."Dimension Set ID" := DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse);
+                 IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 1 Code") THEN
+                   TmpGenJournalLineInsert."Shortcut Dimension 1 Code" := DimensionSetEntry."Dimension Value Code";
+                 IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 2 Code") THEN
+                   TmpGenJournalLineInsert."Shortcut Dimension 2 Code" := DimensionSetEntry."Dimension Value Code";
+                 IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",ConsSetup."Fin. Instrument Dimension Code") THEN
+                   TmpGenJournalLineInsert."Financial Instrument No." := DimensionSetEntry."Dimension Value Code";
+               END ELSE
+                 DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+                  TmpGenJournalLine."Dimension Set ID");
+               TmpGenJournalLineInsert.MODIFY;
+               //NC NOS-26 < SPA
+            END;
+            // --- balancing within the batch <
+            DocBalanceAmount := locJnlLine."Amount (LCY)";
+          END ELSE
+            DocBalanceAmount := DocBalanceAmount + locJnlLine."Amount (LCY)";
+
+          TmpGenJournalLine := locJnlLine;
+
+          IF GLAcc.GET(TmpGenJournalLineInsert."Account No.") THEN BEGIN
+            DefDim.RESET;
+            DefDim.SETRANGE("Table ID", 15);
+            DefDim.SETRANGE("No.", GLAcc."No.");
+            DefDim.SETRANGE("Value Posting", DefDim."Value Posting"::"Same Code");
+            IF DefDim.FINDSET THEN BEGIN
+              //NC NOS-26 > SPA
+              DimMgt.GetDimensionSet(TempDimSetEntry, TmpGenJournalLineInsert."Dimension Set ID");
+              REPEAT
+                TempDimSetEntry.VALIDATE("Dimension Code", DefDim."Dimension Code");
+                IF TempDimSetEntry.FIND THEN
+                  TempDimSetEntry.DELETE;
+                TempDimSetEntry.VALIDATE("Dimension Value Code", DefDim."Dimension Value Code");
+                TempDimSetEntry.INSERT;
+              UNTIL DefDim.NEXT = 0;
+
+              IF IsReceiver THEN BEGIN
+                // getting dimension set ID from the receiver company
+                //DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+                //  DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse))
+                TmpGenJournalLineInsert."Dimension Set ID" := DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse);
+                 IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 1 Code") THEN
+                   TmpGenJournalLineInsert."Shortcut Dimension 1 Code" := DimensionSetEntry."Dimension Value Code";
+                 IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 2 Code") THEN
+                   TmpGenJournalLineInsert."Shortcut Dimension 2 Code" := DimensionSetEntry."Dimension Value Code";
+                 IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",ConsSetup."Fin. Instrument Dimension Code") THEN
+                   TmpGenJournalLineInsert."Financial Instrument No." := DimensionSetEntry."Dimension Value Code";
+              END ELSE
+                DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+                  DimMgt.GetDimensionSetID(TempDimSetEntry));
+              TmpGenJournalLineInsert.MODIFY;
+              //NC NOS-26 < SPA
+            END;
+          END;
+        UNTIL locJnlLine.NEXT = 0;
+
+      // --- Балансирование в конце раздела >
+      IF (DocBalanceAmount <> 0) AND
+          (ABS(DocBalanceAmount) <= ConsolidationSource."Cons. Max Round. Amount")
+      THEN BEGIN
+        TmpGenJournalLineInsert := TmpGenJournalLine;
+        TmpGenJournalLineInsert."Line No." := TmpGenJournalLineInsert."Line No." + 1;
+
+        IF DocBalanceAmount > 0 THEN
+          TmpGenJournalLineInsert."Account No." := ConsolidationSource."Exch. Rate Gains Acc."
+        ELSE
+          TmpGenJournalLineInsert."Account No." := ConsolidationSource."Exch. Rate Losses Acc.";
+
+        TmpGenJournalLineInsert.VALIDATE("Currency Code",'');
+        TmpGenJournalLineInsert.VALIDATE(Amount, -DocBalanceAmount);
+        TmpGenJournalLineInsert.Description := STRSUBSTNO(Text000, TmpGenJournalLineInsert."Document No.");
+        TmpGenJournalLineInsert."Source No." := '';
+        TmpGenJournalLineInsert.INSERT;
+
+        // insert last line dims
+        //NC NOS-26 > SPA
+        IF IsReceiver THEN BEGIN
+          // retrieving dimension set from the current company
+          DimMgt.GetDimensionSet(TempDimSetEntry, TmpGenJournalLine."Dimension Set ID");
+
+          // getting dimension set ID from the receiver company
+          //DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+          //  DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse));
+          TmpGenJournalLineInsert."Dimension Set ID" := DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse);
+          IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 1 Code") THEN
+            TmpGenJournalLineInsert."Shortcut Dimension 1 Code" := DimensionSetEntry."Dimension Value Code";
+          IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 2 Code") THEN
+            TmpGenJournalLineInsert."Shortcut Dimension 2 Code" := DimensionSetEntry."Dimension Value Code";
+          IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",ConsSetup."Fin. Instrument Dimension Code") THEN
+            TmpGenJournalLineInsert."Financial Instrument No." := DimensionSetEntry."Dimension Value Code";
+        END ELSE
+          DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+            TmpGenJournalLine."Dimension Set ID");
+        TmpGenJournalLineInsert.MODIFY;
+        //NC NOS-26 < SPA
+      END;
+      // --- Балансирование в конце раздела <
+
+      IF TmpGenJournalLineInsert.FINDSET THEN
+        REPEAT
+          locJnlLine := TmpGenJournalLineInsert;
+          locJnlLine.INSERT;
+        UNTIL TmpGenJournalLineInsert.NEXT = 0;
+
+      IF GLAcc.GET(TmpGenJournalLineInsert."Account No.") THEN BEGIN
+        DefDim.RESET;
+        DefDim.SETRANGE("Table ID", 15);
+        DefDim.SETRANGE("No.", GLAcc."No.");
+        DefDim.SETRANGE("Value Posting", DefDim."Value Posting"::"Same Code");
+        IF DefDim.FINDSET THEN BEGIN
+          //NC NOS-26 > SPA
+          DimMgt.GetDimensionSet(TempDimSetEntry, TmpGenJournalLineInsert."Dimension Set ID");
+          REPEAT
+            TempDimSetEntry.VALIDATE("Dimension Code", DefDim."Dimension Code");
+            IF TempDimSetEntry.FIND THEN
+              TempDimSetEntry.DELETE;
+            TempDimSetEntry.VALIDATE("Dimension Value Code", DefDim."Dimension Value Code");
+            TempDimSetEntry.INSERT;
+          UNTIL DefDim.NEXT = 0;
+
+          IF IsReceiver THEN BEGIN
+            // getting dimension set ID from the receiver company
+            //DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+            //  DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse));
+            TmpGenJournalLineInsert."Dimension Set ID" := DimMgt.GetDimensionSetIDFromCompany(TempDimSetEntry, CompanyToUse);
+            IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 1 Code") THEN
+              TmpGenJournalLineInsert."Shortcut Dimension 1 Code" := DimensionSetEntry."Dimension Value Code";
+            IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",GLSetup1."Global Dimension 2 Code") THEN
+              TmpGenJournalLineInsert."Shortcut Dimension 2 Code" := DimensionSetEntry."Dimension Value Code";
+            IF DimensionSetEntry.GET(TmpGenJournalLineInsert."Dimension Set ID",ConsSetup."Fin. Instrument Dimension Code") THEN
+              TmpGenJournalLineInsert."Financial Instrument No." := DimensionSetEntry."Dimension Value Code";
+          END ELSE
+            DimMgt.UpdateGenJnlLineDim(TmpGenJournalLineInsert,
+              DimMgt.GetDimensionSetID(TempDimSetEntry));
+          TmpGenJournalLineInsert.MODIFY;
+        END;
+          //NC NOS-26 < SPA
+      END;
+    END;
+
+    PROCEDURE GetRemGLEntries@1101495001(VAR SourceGLEntry@1101495001 : Record 17;VAR RemGLEntry@1101495000 : Record 17) : Boolean;
+    VAR
+      ConsBuffer@1101495002 : Record 50008;
+      IsRemoveGLFound@1101495003 : Boolean;
+      ConsBuffer1@1101495004 : Record 50008;
+      ConsBuffer2@1101495005 : Record 50008;
+      ConsBuffer3@1101495006 : Record 50008;
+    BEGIN
+      IsRemoveGLFound := FALSE;
+      IF SourceGLEntry."Document Type" IN [SourceGLEntry."Document Type"::Invoice,SourceGLEntry."Document Type"::"Credit Memo"] THEN
+        EXIT(IsRemoveGLFound);
+
+      ConsBuffer.RESET;
+      ConsBuffer.SETCURRENTKEY("Cons. Source Code","Consolidation Register","Source Operation No.");
+      ConsBuffer.SETRANGE("Cons. Source Code",SourceGLEntry."Cons. Source Code");
+      ConsBuffer.SETRANGE("Source Operation No.", SourceGLEntry."Buffer Entry No.");
+      IF ConsBuffer.FINDFIRST THEN BEGIN
+        IsRemoveGLFound := TRUE;
+        RemGLEntry.SETCURRENTKEY("Cons. Source Code","Buffer Entry No.",Reposted,Removed);
+        RemGLEntry.SETRANGE("Cons. Source Code",ConsBuffer."Cons. Source Code");
+        RemGLEntry.SETRANGE("Buffer Entry No.",ConsBuffer."Entry No.");
+        RemGLEntry.SETFILTER("Journal Batch Name",'<>%1',SourceGLEntry."Journal Batch Name");
+        IF RemGLEntry.ISEMPTY THEN BEGIN
+          ConsBuffer1.RESET;
+          ConsBuffer1.SETCURRENTKEY("Cons. Source Code","Consolidation Register","Source Operation No.");
+          ConsBuffer1.SETRANGE("Cons. Source Code",ConsBuffer."Cons. Source Code");
+          ConsBuffer1.SETRANGE("Source Operation No.", ConsBuffer."Entry No.");
+          IF ConsBuffer1.FINDFIRST THEN BEGIN
+            RemGLEntry.SETCURRENTKEY("Cons. Source Code","Buffer Entry No.",Reposted,Removed);
+            RemGLEntry.SETRANGE("Cons. Source Code",ConsBuffer1."Cons. Source Code");
+            RemGLEntry.SETRANGE("Buffer Entry No.",ConsBuffer1."Entry No.");
+            RemGLEntry.SETFILTER("Journal Batch Name",'<>%1',SourceGLEntry."Journal Batch Name");
+          END;
+          IF RemGLEntry.ISEMPTY THEN BEGIN
+            ConsBuffer2.RESET;
+            ConsBuffer2.SETCURRENTKEY("Cons. Source Code","Consolidation Register","Source Operation No.");
+            ConsBuffer2.SETRANGE("Cons. Source Code",ConsBuffer1."Cons. Source Code");
+            ConsBuffer2.SETRANGE("Source Operation No.", ConsBuffer1."Entry No.");
+            IF ConsBuffer2.FINDFIRST THEN BEGIN
+              RemGLEntry.SETCURRENTKEY("Cons. Source Code","Buffer Entry No.",Reposted,Removed);
+              RemGLEntry.SETRANGE("Cons. Source Code",ConsBuffer2."Cons. Source Code");
+              RemGLEntry.SETRANGE("Buffer Entry No.",ConsBuffer2."Entry No.");
+              RemGLEntry.SETFILTER("Journal Batch Name",'<>%1',SourceGLEntry."Journal Batch Name");
+            END;
+            IF RemGLEntry.ISEMPTY THEN BEGIN
+              ConsBuffer3.RESET;
+              ConsBuffer3.SETCURRENTKEY("Cons. Source Code","Consolidation Register","Source Operation No.");
+              ConsBuffer3.SETRANGE("Cons. Source Code",ConsBuffer2."Cons. Source Code");
+              ConsBuffer3.SETRANGE("Source Operation No.", ConsBuffer2."Entry No.");
+              IF ConsBuffer2.FINDFIRST THEN BEGIN
+                RemGLEntry.SETCURRENTKEY("Cons. Source Code","Buffer Entry No.",Reposted,Removed);
+                RemGLEntry.SETRANGE("Cons. Source Code",ConsBuffer3."Cons. Source Code");
+                RemGLEntry.SETRANGE("Buffer Entry No.",ConsBuffer3."Entry No.");
+                RemGLEntry.SETFILTER("Journal Batch Name",'<>%1',SourceGLEntry."Journal Batch Name");
+              END;
+            END;
+          END;
+
+        END;
+      END;
+      EXIT(IsRemoveGLFound);
+    END;
+
+    PROCEDURE TransferLines1@1101495002(VAR GLEntryTmp@1210000 : TEMPORARY Record 17;NewPostDate@1210001 : Date;Template@1210002 : Code[20];Batch@1210003 : Code[20];ReasonCode@1000000000 : Code[10];Storno@1000000001 : Boolean);
+    VAR
+      BalGLEntry@1210004 : Record 17;
+      RemGLEntry@1101495000 : Record 17;
+    BEGIN
+      IF IsReceiver THEN BEGIN
+        dlgIndicator.OPEN(TextDlg001);
+        intIndicatorTotal := GLEntryTmp.COUNT;
+        intIndicatorCounter := 1;
+      END;
+
+      GLSetup.GET;
+      GLEntryTmp.RESET;
+      WITH GLEntryTmp DO BEGIN
+        GLEntryCheck.RESET;
+        GLEntryCheck.SETCURRENTKEY("Transaction No.");
+        IF FINDSET(FALSE,FALSE) THEN BEGIN
+          SETCURRENTKEY("Transaction No.");
+          REPEAT
+
+            IF IsReceiver THEN BEGIN
+              intIndicatorCounter += 1;
+              dlgIndicator.UPDATE(1, ROUND((intIndicatorCounter * 999) / intIndicatorTotal*9, 1));
+            END;
+
+           IF NOT GLEntryTmp2.GET("Entry No.") THEN BEGIN
+
+             //NC M1 > DP
+             IF IsReceiver THEN
+             IF (GLEntryTmp."Buffer Entry No."<>0) AND (GLEntryTmp."Cons. Source Code"<>'') THEN
+               IF GetRemGLEntries(GLEntryTmp,RemGLEntry) THEN BEGIN
+                 IF RemGLEntry.FINDSET(FALSE,FALSE) THEN
+                 REPEAT
+
+                   //NC 1666 > PCH
+                   IF NOT GLEntryTmp2.GET(RemGLEntry."Entry No.") THEN
+                   //NC 1666 < PCH
+
+                   TransferLine(RemGLEntry,NewPostDate,Template,Batch,ReasonCode,Storno)
+                 UNTIL RemGLEntry.NEXT = 0;
+               END;
+              //NC M1 < DP
+
+           END;
+          UNTIL NEXT = 0;
+        END;
+      END;
+
+      IF IsReceiver THEN BEGIN
+        InsertRoundingCorrectionLines(GenJnlLine);
+        dlgIndicator.CLOSE;
+      END;
+    END;
+
+    PROCEDURE GetRepGLEntries@1101495003(VAR SourceGLEntry@1101495001 : Record 17;VAR RepGLEntry@1101495000 : Record 17) : Boolean;
+    VAR
+      ConsBuffer@1101495002 : Record 50008;
+      IsRepostGLFound@1101495003 : Boolean;
+    BEGIN
+      IsRepostGLFound := FALSE;
+      RepGLEntry.SETCURRENTKEY("Document No.","Posting Date");
+      RepGLEntry.SETRANGE("Document No.",SourceGLEntry."Document No.");
+      RepGLEntry.SETRANGE("Posting Date",SourceGLEntry."Posting Date");
+      RepGLEntry.SETFILTER("Journal Batch Name",'<>%1',SourceGLEntry."Journal Batch Name");
+      IsRepostGLFound := NOT (RepGLEntry.ISEMPTY);
+      EXIT(IsRepostGLFound);
+    END;
+
+    PROCEDURE DtlGenJnlLine@1101495004(VAR tempGLEnry@1101495001 : Record 17;VAR GenLnlLine@1101495000 : Record 81);
+    BEGIN
+      GenLnlLine."External System ID" :=tempGLEnry."External System ID";
+      GenLnlLine."Original System ID" := tempGLEnry."Original System ID";
+      GenLnlLine."Source Entry No." := tempGLEnry."Entry No.";
+      GenLnlLine."Local G/L Account" := tempGLEnry."Local G/L Account";
+      GenLnlLine."Cons. Source Code" := tempGLEnry."Cons. Source Code";
+      GenLnlLine."Buffer Entry No." := tempGLEnry."Buffer Entry No.";
+      GenLnlLine."Transaction Type" := tempGLEnry."Transaction Type";
+      GenLnlLine."Due Date" := tempGLEnry."Due Date";
+      GenLnlLine."Register No." := tempGLEnry."Register No.";
+      GenLnlLine."Export Register No." := tempGLEnry."Export Register No.";
+      GenLnlLine."Export Cons. Source Code" := tempGLEnry."Export Cons. Source Code";
+      GenLnlLine."External Document Type" := tempGLEnry."External Document Type";
+      GenLnlLine."External Document ID" := tempGLEnry."External Document ID";
+      GenLnlLine."External Document Date" := tempGLEnry."External Document Date";
+      GenLnlLine."External Operation No" := tempGLEnry."External Operation No";
+    END;
+
+    PROCEDURE CheckRemRepBuffer@1101495005(VAR SourceGLEntry@1101495001 : Record 17) : Boolean;
+    VAR
+      ConsBuffer@1101495002 : Record 50008;
+      IsRemoveGLFound@1101495003 : Boolean;
+      ConsBuffer1@1101495004 : Record 50008;
+      ConsBuffer2@1101495005 : Record 50008;
+      ConsBuffer3@1101495006 : Record 50008;
+    BEGIN
+      IsRemoveGLFound := FALSE;
+      IF SourceGLEntry."Document Type" IN [SourceGLEntry."Document Type"::Invoice,SourceGLEntry."Document Type"::"Credit Memo"] THEN
+        EXIT(IsRemoveGLFound);
+      IF (SourceGLEntry."Buffer Entry No."<>0) AND (SourceGLEntry."Cons. Source Code"<>'') THEN BEGIN
+      ConsBuffer.RESET;
+      ConsBuffer.SETCURRENTKEY("Cons. Source Code","Consolidation Register","Source Operation No.");
+      ConsBuffer.SETRANGE("Cons. Source Code",SourceGLEntry."Cons. Source Code");
+      ConsBuffer.SETRANGE("Source Operation No.", SourceGLEntry."Buffer Entry No.");
+      IF ConsBuffer.FINDFIRST THEN
+        IsRemoveGLFound := TRUE;
+      END;
+      EXIT(IsRemoveGLFound);
+    END;
+
+    PROCEDURE GetOriginalVATAmount@1101495006(SourceNo@1101495000 : Code[20];TransactioNo@1101495001 : Integer;VAR OriginalVATAmount2@1101495003 : Decimal;VAR DebitOriginalVATAmount2@1101495004 : Decimal;VAR CreditOriginalVATAmount2@1101495005 : Decimal);
+    VAR
+      VATGLEntry@1101495002 : Record 17;
+    BEGIN
+      //NC NCS-1107.2 > DP
+      VATGLEntry.RESET;
+      VATGLEntry.SETCURRENTKEY("Transaction No.");
+      VATGLEntry.SETRANGE("Transaction No.",TransactioNo);
+      VATGLEntry.SETRANGE("Source No.",SourceNo);
+      VATGLEntry.SETRANGE("FA Entry Type",VATGLEntry."FA Entry Type"::" ");
+      VATGLEntry.SETRANGE("FA Entry No.",0);
+      IF VATGLEntry.FINDFIRST THEN BEGIN
+        OriginalVATAmount2 :=VATGLEntry."Original Amount";
+        DebitOriginalVATAmount2 := VATGLEntry."Original Debit Amount";
+        CreditOriginalVATAmount2 := VATGLEntry."Original Credit Amount";
+      END;
+      //NC NCS-1107.2 < DP
+    END;
+
+    BEGIN
+    {
+      NC MTF02 AKU Доработка по копированию операций с ФИ
+      NC OAM44 DP Использование учетной серии номеров
+      NC MTF02 AKU Копирование учетных групп
+      NC 1666 PCH исправлена ошибка
+      NC APCOC-67 DP Изменена функция TransferLine
+      // TDRAAPCOC-114 >
+        необходимо удалять значение "код филиала" исходной проводки, поскольку для операций с признаком "PD" при учете
+        автоматически присваивается признак "Не транслировать" в MIS.
+      NC NCS-792.1 DP Исключение переноса в фин. журнал только курсовых разниц
+      NC NCS-792.2 DP Переменная GLEntryTmp в функции TransferLines переименована в GLEntryTmp1
+      NC NCS-1099 DP Копирование офсетных счетов, условий договора, типа суммы
+      NC NCS-1099.1 DP Анализ счетов и по признаку прямого учета и по налич. учетной группы источника
+      NC NCS-1107 DP Вставка строки приобретения ОС
+      NC NCS-1107.2 DP Перенос НДС по ОС операциям, отмена переноса ДОВ округления
+      TDRANCS-1526
+        Currency Factor depend on Posting Date
+        Modified func TransferLines
+      TDRANCS-1854> Modified TransferLine
+      TDRANCS-1632
+        Modified TransferLines - added arg p_intRepeat, modified code
+      NC S1893 PCH сохранение BU для SBS
+      BLD001 NCPIF001,OAM43,MTF02,1666
+      NC S2036 PCH протягивание "Source G/L Account No."
+      NC NCS-2300.1 DP Modified TransferLine
+      NC NCS-2374 DP Modified TransferLine
+      BLD002 DP Created build for TDAPCOC-114,NCS-792.2,1099.1,1107.2,1526,1854,1632,S1893,2036,2300.1,2374
+      TDRANCS-2537, 2565 Modified TransferLine
+      ---------
+      NC NOS-26 SPA Миграция на функциональность NAV2017
+    }
+    END.
+  }
+}
+

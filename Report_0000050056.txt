@@ -1,0 +1,1199 @@
+OBJECT Report 50056 Upload FX Adjust. from Excel
+{
+  OBJECT-PROPERTIES
+  {
+    Date=07.08.17;
+    Time=18:32:45;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Upload FX Adjust. from Excel;
+               RUS=Импорт FX коррекций из Excel];
+    ProcessingOnly=Yes;
+    OnInitReport=VAR
+                   l_recMapping@1101495000 : Record 50022;
+                 BEGIN
+                   g_recGLSetup.GET;
+                   //TDRANCS-1579>
+                   IF g_recCurrency.GET('USD') THEN
+                     g_codeCurrency := g_recCurrency.Code;
+                   //TDRANCS-1579>
+                   g_intFirstRow := 4;
+                   g_txtSymb := COPYSTR(FORMAT(1000.0),2,1);
+                   g_intCounter := 0;
+                   g_intLineNo := 0;
+
+                   g_codeMappingForBook := 'DIASOFT_ALL';
+
+                   IF l_recMapping.GET('DESK_DIASOFT') THEN
+                     g_codeMappingForDeskBook := l_recMapping.Code
+                   ELSE
+                     g_codeMappingForDeskBook := '';
+
+                   CASE g_optTypeFXAdj OF
+                     g_optTypeFXAdj::"PL FX Adj":  g_codeAccNo := '54000000';
+                     g_optTypeFXAdj::"FX Cost Alloc Adj":  g_codeAccNo := '55000000';
+                     g_optTypeFXAdj::"FX Book Adj": g_codeAccNo := '54000000';
+                   END;
+                   g_codeBookCorresp := 'RUGM RAT-MM-FX-DUMMY';
+                   g_datePosting := 0D;
+                   g_optPeriod := g_optPeriod::Month;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF g_codeTemplate = '' THEN
+                    ERROR(g_Text008);
+                  IF g_codeBatch = '' THEN
+                    ERROR(g_Text009);
+
+                  IF g_codeAccNo = '' THEN
+                    ERROR(g_Text013);
+                  IF g_codeBookCorresp = '' THEN
+                    ERROR(g_Text014);
+                  IF g_datePosting = 0D THEN
+                    ERROR(g_Text015);
+                  IF g_codeMappingForBook = '' THEN
+                    ERROR(g_Text016);
+                  IF g_codeMappingForDeskBook = '' THEN
+                    ERROR(g_Text017);
+                  IF g_boolReverse AND (g_dateReverse = 0D) THEN
+                    ERROR(g_Text011);
+
+
+                  g_recGenJnLine.RESET;
+                  g_recGenJnLine.SETRANGE("Journal Template Name",g_codeTemplate);
+                  g_recGenJnLine.SETRANGE("Journal Batch Name",g_codeBatch);
+
+                  IF g_recGenJnLine.FINDLAST THEN
+                    g_intLineNo := g_recGenJnLine."Line No.";
+                  g_intLineNo += 10000;
+
+                  g_recGenJnlBatch.SETRANGE("Journal Template Name", g_codeTemplate);
+                  g_recGenJnlBatch.SETRANGE(Name, g_codeBatch);
+                  IF g_recGenJnlBatch.FINDFIRST THEN
+                    g_codePostNoSer := g_recGenJnlBatch."Posting No. Series"
+                  ELSE
+                    ERROR(g_Text010, g_codeBatch, g_recGenJnlBatch.TABLECAPTION);
+
+                  IF fn_OpenBook(GetConvertedFileName,g_txtSheetName) THEN
+                    fn_ReadSheet;
+                END;
+
+    OnPostReport=BEGIN
+                   //NC NOS-26 > SPA
+                   CLEAR(XlRange);
+                   CLEAR(XlWrkSht);
+                   CLEAR(XlWrkshts);
+                   XlWrkBk.Close(FALSE,TypeMissing.GetMissingValue,TypeMissing.GetMissingValue);
+                   CLEAR(XlWrkBk);
+                   XlHelper.CallQuit(XlApp);
+                   CLEAR(XlApp);
+                   //NC NOS-26 < SPA
+                   MESSAGE('Загружено %1 операций', g_intCounter);
+                 END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   DateReverseEditable := g_boolReverse;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Group  ;
+                  CaptionML=[ENU=Import from;
+                             RUS=Импорт из];
+                  GroupType=Group }
+
+      { 1101495003;2;Field  ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Excel file name;
+                             RUS=Имя файла Excel];
+                  SourceExpr=g_txtFileName;
+                  OnLookup=BEGIN
+                             g_txtFileName := FileMgt.OpenFileDialog(ImportHeader,'.xlsx','');
+                           END;
+                            }
+
+      { 1101495004;2;Field  ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Worksheet Name;
+                             RUS=Рабочий лист Название];
+                  SourceExpr=g_txtSheetName;
+                  OnLookup=VAR
+                             ExcelBuffer@1101495000 : Record 370;
+                           BEGIN
+                             IF g_txtFileName = '' THEN
+                               ERROR(EmptyFileNameErr);
+
+                             g_txtSheetName := ExcelBuffer.SelectSheetsName(FileMgt.UploadFileSilent(GetConvertedFileName));
+                           END;
+                            }
+
+      { 1101495002;1;Group  ;
+                  CaptionML=[ENU=Import to;
+                             RUS=Импорт в];
+                  GroupType=Group }
+
+      { 1101495005;2;Field  ;
+                  CaptionML=[ENU=Journal Template;
+                             RUS=Фин. Журнал Шаблон];
+                  SourceExpr=g_codeTemplate;
+                  OnValidate=BEGIN
+                               g_codeBatch := '';
+                             END;
+
+                  OnLookup=BEGIN
+                             g_recGenJnlTmplt.RESET;
+
+                             g_recGenJnlTmplt.FILTERGROUP(250);
+                             g_recGenJnlTmplt.SETRANGE(Recurring, FALSE);
+                             g_recGenJnlTmplt.FILTERGROUP(0);
+
+                             IF PAGE.RUNMODAL(PAGE::"General Journal Templates",g_recGenJnlTmplt) = ACTION::LookupOK THEN
+                               g_codeTemplate := g_recGenJnlTmplt.Name
+                             ELSE
+                               g_codeTemplate := '';
+                           END;
+                            }
+
+      { 1101495006;2;Field  ;
+                  CaptionML=[ENU=Journal Batch;
+                             RUS=Фмн. Журнал Раздел];
+                  SourceExpr=g_codeBatch;
+                  OnValidate=BEGIN
+                               g_recGenJnlBatch.GET(g_codeTemplate, g_codeBatch);
+                             END;
+
+                  OnLookup=BEGIN
+                             g_recGenJnlBatch.FILTERGROUP(250);
+                             g_recGenJnlBatch.SETRANGE("Journal Template Name",g_codeTemplate);
+                             g_recGenJnlBatch.FILTERGROUP(0);
+                             IF PAGE.RUNMODAL(PAGE::"General Journal Batches",g_recGenJnlBatch) = ACTION::LookupOK THEN
+                               g_codeBatch := g_recGenJnlBatch.Name;
+                           END;
+                            }
+
+      { 1101495007;2;Field  ;
+                  CaptionML=[ENU=First String for Analyse;
+                             RUS=Первая Импортируемая Строка];
+                  SourceExpr=g_intFirstRow }
+
+      { 1101495008;2;Field  ;
+                  CaptionML=[ENU=Period;
+                             RUS=Период];
+                  SourceExpr=g_optPeriod }
+
+      { 1101495009;2;Field  ;
+                  CaptionML=[ENU=FX type Correction;
+                             RUS=Тип FX Коррекции];
+                  SourceExpr=g_optTypeFXAdj;
+                  Style=Strong;
+                  StyleExpr=TRUE;
+                  OnValidate=BEGIN
+                               CASE g_optTypeFXAdj OF
+                                 g_optTypeFXAdj::"PL FX Adj":  g_codeAccNo := '54000000';
+                                 g_optTypeFXAdj::"FX Cost Alloc Adj":  g_codeAccNo := '55000000';
+                                 //TDRANCS-1188>
+                                 g_optTypeFXAdj::"FX Book Adj": BEGIN
+                                   g_codeAccNo := '54000000';
+                                 END;
+                                 //TDRANCS-1188<
+                               END;
+                             END;
+                              }
+
+      { 1101495010;2;Field  ;
+                  CaptionML=[ENU=Mapping for BOOK DESK;
+                             RUS=Мэппинг для BOOK DESK];
+                  SourceExpr=g_codeMappingForDeskBook;
+                  TableRelation=Mapping }
+
+      { 1101495011;2;Field  ;
+                  CaptionML=[ENU=Mapping For BOOK -> COSTCENTER;
+                             RUS=Мэппинг для BOOK -> COSTCENTER];
+                  SourceExpr=g_codeMappingForBook;
+                  TableRelation=Mapping }
+
+      { 1101495012;2;Field  ;
+                  CaptionML=[ENU=G\L Account No.;
+                             RUS=Фин. Счет Но.];
+                  SourceExpr=g_codeAccNo;
+                  TableRelation="G/L Account" }
+
+      { 1101495013;2;Field  ;
+                  CaptionML=[ENU=BOOK Correspondent;
+                             RUS=BOOK Корреспондент];
+                  SourceExpr=g_codeBookCorresp;
+                  TableRelation="Dimension Value".Code WHERE (Dimension Code=FILTER(BOOK)) }
+
+      { 1101495014;2;Field  ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата Учета];
+                  SourceExpr=g_datePosting }
+
+      { 1101495015;2;Field  ;
+                  CaptionML=[ENU=Currency of Uploaded Data;
+                             RUS=Валюта Загружаемых Данных];
+                  SourceExpr=g_codeCurrency;
+                  TableRelation=Currency }
+
+      { 1101495016;2;Field  ;
+                  CaptionML=[ENU=Add Reverse;
+                             RUS=Добавить Реверс];
+                  SourceExpr=g_boolReverse;
+                  OnValidate=BEGIN
+                               DateReverseEditable := g_boolReverse;
+                             END;
+                              }
+
+      { 1101495017;2;Field  ;
+                  CaptionML=[ENU=Date of Reverse;
+                             RUS=Дата Реверса];
+                  SourceExpr=g_dateReverse;
+                  Editable=DateReverseEditable }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      XlApp@1101495075 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ApplicationClass" RUNONCLIENT;
+      XlWrkBk@1101495074 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.WorkbookClass" RUNONCLIENT;
+      XlWrkSht@1101495073 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.WorksheetClass" RUNONCLIENT;
+      XlWrkshts@1101495072 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Worksheets" RUNONCLIENT;
+      XlRange@1101495077 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range" RUNONCLIENT;
+      TypeMissing@1101495034 : DotNet "'Microsoft.Dynamics.Nav.Integration.Office, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.Integration.Helper" RUNONCLIENT;
+      XlHelper@1101495076 : DotNet "'Microsoft.Dynamics.Nav.Integration.Office, Version=10.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'.Microsoft.Dynamics.Nav.Integration.Office.Excel.ExcelHelper" RUNONCLIENT;
+      CultureInfo@1101495065 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Globalization.CultureInfo" RUNONCLIENT;
+      Thread@1101495064 : DotNet "'mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Threading.Thread" RUNONCLIENT;
+      gt_recExcelBuf@1101495043 : TEMPORARY Record 370;
+      g_recGenJnLine@1101495042 : Record 81;
+      TempDimSetEntry@1101495041 : TEMPORARY Record 480;
+      g_recGLSetup@1101495040 : Record 98;
+      g_recGenJnlTmplt@1101495039 : Record 80;
+      g_recGenJnlBatch@1101495038 : Record 232;
+      g_recGLAccount@1101495037 : Record 15;
+      g_recCurrency@1101495036 : Record 4;
+      g_recBU@1101495035 : Record 220;
+      DimMgt@1101495063 : Codeunit 408;
+      FileMgt@1101495068 : Codeunit 419;
+      g_intFirstRow@1101495033 : Integer;
+      g_intLineNo@1101495032 : Integer;
+      g_intCounter@1101495031 : Integer;
+      g_intLineNoRev@1101495030 : Integer;
+      g_decAmount@1101495029 : Decimal;
+      g_txtFileName@1101495028 : Text[250];
+      g_txtSheetName@1101495027 : Text[250];
+      g_txtSymb@1101495026 : Text[1];
+      g_txtErrorBOOK@1101495025 : Text[250];
+      ConvertedFileName@1101495071 : Text;
+      g_codeBatch@1101495024 : Code[10];
+      g_codeTemplate@1101495023 : Code[10];
+      g_codePostNoSer@1101495022 : Code[20];
+      g_codeDocNo@1101495021 : Code[20];
+      g_codeCounterparty@1101495020 : Code[20];
+      g_codeGroup@1101495019 : Code[10];
+      g_codeCurrency@1101495018 : Code[10];
+      g_codeDeal@1101495017 : Code[20];
+      g_codeBook@1101495016 : Code[20];
+      g_codeBookFromExcel@1101495015 : Code[20];
+      g_codeBookCorresp@1101495014 : Code[20];
+      g_codeCostcenter@1101495013 : Code[20];
+      g_codeLE@1101495012 : Code[15];
+      g_codeAccNo@1101495011 : Code[20];
+      g_codeBalAccNo@1101495010 : Code[20];
+      g_codeFI@1101495009 : Code[20];
+      g_codeMappingForBook@1101495008 : Code[20];
+      g_codeMappingForDeskBook@1101495007 : Code[20];
+      g_datePosting@1101495006 : Date;
+      g_dateReverse@1101495005 : Date;
+      g_boolConsJnlCleared@1101495004 : Boolean;
+      g_boolJnlCleared@1101495003 : Boolean;
+      g_boolReverse@1101495002 : Boolean;
+      DateReverseEditable@1101495067 : Boolean INDATASET;
+      g_optTypeFXAdj@1101495001 : 'FX Cost Alloc Adj,PL FX Adj,FX Book Adj';
+      g_optPeriod@1101495000 : 'Day,Month,Year';
+      g_Text001@1101495062 : TextConst 'RUS=Импорт Файл Excel';
+      g_Text002@1101495061 : TextConst 'ENU=Excel not found.;RUS=Excel не установлен.';
+      g_Text003@1101495060 : TextConst 'ENU=You must enter a file name.;RUS=Вы должны ввести имя файла.';
+      g_Text004@1101495059 : TextConst 'ENU=You must enter an Excel worksheet name.;RUS=Вы должны ввести имя листа Excel.';
+      g_Text005@1101495058 : TextConst 'ENU=The file %1 does not exist.;RUS=Файл %1 не существует.';
+      g_Text006@1101495057 : TextConst 'ENU=The Excel worksheet %1 does not exist.;RUS=Лист Excel %1 не существует.';
+      g_Text007@1101495056 : TextConst 'ENU=Reading Excel worksheet...\\;RUS=Чтение листа Excel...\\';
+      g_Text008@1101495055 : TextConst 'ENU=You must enter a Journal Template.;RUS=Вы должны задать Фин. Журнал Шаблон.';
+      g_Text009@1101495054 : TextConst 'ENU=You must enter a Journal Batch.;RUS=Вы должны задать Фин. Журнал Раздел.';
+      g_Text010@1101495053 : TextConst 'ENU=Not found %1 Batch in %2.;RUS=Не найден %1 Раздел в %2.';
+      g_Text011@1101495052 : TextConst 'RUS=Необходимо задать Дату Реверса.';
+      g_Text013@1101495051 : TextConst 'ENU=You must enter a G\L Account No.;RUS=Необходимо задать Фин. Счет Но.';
+      g_Text014@1101495050 : TextConst 'ENU=You must enter a BOOK.;RUS=Необходимо задать BOOK.';
+      g_Text015@1101495049 : TextConst 'ENU=You must enter a Posting Date.;RUS=Необходимо задать Дату Учета.';
+      g_Text016@1101495048 : TextConst 'ENU=You must enter a Mapping for BOOK -> COSTCENTER.;RUS=Необходимо задать Мэппинг для BOOK -> COSTCENTER.';
+      g_Text017@1101495047 : TextConst 'ENU=You must enter a Mapping for BOOK DESK.;RUS=Необходимо задать Мэппинг для BOOK DESK.';
+      g_TextErrorCOST@1101495046 : TextConst 'ENU=NOT FOUND COSTCENTER for BOOK %1 in mapping.;RUS=НЕ НАЙДЕН COSTCENTER для BOOK %1 в мэппинге.';
+      g_TextErrorBOOK@1101495045 : TextConst 'ENU=NOT FOUND BOOK %1.;RUS=НЕ НАЙДЕН BOOK %1.';
+      g_TextErrorBOOKMapping@1101495044 : TextConst 'ENU=NOT FOUND BOOK %1 in Dimension Mapping %2.;RUS=НЕ НАЙДЕН BOOK %1 в мэппинге измерений %2.';
+      InvalidParameterErr@1101495066 : TextConst 'ENU=Necessary to use temporary table the adding dimensions for.;RUS=Для добавления измерений необходимо использовать временную таблицу.';
+      ImportHeader@1101495069 : TextConst 'ENU=Select Excel file for import.;RUS=Выберите файл Excel для загрузки.';
+      EmptyFileNameErr@1101495070 : TextConst 'ENU=File name is not defined.;RUS=Имя файла не задано.';
+
+    LOCAL PROCEDURE fn_OpenBook@1101495007(FileName@1101495001 : Text[250];SheetName@1101495000 : Text[250]) : Boolean;
+    VAR
+      l_int@1101495004 : Integer;
+      l_intEndOfLoop@1101495003 : Integer;
+      l_boolFound@1101495002 : Boolean;
+    BEGIN
+      IF FileName = '' THEN
+        ERROR(g_Text003);
+      //NC NOS-26 > SPA
+      CultureInfo := CultureInfo.CultureInfo('en-US');
+      Thread.CurrentThread.CurrentCulture(CultureInfo);
+      //NC NOS-26 < SPA
+      XlApp := XlApp.ApplicationClass;
+      IF ISNULL(XlApp) THEN
+        ERROR(g_Text002);
+
+      XlHelper.CallOpen(XlApp,FileName);
+      XlWrkBk := XlApp.ActiveWorkbook;
+
+      l_int := 1;
+      l_intEndOfLoop := XlWrkBk.Worksheets.Count;
+      WHILE (l_int <= l_intEndOfLoop) AND (NOT l_boolFound) DO BEGIN
+        XlWrkSht := XlWrkBk.Worksheets.Item(l_int);
+        IF SheetName = XlWrkSht.Name THEN
+          l_boolFound := TRUE;
+        l_int := l_int + 1;
+      END;
+      IF l_boolFound THEN
+        XlWrkSht := XlWrkBk.Worksheets.Item(SheetName)
+      ELSE
+        MESSAGE(g_Text006,SheetName);
+
+      EXIT(l_boolFound);
+    END;
+
+    LOCAL PROCEDURE fn_ReadSheet@1101495008();
+    VAR
+      l_inti@1101495005 : Integer;
+      l_intj@1101495004 : Integer;
+      l_intMaxi@1101495003 : Integer;
+      l_intMaxj@1101495002 : Integer;
+      l_dlgWindow@1101495001 : Dialog;
+      l_char@1101495000 : Char;
+    BEGIN
+      l_dlgWindow.OPEN(
+        g_Text007 +
+        '@1@@@@@@@@@@@@@@@@@@@@@@@@\');
+      l_dlgWindow.UPDATE(1,0);
+
+      XlWrkSht.Range('A:BZ').EntireColumn.Hidden := FALSE;
+      XlRange := XlWrkSht.Range('A1').SpecialCells(11, TypeMissing.GetMissingValue);
+
+      g_intCounter := 0;
+      l_intMaxi := XlRange.Row;
+      g_intLineNoRev := XlRange.Row * 2 * 10000 + g_intLineNo;
+      l_intMaxj := XlRange.Column;
+      l_inti := g_intFirstRow;
+      REPEAT
+        g_codeBook := '';
+        g_codeBookFromExcel := '';
+        g_codeCostcenter := '';
+        g_decAmount := 0;
+        g_txtErrorBOOK := '';
+        l_intj := 1;
+        g_recGenJnLine.INIT;
+        REPEAT
+          fn_FillJournal(l_inti,l_intj);
+          l_intj := l_intj + 1;
+        UNTIL l_intj > l_intMaxj;
+        //NC NOS-26 > SPA
+        DimMgt.UpdateGlobalJnlDimFromDimSetID(
+          g_recGenJnLine."Dimension Set ID",
+          g_recGenJnLine."Shortcut Dimension 1 Code",
+          g_recGenJnLine."Shortcut Dimension 2 Code",
+          g_recGenJnLine."Financial Instrument No.");
+        //NC NOS-26 < SPA
+        IF g_boolReverse THEN
+          fn_InsertReverseLine(g_recGenJnLine);
+        // Insert corresponding Line >
+        fn_InsertCorrJournLine(g_recGenJnLine);
+        // Insert corresponding Line <
+
+        l_inti := l_inti + 1;
+        l_dlgWindow.UPDATE(1,ROUND(l_inti / l_intMaxi * 10000,1));
+      UNTIL l_inti > l_intMaxi;
+      l_dlgWindow.CLOSE;
+    END;
+
+    LOCAL PROCEDURE fn_FillJournal@1101495014(p_intRow@1101495003 : Integer;p_intCol@1101495000 : Integer);
+    VAR
+      l_intShift@1101495002 : Integer;
+      l_dec@1101495001 : Decimal;
+    BEGIN
+      CASE g_optTypeFXAdj OF
+        g_optTypeFXAdj::"FX Cost Alloc Adj":
+           l_intShift := 0;
+        g_optTypeFXAdj::"PL FX Adj":
+          l_intShift := 1;
+        g_optTypeFXAdj::"FX Book Adj":
+          l_intShift := 0;
+        ELSE
+          l_intShift := 0;
+      END;
+
+      //TDRANCS-2080>
+      IF g_recGLSetup."Use Bus.Unit for Separ. Trans." AND
+            (g_recGLSetup."Default Business Unit Code" <> '')
+      THEN
+        g_recGenJnLine."Business Unit Code" := g_recGLSetup."Default Business Unit Code";
+      //TDRANCS-2080<
+
+      CASE TRUE OF
+        p_intCol = 1: BEGIN
+          g_recGenJnLine."Journal Template Name" := g_codeTemplate;
+          g_recGenJnLine."Journal Batch Name" := g_codeBatch;
+          g_recGenJnLine."Line No." := g_intLineNo;
+          //TDRANCS-2080>
+          g_recGenJnLine.VALIDATE("Business Unit Code",g_recGenJnLine."Business Unit Code");
+          //TDRANCS-2080<
+          g_recGenJnLine.VALIDATE("Posting No. Series",g_codePostNoSer);
+          g_recGenJnLine.VALIDATE("Posting Date", g_datePosting);
+          CASE g_optTypeFXAdj OF
+            g_optTypeFXAdj::"PL FX Adj": g_recGenJnLine.VALIDATE("Document No.", 'PL_FX_ADJ-' + FORMAT(g_datePosting));
+            g_optTypeFXAdj::"FX Cost Alloc Adj": g_recGenJnLine.VALIDATE("Document No.", 'FX_COST_ALL');
+            g_optTypeFXAdj::"FX Book Adj": g_recGenJnLine.VALIDATE("Document No.", 'FX_BOOK_ADJ');
+          END;
+          g_recGenJnLine.VALIDATE("Account Type",0);
+          g_recGenJnLine.VALIDATE("Account No.",g_codeAccNo);
+
+
+          //IF EVALUATE(l_dec,FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value)) THEN
+          IF EVALUATE(l_dec, FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value)) THEN
+            g_codeBookFromExcel :=
+              DELCHR(FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value), '=',g_txtSymb)
+          ELSE
+            g_codeBookFromExcel := FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value);
+
+          g_codeBook := fn_CheckBOOK(g_codeBookFromExcel);
+          CASE g_optTypeFXAdj OF
+            g_optTypeFXAdj::"PL FX Adj":
+              g_recGenJnLine.Description := g_recGenJnLine."Document No." + FORMAT(g_recGenJnLine."Posting Date") + g_codeBook;
+            g_optTypeFXAdj::"FX Cost Alloc Adj": BEGIN
+              g_recGenJnLine.Description := 'FX cost allocation ' + FORMAT(g_recGenJnLine."Posting Date");
+              //TDRANCS-1397>
+              g_recGenJnLine."Not Translate IFRS" := TRUE;
+              //TDRANCS-1397<
+            END;
+            g_optTypeFXAdj::"FX Book Adj":
+              g_recGenJnLine.Description := 'FX BOOK ' + FORMAT(g_recGenJnLine."Posting Date");
+          END;
+          //g_recGenJnLine.VALIDATE("Business Unit Code",g_codeBU);
+          IF g_codeBook <> 'DELETE' THEN BEGIN
+            g_recGenJnLine.INSERT;
+            g_intCounter += 1;  // Счетчик загруженных операций
+            g_intLineNo += 10000;
+          END;
+        END;
+        (p_intCol = 2) AND (g_optTypeFXAdj = g_optTypeFXAdj::"PL FX Adj") AND (g_codeBook <> 'DELETE'): BEGIN
+          IF EVALUATE(l_dec,FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value)) THEN
+            g_recGenJnLine."Financial Instrument No." :=
+              DELCHR(FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value),'=',g_txtSymb)
+          ELSE
+            g_recGenJnLine."Financial Instrument No." := FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value);
+          g_recGenJnLine.VALIDATE("Financial Instrument No.",g_recGenJnLine."Financial Instrument No.");
+        END;
+        //(p_intCol = 2 + g_optPeriod + g_optTypeFXAdj) AND (g_codeBook <> 'DELETE'): BEGIN
+        (p_intCol = 2 + g_optPeriod + l_intShift) AND (g_codeBook <> 'DELETE'): BEGIN
+
+          IF FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value) <> '' THEN BEGIN
+
+            //TDRANCS-1579>
+            g_recGenJnLine.VALIDATE("Currency Code",g_codeCurrency);
+            //TDRANCS-1579<
+            EVALUATE(g_recGenJnLine.Amount,FORMAT(XlWrkSht.Range(fn_GetColumn(p_intCol) + fn_GetRow(p_intRow)).Value));
+
+            IF ROUND(g_recGenJnLine.Amount,0.01) <> 0 THEN BEGIN
+            //TDRANCS-1454> corrected bug
+            {
+              IF g_boolReverse THEN
+                g_recGenJnLine.VALIDATE(Amount,  ROUND(g_recGenJnLine.Amount,0.01))
+              ELSE
+                g_recGenJnLine.VALIDATE(Amount,- ROUND(g_recGenJnLine.Amount,0.01));
+            }
+            g_recGenJnLine.VALIDATE(Amount,- ROUND(g_recGenJnLine.Amount,0.01));
+            //TDRANCS-1454< corrected bug
+              g_recGenJnLine.MODIFY;
+              IF g_codeBook <> COPYSTR(g_TextErrorBOOK,1,14) THEN BEGIN
+                fn_InsertJournLineDim(g_recGenJnLine,
+                                      'BOOK',
+                                      g_codeBook);
+                g_recGenJnLine.MODIFY; // NC NOS-26 SPA
+                g_codeCostcenter := fn_FindCostCenter(g_codeBook);
+                IF g_codeCostcenter <> COPYSTR(g_TextErrorCOST,1,20) THEN BEGIN
+                  fn_InsertJournLineDim(g_recGenJnLine,
+                                       'COSTCENTER',
+                                        g_codeCostcenter);
+                  g_recGenJnLine.MODIFY; // NC NOS-26 SPA
+                END ELSE BEGIN
+                  g_recGenJnLine."Document No." := COPYSTR(g_TextErrorCOST,1,20);
+                  g_recGenJnLine.Description := COPYSTR(STRSUBSTNO(g_TextErrorCOST,g_codeBook),1,50);
+                  g_recGenJnLine."Shortcut Dimension 2 Code" := g_codeBook;
+                  //НЕ НАЙДЕН COSTCENTER для BOOK %1 в мэппинге %2.
+                  g_recGenJnLine.MODIFY(FALSE);
+                END;
+              END ELSE BEGIN
+                g_recGenJnLine."Document No." := COPYSTR(g_txtErrorBOOK,1,14);
+                g_recGenJnLine.Description := COPYSTR(STRSUBSTNO(g_txtErrorBOOK,g_codeBookFromExcel),1,50);
+                //НЕ НАЙДЕН BOOK %1.
+                g_recGenJnLine.MODIFY(FALSE);
+              END;
+            END ELSE BEGIN
+              g_recGenJnLine.DELETE(TRUE);
+              g_intCounter -= 1;  // Счетчик загруженных операций
+              g_intLineNo -= 10000;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE fn_SetParam@1000000009(p_codeTemplate@1000000000 : Code[10];p_codeBatch@1000000001 : Code[10]);
+    BEGIN
+      g_codeBatch := p_codeBatch;
+      g_codeTemplate := p_codeTemplate;
+    END;
+
+    LOCAL PROCEDURE fn_GetRow@1000000001(p_intRow@1000000000 : Integer) : Text[10];
+    BEGIN
+      EXIT(FORMAT(p_intRow));
+    END;
+
+    LOCAL PROCEDURE fn_GetColumn@1000000004(p_intColNo@1000000000 : Integer) r_txtxlColID : Text[10];
+    VAR
+      l_intx@1000000003 : Integer;
+      l_inti@1000000002 : Integer;
+      l_char@1000000001 : Char;
+      Buffer@1101495000 : TEMPORARY Record 370;
+    BEGIN
+      //NC NOS-26 > SPA
+      {
+      l_intx := p_intColNo - 1;
+      l_char := 65 + l_intx MOD 26;
+      r_txtxlColID[10] := l_char;
+      l_inti := 10;
+      WHILE l_intx > 25 DO BEGIN
+        l_intx := l_intx DIV 26;
+        l_inti := l_inti - 1;
+        l_char := 64 + l_intx MOD 26;
+        r_txtxlColID[l_inti] := l_char;
+      END;
+      FOR l_intx := l_inti TO 10 DO
+        r_txtxlColID[1+l_intx-l_inti] := r_txtxlColID[l_intx];
+      }
+      Buffer.VALIDATE("Column No.",p_intColNo);
+      EXIT(Buffer.xlColID);
+      //NC NOS-26 < SPA
+    END;
+
+    PROCEDURE fn_InsertJournLineDim@1000000015(VAR GenJournalLine@1101495000 : Record 81;DimCode@1101495001 : Code[20];DimValueCode@1101495002 : Code[20]);
+    BEGIN
+      //NC NOS-26 > SPA
+      IF DimValueCode <> '' THEN BEGIN
+        IF NOT TempDimSetEntry.ISTEMPORARY THEN
+          ERROR(InvalidParameterErr);
+
+        IF GenJournalLine."Dimension Set ID" <> 0 THEN
+          DimMgt.GetDimensionSet(TempDimSetEntry, GenJournalLine."Dimension Set ID");
+
+        IF TempDimSetEntry.GET(TempDimSetEntry."Dimension Set ID",DimCode) THEN
+          TempDimSetEntry.DELETE;
+
+        TempDimSetEntry.INIT;
+        TempDimSetEntry.VALIDATE("Dimension Code", DimCode);
+        TempDimSetEntry.VALIDATE("Dimension Value Code", DimValueCode);
+        TempDimSetEntry.SetObject(GenJournalLine);
+        TempDimSetEntry.INSERT(TRUE);
+
+        GenJournalLine."Dimension Set ID" := DimMgt.GetDimensionSetID(TempDimSetEntry);
+      END;
+      //NC NOS-26 < SPA
+    END;
+
+    LOCAL PROCEDURE fn_FindCostCenter@1000000032(p_codeBOOK@1000000000 : Code[20]) r_codeCostCenter : Code[20];
+    VAR
+      l_recDimMapping@1000000001 : Record 50003;
+    BEGIN
+      l_recDimMapping.SETRANGE("Mapping Code",g_codeMappingForBook);
+      l_recDimMapping.SETRANGE("Source Dimension Code",'BOOK');
+      l_recDimMapping.SETRANGE("Source Dimension Value Code",p_codeBOOK);
+      l_recDimMapping.SETRANGE("Receiver Dimension Code",'COSTCENTER');
+      IF l_recDimMapping.FINDFIRST THEN
+        r_codeCostCenter := l_recDimMapping."Receiver Dimension Value Code"
+      ELSE
+        r_codeCostCenter := COPYSTR(g_TextErrorCOST,1,20);
+    END;
+
+    PROCEDURE fn_CheckBOOK@1000000005(p_codeBook@1000000001 : Code[20]) r_codeBook : Code[20];
+    VAR
+      l_recDimValue@1000000000 : Record 349;
+      l_recDimMapping@1000000002 : Record 50003;
+    BEGIN
+      // Check Mapping BOOK DESK -> BOOK NAV
+      l_recDimMapping.SETRANGE("Mapping Code",g_codeMappingForDeskBook);
+      l_recDimMapping.SETRANGE("Source Dimension Code",'BOOK');
+      l_recDimMapping.SETRANGE("Source Dimension Value Code",p_codeBook);
+      l_recDimMapping.SETRANGE("Receiver Dimension Code",'BOOK');
+      l_recDimMapping.SETFILTER("Receiver Dimension Value Code",'<>%1','');
+      IF NOT l_recDimMapping.FINDFIRST THEN BEGIN
+        g_txtErrorBOOK := STRSUBSTNO(g_TextErrorBOOKMapping,p_codeBook,g_codeMappingForDeskBook);
+        EXIT(COPYSTR(g_TextErrorBOOKMapping,1,14));
+      END ELSE BEGIN
+        r_codeBook := l_recDimMapping."Receiver Dimension Value Code";
+        g_txtErrorBOOK := '';
+      END;
+
+      IF NOT l_recDimValue.GET('BOOK',r_codeBook) THEN BEGIN
+          r_codeBook := COPYSTR(g_TextErrorBOOK,1,14);
+          g_txtErrorBOOK := STRSUBSTNO(g_TextErrorBOOK,p_codeBook);
+      END;
+    END;
+
+    PROCEDURE fn_InsertCorrJournLine@1000000006(p_recGenJnLine@1000000000 : Record 81);
+    VAR
+      l_recGenJnlLine@1000000001 : Record 81;
+    BEGIN
+      IF g_codeBook = 'DELETE' THEN
+        EXIT;
+      IF  p_recGenJnLine.Amount = 0 THEN
+        EXIT;
+      l_recGenJnlLine.COPY(p_recGenJnLine);
+      l_recGenJnlLine."Line No." := g_intLineNo;
+      l_recGenJnlLine."Shortcut Dimension 1 Code" := '';
+      l_recGenJnlLine."Shortcut Dimension 2 Code" := '';
+      //TDRANCS-1579>
+      l_recGenJnlLine.VALIDATE("Currency Code",p_recGenJnLine."Currency Code");
+      //TDRANCS-1579<
+      l_recGenJnlLine.VALIDATE(Amount, - p_recGenJnLine.Amount);
+      l_recGenJnlLine.INSERT;
+      g_intCounter += 1;  // Счетчик загруженных операций
+      g_intLineNo += 10000;
+      IF p_recGenJnLine."Financial Instrument No." <> '' THEN
+        l_recGenJnlLine.VALIDATE("Financial Instrument No.",p_recGenJnLine."Financial Instrument No.");
+      fn_InsertJournLineDim(l_recGenJnlLine,
+                            'BOOK',
+                             g_codeBookCorresp);
+      //NC NOS-26 > SPA
+      DimMgt.UpdateGlobalJnlDimFromDimSetID(
+        l_recGenJnlLine."Dimension Set ID",
+        l_recGenJnlLine."Shortcut Dimension 1 Code",
+        l_recGenJnlLine."Shortcut Dimension 2 Code",
+        l_recGenJnlLine."Financial Instrument No.");
+      l_recGenJnlLine.MODIFY;
+      //NC NOS-26 < SPA
+      IF g_boolReverse THEN
+        fn_InsertReverseLine(l_recGenJnlLine);
+    END;
+
+    PROCEDURE fn_InsertReverseLine@1000000007(p_recGenJnLine@1000000000 : Record 81);
+    VAR
+      l_recGenJnlLine@1000000001 : Record 81;
+    BEGIN
+      l_recGenJnlLine.COPY(p_recGenJnLine);
+      l_recGenJnlLine."Line No." := g_intLineNoRev;
+      //TDRANCS-1579>
+      l_recGenJnlLine.VALIDATE("Currency Code",p_recGenJnLine."Currency Code");
+      //TDRANCS-1579<
+      l_recGenJnlLine.VALIDATE(Amount, - p_recGenJnLine.Amount);
+      l_recGenJnlLine.VALIDATE(Quantity,- p_recGenJnLine.Quantity);
+      l_recGenJnlLine."Source Historical Date" := l_recGenJnlLine."Posting Date";
+      {
+      IF g_dateReverse = 0D THEN
+        l_recGenJnlLine."Posting Date" := CALCDATE('<1D>',l_recGenJnlLine."Posting Date")
+      ELSE
+      }
+
+      l_recGenJnlLine."Posting Date" := g_dateReverse;
+
+      IF p_recGenJnLine."Financial Instrument No." <> '' THEN
+        l_recGenJnlLine.VALIDATE("Financial Instrument No.",p_recGenJnLine."Financial Instrument No.");
+
+      //TDRANCS-1454>
+      l_recGenJnlLine."Reversing Entry" := TRUE;
+      //TDRANCS-1454<
+
+      l_recGenJnlLine.INSERT;
+      g_intCounter += 1;  // Счетчик загруженных операций
+      g_intLineNoRev += 10000;
+    END;
+
+    LOCAL PROCEDURE GetConvertedFileName@1101495001() : Text;
+    VAR
+      ExcelMgt@1101495000 : Codeunit 12416;
+    BEGIN
+      //NC NOS-26 > SPA
+      // если исходный файл в новом формате, то использовать его
+      IF FileMgt.GetExtension(g_txtFileName) = 'xlsx' THEN
+        EXIT(g_txtFileName);
+
+      // если файл уже был конвертирован, то вернуть имя конвертированного файла
+      IF ConvertedFileName <> '' THEN
+        EXIT(ConvertedFileName);
+
+      // конвертировать файл в новый формат
+      ConvertedFileName := ExcelMgt.ConvertToOpenXML(g_txtFileName);
+      EXIT(ConvertedFileName);
+      //NC NOS-26 < SPA
+    END;
+
+    EVENT XlWrkSht@1101495073::SelectionChange@165(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::BeforeDoubleClick@166(Target@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::BeforeRightClick@167(Target@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::DocEvents_Event_Activate@168();
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::Deactivate@169();
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::DocEvents_Event_Calculate@170();
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::Change@171(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::FollowHyperlink@172(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Hyperlink");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::PivotTableUpdate@173(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::PivotTableAfterValueChange@174(TargetPivotTable@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";TargetRange@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::PivotTableBeforeAllocateChanges@175(TargetPivotTable@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495002 : Integer;ValueChangeEnd@1101495001 : Integer;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::PivotTableBeforeCommitChanges@176(TargetPivotTable@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495002 : Integer;ValueChangeEnd@1101495001 : Integer;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::PivotTableBeforeDiscardChanges@177(TargetPivotTable@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495001 : Integer;ValueChangeEnd@1101495000 : Integer);
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::PivotTableChangeSync@178(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::LensGalleryRenderComplete@179();
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::TableUpdate@180(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.TableObject");
+    BEGIN
+    END;
+
+    EVENT XlWrkSht@1101495073::BeforeDelete@181();
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::Open@299();
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::WorkbookEvents_Event_Activate@300();
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::Deactivate@301();
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::BeforeClose@302(VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::BeforeSave@303(SaveAsUI@1101495001 : Boolean;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::BeforePrint@304(VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::NewSheet@305(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::AddinInstall@306();
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::AddinUninstall@307();
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::WindowResize@308(Wn@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Window");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::WindowActivate@309(Wn@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Window");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::WindowDeactivate@310(Wn@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Window");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetSelectionChange@311(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetBeforeDoubleClick@312(Sh@1101495002 : Variant;Target@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetBeforeRightClick@313(Sh@1101495002 : Variant;Target@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetActivate@314(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetDeactivate@315(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetCalculate@316(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetChange@317(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetFollowHyperlink@318(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Hyperlink");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetPivotTableUpdate@319(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::PivotTableCloseConnection@320(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::PivotTableOpenConnection@321(Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::WorkbookEvents_Event_Sync@322(SyncEventType@1101495000 : DotNet "'office, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Core.MsoSyncEventType");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::BeforeXmlImport@323(Map@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";Url@1101495002 : Text;IsRefresh@1101495001 : Boolean;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::AfterXmlImport@324(Map@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";IsRefresh@1101495001 : Boolean;Result@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XlXmlImportResult");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::BeforeXmlExport@325(Map@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";Url@1101495001 : Text;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::AfterXmlExport@326(Map@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";Url@1101495001 : Text;Result@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XlXmlExportResult");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::RowsetComplete@327(Description@1101495002 : Text;Sheet@1101495001 : Text;Success@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetPivotTableAfterValueChange@328(Sh@1101495002 : Variant;TargetPivotTable@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";TargetRange@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetPivotTableBeforeAllocateChanges@329(Sh@1101495004 : Variant;TargetPivotTable@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495002 : Integer;ValueChangeEnd@1101495001 : Integer;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetPivotTableBeforeCommitChanges@330(Sh@1101495004 : Variant;TargetPivotTable@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495002 : Integer;ValueChangeEnd@1101495001 : Integer;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetPivotTableBeforeDiscardChanges@331(Sh@1101495003 : Variant;TargetPivotTable@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495001 : Integer;ValueChangeEnd@1101495000 : Integer);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetPivotTableChangeSync@332(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::AfterSave@333(Success@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::NewChart@334(Ch@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Chart");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetLensGalleryRenderComplete@335(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetTableUpdate@336(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.TableObject");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::ModelChange@337(Changes@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ModelChanges");
+    BEGIN
+    END;
+
+    EVENT XlWrkBk@1101495074::SheetBeforeDelete@338(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::AppEvents_Event_NewWorkbook@424(Wb@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetSelectionChange@425(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetBeforeDoubleClick@426(Sh@1101495002 : Variant;Target@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetBeforeRightClick@427(Sh@1101495002 : Variant;Target@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetActivate@428(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetDeactivate@429(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetCalculate@430(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetChange@431(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookOpen@432(Wb@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookActivate@433(Wb@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookDeactivate@434(Wb@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookBeforeClose@435(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookBeforeSave@436(Wb@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";SaveAsUI@1101495001 : Boolean;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookBeforePrint@437(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookNewSheet@438(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookAddinInstall@439(Wb@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookAddinUninstall@440(Wb@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WindowResize@441(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Wn@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Window");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WindowActivate@442(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Wn@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Window");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WindowDeactivate@443(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Wn@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Window");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetFollowHyperlink@444(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Hyperlink");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetPivotTableUpdate@445(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookPivotTableCloseConnection@446(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookPivotTableOpenConnection@447(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookSync@448(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";SyncEventType@1101495000 : DotNet "'office, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Core.MsoSyncEventType");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookBeforeXmlImport@449(Wb@1101495004 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Map@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";Url@1101495002 : Text;IsRefresh@1101495001 : Boolean;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookAfterXmlImport@450(Wb@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Map@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";IsRefresh@1101495001 : Boolean;Result@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XlXmlImportResult");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookBeforeXmlExport@451(Wb@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Map@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";Url@1101495001 : Text;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookAfterXmlExport@452(Wb@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Map@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XmlMap";Url@1101495001 : Text;Result@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XlXmlExportResult");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookRowsetComplete@453(Wb@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Description@1101495002 : Text;Sheet@1101495001 : Text;Success@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::AfterCalculate@454();
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetPivotTableAfterValueChange@455(Sh@1101495002 : Variant;TargetPivotTable@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";TargetRange@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Range");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetPivotTableBeforeAllocateChanges@456(Sh@1101495004 : Variant;TargetPivotTable@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495002 : Integer;ValueChangeEnd@1101495001 : Integer;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetPivotTableBeforeCommitChanges@457(Sh@1101495004 : Variant;TargetPivotTable@1101495003 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495002 : Integer;ValueChangeEnd@1101495001 : Integer;VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetPivotTableBeforeDiscardChanges@458(Sh@1101495003 : Variant;TargetPivotTable@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.PivotTable";ValueChangeStart@1101495001 : Integer;ValueChangeEnd@1101495000 : Integer);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::ProtectedViewWindowOpen@459(Pvw@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ProtectedViewWindow");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::ProtectedViewWindowBeforeEdit@460(Pvw@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ProtectedViewWindow";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::ProtectedViewWindowBeforeClose@461(Pvw@1101495002 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ProtectedViewWindow";Reason@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.XlProtectedViewCloseReason";VAR Cancel@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::ProtectedViewWindowResize@462(Pvw@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ProtectedViewWindow");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::ProtectedViewWindowActivate@463(Pvw@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ProtectedViewWindow");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::ProtectedViewWindowDeactivate@464(Pvw@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ProtectedViewWindow");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookAfterSave@465(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Success@1101495000 : Boolean);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookNewChart@466(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Ch@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Chart");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetLensGalleryRenderComplete@467(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetTableUpdate@468(Sh@1101495001 : Variant;Target@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.TableObject");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::WorkbookModelChange@469(Wb@1101495001 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.Workbook";Changes@1101495000 : DotNet "'Microsoft.Office.Interop.Excel, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c'.Microsoft.Office.Interop.Excel.ModelChanges");
+    BEGIN
+    END;
+
+    EVENT XlApp@1101495075::SheetBeforeDelete@470(Sh@1101495000 : Variant);
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      TDRANCS-1256
+      TDRANCS-1397
+      TDRANCS-1454>
+        for filling field Reverse in G\L Entry
+        + corrected bug
+      TDRANCS-1579>
+        added Currency of Uploaded Data
+      TDRANCS-2080>
+        Modified fn_FillJournal - Added BU
+      ------------------
+      NC NOS-26 SPA Перенесено на новую версию
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

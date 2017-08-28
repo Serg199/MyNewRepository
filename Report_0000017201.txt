@@ -1,0 +1,362 @@
+OBJECT Report 17201 Create Closing Gen. Jnl. Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Closing Gen. Jnl. Line;
+               RUS=Создание закрывающей строки фин. журнала];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  GenJnlBatch."Journal Template Name" := GenJnlLine."Journal Template Name";
+                  GenJnlBatch.Name := GenJnlLine."Journal Batch Name";
+                  GenJnlBatch.FIND;
+
+                  GenJnlLine.VALIDATE("Bal. Account No.");
+                  GenJnlLine.TESTFIELD("Bal. Account No.");
+
+                  IF DateEnd = 0D THEN
+                    ERROR(Text1001);
+                  IF SectionCode = '' THEN
+                    ERROR(Text1002);
+
+                  GenJnlLine0 := GenJnlLine;
+                  GenJnlLine0."Line No." := 0;
+                  GenJnlLine0.RESET;
+                  GenJnlLine0.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                  GenJnlLine0.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                  IF GenJnlLine0.FINDLAST THEN ;
+
+                  GenJnlLine0.INIT;
+                  GenJnlLine0."Line No." += 10000;
+                  GenJnlLine0."Account Type" := GenJnlLine."Bal. Account Type";
+                  GenJnlLine0."Posting Date" := DateEnd;
+                  GenJnlLine0."Document No." := DocumentNo;
+                  GenJnlLine0.VALIDATE("Account No.",GenJnlLine."Bal. Account No.");
+                  GenJnlLine0.VALIDATE("Gen. Posting Type",0);
+
+                  GenJnlLine := GenJnlLine0;
+                END;
+
+    OnPostReport=BEGIN
+                   IF GenJnlLine0.Quantity <> 0 THEN BEGIN
+                     GenJnlLine0.VALIDATE(Amount);
+                     GenJnlLine0.INSERT(TRUE);
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+    { 4086;    ;DataItem;                    ;
+               DataItemTable=Table17210;
+               DataItemTableView=SORTING(Section Code,Ending Date,Object Type);
+               OnPreDataItem=BEGIN
+                               SETRANGE("Section Code",SectionCode);
+                               SETRANGE("Ending Date",DateEnd);
+                               IF PositiveEntry THEN BEGIN
+                                 SETRANGE("Register Type","Register Type"::"Credit Balance");
+                                 SETFILTER("CV Debit Balance Amnt 4",'<>0');
+                               END ELSE BEGIN
+                                 SETRANGE("Register Type","Register Type"::"Debit Balance");
+                                 SETFILTER("CV Credit Balance Amnt 2",'<>0');
+                               END;
+                             END;
+
+               ReqFilterFields=Object Type,C/V No. }
+
+    { 8503;1   ;DataItem;                    ;
+               DataItemTable=Table21;
+               DataItemTableView=SORTING(Customer No.,Open,Positive,Due Date);
+               OnPreDataItem=BEGIN
+                               IF "Tax Register CV Entry"."Object Type" <> "Tax Register CV Entry"."Object Type"::Customer THEN
+                                 CurrReport.BREAK;
+
+                               SETCURRENTKEY("Customer No.",Open,Positive,"Due Date");
+                               SETRANGE("Customer No.","Tax Register CV Entry"."C/V No.");
+                               SETRANGE(Positive,PositiveEntry);
+                               SETFILTER("Due Date",FilterDueDate3Years);
+                               SETFILTER("Date Filter",'..%1',DateEnd);
+                               SETFILTER("Remaining Amt. (LCY)",'<>0');
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  CustLedgEntry.COPY("Cust. Ledger Entry");
+                                  CustLedgEntry.SETRANGE("Date Filter");
+                                  CustLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+                                  SETFILTER("Date Filter",'..%1',DateEnd);
+                                  IF CustLedgEntry."Remaining Amt. (LCY)" = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  GenJnlLine.INIT;
+                                  GenJnlLine."Line No." += 10000;
+                                  GenJnlLine."Account Type" := GenJnlLine."Account Type"::Customer;
+                                  GenJnlLine."Posting Date" := DateEnd;
+                                  GenJnlLine."Document No." := DocumentNo;
+                                  GenJnlLine.VALIDATE("Account No.","Customer No.");
+                                  GenJnlLine.VALIDATE("Currency Code",'');
+                                  GenJnlLine.VALIDATE(Amount,-CustLedgEntry."Remaining Amt. (LCY)");
+                                  GenJnlLine.INSERT(TRUE);
+                                  GenJnlLine.VALIDATE("Shortcut Dimension 1 Code","Global Dimension 1 Code");
+                                  GenJnlLine.VALIDATE("Shortcut Dimension 2 Code","Global Dimension 2 Code");
+                                  GenJnlLine.MODIFY(TRUE);
+
+                                  GenJnlLine0.Amount += CustLedgEntry."Remaining Amt. (LCY)";
+                                  GenJnlLine0.Quantity := 1;
+                                END;
+
+               CalcFields=Remaining Amt. (LCY) }
+
+    { 4114;1   ;DataItem;                    ;
+               DataItemTable=Table25;
+               DataItemTableView=SORTING(Vendor No.,Open,Positive,Due Date);
+               OnPreDataItem=BEGIN
+                               IF "Tax Register CV Entry"."Object Type" <> "Tax Register CV Entry"."Object Type"::Vendor THEN
+                                 CurrReport.BREAK;
+
+                               SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date");
+                               SETRANGE("Vendor No.","Tax Register CV Entry"."C/V No.");
+                               SETRANGE(Positive,PositiveEntry);
+                               SETFILTER("Due Date",FilterDueDate3Years);
+                               SETFILTER("Date Filter",'..%1',DateEnd);
+                               SETFILTER("Remaining Amt. (LCY)",'<>0');
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  VendLedgEntry.COPY("Vendor Ledger Entry");
+                                  VendLedgEntry.SETRANGE("Date Filter");
+                                  VendLedgEntry.CALCFIELDS("Remaining Amt. (LCY)");
+                                  IF VendLedgEntry."Remaining Amt. (LCY)" = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  GenJnlLine.INIT;
+                                  GenJnlLine."Line No." += 10000;
+                                  GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+                                  GenJnlLine."Posting Date" := DateEnd;
+                                  GenJnlLine."Document No." := DocumentNo;
+                                  GenJnlLine.VALIDATE("Account No.","Vendor No.");
+                                  GenJnlLine.VALIDATE("Currency Code",'');
+                                  GenJnlLine.VALIDATE(Amount,-VendLedgEntry."Remaining Amt. (LCY)");
+                                  GenJnlLine.INSERT(TRUE);
+                                  GenJnlLine.VALIDATE("Shortcut Dimension 1 Code","Global Dimension 1 Code");
+                                  GenJnlLine.VALIDATE("Shortcut Dimension 2 Code","Global Dimension 2 Code");
+                                  GenJnlLine.MODIFY(TRUE);
+
+                                  GenJnlLine0.Amount += VendLedgEntry."Remaining Amt. (LCY)";
+                                  GenJnlLine0.Quantity := 1;
+                                END;
+
+               CalcFields=Remaining Amt. (LCY) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   GenJnlLine."Posting Date" := DateEnd;
+                   GenJnlLine."Source Code" := SectionCode;
+
+                   IF PositiveEntry THEN
+                     BalanceText := SELECTSTR(1,Text1003)
+                   ELSE
+                     BalanceText := SELECTSTR(2,Text1003);
+                 END;
+
+      OnAfterGetRecord=BEGIN
+                         BalanceTextText := FORMAT(BalanceText);
+                         BalanceTextTextOnFormat(BalanceTextText);
+                       END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 100 ;2   ;Field     ;
+                  CaptionML=[ENU=Journal Template Name;
+                             RUS=Имя шаблона журнала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=GenJnlLine."Journal Template Name";
+                  TableRelation="Gen. Journal Template" WHERE (Type=CONST(General),
+                                                               Recurring=CONST(No));
+                  OnValidate=BEGIN
+                               IF GenJnlLine."Journal Template Name" = '' THEN
+                                 GenJnlLine."Journal Batch Name" := '';
+                             END;
+                              }
+
+      { 102 ;2   ;Field     ;
+                  CaptionML=[ENU=Journal Batch Name;
+                             RUS=Код раздела журнала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=GenJnlLine."Journal Batch Name";
+                  TableRelation="Gen. Journal Batch";
+                  OnValidate=BEGIN
+                               GenJnlLineJournalBatchNameOnAfterValidate;
+                             END;
+
+                  OnLookup=BEGIN
+                             IF GenJnlLine."Journal Template Name" <> '' THEN BEGIN
+                               GenJnlBatch.RESET;
+                               GenJnlBatch.FILTERGROUP(2);
+                               GenJnlBatch.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                               GenJnlBatch.FILTERGROUP(0);
+                               LookupOK := ACTION::LookupOK = PAGE.RUNMODAL(0,GenJnlBatch);
+                               IF LookupOK THEN BEGIN
+                                 GenJnlLine."Journal Template Name" := GenJnlBatch."Journal Template Name";
+                                 GenJnlLine."Journal Batch Name" := GenJnlBatch.Name;
+                               END;
+                             END;
+                           END;
+                            }
+
+      { 109 ;2   ;Field     ;
+                  CaptionML=[ENU=Bal. Account Type;
+                             RUS=Тип баланс. счета];
+                  OptionCaptionML=[ENU=G/L Account,Customer,Vendor,Bank Account;
+                                   RUS=Счет ГК,Клиент,Поставщик,Банк. счет];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=GenJnlLine."Bal. Account Type" }
+
+      { 111 ;2   ;Field     ;
+                  CaptionML=[ENU=Bal. Account No.;
+                             RUS=Номер баланс. счета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=GenJnlLine."Bal. Account No.";
+                  OnLookup=BEGIN
+                             CASE GenJnlLine."Bal. Account Type" OF
+                               GenJnlLine."Bal. Account Type"::"G/L Account":
+                                 BEGIN
+                                   IF GLAccount.GET(GenJnlLine."Bal. Account No.") THEN ;
+                                   IF ACTION::LookupOK = PAGE.RUNMODAL(0,GLAccount) THEN BEGIN
+                                     GLAccount.TESTFIELD("Account Type",GLAccount."Account Type"::Posting);
+                                     GLAccount.TESTFIELD("Direct Posting",TRUE);
+                                     GLAccount.TESTFIELD(Blocked,FALSE);
+                                     GenJnlLine."Bal. Account No." := GLAccount."No.";
+                                   END;
+                                 END;
+                               GenJnlLine."Bal. Account Type"::Customer:
+                                 BEGIN
+                                   IF Customer.GET(GenJnlLine."Bal. Account No.") THEN ;
+                                   IF ACTION::LookupOK = PAGE.RUNMODAL(0,Customer) THEN BEGIN
+                                     Customer.CheckBlockedCustOnJnls(Customer,GenJnlLine."Account Type",TRUE);
+                                     GenJnlLine."Bal. Account No." := Customer."No.";
+                                   END;
+                                 END;
+                               GenJnlLine."Bal. Account Type"::Vendor:
+                                 BEGIN
+                                   IF Vendor.GET(GenJnlLine."Bal. Account No.") THEN ;
+                                   IF ACTION::LookupOK = PAGE.RUNMODAL(0,Vendor) THEN BEGIN
+                                     Vendor.CheckBlockedVendOnJnls(Vendor,GenJnlLine."Account Type",TRUE);
+                                     GenJnlLine."Bal. Account No." := Vendor."No.";
+                                   END;
+                                 END;
+                               GenJnlLine."Bal. Account Type"::"Bank Account":
+                                 BEGIN
+                                   IF BankAccount.GET(GenJnlLine."Bal. Account No.") THEN ;
+                                   IF ACTION::LookupOK = PAGE.RUNMODAL(0,BankAccount) THEN BEGIN
+                                     BankAccount.TESTFIELD(Blocked,FALSE);
+                                     GenJnlLine."Bal. Account No." := BankAccount."No.";
+                                   END;
+                                 END;
+                             END;
+                           END;
+                            }
+
+      { 104 ;2   ;Field     ;
+                  CaptionML=[ENU=Section Code;
+                             RUS=Код секции];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=GenJnlLine."Source Code";
+                  Editable=FALSE }
+
+      { 107 ;2   ;Field     ;
+                  CaptionML=[ENU=Period Date;
+                             RUS=Дата периода];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=GenJnlLine."Posting Date";
+                  Editable=FALSE }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Balance;
+                             RUS=Сальдо];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BalanceTextText;
+                  Editable=FALSE }
+
+      { 2   ;2   ;Field     ;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Номер документа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DocumentNo }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GenJnlBatch@1000 : Record 232;
+      GenJnlLine@1001 : Record 81;
+      GenJnlLine0@1002 : Record 81;
+      GLAccount@1003 : Record 15;
+      Customer@1004 : Record 18;
+      Vendor@1005 : Record 23;
+      BankAccount@1006 : Record 270;
+      CustLedgEntry@1007 : Record 21;
+      VendLedgEntry@1008 : Record 25;
+      LookupOK@1009 : Boolean;
+      PositiveEntry@1010 : Boolean;
+      DateEnd@1011 : Date;
+      DocumentNo@1012 : Code[20];
+      SectionCode@1013 : Code[10];
+      Text1001@1014 : TextConst 'ENU=Date Period must be set.;RUS=Не задано значение параметра Дата Периода';
+      Text1002@1015 : TextConst 'ENU=Section Code must be set.;RUS=Не задано значение кода секции.';
+      FilterDueDate3Years@1016 : Text[30];
+      Text1003@1017 : TextConst 'ENU=Debit,Credit;RUS=Дебет,Кредит';
+      BalanceText@1210000 : Text[30];
+      BalanceTextText@19013682 : Text[1024] INDATASET;
+
+    PROCEDURE SetSearching@1(NewSectionCode@1000 : Code[10];NewDateEnd@1001 : Date;NewPositiveEntry@1002 : Boolean;NewFilterDueDate3Years@1003 : Text[30]);
+    BEGIN
+      SectionCode := NewSectionCode;
+      DateEnd := NewDateEnd;
+      PositiveEntry := NewPositiveEntry;
+      FilterDueDate3Years := NewFilterDueDate3Years;
+    END;
+
+    LOCAL PROCEDURE GenJnlLineJournalBatchNameOnAfterValidate@19028159();
+    BEGIN
+      IF GenJnlLine."Journal Template Name" <> '' THEN
+        GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Template Name");
+    END;
+
+    LOCAL PROCEDURE BalanceTextTextOnFormat@19015612(VAR Text@19028512 : Text[1024]);
+    BEGIN
+      IF PositiveEntry THEN
+        Text := SELECTSTR(1,Text1003)
+      ELSE
+        Text := SELECTSTR(2,Text1003);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

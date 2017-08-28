@@ -1,0 +1,196 @@
+OBJECT Codeunit 17383 Employee Journal - Post Batch
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17382;
+    OnRun=BEGIN
+            EmplJnlLine.COPY(Rec);
+            RunCode;
+            Rec := EmplJnlLine;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      EmplJnlTemplate@1210029 : Record 17380;
+      EmplJnlBatch@1210028 : Record 17381;
+      EmplJnlLine@1210027 : Record 17382;
+      EmplJnlLine2@1210026 : Record 17382;
+      EmplJnlLine3@1210025 : Record 17382;
+      PayrollReg@1210022 : Record 17424;
+      NoSeries@1210021 : TEMPORARY Record 308;
+      EmplJnlCheckLine@1210020 : Codeunit 17381;
+      EmplJnlPostLine@1210019 : Codeunit 17382;
+      NoSeriesMgt@1210018 : Codeunit 396;
+      NoSeriesMgt2@1210034 : ARRAY [10] OF Codeunit 396;
+      Window@1210015 : Dialog;
+      PayrollRegNo@1210014 : Integer;
+      StartLineNo@1210013 : Integer;
+      LineCount@1210007 : Integer;
+      NoOfRecords@1210006 : Integer;
+      LastDocNo@1210005 : Code[20];
+      LastDocNo2@1210004 : Code[20];
+      LastPostedDocNo@1210003 : Code[20];
+      NoOfPostingNoSeries@1210002 : Integer;
+      PostingNoSeriesNo@1210001 : Integer;
+      Text000@1210033 : TextConst 'ENU=cannot exceed %1 characters;RUS=не может превышать %1 символов';
+      Text001@1210032 : TextConst 'ENU=Journal Batch Name    #1##########\\;RUS=Код раздела журнала   #1##########\\';
+      Text002@1210031 : TextConst 'ENU=Checking lines        #2######\;RUS=Проверка строк        #2######\';
+      Text005@1210023 : TextConst 'ENU=Posting lines         #3###### @4@@@@@@@@@@@@@;RUS=Учет строк            #3###### @4@@@@@@@@@@@@@';
+      Text006@1210017 : TextConst 'ENU=A maximum of %1 posting number series can be used in each journal.;RUS=В каждом журнале можно использовать не более %1 серий учетных номеров.';
+
+    LOCAL PROCEDURE RunCode@1();
+    VAR
+      UpdateAnalysisView@1002 : Codeunit 410;
+    BEGIN
+      WITH EmplJnlLine DO BEGIN
+        SETRANGE("Journal Template Name","Journal Template Name");
+        SETRANGE("Journal Batch Name","Journal Batch Name");
+        LOCKTABLE;
+
+        EmplJnlTemplate.GET("Journal Template Name");
+        EmplJnlBatch.GET("Journal Template Name","Journal Batch Name");
+        IF STRLEN(INCSTR(EmplJnlBatch.Name)) > MAXSTRLEN(EmplJnlBatch.Name) THEN
+          EmplJnlBatch.FIELDERROR(
+            Name,
+            STRSUBSTNO(
+              Text000,
+              MAXSTRLEN(EmplJnlBatch.Name)));
+
+        IF NOT FIND('=><') THEN BEGIN
+          "Line No." := 0;
+          COMMIT;
+          EXIT;
+        END;
+
+        Window.OPEN(
+          Text001 +
+          Text002 +
+          Text005);
+        Window.UPDATE(1,"Journal Batch Name");
+
+        // Check lines
+        LineCount := 0;
+        StartLineNo := "Line No.";
+        REPEAT
+          LineCount := LineCount + 1;
+          Window.UPDATE(2,LineCount);
+          EmplJnlCheckLine.RUN(EmplJnlLine);
+          IF NEXT = 0 THEN
+            FIND('-');
+        UNTIL "Line No." = StartLineNo;
+        NoOfRecords := LineCount;
+
+        // Find next register no.
+        PayrollReg.LOCKTABLE;
+        IF PayrollReg.FINDLAST THEN
+          PayrollRegNo := PayrollReg."No." + 1
+        ELSE
+          PayrollRegNo := 1;
+
+        // Post lines
+        LineCount := 0;
+        LastDocNo := '';
+        LastDocNo2 := '';
+        LastPostedDocNo := '';
+        FIND('-');
+        REPEAT
+          LineCount := LineCount + 1;
+          Window.UPDATE(3,LineCount);
+          Window.UPDATE(4,ROUND(LineCount / NoOfRecords * 10000,1));
+          IF NOT EmptyLine AND
+             (EmplJnlBatch."No. Series" <> '') AND
+             ("Document No." <> LastDocNo2)
+          THEN
+            TESTFIELD("Document No.",NoSeriesMgt.GetNextNo(EmplJnlBatch."No. Series","Posting Date",FALSE));
+          LastDocNo2 := "Document No.";
+          IF "Posting No. Series" = '' THEN
+            "Posting No. Series" := EmplJnlBatch."No. Series"
+          ELSE
+            IF NOT EmptyLine THEN
+              IF "Document No." = LastDocNo THEN
+                "Document No." := LastPostedDocNo
+              ELSE BEGIN
+                IF NOT NoSeries.GET("Posting No. Series") THEN BEGIN
+                  NoOfPostingNoSeries := NoOfPostingNoSeries + 1;
+                  IF NoOfPostingNoSeries > ARRAYLEN(NoSeriesMgt2) THEN
+                    ERROR(
+                      Text006,
+                      ARRAYLEN(NoSeriesMgt2));
+                  NoSeries.Code := "Posting No. Series";
+                  NoSeries.Description := FORMAT(NoOfPostingNoSeries);
+                  NoSeries.INSERT;
+                END;
+                LastDocNo := "Document No.";
+                EVALUATE(PostingNoSeriesNo,NoSeries.Description);
+                "Document No." := NoSeriesMgt2[PostingNoSeriesNo].GetNextNo("Posting No. Series","Posting Date",FALSE);
+                LastPostedDocNo := "Document No.";
+              END;
+          EmplJnlPostLine.RunWithCheck(EmplJnlLine);
+        UNTIL NEXT = 0;
+
+        // Copy register no. and current journal batch name to the Employee journal
+        IF NOT PayrollReg.FINDLAST OR (PayrollReg."No." < PayrollRegNo) THEN
+          PayrollRegNo := 0;
+
+        INIT;
+        "Line No." := PayrollRegNo;
+
+        // Update/delete lines
+        IF PayrollRegNo <> 0 THEN BEGIN
+          EmplJnlLine2.COPYFILTERS(EmplJnlLine);
+          EmplJnlLine2.SETFILTER("Employee No.",'<>%1','');
+          IF EmplJnlLine2.FINDLAST THEN; // Remember the last line
+          EmplJnlLine3.COPY(EmplJnlLine);
+          IF EmplJnlLine3.FINDSET(TRUE,FALSE) THEN
+            REPEAT
+              EmplJnlLine3.DELETE;
+            UNTIL EmplJnlLine3.NEXT = 0;
+          EmplJnlLine3.RESET;
+          EmplJnlLine3.SETRANGE("Journal Template Name","Journal Template Name");
+          EmplJnlLine3.SETRANGE("Journal Batch Name","Journal Batch Name");
+          IF NOT EmplJnlLine3.FIND('+') THEN
+            IF INCSTR("Journal Batch Name") <> '' THEN BEGIN
+              EmplJnlBatch.DELETE;
+              EmplJnlBatch.Name := INCSTR("Journal Batch Name");
+              IF EmplJnlBatch.INSERT THEN;
+              "Journal Batch Name" := EmplJnlBatch.Name;
+            END;
+
+          EmplJnlLine3.SETRANGE("Journal Batch Name","Journal Batch Name");
+          IF (EmplJnlBatch."No. Series" = '') AND NOT EmplJnlLine3.FIND('+') THEN BEGIN
+            EmplJnlLine3.INIT;
+            EmplJnlLine3."Journal Template Name" := "Journal Template Name";
+            EmplJnlLine3."Journal Batch Name" := "Journal Batch Name";
+            EmplJnlLine3."Line No." := 10000;
+            EmplJnlLine3.INSERT;
+            EmplJnlLine3.SetUpNewLine(EmplJnlLine2);
+            EmplJnlLine3.MODIFY;
+          END;
+        END;
+        IF EmplJnlBatch."No. Series" <> '' THEN
+          NoSeriesMgt.SaveNoSeries;
+        IF NoSeries.FIND('-') THEN
+          REPEAT
+            EVALUATE(PostingNoSeriesNo,NoSeries.Description);
+            NoSeriesMgt2[PostingNoSeriesNo].SaveNoSeries;
+          UNTIL NoSeries.NEXT = 0;
+
+        COMMIT;
+      END;
+      UpdateAnalysisView.UpdateAll(0,TRUE);
+      COMMIT;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

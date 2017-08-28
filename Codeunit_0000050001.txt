@@ -1,0 +1,1399 @@
+OBJECT Codeunit 50001 Allocation of Cost Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03.07.15;
+    Time=17:13:12;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'ENU=You should define period for allocation;RUS=Определите даты распределения!';
+      Text002@1000000001 : TextConst 'ENU=You should define Allocation Dimension;RUS=Определите Распределяемое Измерение';
+      LocFilter@1000000002 : Code[1024];
+      ItemLedgerEntry@1000000003 : Record 32;
+      Text003@1000000004 : TextConst 'ENU=Allocation Temaplte %1 is not contain Dimension %2;RUS=Шаблон Распределения %1 не содержит Измерения %2';
+      Text004@1000000005 : TextConst 'ENU=Sum of Allocation Coefficinets should be 1 for Tempalte %1;RUS=Сумма коеффициентов в Шаблоне Распределения %1 не равна 1';
+      Text005@1000000006 : TextConst 'RUS=Для Подразделения нельзя использовать формулы распределений';
+      "NCT>"@1101495001 : TextConst;
+      Text020@1101495000 : TextConst 'ENU=Because of circular references, the program cannot calculate a formula.;RUS=Программа не может вычислить результат формулы из-за наличия циклических ссылок.';
+      StartDate@1101495003 : Date;
+      EndDate@1101495004 : Date;
+      DivisionError@1101495006 : Boolean;
+      PeriodError@1101495007 : Boolean;
+      CallLevel@1101495008 : Integer;
+      CallingTemplFormulaLineID@1101495009 : Integer;
+      OldTemplFormulaLineFilters@1101495010 : Text[250];
+      AccSchedCellValue@1101495013 : TEMPORARY Record 342;
+      AllocationDriverValue@1101495012 : Record 50177;
+      GLSetupRead@1101495014 : Boolean;
+      GLSetup@1101495015 : Record 98;
+      Text017@1101495017 : TextConst 'ENU=The error occurred when the program tried to calculate:\;RUS=Произошла ошибка при вычислении:\';
+      Text018@1101495016 : TextConst 'ENU="Template Formula Line: Row No. = %1, Line No. = %2, Totaling = %3\";RUS="Шаблон Формула Строка: Линия Но. = %1, Строка Но. = %2, Группировка = %3\"';
+      Text022@1101495019 : TextConst 'ENU=You cannot have more than %1 lines with %2 of %3.;RUS=Невозможно использовать более %1 строк с %2 типа %3.';
+      Text023@1101495018 : TextConst 'ENU=Formulas ending with a percent sign require %2 %1 on a line before it.;RUS=На строке перед формулами, заканчивающимися на знак процента, необходимо указывать %2 %1.';
+      BasePercentLine@1101495020 : ARRAY [50] OF Integer;
+      Text007@1101495002 : TextConst 'ENU=Result Formula Line for Template %1 was not found.;RUS=Формула Результата для шаблона %1';
+      Text008@1101495005 : TextConst 'ENU=Driver %1 was not found;RUS=Драйвер %1 не был найден';
+      Text010@1101495011 : TextConst 'ENU=Driver Value Calculation for Template %1;RUS=Расчет значений драйверов для Шаблона %1';
+      AllocGLAccountFrom@1101495021 : Code[20];
+      Text019@1101495022 : TextConst 'ENU=It wasn''t found Driver %1 Value for Allocation Unit %2 at date %3;RUS=Не найдено Значение Драйвера %1 для Единицы Распределения % 2 на дату %3.';
+      CurrentCSBatchHeader@1101495023 : Code[20];
+
+    PROCEDURE SetAllocation@1000000000(AllocationCost@1000000001 : Record 50010;VAR DimCodeBufferTemp@1000000000 : TEMPORARY Record 367;StartDate@1000000002 : Date;EndDate@1000000003 : Date;DimCode@1000000009 : Code[20]);
+    VAR
+      GLEntryLoc@1000000004 : Record 17;
+      AllCostsFormula@1000000005 : Record 50011;
+      LedgerEntryDimension@1000000007 : Record 355;
+      GLSetup@1000000008 : Record 98;
+      LocationRec@1000000011 : Record 14;
+      FirstFind@1000000013 : Boolean;
+      FormulaCode@1000000006 : Code[20];
+      SheetCode@1000000010 : Code[20];
+      ValueCode@1000000012 : Code[20];
+    BEGIN
+      IF (StartDate = 0D) OR (EndDate = 0D) THEN
+       ERROR(Text001);
+
+      IF DimCode = '' THEN
+       ERROR(Text002);
+
+      GLSetup.GET;
+      FormulaCode := '';
+      SheetCode := '';
+      ValueCode := '';
+      IF DimCode = GLSetup."Allocation Dimension 2 Code" THEN
+       BEGIN
+        IF AllocationCost."Allocation Dim. 2 Calc Type" = AllocationCost."Allocation Dim. 2 Calc Type"::Formula THEN
+         FormulaCode := AllocationCost."Allocation Dim. 2 Relation";
+        IF AllocationCost."Allocation Dim. 2 Calc Type" = AllocationCost."Allocation Dim. 2 Calc Type"::Sheet THEN
+         SheetCode := AllocationCost."Allocation Dim. 2 Relation";
+       END;
+
+      IF DimCode = GLSetup."Allocation Dimension 1 Code" THEN
+       BEGIN
+        IF AllocationCost."Allocation Dim. 1 Calc Type" = AllocationCost."Allocation Dim. 1 Calc Type"::Sheet THEN
+         SheetCode := AllocationCost."Allocation Dim. 1 Relation";
+        IF AllocationCost."Allocation Dim. 1 Calc Type" = AllocationCost."Allocation Dim. 1 Calc Type"::Value THEN
+         ValueCode := AllocationCost."Allocation Dim. 1 Relation";
+       END;
+
+      IF FormulaCode <> '' THEN BEGIN
+      AllCostsFormula.GET(FormulaCode);
+
+      DimCodeBufferTemp.RESET;
+      DimCodeBufferTemp.DELETEALL;
+
+      LedgerEntryDimension.RESET;
+      LedgerEntryDimension.SETRANGE("Table ID",32);
+      LedgerEntryDimension.SETRANGE("Dimension Code",DimCode);
+
+      CASE AllCostsFormula."Formula Identifier" OF
+       0:ERROR('Алгоритм пока не реализован!');
+       1:  //по себестоимости реализации
+        BEGIN
+         ItemLedgerEntry.RESET;
+         ItemLedgerEntry.SETCURRENTKEY("Entry Type");
+         ItemLedgerEntry.SETRANGE("Posting Date",StartDate,EndDate);
+         ItemLedgerEntry.SETRANGE("Entry Type",ItemLedgerEntry."Entry Type"::Sale);
+         IF ItemLedgerEntry.FIND('-') THEN
+          REPEAT
+           LedgerEntryDimension.SETRANGE("Entry No.",ItemLedgerEntry."Entry No.");
+           IF NOT LedgerEntryDimension.FIND('-') THEN
+            LedgerEntryDimension."Dimension Value Code" := '';
+
+           ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)");
+
+           FillBuffer(DimCodeBufferTemp,ItemLedgerEntry."Cost Amount (Actual)",LedgerEntryDimension."Dimension Value Code");
+          UNTIL ItemLedgerEntry.NEXT = 0;
+         AmountInKoeffic(DimCodeBufferTemp);
+        END;
+       2: //среднескладской остаток
+        BEGIN
+         FirstFind := FALSE;
+         LocationRec.RESET;
+         LocationRec.SETRANGE("Use As In-Transit",TRUE);
+         IF LocationRec.FIND('-') THEN
+          REPEAT
+           IF NOT FirstFind THEN
+            LocFilter := '<>' + LocationRec.Code
+           ELSE
+            LocFilter := LocFilter + '&<>' + LocationRec.Code;
+           FirstFind := TRUE;
+          UNTIL LocationRec.NEXT = 0;
+         FindLocationRest(DimCodeBufferTemp,StartDate,DimCode);
+         FindLocationRest(DimCodeBufferTemp,EndDate,DimCode);
+         AmountInKoeffic(DimCodeBufferTemp);
+        END;
+       3:ERROR('Алгоритм пока не реализован!');
+      END; //case
+      END;
+      IF SheetCode <> '' THEN
+        SetAllocationFromSheet(DimCodeBufferTemp,DimCode,SheetCode);
+
+      IF ValueCode <> '' THEN //пока используется только для подразделения
+       FillBuffer(DimCodeBufferTemp,1,ValueCode);
+    END;
+
+    PROCEDURE AmountInKoeffic@1000000019(VAR DimCodeBufferTemp@1000000000 : TEMPORARY Record 367);
+    VAR
+      AllAmount@1000000001 : Decimal;
+      AllKoeffic@1000000002 : Decimal;
+    BEGIN
+      DimCodeBufferTemp.RESET;
+      IF DimCodeBufferTemp.FIND('-') THEN
+       REPEAT
+        AllAmount += DimCodeBufferTemp."Amount 2";
+       UNTIL DimCodeBufferTemp.NEXT = 0;
+
+      IF DimCodeBufferTemp.FIND('-') THEN
+       REPEAT
+        DimCodeBufferTemp."Amount 2":= DimCodeBufferTemp."Amount 2"/AllAmount;
+        DimCodeBufferTemp.MODIFY;
+        AllKoeffic += DimCodeBufferTemp."Amount 2";
+       UNTIL DimCodeBufferTemp.NEXT = 0;
+
+      IF AllKoeffic <> 1 THEN
+       BEGIN
+        DimCodeBufferTemp.FIND('+');
+        DimCodeBufferTemp."Amount 2" := DimCodeBufferTemp."Amount 2" + (1 - AllKoeffic);
+        DimCodeBufferTemp.MODIFY;
+       END;
+    END;
+
+    PROCEDURE FillBuffer@1000000007(VAR DimCodeBufferTemp@1000000000 : TEMPORARY Record 367;JAmount@1000000001 : Decimal;DimValueCode@1000000002 : Code[20]);
+    BEGIN
+      DimCodeBufferTemp.SETRANGE(Code,DimValueCode);
+      IF DimCodeBufferTemp.FIND('-') THEN
+       BEGIN
+        DimCodeBufferTemp."Amount 2" += JAmount;
+        DimCodeBufferTemp.MODIFY;
+       END
+      ELSE
+       BEGIN
+        DimCodeBufferTemp.INIT;
+        DimCodeBufferTemp.Code := DimValueCode;
+        DimCodeBufferTemp."Amount 2" := JAmount;
+        DimCodeBufferTemp.INSERT;
+       END;
+    END;
+
+    PROCEDURE FindLocationRest@1000000016(VAR DimCodeBufferTemp@1000000006 : TEMPORARY Record 367;ForDate@1000000000 : Date;DimCode@1000000003 : Code[20]);
+    VAR
+      ItemRec@1000000001 : Record 27;
+      DefaultDimension@1000000002 : Record 352;
+      SalesQuantity@1000000004 : Decimal;
+      ItemApplicationEntry@1000000005 : Record 339;
+    BEGIN
+      ItemRec.RESET;
+      ItemRec.SETFILTER("Location Filter",LocFilter);
+      ItemRec.SETFILTER("Date Filter",'..%1',ForDate);
+      ItemRec.SETFILTER("Net Change",'>%1',0);
+      IF ItemRec.FIND('-') THEN
+       REPEAT
+        DefaultDimension.RESET;
+        DefaultDimension.SETRANGE("Table ID",27);
+        DefaultDimension.SETRANGE("No.",ItemRec."No.");
+        DefaultDimension.SETRANGE("Dimension Code",DimCode);
+        IF DefaultDimension.FIND('-') THEN
+         BEGIN
+          ItemLedgerEntry.RESET;
+          ItemLedgerEntry.SETCURRENTKEY("Item No.");
+          ItemLedgerEntry.SETRANGE("Item No.",ItemRec."No.");
+          ItemLedgerEntry.SETFILTER("Posting Date",'..%1',ForDate);
+          ItemLedgerEntry.SETFILTER(Quantity,'>%1',0);
+          IF ItemLedgerEntry.FIND('-') THEN
+           REPEAT
+            SalesQuantity := 0;
+            ItemApplicationEntry.RESET;
+            ItemApplicationEntry.SETCURRENTKEY("Batch Item Ledger Entry No.","Posting Date","Item Ledger Entry No.");
+            ItemApplicationEntry.SETRANGE("Batch Item Ledger Entry No.",ItemLedgerEntry."Entry No.");
+            ItemApplicationEntry.SETFILTER(Quantity,'<%1',0);
+            ItemApplicationEntry.SETFILTER("Posting Date",'..%1',ForDate);
+            IF ItemApplicationEntry.FIND('-') THEN
+             REPEAT
+              SalesQuantity += ItemApplicationEntry.Quantity;
+             UNTIL ItemApplicationEntry.NEXT = 0;
+
+            FillBuffer(DimCodeBufferTemp,(ItemLedgerEntry."Cost Amount (Actual)"/ItemLedgerEntry.Quantity*
+                      (ItemLedgerEntry.Quantity - ABS(SalesQuantity)))/2,DefaultDimension."Dimension Value Code");
+
+           UNTIL ItemLedgerEntry.NEXT = 0;
+         END;
+       UNTIL ItemRec.NEXT = 0;
+    END;
+
+    PROCEDURE SetAllocationFromSheet@1000000009(VAR DimCodeBufferTemp@1000000000 : TEMPORARY Record 367;DimCode@1000000004 : Code[20];CoverSheetNo@1000000005 : Code[20]);
+    VAR
+      CoverSheetHeader@1000000003 : Record 50014;
+      CoverSheetValues@1000000002 : Record 50013;
+      TheDimIs@1000000001 : Boolean;
+      Coeff@1000000006 : Decimal;
+    BEGIN
+        Coeff := 0;
+        TheDimIs := FALSE;
+        CoverSheetHeader.GET(CoverSheetNo);
+        IF CoverSheetHeader."X Dimension" = DimCode THEN
+         TheDimIs := TRUE;
+        IF CoverSheetHeader."Y Dimension" = DimCode THEN
+         TheDimIs := TRUE;
+        IF NOT TheDimIs THEN
+         ERROR(Text003,CoverSheetHeader.Code,DimCode);
+
+        CoverSheetValues.RESET;
+        CoverSheetValues.SETRANGE("Batch Code",CoverSheetHeader.Code);
+        IF CoverSheetHeader."X Dimension" = DimCode THEN
+         BEGIN
+          CoverSheetValues.SETRANGE("X Dimension Code",DimCode);
+          IF CoverSheetValues.FIND('-') THEN
+           REPEAT
+            FillBuffer(DimCodeBufferTemp,CoverSheetValues.Coefficient,CoverSheetValues."X Dimension Value");
+            Coeff += CoverSheetValues.Coefficient;
+           UNTIL CoverSheetValues.NEXT = 0;
+         END;
+        IF CoverSheetHeader."Y Dimension" = DimCode THEN
+         BEGIN
+          CoverSheetValues.SETRANGE("Y Dimension Code",DimCode);
+          IF CoverSheetValues.FIND('-') THEN
+           REPEAT
+            FillBuffer(DimCodeBufferTemp,CoverSheetValues.Coefficient,CoverSheetValues."Y Dimension Value");
+            Coeff += CoverSheetValues.Coefficient;
+           UNTIL CoverSheetValues.NEXT = 0;
+         END;
+      IF Coeff <> 1 THEN
+       ERROR(Text004,CoverSheetNo);
+    END;
+
+    PROCEDURE SetAllocation2@1000000001(AllocationCost@1000000001 : Record 50010;VAR DimCodeBufferTemp@1000000000 : TEMPORARY Record 367;StartDate@1000000002 : Date;EndDate@1000000003 : Date;DimCode@1000000009 : Code[20];DimValueCode@1000000014 : Code[20]);
+    VAR
+      GLEntryLoc@1000000004 : Record 17;
+      AllCostsFormula@1000000005 : Record 50011;
+      LedgerEntryDimension@1000000007 : Record 355;
+      GLSetup@1000000008 : Record 98;
+      LocationRec@1000000011 : Record 14;
+      FirstFind@1000000013 : Boolean;
+      FormulaCode@1000000006 : Code[20];
+      SheetCode@1000000010 : Code[20];
+      ValueCode@1000000012 : Code[20];
+    BEGIN
+      IF (StartDate = 0D) OR (EndDate = 0D) THEN
+       ERROR(Text001);
+
+      IF DimCode = '' THEN
+       ERROR(Text002);
+
+      GLSetup.GET;
+      FormulaCode := '';
+      SheetCode := '';
+      ValueCode := '';
+      IF DimCode = GLSetup."Allocation Dimension 2 Code" THEN
+       BEGIN
+        IF AllocationCost."Allocation Dim. 2 Calc Type" = AllocationCost."Allocation Dim. 2 Calc Type"::Formula THEN
+         FormulaCode := AllocationCost."Allocation Dim. 2 Relation";
+        IF AllocationCost."Allocation Dim. 2 Calc Type" = AllocationCost."Allocation Dim. 2 Calc Type"::Sheet THEN
+         SheetCode := AllocationCost."Allocation Dim. 2 Relation";
+       END;
+
+      IF DimCode = GLSetup."Allocation Dimension 1 Code" THEN
+       BEGIN
+        IF AllocationCost."Allocation Dim. 1 Calc Type" = AllocationCost."Allocation Dim. 1 Calc Type"::Sheet THEN
+         SheetCode := AllocationCost."Allocation Dim. 1 Relation";
+        IF AllocationCost."Allocation Dim. 1 Calc Type" = AllocationCost."Allocation Dim. 1 Calc Type"::Value THEN
+         ValueCode := AllocationCost."Allocation Dim. 1 Relation";
+       END;
+
+      IF FormulaCode <> '' THEN BEGIN
+      AllCostsFormula.GET(FormulaCode);
+
+      DimCodeBufferTemp.RESET;
+      DimCodeBufferTemp.DELETEALL;
+
+      LedgerEntryDimension.RESET;
+      LedgerEntryDimension.SETRANGE("Table ID",32);
+      LedgerEntryDimension.SETRANGE("Dimension Code",DimCode);
+
+      CASE AllCostsFormula."Formula Identifier" OF
+       0:ERROR('Алгоритм пока не реализован!');
+       1:  //по себестоимости реализации
+        BEGIN
+         ItemLedgerEntry.RESET;
+         ItemLedgerEntry.SETCURRENTKEY("Entry Type");
+         ItemLedgerEntry.SETRANGE("Posting Date",StartDate,EndDate);
+         ItemLedgerEntry.SETRANGE("Entry Type",ItemLedgerEntry."Entry Type"::Sale);
+         IF ItemLedgerEntry.FIND('-') THEN
+          REPEAT
+           LedgerEntryDimension.SETRANGE("Entry No.",ItemLedgerEntry."Entry No.");
+           IF NOT LedgerEntryDimension.FIND('-') THEN
+            LedgerEntryDimension."Dimension Value Code" := '';
+
+           ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)");
+
+           FillBuffer(DimCodeBufferTemp,ItemLedgerEntry."Cost Amount (Actual)",LedgerEntryDimension."Dimension Value Code");
+          UNTIL ItemLedgerEntry.NEXT = 0;
+         AmountInKoeffic(DimCodeBufferTemp);
+        END;
+       2: //среднескладской остаток
+        BEGIN
+         FirstFind := FALSE;
+         LocationRec.RESET;
+         LocationRec.SETRANGE("Use As In-Transit",TRUE);
+         IF LocationRec.FIND('-') THEN
+          REPEAT
+           IF NOT FirstFind THEN
+            LocFilter := '<>' + LocationRec.Code
+           ELSE
+            LocFilter := LocFilter + '&<>' + LocationRec.Code;
+           FirstFind := TRUE;
+          UNTIL LocationRec.NEXT = 0;
+         FindLocationRest(DimCodeBufferTemp,StartDate,DimCode);
+         FindLocationRest(DimCodeBufferTemp,EndDate,DimCode);
+         AmountInKoeffic(DimCodeBufferTemp);
+        END;
+       3:ERROR('Алгоритм пока не реализован!');
+      END; //case
+      END;
+      IF SheetCode <> '' THEN
+        SetAllocationFromSheet2(DimCodeBufferTemp,DimCode,DimValueCode,SheetCode,StartDate,EndDate);
+
+      IF ValueCode <> '' THEN //пока используется только для подразделения
+       FillBuffer(DimCodeBufferTemp,1,ValueCode);
+    END;
+
+    PROCEDURE SetAllocationFromSheet2@1000000002(VAR DimCodeBufferTemp@1000000000 : TEMPORARY Record 367;DimCode@1000000004 : Code[20];DimValueCode@1000000010 : Code[20];CoverSheetTemplate@1000000005 : Code[20];StartDate@1000000007 : Date;EndDate@1000000008 : Date);
+    VAR
+      CoverSheetHeader@1000000003 : Record 50014;
+      CoverSheetValues@1000000002 : Record 50013;
+      TheDimIs@1000000001 : Boolean;
+      Coeff@1000000006 : Decimal;
+      BatchCode@1000000009 : Code[20];
+    BEGIN
+      Coeff := 0;
+      TheDimIs := FALSE;
+      CoverSheetHeader.SETCURRENTKEY("From Date");
+      CoverSheetHeader.SETRANGE(CoverSheetHeader."Template Code",CoverSheetTemplate);
+      CoverSheetHeader.SETRANGE("From Date",StartDate);
+      IF CoverSheetHeader.FINDFIRST THEN
+        BatchCode := CoverSheetHeader.Code;
+
+      IF CoverSheetHeader."X Dimension" = DimCode THEN
+       TheDimIs := TRUE;
+      IF CoverSheetHeader."Y Dimension" = DimCode THEN
+       TheDimIs := TRUE;
+      IF NOT TheDimIs THEN
+       ERROR(Text003,CoverSheetHeader.Code,DimCode);
+
+      CoverSheetValues.RESET;
+      CoverSheetValues.SETRANGE("Template Code",CoverSheetTemplate);
+      CoverSheetValues.SETRANGE("Batch Code",BatchCode);
+      CoverSheetValues.SETRANGE("Y Dimension Code",DimCode);
+      CoverSheetValues.SETRANGE("X Dimension Code",DimCode);
+      CoverSheetValues.SETRANGE("Y Dimension Value",DimValueCode);
+      IF CoverSheetValues.FINDSET THEN
+        REPEAT
+          FillBuffer(DimCodeBufferTemp,CoverSheetValues.Coefficient,CoverSheetValues."X Dimension Value");
+          Coeff += CoverSheetValues.Coefficient;
+        UNTIL CoverSheetValues.NEXT = 0;
+      //IF Coeff <> 1 THEN
+      //  ERROR(Text004,CoverSheetTemplate);
+    END;
+
+    PROCEDURE CreateCoverSheetHeader@1101495003(TempalteCode@1101495001 : Code[20];DateStart@1101495004 : Date;DateEnd@1101495003 : Date);
+    VAR
+      CoverSheetTemplate@1101495000 : Record 50025;
+      CoverSheetHeader@1101495002 : Record 50014;
+      CoverSheetHeaderCheck@1101495005 : Record 50014;
+      CoverSheetValues@1101495006 : Record 50013;
+      TemplateFormulaLine@1101495009 : Record 50179;
+      AllocationDriver@1101495008 : Record 50178;
+      AllocationDriverValue1@1101495007 : Record 50177;
+    BEGIN
+      //NC M1 > DP
+      CurrentCSBatchHeader :='';
+      //NC M1 < DP
+
+
+      //NC MAC02 > DP
+      GLSetup.GET;
+      CoverSheetTemplate.RESET;
+      IF TempalteCode<>'' THEN
+        CoverSheetTemplate.SETRANGE(CoverSheetTemplate.Code,TempalteCode);
+      IF CoverSheetTemplate.FINDSET THEN
+        REPEAT
+          CoverSheetHeader.SETRANGE("Template Code", TempalteCode);
+          CoverSheetHeader.SETRANGE("From Date", DateStart);
+          CoverSheetHeader.SETRANGE("To Date", DateEnd);
+          IF NOT CoverSheetHeader.FINDFIRST THEN BEGIN
+            CoverSheetHeader.INIT;
+            CoverSheetHeader."Template Code" :=TempalteCode;
+            CoverSheetHeader."Y Dimension" := GLSetup."Allocation Dimension 1 Code";
+            IF GLSetup."Allocate Only Dimension 1" THEN
+              CoverSheetHeader."X Dimension" := GLSetup."Allocation Dimension 1 Code"
+            ELSE
+              CoverSheetHeader."X Dimension" := GLSetup."Allocation Dimension 2 Code";
+            CoverSheetHeader."Period Description" :=FORMAT(DateStart) + '-' + FORMAT(DateEnd);
+            CoverSheetHeader.Description := COPYSTR(CoverSheetTemplate.Description+'/'+CoverSheetHeader."Period Description",1,
+            MAXSTRLEN(CoverSheetHeader.Description));
+            CoverSheetHeader."From Date" := DateStart;
+            CoverSheetHeader."To Date" := DateEnd;
+            CoverSheetHeader."Document Date" :=DateEnd;
+            CoverSheetHeader.INSERT(TRUE);
+
+            //NC M1 > DP
+            CurrentCSBatchHeader :=CoverSheetHeader.Code;
+            //NC M1 < DP
+
+            //NC MAC03 > DP
+            IF CoverSheetTemplate.Calculatable AND CoverSheetTemplate.Dynamic  THEN
+              CreateCoverSheetLines1(TempalteCode,CoverSheetHeader.Code,DateStart,DateEnd)
+            ELSE
+            //NC MAC03 < DP
+            IF CoverSheetTemplate.Calculatable THEN
+              CreateCoverSheetLines(TempalteCode,CoverSheetHeader.Code,DateStart,DateEnd);
+          END ELSE BEGIN
+            CoverSheetHeader."Y Dimension" := GLSetup."Allocation Dimension 1 Code";
+            IF GLSetup."Allocate Only Dimension 1" THEN
+              CoverSheetHeader."X Dimension" := GLSetup."Allocation Dimension 1 Code"
+            ELSE
+              CoverSheetHeader."X Dimension" := GLSetup."Allocation Dimension 2 Code";
+            CoverSheetHeader."Period Description" :=FORMAT(DateStart) + '-' + FORMAT(DateEnd);
+            CoverSheetHeader.Description := COPYSTR(CoverSheetTemplate.Description+CoverSheetHeader."Period Description",1,
+            MAXSTRLEN(CoverSheetHeader.Description));
+            CoverSheetHeader."Document Date" :=DateEnd;
+            CoverSheetHeader.MODIFY(TRUE);
+
+            //NC M1 > DP
+            CurrentCSBatchHeader :=CoverSheetHeader.Code;
+            //NC M1 < DP
+
+            CoverSheetValues.RESET;
+            CoverSheetValues.SETRANGE("Template Code",CoverSheetHeader."Template Code");
+            CoverSheetValues.SETRANGE("Batch Code",CoverSheetHeader.Code);
+            CoverSheetValues.DELETEALL;
+            //NC MAC03 > DP
+            IF CoverSheetTemplate.Calculatable AND CoverSheetTemplate.Dynamic  THEN BEGIN
+              TemplateFormulaLine.RESET;
+              TemplateFormulaLine.SETRANGE("Template Code",TempalteCode);
+              TemplateFormulaLine.SETRANGE("Totaling Type",TemplateFormulaLine."Totaling Type"::ShareValue);
+              TemplateFormulaLine.SETRANGE(Result,TRUE);
+              IF TemplateFormulaLine.FINDFIRST THEN BEGIN
+                IF AllocationDriver.GET(TemplateFormulaLine.Totaling) THEN BEGIN
+                  AllocationDriverValue1.RESET;
+                  AllocationDriverValue1.SETCURRENTKEY("Allocation Unit Code","Driver Code",Date);
+                  AllocationDriverValue1.SETRANGE("Driver Code", AllocationDriver.Code);
+                  AllocationDriverValue1.SETRANGE(Date,DateEnd);
+                  AllocationDriverValue1.DELETEALL;
+                END;
+              END;
+              CreateCoverSheetLines1(TempalteCode,CoverSheetHeader.Code,DateStart,DateEnd)
+            END ELSE
+            //NC MAC03 < DP
+            IF CoverSheetTemplate.Calculatable THEN
+              CreateCoverSheetLines(TempalteCode,CoverSheetHeader.Code,DateStart,DateEnd);
+          END;
+        UNTIL CoverSheetTemplate.NEXT=0;
+      //NC MAC02 < DP
+    END;
+
+    PROCEDURE CreateCoverSheetLines@1101495002(TempalteCode@1101495002 : Code[20];BatchCode@1101495005 : Code[20];DateStart@1101495003 : Date;DateEnd@1101495004 : Date);
+    VAR
+      AllocationUnitRelaion@1101495000 : Record 50176;
+      CoverSheetValues@1101495001 : Record 50013;
+      TotalAllocated@1101495006 : Decimal;
+      AURCount@1101495007 : Integer;
+      AURCounter@1101495008 : Integer;
+    BEGIN
+      //NC MAC03 > DP
+      GLSetup.GET;
+      TotalAllocated :=0;
+      StartDate := DateStart;
+      EndDate := DateEnd;
+      AURCount :=0;
+      AURCounter :=0;
+      AllocationUnitRelaion.SETRANGE("Template Code",TempalteCode);
+      AllocationUnitRelaion.SETFILTER(Date,'..%1',DateEnd);
+      AllocationUnitRelaion.SETRANGE(Blocked,FALSE);
+      AllocationUnitRelaion.SETFILTER(Allocate,'<>%1',0);
+      AURCount := AllocationUnitRelaion.COUNT;
+      IF AllocationUnitRelaion.FINDFIRST THEN
+        REPEAT
+          AURCounter +=1;
+          CoverSheetValues.INIT;
+          CoverSheetValues."Template Code" := TempalteCode;
+          CoverSheetValues."Batch Code" := BatchCode;
+          CoverSheetValues."Y Dimension Code" := GLSetup."Allocation Dimension 1 Code";
+          IF GLSetup."Allocate Only Dimension 1" THEN
+            CoverSheetValues."X Dimension Code" := GLSetup."Allocation Dimension 1 Code"
+          ELSE
+            CoverSheetValues."X Dimension Code" := GLSetup."Allocation Dimension 2 Code";
+          CoverSheetValues."Y Dimension Value" := AllocationUnitRelaion."Allocation Unit Code From";
+          CoverSheetValues."X Dimension Value" := AllocationUnitRelaion."Allocation Unit Code To";
+          CoverSheetValues.Coefficient := ROUND(CalcDriverValue(AllocationUnitRelaion,TempalteCode),0.000000001);
+          TotalAllocated := TotalAllocated+CoverSheetValues.Coefficient;
+
+          IF (AURCounter=AURCount) AND (TotalAllocated<>1) THEN BEGIN
+            CoverSheetValues.Coefficient := CoverSheetValues.Coefficient+ (1-TotalAllocated);
+          END;
+
+          IF NOT CoverSheetValues.INSERT THEN CoverSheetValues.MODIFY;
+        UNTIL AllocationUnitRelaion.NEXT=0;
+      //NC MAC03 < DP
+    END;
+
+    PROCEDURE CalcDriverValue@1101495001(VAR AllocationUnitRelaion@1101495000 : Record 50176;TempalteCode@1101495001 : Code[10]) : Decimal;
+    VAR
+      TemplateFormulaLine@1101495004 : Record 50179;
+      Result@1101495005 : Decimal;
+    BEGIN
+      //NC MAC03 > DP
+      Result :=0;
+      TemplateFormulaLine.SETRANGE("Template Code",TempalteCode);
+      TemplateFormulaLine.SETRANGE(Result,TRUE);
+      IF TemplateFormulaLine.FINDSET THEN
+        REPEAT
+          Result := Result+CalcCell(AllocationUnitRelaion,TemplateFormulaLine);
+        UNTIL TemplateFormulaLine.NEXT=0;
+      EXIT(Result);
+      //NC MAC03 < DP
+    END;
+
+    PROCEDURE CalcCell@8(AllocationUnitRelaion@1101495001 : Record 50176;VAR TemplFormulaLine@1000 : Record 50179) : Decimal;
+    VAR
+      Result@1003 : Decimal;
+    BEGIN
+      //NC MAC03 > DP
+      DivisionError := FALSE;
+      PeriodError := FALSE;
+      CallLevel := 0;
+      CallingTemplFormulaLineID := TemplFormulaLine."Line No.";
+      AccSchedCellValue.RESET;
+      AccSchedCellValue.DELETEALL;
+      CLEAR(BasePercentLine);
+      OldTemplFormulaLineFilters := TemplFormulaLine.GETFILTERS;
+      Result := CalcCellValue(AllocationUnitRelaion,TemplFormulaLine);
+      IF TemplFormulaLine."Show Opposite Sign" THEN
+        Result := -Result;
+      EXIT(Result);
+      //NC MAC03 < DP
+    END;
+
+    LOCAL PROCEDURE CalcCellValue@6(AllocationUnitRelaion@1101495001 : Record 50176;TemplFormulaLine@1101495000 : Record 50179) : Decimal;
+    VAR
+      Result@1003 : Decimal;
+      GLAcc@1004 : Record 15;
+      AccSchedExtensionManagement@1470000 : Codeunit 26581;
+    BEGIN
+      //NC MAC03 > DP
+      Result := 0;
+      IF TemplFormulaLine.Totaling <> '' THEN
+        IF AccSchedCellValue.GET(TemplFormulaLine."Template Code",TemplFormulaLine."Line No.",0) THEN BEGIN
+          Result := AccSchedCellValue.Value;
+          DivisionError := DivisionError OR AccSchedCellValue."Has Error";
+          PeriodError := PeriodError OR AccSchedCellValue."Period Error";
+        END ELSE BEGIN
+          IF TemplFormulaLine."Totaling Type" = TemplFormulaLine."Totaling Type"::Constant THEN
+          BEGIN
+              IF NOT EVALUATE(Result,TemplFormulaLine.Totaling) THEN;
+          END
+            ELSE
+              IF TemplFormulaLine."Totaling Type" =TemplFormulaLine."Totaling Type"::Formula THEN
+                Result :=
+                    EvaluateExpression(TemplFormulaLine.Totaling,TemplFormulaLine,AllocationUnitRelaion)
+              ELSE
+                IF (StartDate = 0D) OR (EndDate = 0D) OR (EndDate = 31129999D) THEN BEGIN
+                  Result := 0;
+                  PeriodError := TRUE;
+                END ELSE BEGIN
+                  Result := Result + CalcValue(AllocationUnitRelaion,TemplFormulaLine);
+                END;
+
+          AccSchedCellValue."Row No." := TemplFormulaLine."Line No.";
+          AccSchedCellValue."Column No." := 0;
+          AccSchedCellValue.Value := Result;
+          AccSchedCellValue."Has Error" := DivisionError;
+          AccSchedCellValue."Period Error" := PeriodError;
+          AccSchedCellValue."Schedule Name" := TemplFormulaLine."Template Code";
+          AccSchedCellValue.INSERT;
+        END;
+      EXIT(Result);
+      //NC MAC03 < DP
+    END;
+
+    PROCEDURE CalcValue@1101495000(AllocationUnitRelaion@1101495002 : Record 50176;TemplFormulaLine@1101495001 : Record 50179) : Decimal;
+    VAR
+      AllocationDriverValue@1101495000 : Record 50177;
+      ValueFrom@1101495003 : Decimal;
+      ValueTo@1101495004 : Decimal;
+      DriverValue@1101495005 : Decimal;
+    BEGIN
+      //NC MAC03 > DP
+      DriverValue :=0;
+      IF (AllocationUnitRelaion.Allocate<>0) AND NOT AllocationUnitRelaion.Blocked THEN BEGIN
+        ValueFrom := 0;
+        ValueTo := 0;
+        AllocationDriverValue.RESET;
+        AllocationDriverValue.SETCURRENTKEY("Allocation Unit Code","Driver Code",Date,Base);
+        AllocationDriverValue.SETRANGE("Allocation Unit Code",AllocationUnitRelaion."Allocation Unit Code From");
+        AllocationDriverValue.SETRANGE("Driver Code",TemplFormulaLine.Totaling);
+        AllocationDriverValue.SETFILTER(Date,'..%1',EndDate);
+        IF AllocationDriverValue.FINDLAST THEN
+          ValueFrom := AllocationDriverValue."Allocation Value";
+
+        AllocationDriverValue.SETRANGE("Allocation Unit Code",AllocationUnitRelaion."Allocation Unit Code To");
+        IF AllocationDriverValue.FINDLAST THEN
+          ValueTo := AllocationDriverValue."Allocation Value";
+        IF ValueFrom<>0 THEN
+          DriverValue :=ValueTo/ValueFrom;
+      END;
+      EXIT(DriverValue);
+      //NC MAC03 < DP
+    END;
+
+    LOCAL PROCEDURE EvaluateExpression@9(Expression@1001 : Text[250];TemplFormulaLine@1101495001 : Record 50179;AllocationUnitRelaion@1101495000 : Record 50176) : Decimal;
+    VAR
+      TemplFormulaLine2@1018 : Record 50179;
+      Result@1005 : Decimal;
+      Parantheses@1006 : Integer;
+      Operator@1007 : Char;
+      LeftOperand@1008 : Text[250];
+      RightOperand@1009 : Text[250];
+      LeftResult@1010 : Decimal;
+      RightResult@1011 : Decimal;
+      i@1012 : Integer;
+      IsExpression@1013 : Boolean;
+      IsFilter@1014 : Boolean;
+      Operators@1015 : Text[8];
+      OperatorNo@1016 : Integer;
+      TemplFormulaLineID@1017 : Integer;
+      Show@1210000 : Boolean;
+    BEGIN
+      //NC MAC03 > DP
+      Result := 0;
+      IF NOT GLSetupRead THEN BEGIN
+        GLSetup.GET;
+        GLSetupRead := TRUE;
+      END;
+
+      CallLevel := CallLevel + 1;
+      IF CallLevel > 25 THEN
+        ShowError(Text020,TemplFormulaLine);
+
+      Expression := DELCHR(Expression,'<>',' ');
+      IF STRLEN(Expression) > 0 THEN BEGIN
+        Parantheses := 0;
+        IsExpression := FALSE;
+        Operators := '+-*/^%';
+        OperatorNo := 1;
+        REPEAT
+          i := STRLEN(Expression);
+          REPEAT
+            IF Expression[i] = '(' THEN
+              Parantheses := Parantheses + 1
+            ELSE
+              IF Expression[i] = ')' THEN
+                Parantheses := Parantheses - 1;
+            IF (Parantheses = 0) AND (Expression[i] = Operators[OperatorNo]) THEN
+              IsExpression := TRUE
+            ELSE
+              i := i - 1;
+          UNTIL IsExpression OR (i <= 0);
+          IF NOT IsExpression THEN
+            OperatorNo := OperatorNo + 1;
+        UNTIL (OperatorNo > STRLEN(Operators)) OR IsExpression;
+        IF IsExpression THEN BEGIN
+          IF i > 1 THEN
+            LeftOperand := COPYSTR(Expression,1,i - 1)
+          ELSE
+            LeftOperand := '';
+          IF i < STRLEN(Expression) THEN
+            RightOperand := COPYSTR(Expression,i + 1)
+          ELSE
+            RightOperand := '';
+          Operator := Expression[i];
+          LeftResult :=
+            EvaluateExpression(LeftOperand,TemplFormulaLine,AllocationUnitRelaion);
+          IF (RightOperand = '') AND (Operator = '%')
+          THEN BEGIN
+            TemplFormulaLine2.COPY(TemplFormulaLine);
+            TemplFormulaLine2."Line No." := GetBasePercentLine(TemplFormulaLine);
+            TemplFormulaLine2.FIND;
+            RightResult :=
+              EvaluateExpression(LeftOperand,TemplFormulaLine2,AllocationUnitRelaion);
+          END ELSE
+            RightResult :=
+              EvaluateExpression(RightOperand,TemplFormulaLine,AllocationUnitRelaion);
+          CASE Operator OF
+            '^':
+              Result := POWER(LeftResult,RightResult);
+            '%' :
+              IF RightResult = 0 THEN BEGIN
+                Result := 0;
+                DivisionError := TRUE;
+              END ELSE
+                Result := 100 * LeftResult / RightResult;
+            '*':
+              Result := LeftResult * RightResult;
+            '/':
+              IF RightResult = 0 THEN BEGIN
+                Result := 0;
+                DivisionError := TRUE;
+              END ELSE
+                Result := LeftResult / RightResult;
+            '+':
+              Result := LeftResult + RightResult;
+            '-':
+              Result := LeftResult - RightResult;
+          END;
+        END ELSE
+          IF (Expression[1] = '(') AND (Expression[STRLEN(Expression)] = ')') THEN
+            Result :=EvaluateExpression(COPYSTR(Expression,2,STRLEN(Expression) - 2),TemplFormulaLine,AllocationUnitRelaion)
+          ELSE BEGIN
+            IsFilter :=
+               (STRPOS(Expression,'..') +
+                STRPOS(Expression,'|') +
+                STRPOS(Expression,'<') +
+                STRPOS(Expression,'>') +
+                STRPOS(Expression,'&') +
+                STRPOS(Expression,'=') > 0);
+            IF (STRLEN(Expression) > 20) AND (NOT IsFilter) THEN
+              EVALUATE(Result,Expression)
+            ELSE BEGIN
+             TemplFormulaLine.SETRANGE("Template Code",TemplFormulaLine."Template Code");
+             TemplFormulaLine.SETFILTER("Line Code",Expression);
+             TemplFormulaLineID := TemplFormulaLine."Line No.";
+             IF TemplFormulaLine.FIND('-') THEN
+               REPEAT
+                 IF TemplFormulaLine."Line No." <> TemplFormulaLineID THEN
+                   Result := Result + CalcCellValue(AllocationUnitRelaion,TemplFormulaLine);
+               UNTIL TemplFormulaLine.NEXT = 0
+            END;
+          END;
+      END;
+      CallLevel := CallLevel - 1;
+      EXIT(Result);
+      //NC MAC03 < DP
+    END;
+
+    PROCEDURE ShowError@19(MessageLine@1000 : Text[100];VAR TemplFormulaLine@1001 : Record 50179);
+    BEGIN
+      //NC MAC03 > DP
+      TemplFormulaLine.SETRANGE("Template Code",TemplFormulaLine."Template Code");
+      TemplFormulaLine.SETRANGE("Line No.",CallingTemplFormulaLineID);
+      IF TemplFormulaLine.FIND('-') THEN;
+      ERROR(
+        MessageLine +'\\' +
+        Text017 +
+        Text018,
+        TemplFormulaLine."Line Code", TemplFormulaLine."Line No.",TemplFormulaLine.Totaling);
+      //NC MAC03 < DP
+    END;
+
+    LOCAL PROCEDURE InitBasePercents@33(TemplFormulaLine@1000 : Record 50179);
+    VAR
+      BaseIdx@1002 : Integer;
+    BEGIN
+      //NC MAC03 > DP
+      CLEAR(BasePercentLine);
+      BaseIdx := 0;
+
+      WITH TemplFormulaLine DO BEGIN
+        SETRANGE("Template Code","Template Code");
+        IF FIND('-') THEN
+          REPEAT
+            IF "Totaling Type" = "Totaling Type"::Formula THEN BEGIN
+              BaseIdx := BaseIdx + 1;
+              IF BaseIdx > ARRAYLEN(BasePercentLine) THEN
+                ShowError(
+                  STRSUBSTNO(Text022,ARRAYLEN(BasePercentLine),FIELDCAPTION("Totaling Type"),"Totaling Type"),
+                  TemplFormulaLine);
+              BasePercentLine[BaseIdx] := "Line No.";
+            END;
+          UNTIL NEXT = 0;
+      END;
+
+      IF BaseIdx = 0 THEN BEGIN
+        TemplFormulaLine."Totaling Type" := TemplFormulaLine."Totaling Type"::Formula;
+        ShowError(
+          STRSUBSTNO(Text023,TemplFormulaLine.FIELDCAPTION("Totaling Type"),TemplFormulaLine."Totaling Type"),
+          TemplFormulaLine);
+      END;
+      //NC MAC03 < DP
+    END;
+
+    LOCAL PROCEDURE GetBasePercentLine@34(TemplFormulaLine@1020000 : Record 50179) : Integer;
+    VAR
+      BaseIdx@1020002 : Integer;
+    BEGIN
+      IF BasePercentLine[1] = 0 THEN
+        InitBasePercents(TemplFormulaLine);
+
+      BaseIdx := ARRAYLEN(BasePercentLine);
+      REPEAT
+        IF BasePercentLine[BaseIdx] <> 0 THEN
+          IF BasePercentLine[BaseIdx] < TemplFormulaLine."Line No." THEN
+            EXIT(BasePercentLine[BaseIdx]);
+        BaseIdx := BaseIdx - 1;
+      UNTIL BaseIdx = 0;
+
+      TemplFormulaLine."Totaling Type" := TemplFormulaLine."Totaling Type"::Formula;
+      ShowError(
+        STRSUBSTNO(Text023,TemplFormulaLine.FIELDNAME("Totaling Type"),TemplFormulaLine."Totaling Type"),
+        TemplFormulaLine);
+    END;
+
+    PROCEDURE SetAllocation3@1000000004(AllocationCost@1000000001 : Record 50010;VAR DimensionCodeAmtBufTemp@1000000000 : TEMPORARY Record 375;StartDate@1000000002 : Date;EndDate@1000000003 : Date;DimCode@1000000009 : Code[20]);
+    VAR
+      GLEntryLoc@1000000004 : Record 17;
+      AllCostsFormula@1000000005 : Record 50011;
+      LedgerEntryDimension@1000000007 : Record 355;
+      GLSetup@1000000008 : Record 98;
+      LocationRec@1000000011 : Record 14;
+      FirstFind@1000000013 : Boolean;
+      FormulaCode@1000000006 : Code[20];
+      SheetCode@1000000010 : Code[20];
+      ValueCode@1000000012 : Code[20];
+    BEGIN
+      IF (StartDate = 0D) OR (EndDate = 0D) THEN
+       ERROR(Text001);
+
+      IF DimCode = '' THEN
+       ERROR(Text002);
+
+      GLSetup.GET;
+      FormulaCode := '';
+      SheetCode := '';
+      ValueCode := '';
+      IF DimCode = GLSetup."Allocation Dimension 2 Code" THEN
+       BEGIN
+        IF AllocationCost."Allocation Dim. 2 Calc Type" = AllocationCost."Allocation Dim. 2 Calc Type"::Formula THEN
+         FormulaCode := AllocationCost."Allocation Dim. 2 Relation";
+        IF AllocationCost."Allocation Dim. 2 Calc Type" = AllocationCost."Allocation Dim. 2 Calc Type"::Sheet THEN
+         SheetCode := AllocationCost."Allocation Dim. 2 Relation";
+       END;
+
+      IF DimCode = GLSetup."Allocation Dimension 1 Code" THEN
+       BEGIN
+        IF AllocationCost."Allocation Dim. 1 Calc Type" = AllocationCost."Allocation Dim. 1 Calc Type"::Sheet THEN
+         SheetCode := AllocationCost."Allocation Dim. 1 Relation";
+        IF AllocationCost."Allocation Dim. 1 Calc Type" = AllocationCost."Allocation Dim. 1 Calc Type"::Value THEN
+         ValueCode := AllocationCost."Allocation Dim. 1 Relation";
+       END;
+
+      IF FormulaCode <> '' THEN BEGIN
+      AllCostsFormula.GET(FormulaCode);
+
+      DimensionCodeAmtBufTemp.RESET;
+      DimensionCodeAmtBufTemp.DELETEALL;
+
+      LedgerEntryDimension.RESET;
+      LedgerEntryDimension.SETRANGE("Table ID",32);
+      LedgerEntryDimension.SETRANGE("Dimension Code",DimCode);
+
+      {
+      CASE AllCostsFormula."Formula Identifier" OF
+       0:ERROR('Алгоритм пока не реализован!');
+       1:  //по себестоимости реализации
+        BEGIN
+         ItemLedgerEntry.RESET;
+         ItemLedgerEntry.SETCURRENTKEY("Entry Type");
+         ItemLedgerEntry.SETRANGE("Posting Date",StartDate,EndDate);
+         ItemLedgerEntry.SETRANGE("Entry Type",ItemLedgerEntry."Entry Type"::Sale);
+         IF ItemLedgerEntry.FIND('-') THEN
+          REPEAT
+           LedgerEntryDimension.SETRANGE("Entry No.",ItemLedgerEntry."Entry No.");
+           IF NOT LedgerEntryDimension.FIND('-') THEN
+            LedgerEntryDimension."Dimension Value Code" := '';
+
+           ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)");
+
+           FillBuffer(DimensionCodeAmtBufTemp,ItemLedgerEntry."Cost Amount (Actual)",LedgerEntryDimension."Dimension Value Code");
+          UNTIL ItemLedgerEntry.NEXT = 0;
+         AmountInKoeffic(DimCodeBufferTemp);
+        END;
+       2: //среднескладской остаток
+        BEGIN
+         FirstFind := FALSE;
+         LocationRec.RESET;
+         LocationRec.SETRANGE("Use As In-Transit",TRUE);
+         IF LocationRec.FIND('-') THEN
+          REPEAT
+           IF NOT FirstFind THEN
+            LocFilter := '<>' + LocationRec.Code
+           ELSE
+            LocFilter := LocFilter + '&<>' + LocationRec.Code;
+           FirstFind := TRUE;
+          UNTIL LocationRec.NEXT = 0;
+         FindLocationRest(DimCodeBufferTemp,StartDate,DimCode);
+         FindLocationRest(DimCodeBufferTemp,EndDate,DimCode);
+         AmountInKoeffic(DimCodeBufferTemp);
+        END;
+       3:ERROR('Алгоритм пока не реализован!');
+      END; //case
+      }
+      END;
+
+      IF SheetCode <> '' THEN
+        SetAllocationFromSheet3(DimensionCodeAmtBufTemp,DimCode,SheetCode,StartDate,EndDate,AllocationCost."Allocation Dim. 1 Filter");
+
+      {
+      IF ValueCode <> '' THEN //пока используется только для подразделения
+       FillBuffer(DimCodeBufferTemp,1,ValueCode);
+      }
+    END;
+
+    PROCEDURE SetAllocationFromSheet3@1000000003(VAR DimensionCodeAmtBufTemp@1000000000 : TEMPORARY Record 375;DimCode@1000000004 : Code[20];CoverSheetTemplate@1000000005 : Code[20];StartDate@1000000007 : Date;EndDate@1000000008 : Date;DimValueFromFilter@1000000010 : Text[250]);
+    VAR
+      CoverSheetHeader@1000000003 : Record 50014;
+      CoverSheetValues@1000000002 : Record 50013;
+      TheDimIs@1000000001 : Boolean;
+      Coeff@1000000006 : Decimal;
+      BatchCode@1000000009 : Code[20];
+    BEGIN
+      Coeff := 0;
+      //Y-строки матрицы - from
+      //X-столбцы - to
+      TheDimIs := FALSE;
+      CoverSheetHeader.SETCURRENTKEY("From Date");
+      CoverSheetHeader.SETRANGE("Template Code",CoverSheetTemplate);
+      CoverSheetHeader.SETRANGE("From Date",StartDate);
+      IF CoverSheetHeader.FINDFIRST THEN
+        BatchCode := CoverSheetHeader.Code;
+
+      IF CoverSheetHeader."X Dimension" = DimCode THEN
+       TheDimIs := TRUE;
+      IF CoverSheetHeader."Y Dimension" = DimCode THEN
+       TheDimIs := TRUE;
+      IF NOT TheDimIs THEN
+       ERROR(Text003,CoverSheetHeader.Code,DimCode);
+
+      CoverSheetValues.RESET;
+      CoverSheetValues.SETRANGE("Template Code",CoverSheetTemplate);
+      CoverSheetValues.SETRANGE("Batch Code",BatchCode);
+      CoverSheetValues.SETRANGE("Y Dimension Code",DimCode);
+      CoverSheetValues.SETRANGE("X Dimension Code",DimCode);
+      //CoverSheetValues.SETRANGE("Y Dimension Value",DimValueCode);
+      IF DimValueFromFilter <> '' THEN
+        CoverSheetValues.SETFILTER("Y Dimension Value",DimValueFromFilter);
+      IF CoverSheetValues.FINDSET THEN
+        REPEAT
+          FillBuffer3(DimensionCodeAmtBufTemp,CoverSheetValues.Coefficient,
+            CoverSheetValues."Y Dimension Value",CoverSheetValues."X Dimension Value");
+          //Coeff += CoverSheetValues.Coefficient;
+        UNTIL CoverSheetValues.NEXT = 0;
+      //IF Coeff <> 1 THEN
+      //  ERROR(Text004,CoverSheetTemplate);
+    END;
+
+    PROCEDURE FillBuffer3@1000000011(VAR DimensionCodeAmtBufTemp@1000000000 : TEMPORARY Record 375;JAmount@1000000001 : Decimal;FromDimValueCode@1000000003 : Code[20];ToDimValueCode@1000000002 : Code[20]);
+    BEGIN
+      //"Column Code" - To
+      //"Line Code" - From
+      DimensionCodeAmtBufTemp.SETRANGE("Column Code",ToDimValueCode);
+      DimensionCodeAmtBufTemp.SETRANGE("Line Code",FromDimValueCode);
+      IF DimensionCodeAmtBufTemp.FIND THEN
+       BEGIN
+        DimensionCodeAmtBufTemp.Amount += JAmount;
+        DimensionCodeAmtBufTemp.MODIFY;
+       END
+      ELSE
+       BEGIN
+        DimensionCodeAmtBufTemp.INIT;
+        DimensionCodeAmtBufTemp."Column Code" := ToDimValueCode;
+        DimensionCodeAmtBufTemp."Line Code" := FromDimValueCode;
+        DimensionCodeAmtBufTemp.Amount := JAmount;
+        DimensionCodeAmtBufTemp.INSERT;
+       END;
+    END;
+
+    PROCEDURE CreateCoverSheetLines1@1101495004(AllocTemplateCode@1101495000 : Code[10];AllocBatchCode@1101495011 : Code[20];AllocDateStart@1101495005 : Date;AllocDateEnd@1101495006 : Date);
+    VAR
+      AllocationUnit@1101495001 : Record 50175;
+      AllocationUnitFrom@1101495021 : Record 50175;
+      AllocationTemplate@1101495002 : Record 50025;
+      TemplateFormulaLine@1101495003 : Record 50179;
+      AllocationDriver@1101495004 : Record 50178;
+      AllocationDriverValueCheck@1101495014 : Record 50177;
+      GLEntry@1101495007 : Record 17;
+      AllocGLEntry@1101495008 : Record 50012;
+      BaseAmount@1101495009 : Decimal;
+      AllocUnitAmount@1101495010 : Decimal;
+      CoverSheetValues@1101495012 : Record 50013;
+      BaseCode@1101495013 : Code[20];
+      NextLineNo@1101495015 : Integer;
+      Allocated@1101495016 : Decimal;
+      LastXDimValue@1101495017 : Code[20];
+      LineCount@1101495020 : Integer;
+      LineCounter@1101495019 : Integer;
+      Indicator@1101495018 : Dialog;
+      GLEntry1@1101495023 : Record 17;
+      AllocGLEntry1@1101495022 : Record 50012;
+      AllocAmount@1101495024 : Decimal;
+      LastYDimValue@1101495025 : Code[20];
+    BEGIN
+      //NC MAC02 > DP
+      GLSetup.GET;
+      NextLineNo := 0;
+      IF NOT GLSetup."Allocate Only Dimension 1" THEN
+        EXIT;
+      IF AllocationTemplate.GET(AllocTemplateCode) AND AllocationTemplate.Calculatable THEN BEGIN
+        AllocationTemplate.TESTFIELD("Base Alloc. Unit Filter");
+        IF AllocationDriverValueCheck.FINDLAST THEN
+          NextLineNo := 0;
+          //AllocationDriverValueCheck."Line No.";
+        TemplateFormulaLine.RESET;
+        TemplateFormulaLine.SETRANGE(TemplateFormulaLine."Template Code",AllocTemplateCode);
+        TemplateFormulaLine.SETRANGE("Totaling Type",TemplateFormulaLine."Totaling Type"::ShareValue);
+        TemplateFormulaLine.SETRANGE(Result,TRUE);
+        IF TemplateFormulaLine.FINDFIRST THEN BEGIN
+          IF AllocationDriver.GET(TemplateFormulaLine.Totaling) THEN BEGIN
+            AllocationDriver.TESTFIELD("G/L Account Filer");
+
+            CLEAR(GLEntry);
+            GLEntry.SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+            GLEntry.SETFILTER("G/L Account No.", AllocationDriver."G/L Account Filer");
+
+            //NC M1 < DP
+            IF AllocationTemplate.YTD THEN
+              GLEntry.SETFILTER("Posting Date",'%1..%2',FindFiscalYear(AllocDateEnd),AllocDateEnd)
+            ELSE
+            //NC M1 < DP
+
+            GLEntry.SETFILTER("Posting Date",'%1..%2',AllocDateStart,AllocDateEnd);
+            GLEntry.CALCSUMS(Amount);
+            BaseAmount :=GLEntry.Amount;
+
+            //NC NCS-963 > DP
+            AllocGLEntry.SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Allocation Step",
+            "Posting Date");
+            {
+            AllocGLEntry.SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+            }
+            //NC NCS-963 < DP
+
+            AllocGLEntry.SETFILTER("G/L Account No.", AllocationDriver."G/L Account Filer");
+
+            //NC M1 < DP
+            IF AllocationTemplate.YTD THEN
+              AllocGLEntry.SETFILTER("Posting Date",'%1..%2',FindFiscalYear(AllocDateEnd),AllocDateEnd)
+            ELSE
+            //NC M1 < DP
+
+            AllocGLEntry.SETFILTER("Posting Date",'%1..%2',AllocDateStart,AllocDateEnd);
+
+            //NC NCS-963 > DP
+            IF TemplateFormulaLine."Alloc. Step Filter"<>'' THEN
+               AllocGLEntry.SETFILTER("Allocation Step",TemplateFormulaLine."Alloc. Step Filter");
+            //NC NCS-963 < DP
+
+            AllocGLEntry.CALCSUMS(Amount);
+            BaseAmount := BaseAmount + AllocGLEntry.Amount;
+
+            IF BaseAmount<>0 THEN BEGIN
+
+              AllocationDriverValue.RESET;
+              AllocationDriverValue.SETCURRENTKEY("Allocation Unit Code","Driver Code",Date);
+              AllocationDriverValue.SETRANGE("Allocation Unit Code",'');
+              AllocationDriverValue.SETRANGE("Driver Code", AllocationDriver.Code);
+              AllocationDriverValue.SETRANGE(Date,AllocDateEnd);
+              AllocationDriverValue.SETRANGE(Base,TRUE);
+              IF NOT AllocationDriverValue.FINDFIRST THEN BEGIN
+                NextLineNo := NextLineNo+1;
+                AllocationDriverValue.INIT;
+                AllocationDriverValue."Allocation Unit Code" := '';
+                //AllocationTemplate."Base Alloc. Unit";
+                AllocationDriverValue."Driver Code" := AllocationDriver.Code;
+                AllocationDriverValue.Date := AllocDateEnd;
+                AllocationDriverValue."Allocation Value" :=BaseAmount;
+                AllocationDriverValue.Base :=TRUE;
+                AllocationDriverValue."G/L Begining Date" := AllocDateStart;
+                AllocationDriverValue."G/L Ending Date" := AllocDateEnd;
+                IF NOT AllocationDriverValue.INSERT THEN;
+              END ELSE BEGIN
+                AllocationDriverValue."Allocation Value" :=BaseAmount;
+                AllocationDriverValue.MODIFY;
+              END;
+              Allocated :=0;
+              AllocationUnit.RESET;
+              Indicator.OPEN(STRSUBSTNO(Text010,AllocTemplateCode) + '\' +
+                     '@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@');
+              LineCount := AllocationUnit.COUNT;
+              IF AllocationUnit.FINDSET THEN
+                REPEAT
+                  LineCounter := LineCounter+1;
+                  IF GLSetup."Allocation Dimension 1 Code"=GLSetup."Global Dimension 1 Code" THEN BEGIN
+                    GLEntry.SETRANGE("Global Dimension 1 Code", AllocationUnit.Code);
+                    AllocGLEntry.SETRANGE("Global Dimension 1 Code", AllocationUnit.Code);
+                  END;
+                  IF GLSetup."Allocation Dimension 1 Code"=GLSetup."Global Dimension 2 Code" THEN BEGIN
+                    GLEntry.SETRANGE("Global Dimension 2 Code", AllocationUnit.Code);
+                    AllocGLEntry.SETRANGE("Global Dimension 2 Code", AllocationUnit.Code);
+                  END;
+
+                  GLEntry.CALCSUMS(Amount);
+                  AllocGLEntry.CALCSUMS(Amount);
+                  AllocUnitAmount :=GLEntry.Amount+AllocGLEntry.Amount;
+
+                  IF AllocUnitAmount<>0 THEN BEGIN
+                    AllocationDriverValue.RESET;
+                    AllocationDriverValue.SETCURRENTKEY("Allocation Unit Code","Driver Code",Date);
+                    AllocationDriverValue.SETRANGE("Allocation Unit Code",BaseCode);
+                    AllocationDriverValue.SETRANGE("Driver Code", AllocationDriver.Code);
+                    AllocationDriverValue.SETRANGE(Date,AllocDateEnd);
+                    AllocationDriverValue.SETRANGE(Base,FALSE);
+                    IF NOT AllocationDriverValue.FINDFIRST THEN BEGIN
+                      NextLineNo := NextLineNo+1;
+                      AllocationDriverValue.INIT;
+                      //AllocationDriverValue."Line No." := NextLineNo;
+                      AllocationDriverValue."Allocation Unit Code" := AllocationUnit.Code;
+                      AllocationDriverValue."Driver Code" := AllocationDriver.Code;
+                      AllocationDriverValue.Date := AllocDateEnd;
+                      AllocationDriverValue."Allocation Value" :=AllocUnitAmount;
+                      AllocationDriverValue."G/L Begining Date" := AllocDateStart;
+                      AllocationDriverValue."G/L Ending Date" := AllocDateEnd;
+                      AllocationDriverValue.Base :=FALSE;
+                      IF NOT AllocationDriverValue.INSERT THEN;
+                    END ELSE BEGIN
+                      AllocationDriverValue."Allocation Value" :=AllocUnitAmount;
+                      AllocationDriverValue.MODIFY;
+                    END;
+                    IF AllocBatchCode<>'' THEN BEGIN
+                      CLEAR(AllocationUnitFrom);
+                      AllocationUnitFrom.SETFILTER(Code,AllocationTemplate."Base Alloc. Unit Filter");
+                      IF AllocationUnitFrom.FINDSET THEN
+                        REPEAT
+                          AllocAmount :=0;
+
+                          CLEAR(GLEntry1);
+                          GLEntry1.SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date");
+                          GLEntry1.SETFILTER("G/L Account No.", AllocationTemplate."Alloc. G/L Account Filter");
+
+                          //NC M1 < DP
+                          IF AllocationTemplate.YTD THEN
+                            GLEntry1.SETFILTER("Posting Date",'%1..%2',FindFiscalYear(AllocDateEnd),AllocDateEnd)
+                          ELSE
+                          //NC M1 < DP
+
+                          GLEntry1.SETFILTER("Posting Date",'%1..%2',AllocDateStart,AllocDateEnd);
+
+                          IF GLSetup."Allocation Dimension 1 Code"=GLSetup."Global Dimension 1 Code" THEN BEGIN
+                            GLEntry1.SETRANGE("Global Dimension 1 Code", AllocationUnitFrom.Code);
+                          END;
+                          IF GLSetup."Allocation Dimension 1 Code"=GLSetup."Global Dimension 2 Code" THEN BEGIN
+                            GLEntry1.SETRANGE("Global Dimension 2 Code", AllocationUnitFrom.Code);
+                          END;
+
+                          GLEntry1.CALCSUMS(Amount);
+                          AllocAmount :=GLEntry1.Amount;
+
+
+                        AllocGLEntry1.SETCURRENTKEY("G/L Account No.","Global Dimension 1 Code","Global Dimension 2 Code","Posting Date"
+      );
+                          AllocGLEntry1.SETFILTER("G/L Account No.", AllocationTemplate."Alloc. G/L Account Filter");
+
+                          //NC M1 < DP
+                          IF AllocationTemplate.YTD THEN
+                            AllocGLEntry1.SETFILTER("Posting Date",'%1..%2',FindFiscalYear(AllocDateEnd),AllocDateEnd)
+                          ELSE
+                          //NC M1 < DP
+
+                          AllocGLEntry1.SETFILTER("Posting Date",'%1..%2',AllocDateStart,AllocDateEnd);
+                          IF GLSetup."Allocation Dimension 1 Code"=GLSetup."Global Dimension 1 Code" THEN BEGIN
+                            AllocGLEntry1.SETRANGE("Global Dimension 1 Code", AllocationUnitFrom.Code);
+                          END;
+                          IF GLSetup."Allocation Dimension 1 Code"=GLSetup."Global Dimension 2 Code" THEN BEGIN
+                            AllocGLEntry1.SETRANGE("Global Dimension 2 Code", AllocationUnitFrom.Code);
+                          END;
+
+                          AllocGLEntry1.CALCSUMS(Amount);
+                          AllocAmount := AllocAmount + AllocGLEntry1.Amount;
+
+                          IF AllocAmount<>0 THEN BEGIN
+
+
+                             CoverSheetValues.INIT;
+                             CoverSheetValues."Template Code" := AllocTemplateCode;
+                             CoverSheetValues."Batch Code" := AllocBatchCode;
+                             CoverSheetValues."Y Dimension Code" := GLSetup."Allocation Dimension 1 Code";
+                             IF GLSetup."Allocate Only Dimension 1" THEN
+                               CoverSheetValues."X Dimension Code" := GLSetup."Allocation Dimension 1 Code"
+                            ELSE
+                              CoverSheetValues."X Dimension Code" := GLSetup."Allocation Dimension 2 Code";
+                            CoverSheetValues."Y Dimension Value" := AllocationUnitFrom.Code;
+                            CoverSheetValues."X Dimension Value" := AllocationUnit.Code;
+                            CoverSheetValues.Coefficient := ROUND(AllocUnitAmount/BaseAmount,0.000000001);
+                            LastXDimValue := AllocationUnit.Code;
+                            LastYDimValue := AllocationUnitFrom.Code;
+                            IF NOT CoverSheetValues.INSERT THEN CoverSheetValues.MODIFY;
+
+                          END;
+
+                       UNTIL AllocationUnitFrom.NEXT=0;
+                       Allocated += ROUND(AllocUnitAmount/BaseAmount,0.000000001);
+                    END;
+                  END;
+                  IF (LineCounter=LineCount) AND (Allocated<>1) THEN BEGIN
+                    CoverSheetValues.RESET;
+                    CoverSheetValues.SETRANGE("Template Code",AllocTemplateCode);
+                    CoverSheetValues.SETRANGE("Batch Code", AllocBatchCode);
+                    CoverSheetValues.SETRANGE("Y Dimension Code",GLSetup."Allocation Dimension 1 Code");
+                    IF GLSetup."Allocate Only Dimension 1" THEN
+                      CoverSheetValues.SETRANGE("X Dimension Code",GLSetup."Allocation Dimension 1 Code")
+                    ELSE
+                      CoverSheetValues.SETRANGE("X Dimension Code",GLSetup."Allocation Dimension 2 Code");
+                    CoverSheetValues.SETRANGE("X Dimension Value", LastXDimValue);
+                    IF CoverSheetValues.FINDSET THEN
+                      REPEAT
+                        CoverSheetValues.Coefficient := CoverSheetValues.Coefficient+(1-Allocated);
+                        CoverSheetValues.MODIFY;
+                      UNTIL CoverSheetValues.NEXT=0;
+                  END;
+
+                  Indicator.UPDATE(1, ROUND(LineCounter * (10000 / LineCount),1));
+                UNTIL AllocationUnit.NEXT=0;
+            END;
+          END ELSE
+            ERROR(Text008,TemplateFormulaLine.Totaling);
+        END ELSE BEGIN
+          ERROR(Text007,AllocTemplateCode);
+        END;
+      END;
+      //NC MAC02 < DP
+    END;
+
+    PROCEDURE CheckAllocation@1101495005(TemplateCode@1101495002 : Code[20];DateStart@1101495001 : Date;DateEnd@1101495000 : Date) : Boolean;
+    VAR
+      tmpAllocationDriver@1101495003 : TEMPORARY Record 50175;
+      CoverSheetTemplate@1101495008 : Record 50025;
+      TemplateFormulaLine@1101495004 : Record 50179;
+      AllocationUnitRelaion@1101495005 : Record 50176;
+      OldAllocationUnitFrom@1101495006 : Code[20];
+      IsError@1101495007 : Boolean;
+      AURCount@1101495009 : Integer;
+      AURCounter@1101495010 : Integer;
+    BEGIN
+      IsError := FALSE;
+      CLEAR(CoverSheetTemplate);
+      tmpAllocationDriver.DELETEALL;
+      OldAllocationUnitFrom := '';
+      IF (TemplateCode<>'') AND CoverSheetTemplate.GET(TemplateCode) THEN BEGIN
+        TemplateFormulaLine.RESET;
+        TemplateFormulaLine.SETRANGE("Template Code",TemplateCode);
+        TemplateFormulaLine.SETRANGE("Totaling Type",TemplateFormulaLine."Totaling Type"::ShareValue);
+        IF TemplateFormulaLine.FINDSET THEN
+          REPEAT
+            tmpAllocationDriver.INIT;
+            tmpAllocationDriver.Code := TemplateFormulaLine.Totaling;
+            tmpAllocationDriver.INSERT;
+          UNTIL TemplateFormulaLine.NEXT=0;
+        AllocationUnitRelaion.SETRANGE("Template Code",TemplateCode);
+        AllocationUnitRelaion.SETFILTER(Date,'..%1',DateEnd);
+        AllocationUnitRelaion.SETRANGE(Blocked,FALSE);
+        AllocationUnitRelaion.SETFILTER(Allocate,'<>%1',0);
+        AURCount := AllocationUnitRelaion.COUNT;
+        IF AllocationUnitRelaion.FINDFIRST THEN
+          REPEAT
+            AURCounter +=1;
+            IF tmpAllocationDriver.FINDSET THEN
+              REPEAT
+                IF OldAllocationUnitFrom<>AllocationUnitRelaion."Allocation Unit Code From" THEN BEGIN
+                  AllocationDriverValue.RESET;
+                  AllocationDriverValue.SETCURRENTKEY("Allocation Unit Code","Driver Code",Date);
+                  AllocationDriverValue.SETRANGE("Allocation Unit Code",AllocationUnitRelaion."Allocation Unit Code From");
+                  AllocationDriverValue.SETRANGE("Driver Code", tmpAllocationDriver.Code);
+                  AllocationDriverValue.SETFILTER(Date,'..%1',DateEnd);
+                  IF NOT AllocationDriverValue.FINDFIRST THEN BEGIN
+                    IsError := TRUE;
+                    WriteErrorLog(AllocationUnitRelaion."Allocation Unit Code From",tmpAllocationDriver.Code,DateEnd);
+                  END;
+                END;
+                  AllocationDriverValue.RESET;
+                  AllocationDriverValue.SETCURRENTKEY("Allocation Unit Code","Driver Code",Date);
+                  AllocationDriverValue.SETRANGE("Allocation Unit Code",AllocationUnitRelaion."Allocation Unit Code To");
+                  AllocationDriverValue.SETRANGE("Driver Code", tmpAllocationDriver.Code);
+                  AllocationDriverValue.SETFILTER(Date,'..%1',DateEnd);
+                  IF NOT AllocationDriverValue.FINDFIRST THEN BEGIN
+                    IsError := TRUE;
+                    WriteErrorLog(AllocationUnitRelaion."Allocation Unit Code To",tmpAllocationDriver.Code,DateEnd);
+                  END;
+
+              UNTIL tmpAllocationDriver.NEXT=0;
+              OldAllocationUnitFrom := AllocationUnitRelaion."Allocation Unit Code From";
+          UNTIL AllocationUnitRelaion.NEXT=0;
+      END;
+      EXIT(IsError);
+    END;
+
+    PROCEDURE WriteErrorLog@1101495006(AllocUnitCode@1000000000 : Code[20];AllocDriverCode@1000000001 : Code[20];AllocDate@1101495000 : Date);
+    VAR
+      lrecErrorLog@1000000002 : Record 50023;
+      lGroup@1000000003 : 'System,Load,Transformation,Post,Consolidation,Periodical Job,Transformation FA';
+      lType@1000000004 : 'Error,Warning,Delay';
+      lErrorCode@1000000005 : Code[10];
+      lDescription@1000000006 : Text[250];
+      lrecObject@1000000007 : Record 2000000001;
+    BEGIN
+      lErrorCode := 'EAC01';
+      lDescription := STRSUBSTNO(Text019,AllocDriverCode,AllocUnitCode,AllocDate);
+      lrecObject.GET(lrecObject.Type::Report,'',REPORT::Report50014);
+      lrecErrorLog.AddErrorObject(COMPANYNAME,
+                                  lGroup::"Periodical Job",                //группа -> периодическое задание
+                                  lType::Error,                            //тип -> ошибка
+                                  '',                                      //ConsSourceCode
+                                  0,                                       //ConsRegister
+                                  lErrorCode,
+                                  lDescription,
+                                  COMPANYNAME,
+                                  lrecObject,
+                                  0);                                      //строка статуса
+    END;
+
+    PROCEDURE FindFiscalYear@10(BalanceDate@1000 : Date) : Date;
+    VAR
+      AccountingPeriod@1001 : Record 50;
+    BEGIN
+      //NC MAC05 > DP
+      AccountingPeriod.SETRANGE("New Fiscal Year",TRUE);
+      AccountingPeriod.SETRANGE("Starting Date",0D,BalanceDate);
+      IF AccountingPeriod.FIND('+') THEN
+        EXIT(AccountingPeriod."Starting Date");
+      AccountingPeriod.RESET;
+      AccountingPeriod.FIND('-');
+      EXIT(AccountingPeriod."Starting Date");
+      //NC MAC05 < DP
+    END;
+
+    PROCEDURE FindEndOfFiscalYear@27(BalanceDate@1000 : Date) : Date;
+    VAR
+      AccountingPeriod@1001 : Record 50;
+    BEGIN
+      //NC MAC05 > DP
+      AccountingPeriod.SETRANGE("New Fiscal Year",TRUE);
+      AccountingPeriod.SETFILTER("Starting Date",'>%1',FindFiscalYear(BalanceDate));
+      IF AccountingPeriod.FIND('-') THEN
+        EXIT((CALCDATE('<-1D>',AccountingPeriod."Starting Date")));
+      EXIT((31129999D));
+      //NC MAC05 < DP
+    END;
+
+    PROCEDURE GetBatchCode@1101495007() BatchCode : Code[20];
+    BEGIN
+      //NC M1 > DP
+      EXIT(CurrentCSBatchHeader);
+      //NC M1 < DP
+    END;
+
+    BEGIN
+    {
+      NC NCS-1820 DP Перенос функциональности MIS
+    }
+    END.
+  }
+}
+

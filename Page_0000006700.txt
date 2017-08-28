@@ -1,0 +1,188 @@
+OBJECT Page 6700 Exchange Sync. Setup
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVW110.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 1261=rimd;
+    CaptionML=[ENU=Exchange Sync. Setup;
+               RUS=Настройка синхронизации с Exchange];
+    InsertAllowed=No;
+    LinksAllowed=No;
+    SourceTable=Table6700;
+    PageType=Card;
+    PromotedActionCategoriesML=[ENU=New,Process,Report,Navigate;
+                                RUS=Создать,Обработать,Отчет,Перейти];
+    OnOpenPage=VAR
+                 User@1000 : Record 2000000120;
+                 AzureADMgt@1001 : Codeunit 6300;
+               BEGIN
+                 RESET;
+                 GetUser(User);
+
+                 IF User."Authentication Email" = '' THEN
+                   ERROR(EmailMissingErr);
+
+                 ExchangeAccountUserName := User."Authentication Email";
+
+                 IF NOT GET(USERID) THEN BEGIN
+                   INIT;
+                   "User ID" := USERID;
+                   "Folder ID" := PRODUCTNAME.SHORT;
+                   INSERT;
+                   COMMIT;
+                 END;
+
+                 PasswordRequired := AzureADMgt.GetAccessToken(AzureADMgt.GetO365Resource,AzureADMgt.GetO365ResourceName,FALSE) = '';
+
+                 IF (ExchangeAccountUserName <> '') AND (NOT ISNULLGUID("Exchange Account Password Key")) THEN
+                   ExchangeAccountPasswordTemp := '**********';
+               END;
+
+    ActionList=ACTIONS
+    {
+      { 6       ;    ;ActionContainer;
+                      ActionContainerType=ActionItems }
+      { 18      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Process;
+                                 RUS=Обработать];
+                      Image=Action }
+      { 20      ;2   ;Action    ;
+                      Name=Validate Exchange Connection;
+                      CaptionML=[ENU=Validate Exchange Connection;
+                                 RUS=Проверить подключение к Exchange];
+                      ToolTipML=[ENU=Test that the provided exchange server connection works.;
+                                 RUS=Проверка работоспособности подключения к указанному серверу Exchange.];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=ValidateEmailLoggingSetup;
+                      PromotedCategory=Process;
+                      OnAction=BEGIN
+                                 ProgressWindow.OPEN(ProgressWindowMsg);
+
+                                 IF O365SyncManagement.CreateExchangeConnection(Rec) THEN
+                                   MESSAGE(ConnectionSuccessMsg)
+                                 ELSE BEGIN
+                                   ProgressWindow.CLOSE;
+                                   ERROR(ConnectionFailureErr);
+                                 END;
+
+                                 ProgressWindow.CLOSE;
+                               END;
+                                }
+      { 29      ;1   ;ActionGroup;
+                      CaptionML=[ENU=Navigate;
+                                 RUS=Перейти] }
+      { 30      ;2   ;Action    ;
+                      Name=SetupBookingSync;
+                      CaptionML=[ENU=Bookings Sync. Setup;
+                                 RUS=Настройка синхронизации резервирования];
+                      ToolTipML=[ENU=Open the Bookings Sync. Setup page.;
+                                 RUS=Открытие страницы "Настройка синхронизации Bookings".];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=BookingsLogo;
+                      PromotedCategory=Category4;
+                      OnAction=BEGIN
+                                 IF PasswordRequired AND ISNULLGUID("Exchange Account Password Key") THEN
+                                   ERROR(PasswordMissingErr);
+
+                                 PAGE.RUNMODAL(PAGE::"Booking Sync. Setup");
+                               END;
+                                }
+      { 4       ;2   ;Action    ;
+                      Name=SetupContactSync;
+                      CaptionML=[ENU=Contact Sync. Setup;
+                                 RUS=Настройка синхронизации контактов];
+                      ToolTipML=[ENU=Open the Contact Sync. Setup page.;
+                                 RUS=Открытие страницы "Настройка синхронизации контактов".];
+                      ApplicationArea=#Basic,#Suite;
+                      Promoted=Yes;
+                      Image=ExportSalesPerson;
+                      PromotedCategory=Category4;
+                      OnAction=BEGIN
+                                 IF PasswordRequired AND ISNULLGUID("Exchange Account Password Key") THEN
+                                   ERROR(PasswordMissingErr);
+
+                                 PAGE.RUNMODAL(PAGE::"Contact Sync. Setup",Rec);
+                               END;
+                                }
+    }
+  }
+  CONTROLS
+  {
+    { 1   ;0   ;Container ;
+                ContainerType=ContentArea }
+
+    { 2   ;1   ;Group     ;
+                Name=General;
+                CaptionML=[ENU=General;
+                           RUS=Общее];
+                GroupType=Group }
+
+    { 3   ;2   ;Field     ;
+                Lookup=No;
+                ToolTipML=[ENU=Specifies the ID of the user.;
+                           RUS=Определяет код пользователя.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr="User ID";
+                Editable=false }
+
+    { 5   ;2   ;Field     ;
+                CaptionML=[ENU=Authentication Email;
+                           RUS=Адрес проверки подлинности];
+                ToolTipML=[ENU=Specifies the email address that you use to authenticate yourself on the Exchange server.;
+                           RUS=Определяет адрес электронной почты, который вы используете для проверки подлинности на сервере Exchange Server.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=ExchangeAccountUserName;
+                Enabled=false;
+                Editable=false }
+
+    { 19  ;2   ;Field     ;
+                ExtendedDatatype=Masked;
+                CaptionML=[ENU=Exchange Account Password;
+                           RUS=Пароль учетной записи Exchange];
+                ToolTipML=[ENU=Specifies the password of the user account that has access to Exchange.;
+                           RUS=Определяет пароль учетной записи пользователя, имеющей доступ к Exchange.];
+                ApplicationArea=#Basic,#Suite;
+                SourceExpr=ExchangeAccountPasswordTemp;
+                Visible=PasswordRequired;
+                OnValidate=BEGIN
+                             SetExchangeAccountPassword(ExchangeAccountPasswordTemp);
+                             COMMIT;
+                           END;
+                            }
+
+  }
+  CODE
+  {
+    VAR
+      O365SyncManagement@1002 : Codeunit 6700;
+      ProgressWindow@1008 : Dialog;
+      ExchangeAccountPasswordTemp@1000 : Text;
+      ProgressWindowMsg@1004 : TextConst 'ENU=Validating the connection to Exchange.;RUS=Проверка подключения к Exchange.';
+      ConnectionSuccessMsg@1006 : TextConst 'ENU=Connected successfully to Exchange.;RUS=Подключение к Exchange выполнено успешно.';
+      ExchangeAccountUserName@1001 : Text[250];
+      ConnectionFailureErr@1005 : TextConst 'ENU=Cannot connect to Exchange. Check your user name, password and Folder ID, and then try again.;RUS=Не удалось подключиться к Exchange. Проверьте свои имя пользователя, пароль и код папки, затем повторите попытку.';
+      EmailMissingErr@1007 : TextConst 'ENU=You must specify an authentication email address for this user.;RUS=Необходимо указать адрес электронной почты для проверки подлинности этого пользователя.';
+      PasswordMissingErr@1009 : TextConst 'ENU=You must specify your Exchange credentials for this user first.;RUS=Сначала необходимо указать учетные данные Exchange для этого пользователя.';
+      PasswordRequired@1010 : Boolean;
+
+    LOCAL PROCEDURE GetUser@3(VAR User@1000 : Record 2000000120) : Boolean;
+    BEGIN
+      WITH User DO BEGIN
+        SETRANGE("User Name",USERID);
+        IF FINDFIRST THEN
+          EXIT(TRUE);
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

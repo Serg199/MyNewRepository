@@ -1,0 +1,598 @@
+OBJECT Report 14919 Item Report TORG-29
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Item Report TORG-29;
+               RUS=Товарный отчет ТОРГ-29];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   ReportDate := WORKDATE;
+                   CompanyInfo.GET;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF LocationCode = '' THEN
+                    ERROR(Text006);
+                  Location.GET(LocationCode);
+                  IF (StartDate > EndDate) OR (StartDate = 0D) OR (EndDate = 0D) THEN
+                    ERROR(Text005);
+                  IF ResponsibleEmployee = '' THEN
+                    ERROR(Text008);
+                  IF ReportAcceptorEmployee = '' THEN
+                    ERROR(Text007);
+
+                  TORG29Helper.InitReportTemplate;
+                  TORG29Helper.SetMainSheet;
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT CurrReport.PREVIEW THEN BEGIN
+                     IF EVALUATE(Location."Last Goods Report No.",ReportNo) THEN;
+                     Location."Last Goods Report Date" := EndDate;
+                     Location.MODIFY;
+                   END;
+
+                   IF FileName = '' THEN
+                     TORG29Helper.ExportData
+                   ELSE
+                     TORG29Helper.ExportDataFile(FileName);
+                 END;
+
+  }
+  DATASET
+  {
+    { 2260;    ;DataItem;ReceiptsHeader      ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               ResponsibleEmployeeRec.GET(ResponsibleEmployee);
+                               ReportAcceptorEmployeeRec.GET(ReportAcceptorEmployee);
+                               ReceiptsTotal := 0;
+                               ShipmentTotal := 0;
+                               TORG29Helper.CreateTempReceipts(
+                                 TempValueEntryReceipts,ErrorBuffer,TempEntriesCount,ErrorsCount,
+                                 ResidOnstart,StartDate,EndDate,LocationCode,
+                                 AmountType,ReceiptsDetailing,SalesType,SalesCode,ShowCostReceipts);
+                               TORG29Helper.CreateTempShipment(
+                                 TempValueEntryShipment,ErrorBuffer,TempEntriesCount,ErrorsCount,
+                                 StartDate,EndDate,LocationCode,
+                                 AmountType,ShipmentDetailing,SalesType,SalesCode,ShowCostShipment);
+                               TORG29Helper.FillHeader(
+                                 Location.Name + ' ' + Location."Name 2",FORMAT(OperationType),
+                                 ReportNo,FORMAT(ReportDate),StartDate,FORMAT(EndDate),
+                                 ResponsibleEmployeeRec.GetJobTitleName + ' ' + ResponsibleEmployeeRec."Last Name" + ' ' +
+                                 ResponsibleEmployeeRec.Initials,
+                                 ResponsibleEmployee,LocRepMgt.FormatReportValue(ResidOnstart,2));
+                             END;
+                              }
+
+    { 8263;    ;DataItem;IntegerReceipts     ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               TempValueEntryReceipts.RESET;
+                               IF AmountType = AmountType::Price THEN
+                                 TempValueEntryReceipts.SETFILTER("Item Ledger Entry Quantity",'<>0');
+                               SETRANGE(Number,1,TempValueEntryReceipts.COUNT);
+                               ReceiptsTotal := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    TempValueEntryReceipts.FINDFIRST
+                                  ELSE
+                                    TempValueEntryReceipts.NEXT;
+                                  ReceiptsTotal := ReceiptsTotal + TempValueEntryReceipts."Valued Quantity";
+
+                                  TORG29Helper.FillLine(
+                                    TempValueEntryReceipts.Description,FORMAT(TempValueEntryReceipts."Posting Date"),
+                                    TempValueEntryReceipts."Document No.",LocRepMgt.FormatReportValue(TempValueEntryReceipts."Valued Quantity",2),
+                                    TempValueEntryReceipts."Job No.",TempValueEntryReceipts."Job Task No.",TORG29Helper.GetRcptType);
+                                END;
+                                 }
+
+    { 6766;1   ;DataItem;PMReceipts          ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               IF NOT ShowCostReceipts THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  PMReceiptsTotal :=
+                                    PMReceiptsTotal + TempValueEntryReceipts."Sales Amount (Actual)" -
+                                    TempValueEntryReceipts."Cost Amount (Actual)";
+
+                                  TORG29Helper.FillLine(
+                                    '','',TNTxt,
+                                    LocRepMgt.FormatReportValue(TempValueEntryReceipts."Sales Amount (Actual)" - TempValueEntryReceipts."Cost Amount (Actual)",2),
+                                    '','',TORG29Helper.GetRcptType);
+                                END;
+                                 }
+
+    { 6842;    ;DataItem;ReceiptsFooter      ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPostDataItem=BEGIN
+                                TORG29Helper.FillRcptPageFooter(
+                                  LocRepMgt.FormatReportValue(ReceiptsTotal,2),LocRepMgt.FormatReportValue(PMReceiptsTotal,2),
+                                  LocRepMgt.FormatReportValue(ReceiptsTotal + ResidOnstart + PMReceiptsTotal,2));
+                                TORG29Helper.NewPage;
+                              END;
+                               }
+
+    { 8697;1   ;DataItem;PMReceiptsFooter    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               IF NOT ShowCostReceipts THEN
+                                 CurrReport.BREAK;
+                             END;
+                              }
+
+    { 5614;    ;DataItem;ShipmentHeader      ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               IF ShipmentDetailing = ShipmentDetailing::Sum THEN BEGIN
+                                 IF TempValueEntryShipment.FIND('-') THEN
+                                   ShipmentTotal := TempValueEntryShipment."Valued Quantity";
+                                 ShipmentTotalHeader := FORMAT(ShipmentTotal,0,'<Sign><Integer Thousand><Decimals,3>');
+                               END;
+                               TORG29Helper.FillIssueHeader(ShipmentTotalHeader);
+                             END;
+                              }
+
+    { 8871;    ;DataItem;IntegerShipment     ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               IF ShipmentDetailing = ShipmentDetailing::Sum THEN
+                                 CurrReport.BREAK;
+                               TempValueEntryShipment.RESET;
+                               IF AmountType = AmountType::Price THEN
+                                 TempValueEntryShipment.SETFILTER("Item Ledger Entry Quantity",'<>0');
+
+                               SETRANGE(Number,1,TempValueEntryShipment.COUNT);
+
+                               ShipmentTotal := 0;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    TempValueEntryShipment.FINDFIRST
+                                  ELSE
+                                    TempValueEntryShipment.NEXT;
+
+                                  ShipmentTotal := ShipmentTotal + TempValueEntryShipment."Valued Quantity";
+                                  TORG29Helper.FillLine(
+                                    TempValueEntryShipment.Description,FORMAT(TempValueEntryShipment."Posting Date"),
+                                    TempValueEntryShipment."Document No.",LocRepMgt.FormatReportValue(TempValueEntryShipment."Valued Quantity",2),
+                                    TempValueEntryShipment."Job No.",TempValueEntryShipment."Job Task No.",
+                                    TORG29Helper.GetShptType);
+                                END;
+                                 }
+
+    { 4343;1   ;DataItem;PMShipment          ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               IF NOT ShowCostShipment THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  PMShipmentTotal :=
+                                    PMShipmentTotal + TempValueEntryShipment."Sales Amount (Actual)" -
+                                    TempValueEntryShipment."Cost Amount (Actual)";
+
+                                  TORG29Helper.FillLine(
+                                    '','',TNTxt,
+                                    LocRepMgt.FormatReportValue(TempValueEntryShipment."Sales Amount (Actual)" - TempValueEntryShipment."Cost Amount (Actual)",2),
+                                    '','',TORG29Helper.GetShptType);
+                                END;
+                                 }
+
+    { 1304;    ;DataItem;ShipmentFooter      ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPostDataItem=BEGIN
+                                TORG29Helper.FillShptPageFooter(
+                                  EndDate,FORMAT(ShipmentTotal),
+                                  LocRepMgt.FormatReportValue(ReceiptsTotal - ShipmentTotal + ResidOnstart + PMReceiptsTotal + PMShipmentTotal,2),
+                                  FORMAT(AttachesNo),ReportAcceptorEmployeeRec.GetJobTitleName,
+                                  ReportAcceptorEmployeeRec."Last Name" + ' ' + ReportAcceptorEmployeeRec.Initials,
+                                  ResponsibleEmployeeRec.GetJobTitleName,
+                                  ResponsibleEmployeeRec."Last Name" + ' ' + ResponsibleEmployeeRec.Initials);
+                                TORG29Helper.NewPage;
+                              END;
+                               }
+
+    { 2011;1   ;DataItem;PMShipmentFooter    ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnPreDataItem=BEGIN
+                               IF NOT ShowCostShipment THEN
+                                 CurrReport.BREAK;
+                             END;
+                              }
+
+    { 7383;    ;DataItem;ErrorLog            ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               ErrorBuffer.RESET;
+                               SETRANGE(Number,1,ErrorBuffer.COUNT);
+                               TORG29Helper.SetErrorsSheet;
+                               TORG29Helper.FillErrorReportHeader;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    ErrorBuffer.FINDFIRST
+                                  ELSE
+                                    ErrorBuffer.NEXT;
+
+                                  TORG29Helper.FillErrorLine(
+                                    FORMAT(ErrorBuffer."Posting Date"),ErrorBuffer."Item No.",ErrorBuffer.Description);
+                                END;
+
+               OnPostDataItem=BEGIN
+                                TORG29Helper.SetMainSheet;
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnInit=BEGIN
+               CtrlEnable := TRUE;
+               ReportDate := WORKDATE;
+             END;
+
+      OnOpenPage=VAR
+                   LocationLookup@1210000 : Record 14;
+                 BEGIN
+                   UpdateControls;
+                   IF LocationCode <> '' THEN
+                     IF NOT LocationLookup.GET(LocationCode) THEN
+                       LocationCode := ''
+                     ELSE BEGIN
+                       ResponsibleEmployee := LocationLookup."Responsible Employee No.";
+
+                       IF LocationLookup."Last Goods Report No." < 2147483647 THEN
+                         ReportNo := FORMAT(LocationLookup."Last Goods Report No." + 1)
+                       ELSE
+                         ReportNo := FORMAT(LocationLookup."Last Goods Report No.");
+
+                       IF LocationLookup."Last Goods Report Date" <> 0D THEN BEGIN
+                         StartDate := CALCDATE('<1D>',LocationLookup."Last Goods Report Date");
+                         EndDate := StartDate;
+                       END;
+                     END;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210028;2;Field     ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Location Code;
+                             RUS=Код склада];
+                  ApplicationArea=#Basic,#Suite;
+                  NotBlank=Yes;
+                  SourceExpr=LocationCode;
+                  TableRelation=Location;
+                  OnValidate=BEGIN
+                               LocationCodeOnAfterValidate;
+                             END;
+                              }
+
+      { 1210003;2;Field     ;
+                  CaptionML=[ENU=Report No.;
+                             RUS=Номер отчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportNo }
+
+      { 1210005;2;Field     ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Responsible Employee;
+                             RUS=Материально ответственное лицо];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ResponsibleEmployee;
+                  TableRelation=Employee }
+
+      { 1210000;2;Field     ;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Report Acceptor;
+                             RUS=Приемщик отчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportAcceptorEmployee;
+                  TableRelation=Employee }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Report Date;
+                             RUS=Дата отчета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportDate }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Start Date;
+                             RUS=Дата начала];
+                  ApplicationArea=#Basic,#Suite;
+                  NotBlank=Yes;
+                  SourceExpr=StartDate }
+
+      { 1210010;2;Field     ;
+                  CaptionML=[ENU=End Date;
+                             RUS=Дата окончания];
+                  ApplicationArea=#Basic,#Suite;
+                  NotBlank=Yes;
+                  SourceExpr=EndDate }
+
+      { 1210012;2;Field     ;
+                  CaptionML=[ENU=Operation Type;
+                             RUS=Тип операции];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=OperationType }
+
+      { 1210015;2;Field     ;
+                  CaptionML=[ENU=Attaches No.;
+                             RUS=Номера приложений];
+                  ApplicationArea=#Basic,#Suite;
+                  Numeric=Yes;
+                  SourceExpr=AttachesNo;
+                  MinValue=0 }
+
+      { 1210017;2;Field     ;
+                  DrillDown=No;
+                  CaptionML=[ENU=Receipt Detailing;
+                             RUS=Детализация приемки];
+                  OptionCaptionML=[ENU=Document,Item,Operation;
+                                   RUS=Документ,Товар,Операция];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReceiptsDetailing }
+
+      { 1210018;2;Field     ;
+                  DrillDown=No;
+                  CaptionML=[ENU=Shipment Detailing;
+                             RUS=Детализация отгрузки];
+                  OptionCaptionML=[ENU=Total Amount,Document,Item,Operation;
+                                   RUS=Общая сумма,Документ,Товар,Операция];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShipmentDetailing }
+
+      { 1210021;2;Field     ;
+                  DrillDown=No;
+                  CaptionML=[ENU=Amount Type;
+                             RUS=Тип суммы];
+                  OptionCaptionML=[ENU=Cost,Sales Price;
+                                   RUS=Себестоимость,Цена продажи];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=AmountType;
+                  OnValidate=BEGIN
+                               UpdateControls;
+                             END;
+                              }
+
+      { 1210030;2;Field     ;
+                  Name=SalesTypeCtrl;
+                  DrillDown=No;
+                  CaptionML=[ENU=Sales Type;
+                             RUS=Тип продажи];
+                  OptionCaptionML=[ENU=Customer Price Group,All Customers,Campaign;
+                                   RUS=Ценовая группа клиента,Все клиенты,Кампания];
+                  ApplicationArea=#Basic,#Suite;
+                  NotBlank=Yes;
+                  SourceExpr=SalesType;
+                  Enabled=CtrlEnable;
+                  OnValidate=BEGIN
+                               UpdateControls;
+                               SalesCode := '';
+                             END;
+                              }
+
+      { 1210035;2;Field     ;
+                  Name=SalesCodeCtrl;
+                  Lookup=Yes;
+                  CaptionML=[ENU=Sales Code;
+                             RUS=Код продажи];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=SalesCode;
+                  Enabled=CtrlEnable;
+                  OnLookup=BEGIN
+                             CLEAR(CustomerPriceGroupList);
+                             CLEAR(CampaignList);
+                             IF SalesType = SalesType::Campaign THEN BEGIN
+                               CampaignList.LOOKUPMODE(TRUE);
+                               IF CampaignList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                                 CampaignList.GETRECORD(Campaign);
+                                 Text := Campaign."No.";
+                                 EXIT(TRUE);
+                               END;
+                               EXIT(FALSE);
+                             END;
+                             CustomerPriceGroupList.LOOKUPMODE(TRUE);
+                             IF CustomerPriceGroupList.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                               CustomerPriceGroupList.GETRECORD(CustomerPriceGroup);
+                               Text := CustomerPriceGroup.Code;
+                               EXIT(TRUE);
+                             END;
+                             EXIT(FALSE);
+                           END;
+                            }
+
+      { 1210032;2;Field     ;
+                  Name=ReceiptsCost;
+                  CaptionML=[ENU=Show Cost Amount for Receipts;
+                             RUS=Показать сумму себест. для прих. накладных];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowCostReceipts;
+                  Enabled=CtrlEnable }
+
+      { 1210033;2;Field     ;
+                  Name=ShipmentCost;
+                  CaptionML=[ENU=Show Cost Amount for Shipment;
+                             RUS=Показать сумму себест. для расх. накладных];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowCostShipment;
+                  Enabled=CtrlEnable }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CustomerPriceGroup@1210031 : Record 6;
+      Location@1210030 : Record 14;
+      CompanyInfo@1210024 : Record 79;
+      Campaign@1210023 : Record 5071;
+      ReportAcceptorEmployeeRec@1210022 : Record 5200;
+      ResponsibleEmployeeRec@1210021 : Record 5200;
+      TempValueEntryReceipts@1210018 : TEMPORARY Record 5802;
+      TempValueEntryShipment@1210017 : TEMPORARY Record 5802;
+      ErrorBuffer@1210013 : TEMPORARY Record 5802;
+      TORG29Helper@1210012 : Codeunit 14949;
+      LocRepMgt@1210002 : Codeunit 12401;
+      CampaignList@1210033 : Page 5087;
+      CustomerPriceGroupList@1210032 : Page 7;
+      ResidOnstart@1210028 : Decimal;
+      ReceiptsTotal@1210040 : Decimal;
+      ShipmentTotal@1210042 : Decimal;
+      PMReceiptsTotal@1210050 : Decimal;
+      PMShipmentTotal@1210009 : Decimal;
+      ResponsibleEmployee@1210045 : Code[20];
+      ReportAcceptorEmployee@1210035 : Code[20];
+      SalesCode@1210005 : Code[20];
+      LocationCode@1210004 : Code[20];
+      AttachesNo@1210044 : Integer;
+      ErrorsCount@1210015 : Integer;
+      TempEntriesCount@1210000 : Integer;
+      ReceiptsDetailing@1210034 : 'Document,Item,Operation';
+      ShipmentDetailing@1210027 : 'Sum,Document,Item,Operation';
+      AmountType@1210026 : 'Cost,Price';
+      SalesType@1210016 : 'Customer Price Group,All Customers,Campaign';
+      ShowCostReceipts@1210047 : Boolean;
+      ShowCostShipment@1210001 : Boolean;
+      ReportDate@1210008 : Date;
+      StartDate@1210007 : Date;
+      EndDate@1210006 : Date;
+      OperationType@1210043 : Text[30];
+      ReportNo@1210041 : Text[30];
+      ShipmentTotalHeader@1210003 : Text[30];
+      Text005@1210048 : TextConst 'ENU=Report term is incorrect.;RUS=Дата отчета некорректна.';
+      Text006@1210049 : TextConst 'ENU=Location Code is required.;RUS=Требуется код склада';
+      Text007@1210051 : TextConst 'ENU=Employee Code for Report Acceptor should be entered.;RUS=Необходимо ввести код сотрудника-приемщика отчета.';
+      Text008@1210052 : TextConst 'ENU=Employee Code for Responsible Employee should be entered.;RUS=Необходимо ввести код подотчетного лица.';
+      FileName@1210014 : Text;
+      CtrlEnable@19068788 : Boolean INDATASET;
+      SalesCodeCtrlEnable@1210036 : Boolean;
+      TNTxt@1210037 : TextConst '@@@=Should be translated "т.н.";ENU=t.n.;RUS=т.н.';
+
+    PROCEDURE UpdateControls@1210010();
+    BEGIN
+      IF ISSERVICETIER THEN BEGIN
+        PageUpdateControls;
+        EXIT;
+      END;
+      CtrlEnable := AmountType <> AmountType::Cost;
+
+      IF SalesType = SalesType::"All Customers" THEN BEGIN
+        SalesCodeCtrlEnable := FALSE;
+        SalesCode := '';
+      END ELSE
+        SalesCodeCtrlEnable := CtrlEnable;
+    END;
+
+    LOCAL PROCEDURE LocationCodeOnAfterValidate@19034787();
+    VAR
+      LocationLookup@1210000 : Record 14;
+    BEGIN
+      LocationLookup.SETFILTER(Code,LocationCode);
+      LocationLookup.FINDFIRST;
+      ResponsibleEmployee := LocationLookup."Responsible Employee No.";
+
+      IF LocationLookup."Last Goods Report No." < 2147483647 THEN
+        ReportNo := FORMAT(LocationLookup."Last Goods Report No." + 1)
+      ELSE
+        ReportNo := FORMAT(LocationLookup."Last Goods Report No.");
+
+      IF LocationLookup."Last Goods Report Date" <> 0D THEN BEGIN
+        StartDate := CALCDATE('1D',LocationLookup."Last Goods Report Date");
+        EndDate := StartDate;
+      END;
+    END;
+
+    LOCAL PROCEDURE PageUpdateControls@19035041();
+    BEGIN
+      CtrlEnable := AmountType <> AmountType::Cost;
+      IF CtrlEnable THEN
+        SalesCode := '';
+
+      IF SalesType = SalesType::"All Customers" THEN BEGIN
+        SalesCodeCtrlEnable := FALSE;
+        SalesCode := '';
+      END ELSE
+        SalesCodeCtrlEnable := CtrlEnable;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210005(NewFileName@1210000 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    PROCEDURE InitializeRequest@1210000(NewLocationCode@1210000 : Code[10];NewReportNo@1210001 : Text[30];NewResponsibleEmployee@1210008 : Code[20];NewReportAcceptorEmployee@1210009 : Code[20];NewStartDate@1210004 : Date;NewEndDate@1210003 : Date;NewOperationType@1210002 : Text[30];NewAttachesNo@1210010 : Integer;NewReceiptsDetailing@1210012 : Option;NewShipmentDetailing@1210011 : Option;NewAmountType@1210014 : Option;NewSalesType@1210013 : Option;NewSalesCode@1210015 : Code[20];NewShowCostReceipts@1210007 : Boolean;NewShowCostShipment@1210006 : Boolean);
+    BEGIN
+      LocationCode := NewLocationCode;
+      ReportNo := NewReportNo;
+      ResponsibleEmployee := NewResponsibleEmployee;
+      ReportAcceptorEmployee := NewReportAcceptorEmployee;
+      StartDate := NewStartDate;
+      EndDate := NewEndDate;
+      OperationType := NewOperationType;
+      AttachesNo := NewAttachesNo;
+      ReceiptsDetailing := NewReceiptsDetailing;
+      ShipmentDetailing := NewShipmentDetailing;
+      AmountType := NewAmountType;
+      SalesType := NewSalesType;
+      SalesCode := NewSalesCode;
+      ShowCostReceipts := NewShowCostReceipts;
+      ShowCostShipment := NewShowCostShipment;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

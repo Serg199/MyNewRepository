@@ -1,0 +1,794 @@
+OBJECT Report 14917 Act Items Receipt M-7
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Act Items Receipt M-7;
+               RUS=Акт о приемке материалов М-7];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   CompanyInformation.GET;
+                   GLSetup.GET;
+                 END;
+
+    OnPreReport=BEGIN
+                  InitReportTemplate;
+                END;
+
+    OnPostReport=BEGIN
+                   IF FileName = '' THEN
+                     ExcelReportBuilderMgr.ExportData
+                   ELSE
+                     ExcelReportBuilderMgr.ExportDataToClientFile(FileName);
+                 END;
+
+  }
+  DATASET
+  {
+    { 4458;    ;DataItem;                    ;
+               DataItemTable=Table38;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=FILTER(Order|Invoice|Credit Memo));
+               OnPreDataItem=BEGIN
+                               IF GETFILTERS = '' THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillHeaderBuffer(
+                                    DATABASE::"Purchase Header",
+                                    "Document Type",
+                                    "No.",
+                                    "Document Date",
+                                    "Posting Date",
+                                    "Buy-from Vendor No.",
+                                    "Pay-to Vendor No.",
+                                    "Location Code",
+                                    "Vendor Shipment No.");
+                                  CalcAmounts("Purchase Header");
+                                  IF ShowActualQty THEN
+                                    CalcReceivePurchLines("Purchase Header");
+                                END;
+                                 }
+
+    { 6547;1   ;DataItem;                    ;
+               DataItemTable=Table39;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnAfterGetRecord=VAR
+                                  Qty@1210011 : Decimal;
+                                  Price@1210010 : Decimal;
+                                  Amount@1210009 : Decimal;
+                                  FactQty@1210008 : Decimal;
+                                  FactPrice@1210007 : Decimal;
+                                  FactAmount@1210006 : Decimal;
+                                  ShortageQty@1210003 : Decimal;
+                                  ShortageAmount@1210002 : Decimal;
+                                  SurplusQty@1210001 : Decimal;
+                                  SurplusAmount@1210000 : Decimal;
+                                BEGIN
+                                  IF Type = Type::Item THEN BEGIN
+                                    TESTFIELD("Location Code");
+
+                                    FillLocationBuffer("No.","Location Code",
+                                      GetDimValueCode("Purchase Line"."Dimension Set ID"));
+
+                                    CASE "Document Type" OF
+                                      "Document Type"::Order,
+                                      "Document Type"::Invoice:
+                                        BEGIN
+                                          IF Surplus THEN BEGIN
+                                            Qty := 0;
+                                            Price := 0;
+                                            Amount := 0;
+                                          END ELSE BEGIN
+                                            Qty := Quantity;
+                                            Price := "Direct Unit Cost";
+                                            Amount := Qty * Price;
+                                            IF PurchLineWithLCYAmt.GET("Document Type","Document No.","Line No.") THEN
+                                              FillAmounts(PurchLineWithLCYAmt,Price,Amount);
+                                          END;
+
+                                          IF ShowActualQty THEN BEGIN
+                                            FactQty := "Qty. to Receive";
+                                            FactPrice := "Direct Unit Cost";
+                                            FactAmount := FactQty * FactPrice;
+                                            IF PurchLineWithLCYAmtToReceive.GET("Document Type","Document No.","Line No.") THEN
+                                              FillAmounts(PurchLineWithLCYAmtToReceive,FactPrice,FactAmount);
+                                            IF Surplus THEN BEGIN
+                                              SurplusQty := FactQty;
+                                              SurplusAmount := FactAmount;
+                                            END ELSE BEGIN
+                                              ShortageQty := ABS(Quantity - FactQty);
+                                              ShortageAmount := ABS(Amount - FactAmount);
+                                            END;
+                                          END;
+                                        END;
+                                      "Document Type"::"Credit Memo":
+                                        BEGIN
+                                          IF "Appl.-to Item Entry" <> 0 THEN BEGIN
+                                            ItemLedgerEntry.GET("Appl.-to Item Entry");
+                                            ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)","Purchase Amount (Actual)");
+                                            IF "Qty. per Unit of Measure" <> 0 THEN
+                                              Qty := ItemLedgerEntry.Quantity / "Qty. per Unit of Measure"
+                                            ELSE
+                                              Qty := ItemLedgerEntry.Quantity;
+
+                                            IF (("Qty. per Unit of Measure" > 1) AND (ItemLedgerEntry."Qty. per Unit of Measure" <> 1) AND
+                                                ("Qty. per Unit of Measure" <> ItemLedgerEntry."Qty. per Unit of Measure"))
+                                            THEN BEGIN
+                                              Qty := ItemLedgerEntry.Quantity;
+                                              FactQty := Qty - Quantity * "Qty. per Unit of Measure";
+                                              Price := "Direct Unit Cost" / "Qty. per Unit of Measure";
+                                              FactPrice := Price;
+                                              ShortageQty := Quantity * "Qty. per Unit of Measure";
+                                            END ELSE BEGIN
+                                              Price := "Direct Unit Cost";
+                                              FactQty := Qty - Quantity;
+                                              FactPrice := "Direct Unit Cost";
+                                              ShortageQty := Quantity;
+                                            END;
+
+                                            Amount := Qty * Price;
+                                            FactAmount := FactQty * FactPrice;
+
+                                            IF PurchLineWithLCYAmtToReceive.GET("Document Type","Document No.","Line No.") THEN BEGIN
+                                              FillAmounts(PurchLineWithLCYAmtToReceive,Price,Amount);
+                                              IF Qty <> 0 THEN
+                                                Price := Amount / Qty;
+                                            END;
+
+                                            IF PurchLineWithLCYAmt.GET("Document Type","Document No.","Line No.") THEN BEGIN
+                                              FillAmounts(PurchLineWithLCYAmt,FactPrice,FactAmount);
+                                              FactAmount := Amount - FactAmount;
+                                            END;
+
+                                            ShortageAmount := Amount - FactAmount;
+
+                                            IF FactQty <> 0 THEN
+                                              FactPrice := FactAmount / FactQty;
+                                          END;
+                                          SurplusQty := 0;
+                                          SurplusAmount := 0;
+                                        END;
+                                    END;
+
+                                    FillLineBuffer(
+                                      8 + LineCounter,
+                                      "No.",
+                                      Description,
+                                      "Unit of Measure Code",
+                                      Qty,
+                                      Price,
+                                      Amount,
+                                      FactQty,
+                                      FactPrice,
+                                      FactAmount,
+                                      0,
+                                      ShortageQty,
+                                      ShortageAmount,
+                                      SurplusQty,
+                                      SurplusAmount);
+
+                                    LineCounter := LineCounter + 1;
+                                  END;
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+    { 4608;    ;DataItem;                    ;
+               DataItemTable=Table12450;
+               DataItemTableView=SORTING(Document Type,No.)
+                                 WHERE(Document Type=CONST(Receipt));
+               OnPreDataItem=BEGIN
+                               IF GETFILTERS = '' THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillHeaderBuffer(
+                                    DATABASE::"Item Document Header",
+                                    0,
+                                    "No.",
+                                    "Document Date",
+                                    "Posting Date",
+                                    '',
+                                    '',
+                                    "Location Code",
+                                    '');
+                                END;
+                                 }
+
+    { 9336;1   ;DataItem;                    ;
+               DataItemTable=Table12453;
+               DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+               OnAfterGetRecord=BEGIN
+                                  FillLocationBuffer("Item No.","Location Code",
+                                    GetDimValueCode("Item Document Line"."Dimension Set ID"));
+
+                                  TESTFIELD("Location Code");
+
+                                  FillLineBuffer(
+                                    8 + LineCounter,
+                                    "Item No.",
+                                    Description,
+                                    "Unit of Measure Code",
+                                    0,
+                                    0,
+                                    0,
+                                    Quantity,
+                                    "Unit Amount",
+                                    Quantity * "Unit Amount",
+                                    0,
+                                    0,
+                                    0,
+                                    Quantity,
+                                    Quantity * "Unit Amount");
+
+                                  LineCounter := LineCounter + 1;
+                                END;
+
+               DataItemLink=Document Type=FIELD(Document Type),
+                            Document No.=FIELD(No.) }
+
+    { 1266;    ;DataItem;                    ;
+               DataItemTable=Table12451;
+               DataItemTableView=SORTING(No.);
+               OnPreDataItem=BEGIN
+                               IF GETFILTERS = '' THEN
+                                 CurrReport.BREAK;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  FillHeaderBuffer(
+                                    DATABASE::"Item Receipt Header",
+                                    0,
+                                    "No.",
+                                    "Document Date",
+                                    "Posting Date",
+                                    '',
+                                    '',
+                                    "Location Code",
+                                    '');
+                                END;
+                                 }
+
+    { 2461;1   ;DataItem;                    ;
+               DataItemTable=Table12452;
+               DataItemTableView=SORTING(Document No.,Line No.);
+               OnAfterGetRecord=BEGIN
+                                  FillLocationBuffer("Item No.","Location Code",
+                                    GetDimValueCode("Item Receipt Line"."Dimension Set ID"));
+
+                                  TESTFIELD("Location Code");
+
+                                  FillLineBuffer(
+                                    8 + LineCounter,
+                                    "Item No.",
+                                    Description,
+                                    "Unit of Measure Code",
+                                    0,
+                                    0,
+                                    0,
+                                    Quantity,
+                                    "Unit Amount",
+                                    Quantity * "Unit Amount",
+                                    "Item Rcpt. Entry No.",
+                                    0,
+                                    0,
+                                    Quantity,
+                                    Quantity * "Unit Amount");
+
+                                  LineCounter := LineCounter + 1;
+                                END;
+
+               DataItemLink=Document No.=FIELD(No.) }
+
+    { 2278;    ;DataItem;HeaderLoop          ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               MaxIteration=1;
+               OnAfterGetRecord=BEGIN
+                                  FillSheet1;
+
+                                  ExcelReportBuilderMgr.SetSheet('Sheet2');
+                                  ExcelReportBuilderMgr.AddSection('PAGE2');
+
+                                  FillSheet4;
+                                END;
+                                 }
+
+    { 2132;    ;DataItem;LineLoop            ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnPreDataItem=BEGIN
+                               SETRANGE(Number,1,LineBuffer.COUNT);
+
+                               ExcelReportBuilderMgr.SetSheet('Sheet3');
+                               ExcelReportBuilderMgr.AddSection('REPORTHEADER');
+
+                               IF LocationBuffer.FINDSET THEN
+                                 REPEAT
+                                   FillLocationLine(
+                                     LocationBuffer."Dimension 1 Code",
+                                     OperationTypeCode,
+                                     OrgDepartment,
+                                     ActivityKind,
+                                     HeaderBuffer."Pay-to Vendor No.",
+                                     LocationBuffer."Dimension 1 Value Code",
+                                     LocationBuffer."Dimension 2 Code",
+                                     HeaderBuffer."Orig. Invoice No.");
+                                 UNTIL LocationBuffer.NEXT = 0;
+
+                               ExcelReportBuilderMgr.AddSection('PAGEHEADER');
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  IF Number = 1 THEN
+                                    LineBuffer.FINDSET
+                                  ELSE
+                                    LineBuffer.NEXT;
+
+                                  FillDocumentLine(
+                                    LineBuffer."No.",
+                                    LineBuffer.Description,
+                                    LineBuffer."Unit of Measure Code",
+                                    LineBuffer."Unit of Measure",
+                                    LineBuffer.Quantity,
+                                    LineBuffer."Direct Unit Cost",
+                                    LineBuffer."Line Amount",
+                                    LineBuffer."Quantity Received",
+                                    LineBuffer."Unit Price (LCY)",
+                                    LineBuffer."Outstanding Amount",
+                                    LineBuffer."Appl.-to Item Entry",
+                                    LineBuffer."Return Shpd. Not Invd.",
+                                    LineBuffer."VAT Base Amount",
+                                    LineBuffer."Return Qty. to Ship",
+                                    LineBuffer."Prepayment Amount");
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExcelReportBuilderMgr.AddSection('PAGEFOOTER');
+                              END;
+                               }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210002;2;Field     ;
+                  Name=ShowActualQuantity;
+                  CaptionML=[ENU=Show Actual Quantity;
+                             RUS=Отразить фактическое количество];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowActualQty }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Operation Type Code;
+                             RUS=Код вида операции];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=OperationTypeCode }
+
+      { 1210006;2;Field     ;
+                  CaptionML=[ENU=Organization Department;
+                             RUS=Структурное подразделение];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=OrgDepartment }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Activity Kind;
+                             RUS=Вид деятельности];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ActivityKind }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Corr. Acc. Dimension Code;
+                             RUS=Корр. счет: код аналит. учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=CorrAccDimension;
+                  TableRelation=Dimension;
+                  OnLookup=VAR
+                             DimensionTable@1210003 : Record 348;
+                             DimensionListForm@1210002 : Page 548;
+                           BEGIN
+                             DimensionListForm.LOOKUPMODE := TRUE;
+                             IF DimensionListForm.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                               DimensionListForm.GETRECORD(DimensionTable);
+                               CorrAccDimension := DimensionTable.Code;
+                             END;
+                           END;
+                            }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      Vendor@1210012 : Record 23;
+      Item@1210015 : Record 27;
+      ItemLedgerEntry@1210022 : Record 32;
+      CompanyInformation@1210010 : Record 79;
+      GLSetup@1210026 : Record 98;
+      UnitOfMeasure@1210019 : Record 204;
+      Employee@1210011 : Record 5200;
+      LocationBuffer@1210013 : TEMPORARY Record 351;
+      InventoryPostingSetup@1210014 : Record 5813;
+      DocumentSignature@1210020 : Record 12420;
+      HeaderBuffer@1210001 : TEMPORARY Record 38;
+      LineBuffer@1210002 : TEMPORARY Record 39;
+      VendAgrmt@1210025 : Record 14901;
+      HeaderLocation@1210027 : Record 14;
+      PurchLineWithLCYAmt@1210021 : TEMPORARY Record 39;
+      PurchLineWithLCYAmtToReceive@1210009 : TEMPORARY Record 39;
+      LocMgt@1210017 : Codeunit 12400;
+      LocalReportManagement@1210032 : Codeunit 12401;
+      ExcelReportBuilderMgr@1210024 : Codeunit 14930;
+      OperationTypeCode@1210003 : Code[10];
+      OrgDepartment@1210004 : Code[10];
+      ActivityKind@1210005 : Code[10];
+      CorrAccDimension@1210023 : Code[20];
+      ShowActualQty@1210006 : Boolean;
+      FileName@1210008 : Text;
+      LineCounter@1210018 : Integer;
+
+    LOCAL PROCEDURE FillLocationBuffer@1210014(ItemNo@1210001 : Code[20];LocationCode@1210002 : Code[10];DimValueCode@1210003 : Code[20]);
+    BEGIN
+      Item.GET(ItemNo);
+      InventoryPostingSetup.GET(LocationCode,Item."Inventory Posting Group");
+      IF NOT LocationBuffer.GET(LocationCode,InventoryPostingSetup."Inventory Account",DimValueCode,'') THEN BEGIN
+        LocationBuffer."Dimension 1 Code" := LocationCode;
+        LocationBuffer."Dimension 1 Value Code" := InventoryPostingSetup."Inventory Account";
+        LocationBuffer."Dimension 2 Code" := DimValueCode;
+        LocationBuffer.INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE FillHeaderBuffer@1210011(TableID@1210005 : Integer;DocumentType@1210006 : Integer;DocumentNo@1210000 : Code[20];DocumentDate@1210001 : Date;PostingDate@1210002 : Date;BuyFromVendorNo@1210003 : Code[20];PayToVendorNo@1210004 : Code[20];LocationCode@1210008 : Code[10];VendorShipmentNo@1210009 : Code[20]);
+    VAR
+      PurchaseHeader@1210007 : Record 38;
+    BEGIN
+      IF TableID = DATABASE::"Purchase Header" THEN BEGIN
+        PurchaseHeader.GET(DocumentType,DocumentNo);
+        HeaderBuffer.TRANSFERFIELDS(PurchaseHeader);
+        HeaderBuffer."Pmt. Discount Date" := 0D;
+        IF HeaderBuffer."Agreement No." <> '' THEN BEGIN
+          VendAgrmt.GET(HeaderBuffer."Buy-from Vendor No.",HeaderBuffer."Agreement No.");
+          HeaderBuffer."Pmt. Discount Date" := VendAgrmt."Agreement Date";
+        END;
+      END ELSE BEGIN
+        HeaderBuffer."Document Type" := DocumentType;
+        HeaderBuffer."No." := DocumentNo;
+        HeaderBuffer."Buy-from Vendor No." := BuyFromVendorNo;
+        HeaderBuffer."Pay-to Vendor No." := PayToVendorNo;
+      END;
+      HeaderBuffer."Orig. Invoice No." := VendorShipmentNo;
+      HeaderBuffer."No. of Documents" := TableID;
+      HeaderBuffer."Document Date" := DocumentDate;
+      HeaderBuffer."Posting Date" := PostingDate;
+      HeaderBuffer."Location Code" := LocationCode;
+      HeaderBuffer.INSERT;
+    END;
+
+    LOCAL PROCEDURE FillLineBuffer@1210002(LineNo@1210005 : Integer;ItemNo@1210000 : Code[20];ItemName@1210001 : Text[250];UnitOfMeasureCode@1210007 : Code[10];Qty@1210002 : Decimal;Price@1210003 : Decimal;Amount@1210004 : Decimal;FactQty@1210009 : Decimal;FactPrice@1210010 : Decimal;FactAmount@1210011 : Decimal;ItemEntryNo@1210018 : Integer;DeficitQty@1210014 : Decimal;DeficitAmount@1210015 : Decimal;SurplusQty@1210016 : Decimal;SurplusAmount@1210017 : Decimal);
+    BEGIN
+      LineBuffer."Line No." := LineNo;
+      LineBuffer."No." := ItemNo;
+      LineBuffer.Description := ItemName;
+      LineBuffer."Unit of Measure Code" := UnitOfMeasureCode;
+      IF UnitOfMeasure.GET(UnitOfMeasureCode) THEN
+        LineBuffer."Unit of Measure" := UnitOfMeasure.Description;
+      LineBuffer.Quantity := Qty;
+      LineBuffer."Direct Unit Cost" := Price;
+      LineBuffer."Line Amount" := Amount;
+      LineBuffer."Quantity Received" := FactQty;
+      LineBuffer."Unit Price (LCY)" := FactPrice;
+      LineBuffer."Outstanding Amount" := FactAmount;
+      LineBuffer."Appl.-to Item Entry" := ItemEntryNo;
+      LineBuffer."Return Shpd. Not Invd." := DeficitQty;
+      LineBuffer."VAT Base Amount" := DeficitAmount;
+      LineBuffer."Return Qty. to Ship" := SurplusQty;
+      LineBuffer."Prepayment Amount" := SurplusAmount;
+      LineBuffer.INSERT;
+    END;
+
+    LOCAL PROCEDURE FillDocumentLine@1210004(ItemNo@1210000 : Code[20];ItemName@1210001 : Text[250];UnitOfMeasureCode@1210007 : Code[10];UnitOfMeasureName@1210008 : Text[30];Qty@1210002 : Decimal;Price@1210003 : Decimal;Amount@1210004 : Decimal;FactQty@1210009 : Decimal;FactPrice@1210010 : Decimal;FactAmount@1210011 : Decimal;ItemEntryNo@1210018 : Integer;DeficitQty@1210014 : Decimal;DeficitAmount@1210015 : Decimal;SurplusQty@1210016 : Decimal;SurplusAmount@1210017 : Decimal);
+    BEGIN
+      IF NOT ExcelReportBuilderMgr.TryAddSection('BODY') THEN BEGIN
+        ExcelReportBuilderMgr.AddPagebreak;
+        ExcelReportBuilderMgr.AddSection('BODY');
+      END;
+
+      ExcelReportBuilderMgr.AddDataToSection('ItemName',ItemName);
+      ExcelReportBuilderMgr.AddDataToSection('ItemId',ItemNo);
+
+      ExcelReportBuilderMgr.AddDataToSection('Unit' ,UnitOfMeasureCode);
+      ExcelReportBuilderMgr.AddDataToSection('UnitName',UnitOfMeasureName);
+
+      ExcelReportBuilderMgr.AddDataToSection('DocQty',BlankZeroValue(Qty));
+      ExcelReportBuilderMgr.AddDataToSection('DocPrice',BlankZeroValue(ROUND(Price)));
+      ExcelReportBuilderMgr.AddDataToSection('DocAmount',BlankZeroValue(ROUND(Amount)));
+      ExcelReportBuilderMgr.AddDataToSection('FactQty',BlankZeroValue(FactQty));
+      ExcelReportBuilderMgr.AddDataToSection('FactPrice',BlankZeroValue(ROUND(FactPrice)));
+      ExcelReportBuilderMgr.AddDataToSection('FactAmount',BlankZeroValue(ROUND(FactAmount)));
+      ExcelReportBuilderMgr.AddDataToSection('ItemEntryNo',BlankZeroValue(ItemEntryNo));
+      ExcelReportBuilderMgr.AddDataToSection('LossQty',BlankZeroValue(DeficitQty));
+      ExcelReportBuilderMgr.AddDataToSection('LossAmount',BlankZeroValue(DeficitAmount));
+      ExcelReportBuilderMgr.AddDataToSection('ExcessQty' ,BlankZeroValue(SurplusQty));
+      ExcelReportBuilderMgr.AddDataToSection('ExcessAmount',BlankZeroValue(ROUND(SurplusAmount)));
+    END;
+
+    LOCAL PROCEDURE FillLocationLine@1210023(LocationCode@1210000 : Code[20];OperationTypeCode@1210007 : Code[10];OrgDepartment@1210006 : Code[10];ActivityKind@1210005 : Code[10];VendorNo@1210009 : Code[20];GLAccountNo@1210001 : Code[20];CorrAccDimValue@1210010 : Code[20];DocumentNo@1210008 : Code[20]);
+    VAR
+      Location@1210004 : Record 14;
+    BEGIN
+      ExcelReportBuilderMgr.AddSection('LocationBody');
+      Location.GET(LocationCode);
+
+      ExcelReportBuilderMgr.AddDataToSection('OperationType',OperationTypeCode);
+      ExcelReportBuilderMgr.AddDataToSection('DepartmentName',OrgDepartment);
+      ExcelReportBuilderMgr.AddDataToSection('ActivityCategory',ActivityKind);
+      ExcelReportBuilderMgr.AddDataToSection('StockName',Location.Name + Location."Name 2");
+      ExcelReportBuilderMgr.AddDataToSection('VendAccount',VendorNo);
+      ExcelReportBuilderMgr.AddDataToSection('LedgerAccount',GLAccountNo);
+      ExcelReportBuilderMgr.AddDataToSection('AnalysisCode',CorrAccDimValue);
+      ExcelReportBuilderMgr.AddDataToSection('DocumentNo',DocumentNo);
+    END;
+
+    LOCAL PROCEDURE GetDocSignParameters@1210007(TableID@1210005 : Integer;DocumentType@1210006 : Integer;DocumentNo@1210004 : Code[20];EmployeeType@1210002 : Integer;VAR EmployeePosition@1210001 : Text[50];VAR EmployeeName@1210000 : Text[50];VAR EmployeeDocument@1210003 : Text[250]) : Boolean;
+    BEGIN
+      CASE TableID OF
+        DATABASE::"Purchase Header",
+        DATABASE::"Item Document Header":
+          EXIT(
+            LocalReportManagement.GetDocSignEmplInfo(
+              FALSE,
+              TableID,
+              DocumentType,
+              DocumentNo,
+              EmployeeType,
+              EmployeePosition,
+              EmployeeName,
+              EmployeeDocument));
+        DATABASE::"Item Receipt Header":
+          EXIT(
+            LocalReportManagement.GetDocSignEmplInfo(
+              TRUE,
+              TableID,
+              DocumentType,
+              DocumentNo,
+              EmployeeType,
+              EmployeePosition,
+              EmployeeName,
+              EmployeeDocument));
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    LOCAL PROCEDURE GetDimValueCode@1210008(DimSetID@1210000 : Integer) : Code[20];
+    VAR
+      DimSetEntry@1210004 : Record 480;
+    BEGIN
+      IF CorrAccDimension <> '' THEN
+        IF DimSetEntry.GET(DimSetID,CorrAccDimension) THEN
+          EXIT(DimSetEntry."Dimension Value Code");
+
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE CalcAmounts@1210001(PurchHeader@1210003 : Record 38);
+    VAR
+      PurchLine@1210005 : Record 39;
+      PurchasePosting@1210002 : Codeunit 90;
+      TotalAmount@1210000 : Decimal;
+      TotalAmountInclVAT@1210001 : Decimal;
+      TotalAmountLCY@1210004 : Decimal;
+      TotalAmountInclVATLCY@1210006 : Decimal;
+    BEGIN
+      PurchasePosting.SumPurchLines2Ex(PurchHeader,PurchLineWithLCYAmt,PurchLine,0,
+        TotalAmount,TotalAmountInclVAT,TotalAmountLCY,TotalAmountInclVATLCY);
+    END;
+
+    LOCAL PROCEDURE CalcReceivePurchLines@1210005(PurchHeader@1210001 : Record 38);
+    VAR
+      PurchLine@1210004 : Record 39;
+      ItemLedgerEntry@1210000 : Record 32;
+      TempPurchLine@1210003 : TEMPORARY Record 39;
+      PurchasePosting@1210005 : Codeunit 90;
+      TotalAmount@1210009 : Decimal;
+      TotalAmountInclVAT@1210008 : Decimal;
+      TotalAmountLCY@1210007 : Decimal;
+      TotalAmountInclVATLCY@1210006 : Decimal;
+    BEGIN
+      WITH PurchHeader DO BEGIN
+        PurchLine.SETRANGE("Document Type","Document Type");
+        PurchLine.SETRANGE("Document No.","No.");
+        PurchLine.SETFILTER(Type,'>0');
+        PurchLine.SETFILTER(Quantity,'<>0');
+        IF PurchLine.FINDSET THEN
+          REPEAT
+            TempPurchLine := PurchLine;
+            IF PurchLine."Document Type" = PurchLine."Document Type"::"Credit Memo" THEN
+              IF PurchLine."Appl.-to Item Entry" <> 0 THEN BEGIN
+                ItemLedgerEntry.GET(PurchLine."Appl.-to Item Entry");
+                ItemLedgerEntry.CALCFIELDS("Cost Amount (Actual)","Sales Amount (Actual)");
+                IF ItemLedgerEntry."Qty. per Unit of Measure" <> 0 THEN
+                  TempPurchLine.Quantity := ItemLedgerEntry.Quantity / ItemLedgerEntry."Qty. per Unit of Measure"
+                ELSE
+                  TempPurchLine.Quantity := ItemLedgerEntry.Quantity;
+              END ELSE
+                TempPurchLine.Quantity := 0
+            ELSE
+              TempPurchLine.Quantity := TempPurchLine."Qty. to Receive";
+            TempPurchLine.INSERT;
+          UNTIL PurchLine.NEXT = 0;
+
+        PurchasePosting.SumPurchLines2Ex(PurchHeader,PurchLineWithLCYAmtToReceive,TempPurchLine,0,
+          TotalAmount,TotalAmountInclVAT,TotalAmountLCY,TotalAmountInclVATLCY);
+      END;
+    END;
+
+    LOCAL PROCEDURE FillAmounts@1210096(PurchLine@1210003 : Record 39;VAR Price@1210000 : Decimal;VAR Amount@1210001 : Decimal);
+    BEGIN
+      IF PurchLine.Quantity <> 0 THEN
+        Price := PurchLine.Amount / PurchLine.Quantity;
+
+      Amount := PurchLine.Amount;
+    END;
+
+    LOCAL PROCEDURE InitReportTemplate@1210010();
+    VAR
+      PurchSetup@1210000 : Record 312;
+    BEGIN
+      PurchSetup.GET;
+      PurchSetup.TESTFIELD("M-7 Template Code");
+      ExcelReportBuilderMgr.InitTemplate(PurchSetup."M-7 Template Code");
+    END;
+
+    PROCEDURE SetFileNameSilent@1210000(NewFileName@1210001 : Text);
+    BEGIN
+      FileName := NewFileName;
+    END;
+
+    LOCAL PROCEDURE FillSheet1@1210009();
+    BEGIN
+      WITH HeaderBuffer DO BEGIN
+        ExcelReportBuilderMgr.SetSheet('Sheet1');
+        ExcelReportBuilderMgr.AddSection('PAGE1');
+
+        ExcelReportBuilderMgr.AddDataToSection('DocumentNumber',"No.");
+
+        IF CompanyInformation."Director No." <> '' THEN
+          IF Employee.GET(CompanyInformation."Director No.") THEN BEGIN
+            ExcelReportBuilderMgr.AddDataToSection('DirectorPosition',Employee.GetJobTitleName);
+            ExcelReportBuilderMgr.AddDataToSection('DirectorName',CompanyInformation."Director Name");
+          END;
+
+        ExcelReportBuilderMgr.AddDataToSection('CompanyName',LocalReportManagement.GetCompanyName);
+        ExcelReportBuilderMgr.AddDataToSection('OKPO',CompanyInformation."OKPO Code");
+        ExcelReportBuilderMgr.AddDataToSection('DocumentDate',FORMAT("Document Date"));
+
+        IF "Buy-from Vendor No." <> '' THEN BEGIN
+          Vendor.GET("Buy-from Vendor No.");
+          ExcelReportBuilderMgr.AddDataToSection('InvoiceAccountName',
+            LocalReportManagement.GetVendorName("Buy-from Vendor No.") + ', ' +
+            "Buy-from Address" + "Buy-from Address 2" + ', ' +
+            "Buy-from City" + ', ' +
+            "Buy-from Post Code" + ', ' +
+            "Buy-from County" + ', ' +
+            Vendor."Phone No.");
+        END;
+
+        IF "Pay-to Vendor No." <> '' THEN BEGIN
+          Vendor.GET("Pay-to Vendor No.");
+          ExcelReportBuilderMgr.AddDataToSection('VendAccountName',
+            LocalReportManagement.GetVendorName("Pay-to Vendor No.") + ', ' +
+            "Pay-to Address" + "Pay-to Address 2" + ', ' +
+            "Pay-to City" + ', ' +
+            "Pay-to Post Code" + ', ' +
+            "Pay-to County" + ', ' +
+            Vendor."Phone No.");
+        END;
+
+        ExcelReportBuilderMgr.AddDataToSection('AcceptorAccount',
+          LocalReportManagement.GetCompanyName + ',' +
+          CompanyInformation.Address + CompanyInformation."Address 2" + ',' +
+          CompanyInformation."Phone No.");
+
+        IF "External Agreement No." <> '' THEN
+          ExcelReportBuilderMgr.AddDataToSection('ContractNumber',"External Agreement No.")
+        ELSE
+          ExcelReportBuilderMgr.AddDataToSection('ContractNumber',"Agreement No.");
+
+        IF "Pmt. Discount Date" <> 0D THEN
+          ExcelReportBuilderMgr.AddDataToSection('ContractDate',LocMgt.Date2Text("Pmt. Discount Date"));
+      END;
+    END;
+
+    LOCAL PROCEDURE FillSheet4@1210013();
+    VAR
+      EmployeePosition@1210002 : Text[50];
+      EmployeeName@1210001 : Text[50];
+      EmployeeDocument@1210000 : Text[250];
+    BEGIN
+      WITH HeaderBuffer DO BEGIN
+        ExcelReportBuilderMgr.SetSheet('Sheet4');
+        ExcelReportBuilderMgr.AddSection('PAGE4');
+
+        ExcelReportBuilderMgr.AddDataToSection('AcceptanceDate',FORMAT("Posting Date"));
+
+        ExcelReportBuilderMgr.AddDataToSection('ActNo',FORMAT("No."));
+        ExcelReportBuilderMgr.AddDataToSection('ActDay',FORMAT("Document Date",0,'<Day,2>'));
+
+        ExcelReportBuilderMgr.AddDataToSection('ActMonth',FORMAT(LocMgt.Month2Text("Document Date")));
+        ExcelReportBuilderMgr.AddDataToSection('ActYear',FORMAT("Document Date",0,'<Year>'));
+
+        IF GetDocSignParameters("No. of Documents","Document Type","No.",
+             DocumentSignature."Employee Type"::Member1,EmployeePosition,EmployeeName,EmployeeDocument)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection('CommissionMember1Title',EmployeePosition);
+          ExcelReportBuilderMgr.AddDataToSection('CommissionMember1Name',EmployeeName);
+          ExcelReportBuilderMgr.AddDataToSection('CommissionDocument1',EmployeeDocument);
+        END;
+
+        IF GetDocSignParameters("No. of Documents","Document Type","No.",
+             DocumentSignature."Employee Type"::Member2,EmployeePosition,EmployeeName,EmployeeDocument)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection('CommissionMember2Title',EmployeePosition);
+          ExcelReportBuilderMgr.AddDataToSection('CommissionMember2Name',EmployeeName);
+          ExcelReportBuilderMgr.AddDataToSection('CommissionDocument2',EmployeeDocument);
+        END;
+
+        IF GetDocSignParameters("No. of Documents","Document Type","No.",
+             DocumentSignature."Employee Type"::Member3,EmployeePosition,EmployeeName,EmployeeDocument)
+        THEN BEGIN
+          ExcelReportBuilderMgr.AddDataToSection('CommissionMember3Title',EmployeePosition);
+          ExcelReportBuilderMgr.AddDataToSection('CommissionMember3Name',EmployeeName);
+          ExcelReportBuilderMgr.AddDataToSection('CommissionDocument3',EmployeeDocument);
+        END;
+
+        IF GetDocSignParameters("No. of Documents","Document Type","No.",
+             DocumentSignature."Employee Type"::StoredBy,EmployeePosition,EmployeeName,EmployeeDocument)
+        THEN
+          ExcelReportBuilderMgr.AddDataToSection('Stockkeeper',EmployeeName)
+        ELSE
+          IF HeaderLocation.GET("Location Code") THEN
+            ExcelReportBuilderMgr.AddDataToSection('Stockkeeper',HeaderLocation.Contact);
+      END;
+    END;
+
+    LOCAL PROCEDURE BlankZeroValue@1210015(Value@1210000 : Decimal) : Text;
+    BEGIN
+      IF Value = 0 THEN
+        EXIT('');
+
+      EXIT(FORMAT(Value));
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

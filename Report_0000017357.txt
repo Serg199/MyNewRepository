@@ -1,0 +1,363 @@
+OBJECT Report 17357 HR Generic Report
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=HR Generic Report;
+               RUS=Общий кадровый отчет];
+    ProcessingOnly=Yes;
+    OnPreReport=VAR
+                  CompanyInformation@1210002 : Record 79;
+                BEGIN
+                  CompanyInformation.GET;
+
+                  ExcelMgt.CreateBook;
+                  ExcelMgt.OpenSheetByNumber(1);
+
+                  RecordCounter := 1;
+                END;
+
+    OnPostReport=BEGIN
+                   ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 6503;    ;DataItem;HeaderGroups        ;
+               DataItemTable=Table17356;
+               DataItemTableView=SORTING(Print Order);
+               OnPreDataItem=BEGIN
+                               HeaderCellColumn := 'A';
+                             END;
+
+               OnPostDataItem=BEGIN
+                                ExcelMgt.BoldRow(RecordCounter);
+                                LastLinePointer := RecordCounter;
+                              END;
+
+               ReqFilterFields=Code }
+
+    { 8873;1   ;DataItem;GroupColumn         ;
+               DataItemTable=Table17357;
+               DataItemTableView=SORTING(Field Group Code,Field Print Order No.,Table No.,Field No.);
+               OnAfterGetRecord=BEGIN
+                                  IF "Field Report Caption" = '' THEN BEGIN
+                                    CALCFIELDS("Field Name");
+                                    PrintRecordColumns(HeaderCellColumn,RecordCounter,"Table Name" + ': ' + "Field Name")
+                                  END ELSE
+                                    PrintRecordColumns(HeaderCellColumn,RecordCounter,"Field Report Caption");
+                                END;
+
+               OnPostDataItem=BEGIN
+                                ExcelMgt.BoldRow(RecordCounter);
+                              END;
+
+               DataItemLink=Field Group Code=FIELD(Code) }
+
+    { 1709;    ;DataItem;                    ;
+               DataItemTable=Table17350;
+               OnPreDataItem=BEGIN
+                               PersonLineCounter := 2;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  RowCellColumn := 'A';
+                                  RecordCounter := LastLinePointer + 1;
+                                  PersonRecordRef.GETTABLE(Person);
+                                END;
+
+               ReqFilterFields=No. }
+
+    { 7528;1   ;DataItem;                    ;
+               DataItemTable=Table5200;
+               OnPreDataItem=BEGIN
+                               EmployeeLineCounter := PersonLineCounter;
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  HRFieldGroup@1210000 : Record 17356;
+                                BEGIN
+                                  EmployeeRecordRef.GETTABLE(Employee);
+
+                                  HRFieldGroup.COPYFILTERS(HeaderGroups);
+                                  PrintFieldGroups(HRFieldGroup,TRUE);
+                                  RowCellColumn := 'A';
+                                  RecordCounter := LastLinePointer + 1;
+
+                                  IF ExtendPersonInfo THEN
+                                    EmployeeLineCounter := FillTableInfo(DATABASE::Employee,EmployeeLineCounter,LastLinePointer);
+                                END;
+
+               OnPostDataItem=VAR
+                                HRFieldGroup@1210000 : Record 17356;
+                              BEGIN
+                                // if no employee and some filters on employee exist
+                                // then print info only with that employee
+                                // unless ->
+                                IF Employee.ISEMPTY AND (Employee.GETFILTERS = '') THEN BEGIN
+                                  HRFieldGroup.COPYFILTERS(HeaderGroups);
+                                  PrintFieldGroups(HRFieldGroup,FALSE);
+                                END;
+
+                                IF ExtendPersonInfo THEN
+                                  PersonLineCounter := FillTableInfo(DATABASE::Person,PersonLineCounter,LastLinePointer);
+                              END;
+
+               ReqFilterFields=No.;
+               DataItemLink=Person No.=FIELD(No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Fill Person Info for all Lines;
+                             RUS=Заполненные сведения о физ. лице для всех строк];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ExtendPersonInfo }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      ExcelMgt@1210006 : Codeunit 12416;
+      LastLinePointer@1210007 : Integer;
+      RecordCounter@1210000 : Integer;
+      HeaderCellColumn@1210001 : Code[10];
+      PersonRecordRef@1210008 : RecordRef;
+      EmployeeRecordRef@1210010 : RecordRef;
+      RowCellColumn@1210009 : Code[10];
+      ExtendPersonInfo@1210011 : Boolean;
+      PersonLineCounter@1210012 : Integer;
+      EmployeeLineCounter@1210013 : Integer;
+
+    PROCEDURE PrintRecordColumns@1210007(VAR CellColumn@1210005 : Code[10];RowCounter@1210001 : Integer;FieldCaption@1210002 : Text[62]);
+    BEGIN
+      ExcelMgt.FillCellWithFormat(CellColumn + FORMAT(RowCounter),FieldCaption,'@');
+      ExcelMgt.SetColumnSize(CellColumn + FORMAT(RowCounter),15);
+      CellColumn := ExcelMgt.GetNextColumn(CellColumn,1);
+    END;
+
+    PROCEDURE PrintValue@1210006(CellColumn@1210002 : Code[10];RowCounter@1210001 : Integer;xFieldRef@1210000 : FieldRef);
+    BEGIN
+      ExcelMgt.FillCellWithFormat(CellColumn + FORMAT(RowCounter),FORMAT(xFieldRef),'@');
+    END;
+
+    PROCEDURE PrintRelatedTable@1210000(TableId@1210004 : Integer;FieldId@1210002 : Integer;BaseRecRef@1210005 : RecordRef;CellColumn@1210000 : Code[10];RowCounter@1210007 : Integer);
+    VAR
+      xRelatedRecordRef@1210003 : RecordRef;
+      FieldInPk@1210006 : Boolean;
+    BEGIN
+      xRelatedRecordRef.OPEN(TableId);
+
+      FieldInPk := NOT ((DATABASE::Employee = BaseRecRef.NUMBER) AND
+                        ((DATABASE::"Employee Ledger Entry" = TableId) OR (DATABASE::"Employee Job Entry" = TableId)));
+
+      SetFiltersToRelatedTable(BaseRecRef,xRelatedRecordRef,FieldInPk);
+
+      PrintTableToExcel(xRelatedRecordRef,FieldId,RowCellColumn,RecordCounter);
+
+      xRelatedRecordRef.CLOSE;
+    END;
+
+    PROCEDURE PrintTableToExcel@1210022(xRelatedRecordRef@1210003 : RecordRef;FieldId@1210002 : Integer;CellColumn@1210000 : Code[10];RowCounter@1210007 : Integer);
+    VAR
+      xFieldRef@1210001 : FieldRef;
+    BEGIN
+      IF xRelatedRecordRef.FINDSET THEN
+        REPEAT
+          xFieldRef := xRelatedRecordRef.FIELD(FieldId);
+          PrintValue(CellColumn,RowCounter,xFieldRef);
+          RowCounter += 1;
+        UNTIL xRelatedRecordRef.NEXT = 0;
+
+      IF RowCounter - 1 > LastLinePointer THEN
+        LastLinePointer := RowCounter - 1;
+    END;
+
+    PROCEDURE PrintFieldGroups@1210001(VAR HRFieldGroup@1210003 : Record 17356;PrintEmployeeInfo@1210004 : Boolean);
+    VAR
+      HRFieldGroupLine@1210000 : Record 17357;
+    BEGIN
+      HRFieldGroup.SETCURRENTKEY("Print Order");
+      IF HRFieldGroup.FINDSET THEN
+        REPEAT
+          HRFieldGroupLine.RESET;
+          HRFieldGroupLine.SETCURRENTKEY("Field Group Code","Field Print Order No.","Table No.","Field No.");
+          HRFieldGroupLine.SETRANGE("Field Group Code",HRFieldGroup.Code);
+          IF HRFieldGroupLine.FINDSET THEN
+            REPEAT
+              PrintFieldGroupLine(HRFieldGroupLine,PrintEmployeeInfo);
+              RowCellColumn := ExcelMgt.GetNextColumn(RowCellColumn,1);
+            UNTIL HRFieldGroupLine.NEXT = 0;
+
+          IF RecordCounter > LastLinePointer THEN
+            LastLinePointer := RecordCounter;
+
+        UNTIL HRFieldGroup.NEXT = 0;
+    END;
+
+    PROCEDURE PrintFieldGroupLine@1210003(VAR HRFieldGroupLine@1210000 : Record 17357;PrintEmployeeInfo@1210001 : Boolean);
+    VAR
+      xFieldRef@1210002 : FieldRef;
+    BEGIN
+      WITH HRFieldGroupLine DO
+        // Person and employee is in Cartesian product
+        // other tables printed as lists for product entry
+        CASE "Table No." OF
+          DATABASE::Person:
+            BEGIN
+              xFieldRef := PersonRecordRef.FIELD("Field No.");
+              PrintValue(RowCellColumn,RecordCounter,xFieldRef);
+            END;
+          DATABASE::Employee:
+            IF PrintEmployeeInfo THEN BEGIN
+              xFieldRef := EmployeeRecordRef.FIELD("Field No.");
+              PrintValue(RowCellColumn,RecordCounter,xFieldRef);
+            END;
+          ELSE
+            IF IsTableRelated(DATABASE::Employee,"Table No.") THEN BEGIN
+              IF PrintEmployeeInfo THEN
+                PrintRelatedTable("Table No.","Field No.",EmployeeRecordRef,RowCellColumn,RecordCounter)
+            END ELSE
+              IF IsTableRelated(DATABASE::Person,"Table No.") THEN
+                PrintRelatedTable("Table No.","Field No.",PersonRecordRef,RowCellColumn,RecordCounter)
+        END;
+    END;
+
+    PROCEDURE SetFiltersToRelatedTable@1210004(xBaseRecordRef@1210004 : RecordRef;VAR xRelatedRecordRef@1210002 : RecordRef;OnlyPKFields@1210006 : Boolean) : Boolean;
+    VAR
+      FieldTable@1210000 : Record 2000000041;
+      xBaseFieldRef@1210005 : FieldRef;
+      xFieldRef@1210001 : FieldRef;
+      RelationFieldId@1210003 : Integer;
+    BEGIN
+      FieldTable.SETRANGE(TableNo,xRelatedRecordRef.NUMBER);
+      FieldTable.SETRANGE(RelationTableNo,xBaseRecordRef.NUMBER);
+
+      IF FieldTable.FINDSET THEN
+        REPEAT
+          IF (NOT OnlyPKFields) OR IsPrimaryKeyContainsField(FieldTable.TableNo,FieldTable."No.") THEN BEGIN
+            IF FieldTable.RelationFieldNo = 0 THEN
+              RelationFieldId := GetFirstPrimaryKeyField(xBaseRecordRef.NUMBER)
+            ELSE
+              RelationFieldId := FieldTable.RelationFieldNo;
+
+            xBaseFieldRef := xBaseRecordRef.FIELD(RelationFieldId);
+            xFieldRef := xRelatedRecordRef.FIELD(FieldTable."No.");
+
+            xFieldRef.SETRANGE(xBaseFieldRef.VALUE);
+          END;
+        UNTIL FieldTable.NEXT = 0
+      ELSE
+        EXIT(FALSE);
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE IsTableRelated@1210036(BaseRecordId@1210001 : Integer;RelatedRecordId@1210000 : Integer) : Boolean;
+    VAR
+      FieldTable@1210002 : Record 2000000041;
+    BEGIN
+      FieldTable.SETRANGE(TableNo,RelatedRecordId);
+      FieldTable.SETRANGE(RelationTableNo,BaseRecordId);
+      EXIT(NOT FieldTable.ISEMPTY);
+    END;
+
+    PROCEDURE GetFirstPrimaryKeyField@1210015(TableId@1210000 : Integer) : Integer;
+    VAR
+      xKeyRef@1210001 : KeyRef;
+      xFieldRef@1210002 : FieldRef;
+      xRecordRef@1210003 : RecordRef;
+    BEGIN
+      xRecordRef.OPEN(TableId);
+      xKeyRef := xRecordRef.KEYINDEX(1);
+      xFieldRef := xKeyRef.FIELDINDEX(1);
+      EXIT(xFieldRef.NUMBER);
+    END;
+
+    PROCEDURE IsPrimaryKeyContainsField@1210063(TableId@1210003 : Integer;FieldId@1210004 : Integer) : Boolean;
+    VAR
+      xKeyRef@1210002 : KeyRef;
+      xFieldRef@1210001 : FieldRef;
+      xRecordRef@1210000 : RecordRef;
+      I@1210005 : Integer;
+    BEGIN
+      xRecordRef.OPEN(TableId);
+      xKeyRef := xRecordRef.KEYINDEX(1);
+
+      FOR I := 1 TO xKeyRef.FIELDCOUNT DO BEGIN
+        xFieldRef := xKeyRef.FIELDINDEX(I);
+
+        IF xFieldRef.NUMBER = FieldId THEN
+          EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE FillExcelRowsWithTableInfo@1210002(TableNo@1210000 : Integer;VAR HRFieldGroup@1210003 : Record 17356;SourceRow@1210005 : Integer;DestStartingRow@1210001 : Integer;DestEndingRow@1210002 : Integer);
+    VAR
+      HRFieldGroupLine@1210004 : Record 17357;
+      ColumnCode@1210006 : Code[10];
+    BEGIN
+      ColumnCode := 'A';
+      HRFieldGroup.SETCURRENTKEY("Print Order");
+      IF HRFieldGroup.FINDSET THEN
+        REPEAT
+          HRFieldGroupLine.RESET;
+          HRFieldGroupLine.SETCURRENTKEY("Field Group Code","Field Print Order No.","Table No.","Field No.");
+          HRFieldGroupLine.SETRANGE("Field Group Code",HRFieldGroup.Code);
+          IF HRFieldGroupLine.FINDSET THEN
+            REPEAT
+              IF HRFieldGroupLine."Table No." = TableNo THEN
+                ExcelMgt.CopySheetTo(ColumnCode + FORMAT(SourceRow),
+                  ColumnCode + FORMAT(DestStartingRow),ColumnCode + FORMAT(DestEndingRow));
+              ColumnCode := ExcelMgt.GetNextColumn(ColumnCode,1);
+            UNTIL HRFieldGroupLine.NEXT = 0;
+        UNTIL HRFieldGroup.NEXT = 0;
+    END;
+
+    PROCEDURE FillTableInfo@1210077(TableNo@1210002 : Integer;LineCounter@1210000 : Integer;LastLinePointer@1210001 : Integer) : Integer;
+    VAR
+      HRFieldGroup@1210003 : Record 17356;
+    BEGIN
+      IF LineCounter + 1 <= LastLinePointer THEN BEGIN
+        HRFieldGroup.RESET;
+        HRFieldGroup.COPYFILTERS(HeaderGroups);
+        FillExcelRowsWithTableInfo(TableNo,HRFieldGroup,
+          LineCounter,LineCounter + 1,LastLinePointer);
+      END;
+
+      EXIT(LastLinePointer + 1);
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

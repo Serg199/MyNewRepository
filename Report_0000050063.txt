@@ -1,0 +1,891 @@
+OBJECT Report 50063 Loans - Interest Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10.08.17;
+    Time=11:10:12;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Loans - Interest Post;
+               RUS=Кредиты/Займы - Учет Процентов];
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   PostingDescription := Text003;
+
+                   //NC NCS-1268 > DP
+                   PostingDescription2 := Text004;
+                   //NC NCS-1268 < DP
+
+                   StandParameter.RESET;
+                   StandParameter.SETRANGE("Report ID",REPORT::"Loans - Interest Post");
+                   IF StandParameter.FINDFIRST THEN BEGIN
+                     IF (StandParameter."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                       IF NOT IsCalc THEN
+                       PostingDate:=CALCDATE(StandParameter."Posting Date",WORKDATE);
+                     IF StandParameter."Gen. Journal Template"<>'' THEN
+                       Template:=StandParameter."Gen. Journal Template";
+                     IF StandParameter."Gen. Journal Batch"<>'' THEN
+                       Batch:=StandParameter."Gen. Journal Batch";
+                     IF StandParameter."Prefix Numbers"<>'' THEN
+                       DocumentNo:=StandParameter."Prefix Numbers";
+                     IF PostingDate <> 0D THEN
+                       DocumentNo:=DocumentNo+FORMAT(PostingDate,0,'<Year><Month,2><Day,2>');
+                     IF StandParameter."Posting Description"<>'' THEN
+                       PostingDescription:=StandParameter."Posting Description";
+                     IsPost:=StandParameter.Post;
+                   END ELSE
+                     ERROR(Text007+StandParameter.TABLECAPTION + Text008);
+                 END;
+
+    OnPreReport=BEGIN
+                  IF NOT CurrReport.USEREQUESTPAGE THEN BEGIN
+                    StandParameter.RESET;
+                    StandParameter.SETRANGE("Report ID",REPORT::"Loans - Interest Post");
+                    IF StandParameter.FINDFIRST THEN BEGIN
+                      IF (StandParameter."Posting Date"<>'') AND CurrReport.USEREQUESTPAGE THEN
+                        IF NOT IsCalc THEN
+                        PostingDate:=CALCDATE(StandParameter."Posting Date",WORKDATE);
+                      IF StandParameter."Gen. Journal Template"<>'' THEN
+                        Template:=StandParameter."Gen. Journal Template";
+                      IF StandParameter."Gen. Journal Batch"<>'' THEN
+                        Batch:=StandParameter."Gen. Journal Batch";
+                      IF StandParameter."Prefix Numbers"<>'' THEN
+                        DocumentNo:=StandParameter."Prefix Numbers";
+                      IF PostingDate <> 0D THEN
+                        DocumentNo:=DocumentNo+FORMAT(PostingDate,0,'<Year><Month,2><Day,2>');
+                      IF StandParameter."Posting Description"<>'' THEN
+                        PostingDescription:=StandParameter."Posting Description";
+                      IsPost:=StandParameter.Post;
+                    END ELSE
+                      ERROR(Text007+StandParameter.TABLECAPTION + Text008);
+                  END;
+
+                  LineMin := 0;
+                  LineMax := 0;
+                END;
+
+    OnPostReport=BEGIN
+                   NextLineNo :=0;
+                   GLSetup.GET;
+                   GenJnlLine.RESET;
+                   GenJnlLine.SETRANGE("Journal Template Name",Template);
+                   GenJnlLine.SETRANGE("Journal Batch Name",Batch);
+                   IF GenJnlLine.FINDLAST THEN
+                       NextLineNo := GenJnlLine."Line No.";
+
+                   LineMin :=NextLineNo;
+                   IF tmpGenJnlLine.FINDSET THEN
+                     REPEAT
+                       GenJnlLine.INIT;
+                       GenJnlLine.TRANSFERFIELDS(tmpGenJnlLine);
+                       NextLineNo := NextLineNo+10000;
+                       GenJnlLine."Line No." := NextLineNo;
+                       LineMax := GenJnlLine."Line No.";
+                       GenJnlLine.VALIDATE("Account No.");
+                       CASE GenJnlLine."Account Type" OF
+                         GenJnlLine."Account Type"::Customer:
+                           BEGIN
+                             CustAgreement.GET(GenJnlLine."Account No.",GenJnlLine."Agreement No.");
+                             CustPostingGroup.RESET;
+                             CustPostingGroup.SETRANGE("Loan Princ/Int. Posting Group",CustAgreement."Customer Posting Group");
+                             CustPostingGroup.SETRANGE("Loan Interest",TRUE);
+                             IF CustPostingGroup.FINDFIRST THEN
+                               GenJnlLine."Posting Group" := CustPostingGroup.Code
+                           END;
+                         GenJnlLine."Account Type"::Vendor:
+                           BEGIN
+                             VendAgreement.GET(GenJnlLine."Account No.",GenJnlLine."Agreement No.");
+                             VendPostingGroup.RESET;
+                             VendPostingGroup.SETRANGE("Loan Princ/Int. Posting Group",VendAgreement."Vendor Posting Group");
+                             VendPostingGroup.SETRANGE("Loan Interest",TRUE);
+                             IF VendPostingGroup.FINDFIRST THEN
+                               GenJnlLine."Posting Group" := VendPostingGroup.Code
+                           END;
+                       END;
+                       GenJnlLine.VALIDATE("Amount Type");
+                       //NC MLN09.3 > DP
+                       GenJnlLine.VALIDATE("Agreement No.");
+                       //NC MLN09.3 < DP
+
+                       GenJnlLine.VALIDATE(Amount);
+                       GenJnlLine.INSERT;
+                       CopyDefDimToJnlLineDim(GenJnlLine);
+
+                       //NC NCS-1268 > DP
+                       IF GenJnlLine."Amount Type"=GenJnlLine."Amount Type"::"Reserve%" THEN BEGIN
+                         GenJnlLine."Posting Group" := tmpGenJnlLine."Posting Group";
+                         GenJnlLine.MODIFY;
+                         CopyDefDimToJnlLineDim2(GenJnlLine);
+                       END;
+                       //NC NCS-1268 < DP
+
+                     UNTIL tmpGenJnlLine.NEXT=0;
+
+                   //Учет
+                   IF IsPost THEN BEGIN
+                     //IF GUIALLOWED THEN
+                        //Window.UPDATE(6,Text50024);
+
+                     GenJnlLine.SETRANGE("Journal Template Name",Template);
+                     GenJnlLine.SETRANGE("Journal Batch Name",Batch);
+                     GenJnlLine.SETRANGE("Line No.",LineMin,LineMax);
+                     GenJnlLine.SETRANGE("Document No.", DocumentNo);
+                     IF NOT GenJnlLine.ISEMPTY THEN BEGIN
+                       GenJnlLinePost.SetNoMessage(TRUE);
+                       GenJnlLinePost.RUN(GenJnlLine);
+                     END;
+                   END ELSE BEGIN
+                     //NC NCS-1051 > DP
+                     IF GUIALLOWED THEN
+                       MESSAGE(
+                         STRSUBSTNO(Text001,
+                           GenJnlLine.FIELDCAPTION(GenJnlLine."Journal Template Name"),
+                           Template,
+                           GenJnlLine.FIELDCAPTION("Journal Batch Name"),
+                           Batch));
+                     //NC NCS-1051 < DP
+                   END;
+                 END;
+
+  }
+  DATASET
+  {
+    { 1101495000;;DataItem;                  ;
+               DataItemTable=Table50096;
+               DataItemTableView=SORTING(Source Type,Source No.,Agreement No.,Condition No.)
+                                 ORDER(Ascending)
+                                 WHERE(Condition Type=CONST(New));
+               OnPreDataItem=BEGIN
+                               //NC NCS-1051 > DP
+                               IsDelete := TRUE;
+                               IF GUIALLOWED THEN
+                                 IF NOT CONFIRM(
+                                         STRSUBSTNO(Text002,
+                                         GenJnlLine.FIELDCAPTION(GenJnlLine."Journal Template Name"),
+                                         Template,
+                                         GenJnlLine.FIELDCAPTION("Journal Batch Name"),
+                                         Batch))
+                               THEN
+                                 IsDelete := FALSE;
+
+                               IF IsDelete THEN BEGIN
+                                 GenJnlLine.RESET;
+                                 GenJnlLine.SETRANGE("Journal Template Name",Template);
+                                 GenJnlLine.SETRANGE("Journal Batch Name",Batch);
+                                 //NC NCS-1032 > DP
+                                 {
+                                 GenJnlLine.DELETEALL;
+                                 }
+
+                                 IF GenJnlLine.FINDSET THEN
+                                   REPEAT
+
+                                      IF GenJnlLine."Interest Accrual" THEN BEGIN
+                                        SourceType :=-1;
+                                        IF GenJnlLine."Account Type"=GenJnlLine."Account Type"::Customer THEN
+                                          SourceType :=0
+                                        ELSE
+                                          IF GenJnlLine."Account Type"=GenJnlLine."Account Type"::Vendor THEN
+                                            SourceType :=1;
+
+                                        IF SourceType>=0 THEN
+                                          IF AgreementSchedule2.GET(SourceType, GenJnlLine."Account No.",GenJnlLine."Agreement No.",
+                                            GenJnlLine."Agreement Condition No.", 0, GenJnlLine."Agreement Schedule Date") AND
+                                            NOT AgreementSchedule2.Posted
+                                          THEN BEGIN
+                                            AgreementSchedule2.Blocked := TRUE;
+                                            AgreementSchedule2.Processed := TRUE;
+                                            AgreementSchedule2.MODIFY;
+                                          END;
+                                      END;
+
+                                      IF GenJnlLine1.GET(GenJnlLine."Journal Template Name",
+                                        GenJnlLine."Journal Batch Name", GenJnlLine."Line No.") THEN
+                                        GenJnlLine1.DELETE;
+                                   UNTIL GenJnlLine.NEXT=0;
+                                 //NC NCS-1032 > DP
+                               END;
+                               //NC NCS-1051 < DP
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  //NC NCS-1085 > DP
+                                  IF NOT IsActiveAgreement THEN
+                                    CurrReport.SKIP;
+                                  //NC NCS-1085 < DP
+                                END;
+                                 }
+
+    { 1101495001;1;DataItem;AgreementSchedule;
+               DataItemTable=Table50097;
+               DataItemTableView=SORTING(Source Type,Source No.,Agreement No.,Agreement Condition No.,Type,Date)
+                                 ORDER(Ascending)
+                                 WHERE(Blocked=CONST(No),
+                                       Posted=CONST(No));
+               OnPreDataItem=BEGIN
+                               //NC NCS-1268 > DP
+                               GLSetup.GET;
+                               //NC NCS-1268 < DP
+
+                               AgreementSchedule.SETFILTER(Date,'%1..%2',DateStart,DateEnd);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  NextLineNo := NextLineNo+1;
+                                  tmpGenJnlLine.INIT;
+                                  tmpGenJnlLine."Journal Template Name" := Template;
+                                  tmpGenJnlLine."Journal Batch Name" := Batch;
+                                  tmpGenJnlLine."Line No." :=NextLineNo;
+                                  tmpGenJnlLine."Posting Date" := AgreementSchedule.Date;
+                                  IF DocumentNo='' THEN
+                                    DocumentNo := 'INTR-'+FORMAT(tmpGenJnlLine."Posting Date",0,'<Year,2><Month,2>');
+                                  tmpGenJnlLine."Document No." := DocumentNo;
+                                  tmpGenJnlLine."External Document No." := DocumentNo;
+
+                                  //NC NCS-1268 > DP
+                                  IF GLSetup."LCY Code" <> AgreementSchedule."Currency Code" THEN
+                                  //NC NCS-1268 < DP
+
+                                  tmpGenJnlLine."Currency Code" := AgreementSchedule."Currency Code";
+                                  CASE AgreementSchedule."Source Type" OF
+                                    AgreementSchedule."Source Type"::Customer:
+                                      BEGIN
+
+                                        tmpGenJnlLine."Account Type" :=tmpGenJnlLine."Account Type"::Customer;
+                                        tmpGenJnlLine."Account No." := AgreementSchedule."Source No.";
+                                        tmpGenJnlLine."Agreement No." := AgreementSchedule."Agreement No.";
+                                        tmpGenJnlLine."Agreement Condition No." := AgreementSchedule."Agreement Condition No.";
+                                        tmpGenJnlLine."Agreement Schedule Date" := AgreementSchedule.Date;
+                                        tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Interest;
+                                        tmpGenJnlLine.Amount :=AgreementSchedule.Amount;
+                                        tmpGenJnlLine."Interest Calc. No. of Days" := AgreementSchedule."Interest Calc. No. of Days";
+                                        tmpGenJnlLine."Interest Accrual" := TRUE;
+                                        Cust.GET("Source No.");
+                                        CustAgreement.GET("Source No.","Agreement No.");
+
+                                        tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     AgreementSchedule."Source No.",
+                                                                     Cust.Name,
+                                                                     CustAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                        tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         AgreementSchedule."Source No.",
+                                                                         Cust.Name,
+                                                                         CustAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+
+                                        CustPostingGroup.RESET;
+                                        CustPostingGroup.SETRANGE("Loan Princ/Int. Posting Group",CustAgreement."Customer Posting Group");
+                                        CustPostingGroup.SETRANGE("Loan Interest",TRUE);
+                                        IF CustPostingGroup.FINDFIRST THEN
+                                          PostingGroupCode := CustPostingGroup.Code
+                                        ELSE
+                                          PostingGroupCode := CustAgreement."Customer Posting Group";
+                                        CustPostingGroup.RESET;
+
+                                        IF CustPostingGroup.GET(PostingGroupCode) THEN BEGIN
+                                          CustPostingGroup.TESTFIELD("Loan Interest Account");
+
+                                          tmpGenJnlLine."Posting Group" :=CustPostingGroup.Code;
+                                          tmpGenJnlLine."Bal. Account Type" := tmpGenJnlLine."Bal. Account Type"::"G/L Account";
+                                          tmpGenJnlLine."Bal. Account No." := CustPostingGroup."Loan Interest Account";
+                                        END ELSE BEGIN
+
+                                          CustPostingGroup.RESET;
+                                          CustPostingGroup.SETRANGE("Loan Princ/Int. Posting Group",CustAgreement."Customer Posting Group");
+                                          CustPostingGroup.SETRANGE("Loan Interest",TRUE);
+                                          IF CustPostingGroup.FINDFIRST THEN
+                                            PostingGroupCode := CustPostingGroup.Code
+                                          ELSE
+                                            PostingGroupCode := CustAgreement."Customer Posting Group";
+                                          CustPostingGroup.RESET;
+
+                                          IF CustPostingGroup.GET(PostingGroupCode) THEN BEGIN
+                                            CustPostingGroup.TESTFIELD("Loan Interest Account");
+                                            tmpGenJnlLine."Posting Group" :=CustPostingGroup.Code;
+                                            tmpGenJnlLine."Bal. Account Type" := tmpGenJnlLine."Bal. Account Type"::"G/L Account";
+                                            tmpGenJnlLine."Bal. Account No." := CustPostingGroup."Loan Interest Account";
+                                          END;
+                                        END;
+                                      END;
+                                    AgreementSchedule."Source Type"::Vendor:
+                                      BEGIN
+                                        tmpGenJnlLine."Account Type" :=tmpGenJnlLine."Account Type"::Vendor;
+                                        tmpGenJnlLine."Account No." := AgreementSchedule."Source No.";
+                                        tmpGenJnlLine."Agreement No." := AgreementSchedule."Agreement No.";
+                                        tmpGenJnlLine."Agreement Condition No." := AgreementSchedule."Agreement Condition No.";
+                                        tmpGenJnlLine."Agreement Schedule Date" := AgreementSchedule.Date;
+                                        tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::Interest;
+                                        tmpGenJnlLine."Interest Calc. No. of Days" := AgreementSchedule."Interest Calc. No. of Days";
+                                        tmpGenJnlLine."Interest Accrual" := TRUE;
+                                        tmpGenJnlLine.Amount :=AgreementSchedule.Amount;
+                                        Vend.GET("Source No.");
+                                        VendAgreement.GET("Source No.","Agreement No.");
+                                        tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                     AgreementSchedule."Source No.",
+                                                                     Vend.Name,
+                                                                     VendAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                        tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription,
+                                                                         AgreementSchedule."Source No.",
+                                                                         Vend.Name,
+                                                                         VendAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+                                        VendPostingGroup.RESET;
+                                        VendPostingGroup.SETRANGE("Loan Princ/Int. Posting Group",VendAgreement."Vendor Posting Group");
+                                        VendPostingGroup.SETRANGE("Loan Interest",TRUE);
+                                        IF VendPostingGroup.FINDFIRST THEN
+                                          PostingGroupCode := VendPostingGroup.Code
+                                        ELSE
+                                          PostingGroupCode := VendAgreement."Vendor Posting Group";
+                                        VendPostingGroup.RESET;
+
+                                        IF VendPostingGroup.GET(PostingGroupCode) THEN BEGIN
+                                          VendPostingGroup.TESTFIELD("Loan Interest Account");
+                                          tmpGenJnlLine."Posting Group" :=VendPostingGroup.Code;
+                                          tmpGenJnlLine."Bal. Account Type" := tmpGenJnlLine."Bal. Account Type"::"G/L Account";
+                                          tmpGenJnlLine."Bal. Account No." := VendPostingGroup."Loan Interest Account";
+                                        END ELSE BEGIN
+                                          VendPostingGroup.RESET;
+                                          VendPostingGroup.SETRANGE("Loan Princ/Int. Posting Group",VendAgreement."Vendor Posting Group");
+                                          VendPostingGroup.SETRANGE("Loan Interest",TRUE);
+                                          IF VendPostingGroup.FINDFIRST THEN
+                                            PostingGroupCode := VendPostingGroup.Code
+                                          ELSE
+                                            PostingGroupCode := VendAgreement."Vendor Posting Group";
+                                          VendPostingGroup.RESET;
+
+                                          IF VendPostingGroup.GET(PostingGroupCode) THEN BEGIN
+                                            VendPostingGroup.TESTFIELD("Loan Interest Account");
+                                            tmpGenJnlLine."Posting Group" :=VendPostingGroup.Code;
+                                            tmpGenJnlLine."Bal. Account Type" := tmpGenJnlLine."Bal. Account Type"::"G/L Account";
+                                            tmpGenJnlLine."Bal. Account No." := VendPostingGroup."Loan Interest Account";
+                                          END;
+                                        END;
+                                      END;
+                                  END;
+
+                                  //NC NCS-2163 > DP
+                                  IF GLSetup."Default Business Unit Code"<>'' THEN
+                                    tmpGenJnlLine."Business Unit Code" := GLSetup."Default Business Unit Code";
+                                  //NC NCS-2163 < DP
+
+                                  IF tmpGenJnlLine.Amount<>0 THEN
+                                    tmpGenJnlLine.INSERT;
+
+                                  //NC NCS-1268 > DP
+                                  CASE AgreementSchedule."Source Type" OF
+                                    AgreementSchedule."Source Type"::Customer:
+                                      IF CustAgreement.Reserve THEN BEGIN
+                                        NextLineNo := NextLineNo+1;
+                                        tmpGenJnlLine.INIT;
+                                        tmpGenJnlLine."Journal Template Name" := Template;
+                                        tmpGenJnlLine."Journal Batch Name" := Batch;
+                                        tmpGenJnlLine."Line No." :=NextLineNo;
+                                        tmpGenJnlLine."Posting Date" := AgreementSchedule.Date;
+                                        IF DocumentNo='' THEN
+                                          DocumentNo := 'INTR-'+FORMAT(tmpGenJnlLine."Posting Date",0,'<Year,2><Month,2>');
+                                        tmpGenJnlLine."Document No." := DocumentNo;
+                                        tmpGenJnlLine."External Document No." := DocumentNo;
+
+                                        //NC NCS-1268 > DP
+                                        IF GLSetup."LCY Code" <> AgreementSchedule."Currency Code" THEN
+                                        //NC NCS-1268 < DP
+
+                                        tmpGenJnlLine."Currency Code" := AgreementSchedule."Currency Code";
+                                        tmpGenJnlLine."Account Type" :=tmpGenJnlLine."Account Type"::Customer;
+                                        tmpGenJnlLine."Account No." := AgreementSchedule."Source No.";
+                                        tmpGenJnlLine."Agreement No." := AgreementSchedule."Agreement No.";
+                                        tmpGenJnlLine."Agreement Condition No." := AgreementSchedule."Agreement Condition No.";
+                                        tmpGenJnlLine."Agreement Schedule Date" := AgreementSchedule.Date;
+                                        tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::"Reserve%";
+                                        tmpGenJnlLine.Amount :=-ROUND(AgreementSchedule.Amount*CustAgreement."Reserve %"/100);
+                                        tmpGenJnlLine."Interest Calc. No. of Days" := AgreementSchedule."Interest Calc. No. of Days";
+                                        tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription2,
+                                                                     AgreementSchedule."Source No.",
+                                                                     Cust.Name,
+                                                                     CustAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                        tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription2,
+                                                                         AgreementSchedule."Source No.",
+                                                                         Cust.Name,
+                                                                         CustAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+                                        CustAgreement.TESTFIELD("Reserve % Posting Group");
+                                        tmpGenJnlLine."Posting Group" :=CustAgreement."Reserve % Posting Group";
+                                        IF CustPostingGroup.GET(CustAgreement."Reserve % Posting Group") THEN BEGIN
+                                          CustPostingGroup.TESTFIELD("Loan Reserve Account");
+                                          tmpGenJnlLine."Bal. Account Type" := tmpGenJnlLine."Bal. Account Type"::"G/L Account";
+                                          tmpGenJnlLine."Bal. Account No." := CustPostingGroup."Loan Reserve Account";
+                                        END;
+
+                                        //NC NCS-2163 > DP
+                                        IF GLSetup."Default Business Unit Code"<>'' THEN
+                                          tmpGenJnlLine."Business Unit Code" := GLSetup."Default Business Unit Code";
+                                        //NC NCS-2163 < DP
+
+                                        IF tmpGenJnlLine.Amount<>0 THEN
+                                          tmpGenJnlLine.INSERT;
+                                      END;
+                                    AgreementSchedule."Source Type"::Vendor:
+                                      IF VendAgreement.Reserve THEN BEGIN
+                                        NextLineNo := NextLineNo+1;
+                                        tmpGenJnlLine.INIT;
+                                        tmpGenJnlLine."Journal Template Name" := Template;
+                                        tmpGenJnlLine."Journal Batch Name" := Batch;
+                                        tmpGenJnlLine."Line No." :=NextLineNo;
+                                        tmpGenJnlLine."Posting Date" := AgreementSchedule.Date;
+                                        IF DocumentNo='' THEN
+                                          DocumentNo := 'INTR-'+FORMAT(tmpGenJnlLine."Posting Date",0,'<Year,2><Month,2>');
+                                        tmpGenJnlLine."Document No." := DocumentNo;
+                                        tmpGenJnlLine."External Document No." := DocumentNo;
+
+                                        //NC NCS-1268 > DP
+                                        IF GLSetup."LCY Code" <> AgreementSchedule."Currency Code" THEN
+                                        //NC NCS-1268 < DP
+
+                                        tmpGenJnlLine."Currency Code" := AgreementSchedule."Currency Code";
+                                        tmpGenJnlLine."Account Type" :=tmpGenJnlLine."Account Type"::Vendor;
+                                        tmpGenJnlLine."Account No." := AgreementSchedule."Source No.";
+                                        tmpGenJnlLine."Agreement No." := AgreementSchedule."Agreement No.";
+                                        tmpGenJnlLine."Agreement Condition No." := AgreementSchedule."Agreement Condition No.";
+                                        tmpGenJnlLine."Agreement Schedule Date" := AgreementSchedule.Date;
+                                        tmpGenJnlLine."Amount Type" := tmpGenJnlLine."Amount Type"::"Reserve%";
+                                        tmpGenJnlLine.Amount :=-ROUND(AgreementSchedule.Amount*VendAgreement."Reserve %"/100);
+                                        tmpGenJnlLine."Interest Calc. No. of Days" := AgreementSchedule."Interest Calc. No. of Days";
+                                        tmpGenJnlLine.Description := COPYSTR(STRSUBSTNO(PostingDescription2,
+                                                                     AgreementSchedule."Source No.",
+                                                                     Vend.Name,
+                                                                     VendAgreement."External Agreement No."),1,MAXSTRLEN(tmpGenJnlLine.Description));
+                                        tmpGenJnlLine."Description 2" := COPYSTR(STRSUBSTNO(PostingDescription2,
+                                                                         AgreementSchedule."Source No.",
+                                                                         Vend.Name,
+                                                                         VendAgreement."External Agreement No."),51,MAXSTRLEN(tmpGenJnlLine."Description 2"));
+                                        VendAgreement.TESTFIELD("Reserve % Posting Group");
+                                        tmpGenJnlLine."Posting Group" :=VendAgreement."Reserve % Posting Group";
+                                        IF VendPostingGroup.GET(VendAgreement."Reserve % Posting Group") THEN BEGIN
+                                          VendPostingGroup.TESTFIELD("Loan Reserve Account");
+                                          tmpGenJnlLine."Bal. Account Type" := tmpGenJnlLine."Bal. Account Type"::"G/L Account";
+                                          tmpGenJnlLine."Bal. Account No." := VendPostingGroup."Loan Reserve Account";
+                                        END;
+
+                                        //NC NCS-2163 > DP
+                                        IF GLSetup."Default Business Unit Code"<>'' THEN
+                                          tmpGenJnlLine."Business Unit Code" := GLSetup."Default Business Unit Code";
+                                        //NC NCS-2163 < DP
+
+                                        IF tmpGenJnlLine.Amount<>0 THEN
+                                          tmpGenJnlLine.INSERT;
+
+                                      END;
+                                  END;
+                                  //NC NCS-1268 < DP
+
+                                  AgreementSchedule.Processed := TRUE;
+                                  AgreementSchedule.MODIFY;
+                                END;
+
+               DataItemLink=Source Type=FIELD(Source Type),
+                            Source No.=FIELD(Source No.),
+                            Agreement No.=FIELD(Agreement No.),
+                            Agreement Condition No.=FIELD(Condition No.) }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PeriodReportManagement.InitPeriod(CalendarPeriod,Periodical);
+                   PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,ProgressiveTotal);
+                   DatePeriod.COPY(CalendarPeriod);
+                   PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+                   UpdatePostingInfo; // NC NOS-26 SPA
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495013;1;Group  ;
+                  CaptionML=[ENU=Report options;
+                             RUS=Параметры отчета];
+                  GroupType=Group }
+
+      { 1101495001;2;Field  ;
+                  CaptionML=[ENU=Periodical Accrual;
+                             RUS=Периодичность начисления];
+                  OptionCaptionML=[ENU=Month,Quarter,Year;
+                                   RUS=Месяц,Квартал,Год];
+                  SourceExpr=Periodical;
+                  OnValidate=BEGIN
+                               PeriodReportManagement.InitPeriod(CalendarPeriod,Periodical);
+                               PeriodReportManagement.SetCaptionPeriodYear(AccountPeriod,CalendarPeriod,ProgressiveTotal);
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+                               UpdatePostingInfo; // NC NOS-26 SPA
+                             END;
+                              }
+
+      { 1101495002;2;Field  ;
+                  CaptionML=[ENU=Accounting Period;
+                             RUS=Учетный Период];
+                  SourceExpr=AccountPeriod;
+                  OnValidate=BEGIN
+                               DatePeriod.COPY(CalendarPeriod);
+                               PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+
+                               UpdatePostingInfo; // NC NOS-26 SPA
+                               DocumentNo := 'INTR-'+FORMAT(PostingDate);
+                             END;
+
+                  OnLookup=BEGIN
+                             PeriodReportManagement.SelectPeriod(Text,CalendarPeriod,ProgressiveTotal);
+                             DatePeriod.COPY(CalendarPeriod);
+                             PeriodReportManagement.PeriodSetup(DatePeriod,ProgressiveTotal);
+                             RequestOptionsPage.UPDATE;
+                             EXIT(TRUE);
+                           END;
+                            }
+
+      { 1101495012;2;Group  ;
+                  CaptionML=[ENU=Period's beginning and ending days;
+                             RUS=Даты начала и окончания периода];
+                  GroupType=Group }
+
+      { 1101495010;3;Group  ;
+                  GroupType=GridLayout;
+                  Layout=Rows }
+
+      { 1101495011;4;Group  ;
+                  GroupType=Group;
+                  Layout=Rows }
+
+      { 1101495003;5;Field  ;
+                  CaptionML=[ENU=From;
+                             RUS=С];
+                  SourceExpr=DatePeriod."Period Start";
+                  Editable=FALSE;
+                  ShowCaption=No }
+
+      { 1101495004;5;Field  ;
+                  CaptionML=[ENU=To;
+                             RUS=По];
+                  SourceExpr=DatePeriod."Period End";
+                  Editable=FALSE;
+                  ShowCaption=No }
+
+      { 1101495014;2;Group  ;
+                  CaptionML=[ENU=Post;
+                             RUS=Учет];
+                  GroupType=Group }
+
+      { 1101495005;3;Field  ;
+                  CaptionML=[ENU=Gen. Journal Template;
+                             RUS=Фин. Журнал Шаблон];
+                  SourceExpr=Template;
+                  TableRelation="Gen. Journal Template" }
+
+      { 1101495006;3;Field  ;
+                  CaptionML=[ENU=Gen. Journal Batch.;
+                             RUS=Фин. Журнал Раздел];
+                  SourceExpr=Batch;
+                  OnValidate=BEGIN
+                               //NC PIF001 > DP
+                               IF Batch <> '' THEN BEGIN
+                                 GenJnlBatch.GET(Template, Batch);
+                               END;
+                               //NC PIF001 < DP
+                             END;
+
+                  OnLookup=BEGIN
+                             //NC PIF001 > DP
+                             GenJnlBatch.SETRANGE("Journal Template Name", Template);
+                             IF PAGE.RUNMODAL(PAGE::"General Journal Batches", GenJnlBatch) = ACTION::LookupOK THEN BEGIN
+                               Batch := GenJnlBatch.Name;
+                             END;
+                             //NC PIF001 < DP
+                           END;
+                            }
+
+      { 1101495008;3;Field  ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата Учета];
+                  SourceExpr=PostingDate }
+
+      { 1101495007;3;Field  ;
+                  CaptionML=[ENU=Document No.;
+                             RUS=Документ Но.];
+                  SourceExpr=DocumentNo }
+
+      { 1101495009;3;Field  ;
+                  CaptionML=[ENU=Posting Description;
+                             RUS=Описание Учета];
+                  SourceExpr=PostingDescription }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      DateStart@1101495038 : Date;
+      DateEnd@1101495037 : Date;
+      Cust@1101495036 : Record 18;
+      Vend@1101495035 : Record 23;
+      CustAgreement@1101495034 : Record 14902;
+      VendAgreement@1101495033 : Record 14901;
+      CustPostingGroup@1101495032 : Record 92;
+      VendPostingGroup@1101495031 : Record 93;
+      CalendarPeriod@1101495030 : Record 2000000007;
+      DatePeriod@1101495029 : Record 2000000007;
+      ChangeDate@1101495028 : Page 12445;
+      PeriodReportManagement@1101495027 : Codeunit 12406;
+      AccountPeriod@1101495026 : Text[30];
+      ProgressiveTotal@1101495025 : Boolean;
+      Periodical@1101495024 : 'Month,Quarter,Year';
+      PostingDate@1101495023 : Date;
+      PostingDescription@1101495022 : Text[50];
+      DocumentNo@1101495021 : Code[20];
+      Template@1101495020 : Code[10];
+      Batch@1101495019 : Code[10];
+      GenJnlBatch@1101495018 : Record 232;
+      GenJnlTemplate@1101495017 : Record 80;
+      tmpGenJnlLine@1101495016 : TEMPORARY Record 81;
+      GenJnlLine@1101495015 : Record 81;
+      NextLineNo@1101495014 : Integer;
+      GLSetup@1101495013 : Record 98;
+      StandParameter@1101495012 : Record 50076;
+      IsPost@1101495011 : Boolean;
+      GenJnlLinePost@1101495010 : Codeunit 231;
+      LineMin@1101495009 : Integer;
+      LineMax@1101495008 : Integer;
+      PostingGroupCode@1101495007 : Code[10];
+      IsCalc@1101495006 : Boolean;
+      IsDelete@1101495005 : Boolean;
+      AgreementSchedule2@1101495004 : Record 50097;
+      GenJnlLine1@1101495003 : Record 81;
+      SourceType@1101495002 : Integer;
+      PostingDescription2@1101495001 : Text[50];
+      StandParameter2@1101495000 : Record 50076;
+      Text003@1101495044 : TextConst 'ENU=Interest %1 %2 %3;RUS=Проценты %1 %2 %3';
+      Text007@1101495043 : TextConst 'ENU="You should setup ";RUS="Не заполнены настройки в "';
+      Text008@1101495042 : TextConst 'ENU=" for ''Loans - Interest Post''";RUS=" для ''Кредиты/Займы - Учет Процентов''"';
+      Text001@1101495041 : TextConst 'ENU=Accruals have been completed. You should post G/L Journal %1 %2, %3 %4.;RUS=Начисление завершено. Необходимо учесть строки Фин. Журнала %1 %2, %3 %4.';
+      Text002@1101495040 : TextConst 'ENU=Do You want to delete lines of G/L Journal %1 %2, %3 %4;RUS=Удалить строки Фин. Журнала %1 %2, %3 %4';
+      Text004@1101495039 : TextConst 'ENU=Provision %1 %2 %3;RUS=Provision %1 %2 %3';
+      DimMgt@1101495045 : Codeunit 408;
+
+    PROCEDURE CopyDefDimToJnlLineDim@1000000000(VAR GenJnlLine@1210002 : Record 81);
+    VAR
+      DefDim@1000000000 : Record 352;
+      TempDimSetEntry@1101495000 : TEMPORARY Record 480;
+      DimSetEntry@1101495001 : Record 480;
+    BEGIN
+      DefDim.RESET;
+      DefDim.SETRANGE("Table ID",DATABASE::"Period. Activities Stand. Par.");
+      DefDim.SETRANGE("No.",StandParameter.Code);
+
+      IF DefDim.FINDSET THEN BEGIN
+        //NC NOS-26 > SPA
+        DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine."Dimension Set ID");
+        TempDimSetEntry.SetObject(GenJnlLine);
+        //NC NOS-26 < SPA
+        REPEAT
+          IF DefDim."Dimension Value Code"<>'' THEN BEGIN
+            //NC NOS-26 > SPA
+            TempDimSetEntry.VALIDATE("Dimension Code",DefDim."Dimension Code");
+            //варианты перезаписи измерений в зависимости от типа учета значения
+            CASE DefDim."Value Posting" OF
+              DefDim."Value Posting"::"Code Mandatory": BEGIN
+                IF TempDimSetEntry.FIND THEN
+                  TempDimSetEntry.DELETE;
+                TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                TempDimSetEntry.INSERT(TRUE);
+              END;
+              ELSE BEGIN
+                IF TempDimSetEntry.FIND THEN BEGIN
+                  IF TempDimSetEntry."Dimension Value Code" = '' THEN BEGIN
+                    TempDimSetEntry.DELETE;
+                    TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                    TempDimSetEntry.INSERT(TRUE);
+                  END;
+                END ELSE BEGIN
+                  TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                  TempDimSetEntry.INSERT(TRUE);
+                END;
+              END;
+            END;
+            {
+            JnlLineDim.INIT;
+            JnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+            JnlLineDim."Journal Template Name" := GenJnlLine."Journal Template Name";
+            JnlLineDim."Journal Batch Name" := GenJnlLine."Journal Batch Name";
+            JnlLineDim."Journal Line No." := GenJnlLine."Line No.";
+            JnlLineDim."Dimension Code" := DefDim."Dimension Code";
+            JnlLineDim.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+            IF NOT JnlLineDim.INSERT(TRUE) THEN
+              //варианты перезаписи измерений в зависимости от типа учета значения
+              CASE DefDim."Value Posting" OF
+                DefDim."Value Posting"::"Code Mandatory": JnlLineDim.MODIFY(TRUE);
+                ELSE
+                  IF JnlLineDim2.GET(JnlLineDim."Table ID",JnlLineDim."Journal Template Name",JnlLineDim."Journal Batch Name",
+                     JnlLineDim."Journal Line No.",JnlLineDim."Allocation Line No.",JnlLineDim."Dimension Code") THEN
+                    IF JnlLineDim2."Dimension Value Code"='' THEN
+                      JnlLineDim.MODIFY(TRUE);
+              END;
+            IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+              GenJnlLine."Shortcut Dimension 1 Code" := DefDim."Dimension Value Code";
+            IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+              GenJnlLine."Shortcut Dimension 2 Code" := DefDim."Dimension Value Code";
+            }
+            //NC NOS-26 < SPA
+          END;
+        UNTIL DefDim.NEXT = 0;
+
+        //NC NOS-26 > SPA
+        DimMgt.UpdateGenJnlLineDim(GenJnlLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+        GenJnlLine.MODIFY;
+        //NC NOS-26 < SPA
+      END;
+    END;
+
+    PROCEDURE SetParameters@1000000001(NewDateStart@1000000000 : Date;NewDateEnd@1000000001 : Date);
+    BEGIN
+      DateStart := NewDateStart;
+      DateEnd := NewDateEnd;
+      PostingDate := DateEnd;
+      IsCalc := TRUE;
+    END;
+
+    PROCEDURE IsActiveAgreement@1101495003() : Boolean;
+    VAR
+      CustAgreement@1101495000 : Record 14902;
+      VendAgreement@1101495001 : Record 14901;
+      IsActive@1101495002 : Boolean;
+    BEGIN
+      //NC NCS-1085 > DP
+      IsActive := FALSE;
+      CASE "Agreement Detail"."Source Type" OF
+        "Agreement Detail"."Source Type"::Customer:
+        BEGIN
+          IF CustAgreement.GET("Agreement Detail"."Source No.","Agreement Detail"."Agreement No.") THEN
+            IsActive := CustAgreement.Active;
+        END;
+        "Agreement Detail"."Source Type"::Vendor:
+        BEGIN
+          IF VendAgreement.GET("Agreement Detail"."Source No.","Agreement Detail"."Agreement No.") THEN
+            IsActive := VendAgreement.Active;
+        END;
+      END;
+      EXIT(IsActive);
+      //NC NCS-1085 < DP
+    END;
+
+    PROCEDURE CopyDefDimToJnlLineDim2@1101495000(VAR GenJnlLine2@1210002 : Record 81);
+    VAR
+      DefDim@1000000000 : Record 352;
+      TempDimSetEntry@1101495001 : TEMPORARY Record 480;
+      DimSetEntry@1101495000 : Record 480;
+    BEGIN
+      //NC NCS-1268 DP>
+      StandParameter2.RESET;
+      StandParameter2.SETRANGE("Report ID",REPORT::"Loans - Create Reserve");
+      IF StandParameter2.FINDFIRST THEN BEGIN
+        DefDim.RESET;
+        DefDim.SETRANGE("Table ID",DATABASE::"Period. Activities Stand. Par.");
+        DefDim.SETRANGE("No.",StandParameter2.Code);
+        IF DefDim.FINDSET THEN BEGIN
+          //NC NOS-26 > SPA
+          DimMgt.GetDimensionSet(TempDimSetEntry,GenJnlLine2."Dimension Set ID");
+          TempDimSetEntry.SetObject(GenJnlLine2);
+          //NC NOS-26 < SPA
+          REPEAT
+            IF DefDim."Dimension Value Code"<>'' THEN BEGIN
+              //NC NOS-26 > SPA
+              TempDimSetEntry.VALIDATE("Dimension Code",DefDim."Dimension Code");
+              //варианты перезаписи измерений в зависимости от типа учета значения
+              CASE DefDim."Value Posting" OF
+                DefDim."Value Posting"::"Code Mandatory": BEGIN
+                  IF TempDimSetEntry.FIND THEN
+                    TempDimSetEntry.DELETE;
+                  TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                  TempDimSetEntry.INSERT(TRUE);
+                END;
+
+                ELSE BEGIN
+                  IF TempDimSetEntry.FIND THEN BEGIN
+                    IF TempDimSetEntry."Dimension Value Code" = '' THEN BEGIN
+                      TempDimSetEntry.DELETE;
+                      TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                      TempDimSetEntry.INSERT(TRUE);
+                    END;
+                  END ELSE BEGIN
+                    TempDimSetEntry.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+                    TempDimSetEntry.INSERT(TRUE);
+                  END;
+                END;
+              END;
+              {
+              JnlLineDim.INIT;
+              JnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+              JnlLineDim."Journal Template Name" := GenJnlLine2."Journal Template Name";
+              JnlLineDim."Journal Batch Name" := GenJnlLine2."Journal Batch Name";
+              JnlLineDim."Journal Line No." := GenJnlLine2."Line No.";
+              JnlLineDim."Dimension Code" := DefDim."Dimension Code";
+              JnlLineDim.VALIDATE("Dimension Value Code",DefDim."Dimension Value Code");
+              IF NOT JnlLineDim.INSERT(TRUE) THEN
+                //варианты перезаписи измерений в зависимости от типа учета значения
+                CASE DefDim."Value Posting" OF
+                  DefDim."Value Posting"::"Code Mandatory": JnlLineDim.MODIFY(TRUE);
+                  ELSE
+                    IF JnlLineDim2.GET(JnlLineDim."Table ID",JnlLineDim."Journal Template Name",JnlLineDim."Journal Batch Name",
+                       JnlLineDim."Journal Line No.",JnlLineDim."Allocation Line No.",JnlLineDim."Dimension Code") THEN
+                      IF JnlLineDim2."Dimension Value Code"='' THEN
+                        JnlLineDim.MODIFY(TRUE);
+                END;
+              IF DefDim."Dimension Code" = GLSetup."Global Dimension 1 Code" THEN
+                GenJnlLine2."Shortcut Dimension 1 Code" := DefDim."Dimension Value Code";
+              IF DefDim."Dimension Code" = GLSetup."Global Dimension 2 Code" THEN
+                GenJnlLine2."Shortcut Dimension 2 Code" := DefDim."Dimension Value Code";
+              }
+              //NC NOS-26 < SPA
+            END;
+          UNTIL DefDim.NEXT = 0;
+
+          //NC NOS-26 > SPA
+          DimMgt.UpdateGenJnlLineDim(GenJnlLine2,DimMgt.GetDimensionSetID(TempDimSetEntry));
+          GenJnlLine2.MODIFY;
+          //NC NOS-26 < SPA
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdatePostingInfo@1101495016();
+    BEGIN
+      DateStart := DatePeriod."Period Start";
+      DateEnd := DatePeriod."Period End";
+      PostingDate := DatePeriod."Period End";
+    END;
+
+    BEGIN
+    {
+      NC MLN09.1 DP Изменен фильтр DataItem "Agreement Detail"
+      NC MLN09.3 DP Изменен порядок заполнения Фин. Журнал Строка
+      NC NCS-1085 DP Расчет процентов только по активным договорам
+      NC NCS-1051 DP Очистка строк фин. журнала перед формированием процентов, сообщение по результатам работы
+      NC NCS-1032 DP При удалении фин. строк для неучтенных начисленных процентов осуществляется блокировка записи в графике.
+      NC NCS-1268 DP Начисление резерва
+      NC NCS-2163 DP Изменен триггер AgreementSchedule - OnAfterGetRecord(); указывается BU Code по умолчанию
+      -----------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

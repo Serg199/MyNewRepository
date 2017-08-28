@@ -1,0 +1,1014 @@
+OBJECT Codeunit 12422 Corrective Document Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesHeader@1210001 : Record 36;
+      Currency@1210000 : Record 4;
+      Text001@1210003 : TextConst 'ENU=Line No. %1 already exists in Corrective %2 No. %3.;RUS=Строка номер %1 уже существует в корректирующем %2 номер %3.';
+      CorrectionType@1210004 : 'Original Item,Item Charge';
+      Text002@1210002 : TextConst 'ENU=Line No. %1 has already been corrected by Sales Invoice %2.;RUS=Строка номер %1 уже исправлена счетом продажи %2.';
+      Text003@1210005 : TextConst 'ENU=Line No. %1 has already been corrected by Sales Credit Memo %2.;RUS=Строка номер %1 уже исправлена кредит-нотой продажи %2.';
+      Text004@1210006 : TextConst 'ENU=The dimensions used in %1 %2 should be equal to %3.;RUS=Измерения, использованные в %1 %2, должны быть равны %3.';
+
+    LOCAL PROCEDURE GetSalesHeader@1210016(DocType@1210000 : Option;DocNo@1210001 : Code[20]);
+    BEGIN
+      SalesHeader.GET(DocType,DocNo);
+      SalesHeader.TESTFIELD("Corrective Document");
+      SalesHeader.TESTFIELD("Corrected Doc. Type");
+      SalesHeader.TESTFIELD("Corrected Doc. No.");
+
+      IF SalesHeader."Currency Code" <> '' THEN
+        Currency.GET(SalesHeader."Currency Code")
+      ELSE
+        Currency.InitRoundingPrecision;
+    END;
+
+    PROCEDURE SetSalesHeader@1210001(DocType@1210001 : Option;DocNo@1210000 : Code[20]);
+    BEGIN
+      GetSalesHeader(DocType,DocNo);
+    END;
+
+    PROCEDURE SetCorrectionType@1210006(SelectedCorrectionType@1210000 : Option);
+    BEGIN
+      CorrectionType := SelectedCorrectionType;
+    END;
+
+    LOCAL PROCEDURE GetItemChargeAssgntLineNo@1210041(SalesLine@1210000 : Record 37) : Integer;
+    VAR
+      ItemChargeAssgntSales@1210001 : Record 5809;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        ItemChargeAssgntSales.RESET;
+        ItemChargeAssgntSales.SETRANGE("Document Type","Document Type");
+        ItemChargeAssgntSales.SETRANGE("Document No.","Document No.");
+        ItemChargeAssgntSales.SETRANGE("Document Line No.","Line No.");
+        ItemChargeAssgntSales.SETRANGE("Item Charge No.","No.");
+        IF ItemChargeAssgntSales.FINDLAST THEN;
+        EXIT(ItemChargeAssgntSales."Line No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE ItemShptChargeAssgnt@1210040(SalesLine@1210000 : Record 37;VAR TempSalesShptLine@1210001 : Record 111);
+    VAR
+      ItemChargeAssgntSales@1210002 : Record 5809;
+      AssignItemChargeSales@1210003 : Codeunit 5807;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        ItemChargeAssgntSales.INIT;
+        ItemChargeAssgntSales."Document Type" := "Document Type";
+        ItemChargeAssgntSales."Document No." := "Document No.";
+        ItemChargeAssgntSales."Document Line No." := "Line No.";
+        ItemChargeAssgntSales."Item Charge No." := "No.";
+        ItemChargeAssgntSales."Line No." := GetItemChargeAssgntLineNo(SalesLine);
+        ItemChargeAssgntSales."Unit Cost" := "Unit Price";
+
+        TempSalesShptLine.FINDSET;
+        AssignItemChargeSales.CreateShptChargeAssgnt(TempSalesShptLine,ItemChargeAssgntSales);
+      END;
+    END;
+
+    LOCAL PROCEDURE ItemRcptChargeAssgnt@1210042(SalesLine@1210000 : Record 37;VAR TempSalesReturnRcptLine@1210001 : Record 6661);
+    VAR
+      ItemChargeAssgntSales@1210002 : Record 5809;
+      AssignItemChargeSales@1210003 : Codeunit 5807;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        ItemChargeAssgntSales.INIT;
+        ItemChargeAssgntSales."Document Type" := "Document Type";
+        ItemChargeAssgntSales."Document No." := "Document No.";
+        ItemChargeAssgntSales."Document Line No." := "Line No.";
+        ItemChargeAssgntSales."Item Charge No." := "No.";
+        ItemChargeAssgntSales."Line No." := GetItemChargeAssgntLineNo(SalesLine);
+        ItemChargeAssgntSales."Unit Cost" := "Unit Price";
+
+        TempSalesReturnRcptLine.FINDSET;
+        AssignItemChargeSales.CreateRcptChargeAssgnt(TempSalesReturnRcptLine,ItemChargeAssgntSales);
+      END;
+    END;
+
+    LOCAL PROCEDURE SalesItemChargeAssgnt@1210038(SalesLine@1470001 : Record 37;VAR TempSalesShptLine@1470003 : Record 111;VAR TempSalesReturnRcptLine@1210000 : Record 6661);
+    VAR
+      AssignItemChargeSales@1001 : Codeunit 5807;
+    BEGIN
+      IF NOT TempSalesShptLine.ISEMPTY THEN
+        ItemShptChargeAssgnt(SalesLine,TempSalesShptLine);
+
+      IF NOT TempSalesReturnRcptLine.ISEMPTY THEN
+        ItemRcptChargeAssgnt(SalesLine,TempSalesReturnRcptLine);
+
+      AssignItemChargeSales.SuggestAssignment2(SalesLine,SalesLine.Quantity,SalesLine."Line Amount",2);
+    END;
+
+    LOCAL PROCEDURE GetRcptShptLineNo@1210005(ValueEntry@1210000 : Record 5802) : Integer;
+    VAR
+      ValueEntry1@1210001 : Record 5802;
+    BEGIN
+      IF ValueEntry."Item Charge No." = '' THEN
+        EXIT(ValueEntry."Document Line No.");
+
+      ValueEntry1.SETCURRENTKEY("Item Ledger Entry No.","Entry Type");
+      ValueEntry1.SETRANGE("Item Ledger Entry No.",ValueEntry."Item Ledger Entry No.");
+      ValueEntry1.SETRANGE("Entry Type",ValueEntry."Entry Type"::"Direct Cost");
+      IF ValueEntry1.FINDSET THEN
+        REPEAT
+          IF ValueEntry1."Item Charge No." = '' THEN
+            EXIT(ValueEntry1."Document Line No.");
+        UNTIL ValueEntry1.NEXT = 0;
+
+      EXIT(0);
+    END;
+
+    LOCAL PROCEDURE CreateItemChargeAssignment@1210007(SalesLine@1210001 : Record 37);
+    VAR
+      SalesInvLine@1210004 : Record 113;
+      SalesCrMemoLine@1210000 : Record 115;
+      TempSalesShptLine@1210002 : TEMPORARY Record 111;
+      TempReturnRcptLine@1210003 : TEMPORARY Record 6661;
+    BEGIN
+      IF SalesLine.Type <> SalesLine.Type::"Charge (Item)" THEN
+        EXIT;
+
+      WITH SalesLine DO BEGIN
+        CASE "Original Doc. Type" OF
+          "Original Doc. Type"::Invoice:
+            GetSalesShptLines(
+              TempSalesShptLine,
+              "Original Doc. No.",
+              GetSalesInvHeaderPostingDate("Original Doc. No."),
+              "Original No.",
+              "Corrected Doc. Line No.");
+          "Original Doc. Type"::"Credit Memo":
+            GetSalesRcptLines(
+              TempReturnRcptLine,
+              "Original Doc. No.",
+              GetSalesCrMHeaderPostingDate("Original Doc. No."),
+              "Original No.",
+              "Corrected Doc. Line No.");
+        END;
+
+        SetSalesInvCrMemoLineFilters(
+          SalesInvLine,
+          SalesCrMemoLine,
+          "Original Doc. Type",
+          "Original Doc. No.",
+          "Original Doc. Line No.");
+
+        IF SalesInvLine.FINDSET THEN
+          REPEAT
+            IF SalesInvLine.Type = SalesInvLine.Type::Item THEN
+              GetSalesShptLines(
+                TempSalesShptLine,
+                SalesInvLine."Document No.",
+                GetSalesInvHeaderPostingDate(SalesInvLine."Document No."),
+                SalesInvLine."Original No.",
+                SalesInvLine."Line No.");
+          UNTIL SalesInvLine.NEXT = 0;
+
+        IF SalesCrMemoLine.FINDSET THEN
+          REPEAT
+            IF SalesCrMemoLine.Type = SalesCrMemoLine.Type::Item THEN
+              GetSalesRcptLines(
+                TempReturnRcptLine,
+                SalesCrMemoLine."Document No.",
+                GetSalesCrMHeaderPostingDate(SalesCrMemoLine."Document No."),
+                SalesCrMemoLine."Original No.",
+                SalesCrMemoLine."Line No.");
+          UNTIL SalesCrMemoLine.NEXT = 0;
+      END;
+
+      SalesItemChargeAssgnt(SalesLine,TempSalesShptLine,TempReturnRcptLine);
+    END;
+
+    LOCAL PROCEDURE GetSalesShptLines@1210021(VAR TempSalesShptLine@1470005 : Record 111;DocNo@1470003 : Code[20];PostingDate@1470006 : Date;ItemNo@1210000 : Code[20];LineNo@1210001 : Integer);
+    VAR
+      ValueEntry@1470001 : Record 5802;
+      ItemLedgEntry@1470002 : Record 32;
+      SalesShptLine@1470004 : Record 111;
+    BEGIN
+      ValueEntry.SETCURRENTKEY("Item No.","Posting Date","Document No.","Document Line No.");
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Posting Date",PostingDate);
+      ValueEntry.SETRANGE("Document No.",DocNo);
+      ValueEntry.SETRANGE("Document Line No.",LineNo);
+      IF ValueEntry.FINDSET THEN
+        REPEAT
+          IF (ValueEntry."Item Ledger Entry No." <> 0) AND
+             (ValueEntry."Entry Type" = ValueEntry."Entry Type"::"Direct Cost")
+          THEN BEGIN
+            ItemLedgEntry.GET(ValueEntry."Item Ledger Entry No.");
+            IF SalesShptLine.GET(ItemLedgEntry."Document No.",GetRcptShptLineNo(ValueEntry)) THEN BEGIN
+              TempSalesShptLine := SalesShptLine;
+              IF TempSalesShptLine.INSERT THEN;
+            END;
+          END;
+        UNTIL ValueEntry.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE GetSalesRcptLines@1210020(VAR TempReturnReceiptLine@1470005 : Record 6661;DocNo@1470003 : Code[20];PostingDate@1470006 : Date;ItemNo@1210000 : Code[20];LineNo@1210001 : Integer);
+    VAR
+      ValueEntry@1470001 : Record 5802;
+      ItemLedgEntry@1470002 : Record 32;
+      ReturnRcptLine@1470004 : Record 6661;
+    BEGIN
+      ValueEntry.SETCURRENTKEY("Item No.","Posting Date","Document No.","Document Line No.");
+      ValueEntry.SETRANGE("Item No.",ItemNo);
+      ValueEntry.SETRANGE("Posting Date",PostingDate);
+      ValueEntry.SETRANGE("Document No.",DocNo);
+      ValueEntry.SETRANGE("Document Line No.",LineNo);
+      IF ValueEntry.FINDSET THEN
+        REPEAT
+          IF (ValueEntry."Item Ledger Entry No." <> 0) AND
+             (ValueEntry."Entry Type" = ValueEntry."Entry Type"::"Direct Cost")
+          THEN BEGIN
+            ItemLedgEntry.GET(ValueEntry."Item Ledger Entry No.");
+            IF ReturnRcptLine.GET(ItemLedgEntry."Document No.",GetRcptShptLineNo(ValueEntry)) THEN BEGIN
+              TempReturnReceiptLine := ReturnRcptLine;
+              IF TempReturnReceiptLine.INSERT THEN;
+            END;
+          END;
+        UNTIL ValueEntry.NEXT = 0;
+    END;
+
+    PROCEDURE CreateSalesLinesFromPstdInv@1210010(VAR SourceSalesInvLine@1210002 : Record 113);
+    VAR
+      InventorySetup@1210001 : Record 313;
+      SalesLine@1210003 : Record 37;
+      TempSalesLine@1210005 : Record 37;
+      SalesInvLine@1210000 : Record 113;
+      LineNo@1210004 : Integer;
+      ItemLine@1210007 : Boolean;
+    BEGIN
+      InventorySetup.GET;
+      SalesInvLine.COPY(SourceSalesInvLine);
+      LineNo := GetSalesLineNo(SalesHeader."Document Type",SalesHeader."No.");
+
+      IF SalesInvLine.FINDSET THEN
+        REPEAT
+          CheckSalesLineExists(SalesInvLine."Line No.");
+          CheckSalesLineCorrected(SalesInvLine."Line No.");
+          TempSalesLine.TRANSFERFIELDS(SalesInvLine);
+          ItemLine :=
+            (SalesInvLine.Type = SalesInvLine.Type::Item) OR
+            (SalesInvLine."Original Type" = SalesInvLine."Original Type"::Item);
+
+          InsertSalesLine(SalesLine,SalesHeader."Document Type",SalesHeader."No.",LineNo);
+
+          IF SalesInvLine.Type <> SalesInvLine.Type::" " THEN BEGIN
+            IF NOT ItemLine THEN BEGIN
+              SalesLine.VALIDATE(Type,SalesInvLine.Type);
+              SalesLine.VALIDATE("No.",SalesInvLine."No.");
+            END ELSE
+              ValidateItemLine(SalesLine,TempSalesLine);
+            ValidateCorrValues(SalesLine,TempSalesLine);
+          END ELSE BEGIN
+            SalesLine."No." := SalesInvLine."No.";
+            SalesLine.Description := SalesInvLine.Description;
+          END;
+          SalesLine."Dimension Set ID" := SalesInvLine."Dimension Set ID";
+          IF InventorySetup."Enable Red Storno" AND
+             (SalesLine.Type = SalesLine.Type::Item) AND
+             (SalesLine."Document Type" IN [SalesLine."Document Type"::"Credit Memo",SalesLine."Document Type"::"Return Order"])
+          THEN
+            FindAndSetApplFromItemEntryNo(SalesLine,SalesInvLine);
+          SalesLine.MODIFY;
+          IF ItemLine THEN
+            CreateItemChargeAssignment(SalesLine);
+          IF SalesLine.Type = SalesLine.Type::Item THEN
+            CreateItemTracking(SalesLine,TempSalesLine);
+          LineNo := LineNo + 10000;
+        UNTIL SalesInvLine.NEXT = 0;
+    END;
+
+    PROCEDURE CreateSalesLinesFromPstdCrMemo@1210011(VAR SourceSalesCrMemoLine@1210002 : Record 115);
+    VAR
+      SalesLine@1210003 : Record 37;
+      TempSalesLine@1210005 : Record 37;
+      SalesCrMemoLine@1210000 : Record 115;
+      LineNo@1210004 : Integer;
+      ItemLine@1210006 : Boolean;
+    BEGIN
+      SalesCrMemoLine.COPY(SourceSalesCrMemoLine);
+      LineNo := GetSalesLineNo(SalesHeader."Document Type",SalesHeader."No.");
+
+      IF SalesCrMemoLine.FINDSET THEN
+        REPEAT
+          CheckSalesLineExists(SalesCrMemoLine."Line No.");
+          CheckSalesLineCorrected(SalesCrMemoLine."Line No.");
+          TempSalesLine.TRANSFERFIELDS(SalesCrMemoLine);
+          ItemLine :=
+            (SalesCrMemoLine.Type = SalesCrMemoLine.Type::Item) OR
+            (SalesCrMemoLine."Original Type" = SalesCrMemoLine."Original Type"::Item);
+
+          InsertSalesLine(SalesLine,SalesHeader."Document Type",SalesHeader."No.",LineNo);
+
+          IF SalesCrMemoLine.Type <> SalesCrMemoLine.Type::" " THEN BEGIN
+            IF NOT ItemLine THEN BEGIN
+              SalesLine.VALIDATE(Type,SalesCrMemoLine.Type);
+              SalesLine.VALIDATE("No.",SalesCrMemoLine."No.");
+            END ELSE
+              ValidateItemLine(SalesLine,TempSalesLine);
+            ValidateCorrValues(SalesLine,TempSalesLine);
+          END ELSE BEGIN
+            SalesLine."No." := SalesCrMemoLine."No.";
+            SalesLine.Description := SalesCrMemoLine.Description;
+          END;
+          SalesLine."Dimension Set ID" := SalesCrMemoLine."Dimension Set ID";
+          SalesLine.MODIFY;
+          IF ItemLine THEN
+            CreateItemChargeAssignment(SalesLine);
+          IF SalesLine.Type = SalesLine.Type::Item THEN
+            CreateItemTracking(SalesLine,TempSalesLine);
+          LineNo := LineNo + 10000;
+        UNTIL SalesCrMemoLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE GetSalesLineNo@1210019(DocType@1210000 : Option;DocNo@1210001 : Code[20]) : Integer;
+    VAR
+      SalesLine@1210002 : Record 37;
+    BEGIN
+      SalesLine.RESET;
+      SalesLine.SETRANGE("Document Type",DocType);
+      SalesLine.SETRANGE("Document No.",DocNo);
+      IF SalesLine.FINDLAST THEN;
+      EXIT(SalesLine."Line No." + 10000);
+    END;
+
+    LOCAL PROCEDURE InsertSalesLine@1210031(VAR SalesLine@1210000 : Record 37;DocType@1210001 : Option;DocNo@1210002 : Code[20];LineNo@1210003 : Integer);
+    BEGIN
+      SalesLine.INIT;
+      SalesLine."Document Type" := DocType;
+      SalesLine."Document No." := DocNo;
+      SalesLine."Line No." := LineNo;
+      SalesLine.INSERT;
+    END;
+
+    PROCEDURE SelectPstdSalesDocLines@1210014();
+    VAR
+      SalesInvLine@1210000 : Record 113;
+      SalesCrMemoLine@1210001 : Record 115;
+      SalesInvoiceLines@1210002 : Page 14975;
+      SalesCreditMemoLines@1210003 : Page 14976;
+    BEGIN
+      CASE SalesHeader."Corrected Doc. Type" OF
+        SalesHeader."Corrected Doc. Type"::Invoice:
+          BEGIN
+            SalesInvLine.SETRANGE("Document No.",SalesHeader."Corrected Doc. No.");
+            SalesInvoiceLines.SetSalesHeader(SalesHeader."Document Type",SalesHeader."No.");
+            SalesInvoiceLines.SETTABLEVIEW(SalesInvLine);
+            SalesInvoiceLines.LOOKUPMODE := TRUE;
+            IF SalesInvoiceLines.RUNMODAL <> ACTION::Cancel THEN;
+          END;
+        SalesHeader."Corrected Doc. Type"::"Credit Memo":
+          BEGIN
+            SalesCrMemoLine.SETRANGE("Document No.",SalesHeader."Corrected Doc. No.");
+            SalesCreditMemoLines.SetSalesHeader(SalesHeader."Document Type",SalesHeader."No.");
+            SalesCreditMemoLines.SETTABLEVIEW(SalesCrMemoLine);
+            SalesCreditMemoLines.LOOKUPMODE := TRUE;
+            IF SalesCreditMemoLines.RUNMODAL <> ACTION::Cancel THEN;
+          END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ValidateItemLine@1210025(VAR SalesLine@1210000 : Record 37;VAR TempSalesLine@1210001 : Record 37);
+    VAR
+      InvPostingGroup@1210002 : Record 94;
+      CorrectedLine@1210003 : Boolean;
+    BEGIN
+      CorrectedLine := TempSalesLine."Corrected Doc. Line No." <> 0;
+      IF CorrectionType = CorrectionType::"Original Item" THEN BEGIN
+        IF CorrectedLine THEN BEGIN
+          SalesLine.VALIDATE(Type,TempSalesLine."Original Type");
+          SalesLine.VALIDATE("No.",TempSalesLine."Original No.");
+        END ELSE BEGIN
+          SalesLine.VALIDATE(Type,TempSalesLine.Type);
+          SalesLine.VALIDATE("No.",TempSalesLine."No.");
+        END;
+        SalesLine.VALIDATE("Location Code",TempSalesLine."Location Code");
+        SalesLine."Posting Group" := TempSalesLine."Posting Group";
+      END ELSE
+        CASE TempSalesLine.Type OF
+          TempSalesLine.Type::Item:
+            BEGIN
+              InvPostingGroup.GET(TempSalesLine."Posting Group");
+              InvPostingGroup.TESTFIELD("Sales Corr. Doc. Charge (Item)");
+              SalesLine.VALIDATE(Type,SalesLine.Type::"Charge (Item)");
+              SalesLine.VALIDATE("No.",InvPostingGroup."Sales Corr. Doc. Charge (Item)");
+            END;
+          TempSalesLine.Type::"Charge (Item)",
+          TempSalesLine.Type::"G/L Account":
+            BEGIN
+              SalesLine.VALIDATE(Type,TempSalesLine.Type);
+              SalesLine.VALIDATE("No.",TempSalesLine."No.");
+            END;
+        END;
+    END;
+
+    LOCAL PROCEDURE ValidateCorrValues@1210035(VAR SalesLine@1210000 : Record 37;VAR TempSalesLine@1210001 : Record 37);
+    VAR
+      CorrectedLine@1210003 : Boolean;
+    BEGIN
+      CorrectedLine := TempSalesLine."Corrected Doc. Line No." <> 0;
+      WITH SalesLine DO BEGIN
+        VALIDATE("Gen. Prod. Posting Group",TempSalesLine."Gen. Prod. Posting Group");
+        VALIDATE("VAT Prod. Posting Group",TempSalesLine."VAT Prod. Posting Group");
+        "Corrected Doc. Line No." := TempSalesLine."Line No.";
+        Description := TempSalesLine.Description;
+        IF CorrectedLine THEN BEGIN
+          "Original Doc. Type" := TempSalesLine."Original Doc. Type";
+          "Original Doc. No." := TempSalesLine."Original Doc. No.";
+          "Original Doc. Line No." := TempSalesLine."Original Doc. Line No.";
+          "Original Type" := TempSalesLine."Original Type";
+          "Original No." := TempSalesLine."Original No.";
+          "Quantity (Before)" := TempSalesLine."Quantity (After)";
+          "Quantity (After)" := TempSalesLine."Quantity (After)";
+          "Unit Price (Before)" := TempSalesLine."Unit Price (After)";
+          "Unit Price (After)" := TempSalesLine."Unit Price (After)";
+          "Amount (Before)" := TempSalesLine."Amount (After)";
+          "Amount Including VAT (Before)" := TempSalesLine."Amount Including VAT (After)";
+          "Amount (LCY) (Before)" := TempSalesLine."Amount (LCY) (After)";
+          "Amt. Incl. VAT (LCY) (Before)" := TempSalesLine."Amt. Incl. VAT (LCY) (After)";
+        END ELSE BEGIN
+          "Original Doc. Type" := SalesHeader."Corrected Doc. Type";
+          "Original Doc. No." := SalesHeader."Corrected Doc. No.";
+          "Original Doc. Line No." := TempSalesLine."Line No.";
+          "Original Type" := TempSalesLine.Type;
+          "Original No." := TempSalesLine."No.";
+          "Quantity (Before)" := TempSalesLine.Quantity;
+          "Quantity (After)" := TempSalesLine.Quantity;
+          "Unit Price (Before)" := TempSalesLine."Unit Price";
+          "Unit Price (After)" := TempSalesLine."Unit Price";
+          "Amount (Before)" := TempSalesLine.Amount;
+          "Amount Including VAT (Before)" := TempSalesLine."Amount Including VAT";
+          "Amount (LCY) (Before)" := TempSalesLine."Amount (LCY)";
+          "Amt. Incl. VAT (LCY) (Before)" := TempSalesLine."Amount Including VAT (LCY)";
+          IF TempSalesLine."Line Discount %" <> 0 THEN BEGIN
+            "Unit Price (Before)" :=
+              ROUND("Amount (Before)" / "Quantity (Before)",Currency."Unit-Amount Rounding Precision");
+            "Unit Price (After)" := "Unit Price (Before)";
+          END;
+        END;
+        VALIDATE(Quantity,"Quantity (After)");
+        VALIDATE("Unit Price","Unit Price (After)");
+        VALIDATE("Line Discount %",0);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckSalesLineExists@1210039(CorrLineNo@1210001 : Integer);
+    VAR
+      CorrSalesHeader@1210002 : Record 36;
+      CorrSalesLine@1210000 : Record 37;
+    BEGIN
+      CorrSalesHeader.RESET;
+      CorrSalesHeader.SETCURRENTKEY("Corrective Document","Corrected Doc. Type","Corrected Doc. No.");
+      CorrSalesHeader.SETRANGE("Corrective Document",TRUE);
+      CorrSalesHeader.SETRANGE("Corrected Doc. Type",SalesHeader."Corrected Doc. Type");
+      CorrSalesHeader.SETRANGE("Corrected Doc. No.",SalesHeader."Corrected Doc. No.");
+      CorrSalesHeader.SETFILTER("No.",'<>%1',SalesHeader."No.");
+      IF CorrSalesHeader.FINDSET THEN
+        REPEAT
+          CorrSalesLine.RESET;
+          CorrSalesLine.SETRANGE("Document Type",CorrSalesHeader."Document Type");
+          CorrSalesLine.SETRANGE("Document No.",CorrSalesHeader."No.");
+          CorrSalesLine.SETRANGE("Corrected Doc. Line No.",CorrLineNo);
+          IF CorrSalesLine.FINDFIRST THEN
+            ERROR(Text001,CorrLineNo,CorrSalesLine."Document Type",CorrSalesLine."Document No.");
+        UNTIL CorrSalesHeader.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CheckSalesLineCorrected@1210012(CorrLineNo@1210000 : Integer);
+    VAR
+      SalesInvLine@1210001 : Record 113;
+      SalesCrMemoLine@1210002 : Record 115;
+    BEGIN
+      IF SalesHeader."Corrective Doc. Type" = SalesHeader."Corrective Doc. Type"::Revision THEN
+        EXIT;
+
+      SetSalesInvCrMemoLineFilters(
+        SalesInvLine,
+        SalesCrMemoLine,
+        SalesHeader."Corrected Doc. Type",
+        SalesHeader."Corrected Doc. No.",
+        CorrLineNo);
+
+      IF SalesInvLine.FINDFIRST THEN
+        ERROR(Text002,CorrLineNo,SalesInvLine."Document No.");
+
+      IF SalesCrMemoLine.FINDFIRST THEN
+        ERROR(Text003,CorrLineNo,SalesCrMemoLine."Document No.");
+    END;
+
+    LOCAL PROCEDURE SetSalesInvCrMemoLineFilters@1210009(VAR SalesInvLine@1210000 : Record 113;VAR SalesCrMemoLine@1210001 : Record 115;OriginalDocType@1210002 : Option;OriginalDocNo@1210003 : Code[20];OriginalDocLineNo@1210004 : Integer);
+    BEGIN
+      SalesInvLine.RESET;
+      SalesInvLine.SETCURRENTKEY("Original Doc. Type","Original Doc. No.","Original Doc. Line No.");
+      SalesInvLine.SETRANGE("Original Doc. Type",OriginalDocType);
+      SalesInvLine.SETRANGE("Original Doc. No.",OriginalDocNo);
+      SalesInvLine.SETRANGE("Original Doc. Line No.",OriginalDocLineNo);
+
+      SalesCrMemoLine.RESET;
+      SalesCrMemoLine.SETCURRENTKEY("Original Doc. Type","Original Doc. No.","Original Doc. Line No.");
+      SalesCrMemoLine.SETRANGE("Original Doc. Type",OriginalDocType);
+      SalesCrMemoLine.SETRANGE("Original Doc. No.",OriginalDocNo);
+      SalesCrMemoLine.SETRANGE("Original Doc. Line No.",OriginalDocLineNo);
+    END;
+
+    PROCEDURE GetSalesInvHeaderPostingDate@1210022(DocNo@1210001 : Code[20]) : Date;
+    VAR
+      SalesInvHeader@1210002 : Record 112;
+    BEGIN
+      IF SalesInvHeader.GET(DocNo) THEN
+        EXIT(SalesInvHeader."Posting Date");
+      EXIT(0D);
+    END;
+
+    PROCEDURE GetSalesCrMHeaderPostingDate@1210023(DocNo@1210000 : Code[20]) : Date;
+    VAR
+      SalesCrMemoHeader@1210002 : Record 114;
+    BEGIN
+      IF SalesCrMemoHeader.GET(DocNo) THEN
+        EXIT(SalesCrMemoHeader."Posting Date");
+      EXIT(0D);
+    END;
+
+    LOCAL PROCEDURE CreateItemTracking@1210004(SalesLine@1210000 : Record 37;TempSalesLine@1210001 : Record 37);
+    VAR
+      SalesInvLine@1210002 : Record 113;
+      SalesCrMemoLine@1210003 : Record 115;
+      ItemLedgEntryBuf@1210006 : TEMPORARY Record 32;
+      TempTrkgItemLedgEntry@1210005 : TEMPORARY Record 32;
+      SalesSetup@1210010 : Record 311;
+      ItemTrackingMgt@1210007 : Codeunit 6500;
+      ItemTrackingDocMgt@1210011 : Codeunit 6503;
+      MissingExCostRevLink@1210004 : Boolean;
+      FillExactCostRevLink@1210008 : Boolean;
+      ExactCostRevMandatory@1210009 : Boolean;
+    BEGIN
+      MissingExCostRevLink := FALSE;
+      FillExactCostRevLink := FALSE;
+      ExactCostRevMandatory := FALSE;
+      TempTrkgItemLedgEntry.RESET;
+      TempTrkgItemLedgEntry.DELETEALL;
+
+      CASE SalesHeader."Corrected Doc. Type" OF
+        SalesHeader."Corrected Doc. Type"::Invoice:
+          BEGIN
+            SalesInvLine.GET(TempSalesLine."Document No.",TempSalesLine."Line No.");
+            SalesInvLine.GetItemLedgEntries(ItemLedgEntryBuf,TRUE);
+          END;
+        SalesHeader."Corrected Doc. Type"::"Credit Memo":
+          BEGIN
+            SalesCrMemoLine.GET(TempSalesLine."Document No.",TempSalesLine."Line No.");
+            SalesCrMemoLine.GetItemLedgEntries(ItemLedgEntryBuf,TRUE);
+          END;
+      END;
+
+      FillExactCostRevLink :=
+        ((SalesHeader."Corrected Doc. Type" = SalesHeader."Corrected Doc. Type"::Invoice) AND
+         (SalesHeader."Document Type" = SalesHeader."Document Type"::"Credit Memo")) OR
+        ((SalesHeader."Corrected Doc. Type" = SalesHeader."Corrected Doc. Type"::"Credit Memo") AND
+         (SalesHeader."Document Type" = SalesHeader."Document Type"::Invoice));
+
+      IF IsCopyItemTrkg(ItemLedgEntryBuf) THEN BEGIN
+        SalesSetup.GET;
+        ExactCostRevMandatory := SalesSetup."Exact Cost Reversing Mandatory";
+        MissingExCostRevLink := (SalesLine."Quantity (Base)" <> 0) AND FillExactCostRevLink;
+        ItemTrackingDocMgt.CopyItemLedgerEntriesToTemp(TempTrkgItemLedgEntry,ItemLedgEntryBuf);
+        ItemTrackingMgt.CopyItemLedgEntryTrkgToSalesLn(
+          TempTrkgItemLedgEntry,SalesLine,
+          FillExactCostRevLink AND ExactCostRevMandatory,MissingExCostRevLink,
+          SalesHeader."Prices Including VAT",SalesHeader."Prices Including VAT",FALSE);
+      END;
+    END;
+
+    LOCAL PROCEDURE IsCopyItemTrkg@1210050(VAR ItemLedgEntry@1210001 : Record 32) : Boolean;
+    BEGIN
+      WITH ItemLedgEntry DO BEGIN
+        IF ISEMPTY THEN
+          EXIT(TRUE);
+        SETFILTER("Lot No.",'<>%1','');
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+        SETRANGE("Lot No.");
+        SETFILTER("Serial No.",'<>%1','');
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+        SETRANGE("Serial No.");
+      END;
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckSalesCorrDocHeader@1210003(CorrDocHeader@1210000 : Record 36);
+    VAR
+      CorrSalesInvHeader@1210001 : Record 112;
+      CorrSalesCrMemoHeader@1210002 : Record 114;
+      TempSalesHeader@1210003 : Record 36;
+    BEGIN
+      WITH CorrDocHeader DO BEGIN
+        CASE "Corrected Doc. Type" OF
+          "Corrected Doc. Type"::Invoice:
+            BEGIN
+              CorrSalesInvHeader.GET("Corrected Doc. No.");
+              TempSalesHeader.TRANSFERFIELDS(CorrSalesInvHeader);
+            END;
+          "Corrected Doc. Type"::"Credit Memo":
+            BEGIN
+              CorrSalesCrMemoHeader.GET("Corrected Doc. No.");
+              TempSalesHeader.TRANSFERFIELDS(CorrSalesCrMemoHeader);
+            END;
+        END;
+        TESTFIELD("Currency Code",TempSalesHeader."Currency Code");
+        TESTFIELD("Currency Factor",TempSalesHeader."Currency Factor");
+        TESTFIELD("Prices Including VAT",TempSalesHeader."Prices Including VAT");
+        TESTFIELD("Sell-to Customer No.",TempSalesHeader."Sell-to Customer No.");
+        TESTFIELD("Bill-to Customer No.",TempSalesHeader."Bill-to Customer No.");
+        TESTFIELD("Shortcut Dimension 1 Code",TempSalesHeader."Shortcut Dimension 1 Code");
+        TESTFIELD("Shortcut Dimension 2 Code",TempSalesHeader."Shortcut Dimension 2 Code");
+      END;
+    END;
+
+    PROCEDURE CheckSalesCorrDocHeaderDim@1210002(CorrDocHeader@1210002 : Record 36);
+    VAR
+      SalesInvHeader@1210000 : Record 112;
+      SalesCrMemoHeader@1210001 : Record 114;
+    BEGIN
+      WITH CorrDocHeader DO
+        CASE "Corrected Doc. Type" OF
+          "Corrected Doc. Type"::Invoice:
+            BEGIN
+              SalesInvHeader.GET("Corrected Doc. No.");
+              IF SalesInvHeader."Dimension Set ID" <> "Dimension Set ID" THEN
+                ERROR(Text004,"Document Type","No.","Corrected Doc. No.");
+            END;
+          "Corrected Doc. Type"::"Credit Memo":
+            BEGIN
+              SalesCrMemoHeader.GET("Corrected Doc. No.");
+              IF SalesCrMemoHeader."Dimension Set ID" <> "Dimension Set ID" THEN
+                ERROR(Text004,"Document Type","No.","Corrected Doc. No.");
+            END;
+        END;
+    END;
+
+    PROCEDURE GetPurchInvHeaderPostingDate@1210013(DocNo@1210001 : Code[20]) : Date;
+    VAR
+      PurchInvHeader@1210002 : Record 122;
+    BEGIN
+      IF PurchInvHeader.GET(DocNo) THEN
+        EXIT(PurchInvHeader."Posting Date");
+      EXIT(0D);
+    END;
+
+    PROCEDURE GetPurchCrMHeaderPostingDate@1210008(DocNo@1210000 : Code[20]) : Date;
+    VAR
+      PurchCrMemoHeader@1210002 : Record 124;
+    BEGIN
+      IF PurchCrMemoHeader.GET(DocNo) THEN
+        EXIT(PurchCrMemoHeader."Posting Date");
+      EXIT(0D);
+    END;
+
+    PROCEDURE IsCorrDocument@1210029(VAR CorrSalesHeader@1210000 : Record 36) : Boolean;
+    BEGIN
+      EXIT(IsCorrDocType(CorrSalesHeader) OR GetRevToCorrDoc(CorrSalesHeader));
+    END;
+
+    LOCAL PROCEDURE IsCorrDocType@1210027(VAR CorrSalesHeader@1210000 : Record 36) : Boolean;
+    BEGIN
+      WITH CorrSalesHeader DO
+        EXIT("Corrective Document" AND ("Corrective Doc. Type" = "Corrective Doc. Type"::Correction));
+    END;
+
+    PROCEDURE GetInitialDoc@1210026(VAR CorrSalesHeader@1210001 : Record 36);
+    BEGIN
+      IF NOT FindInitialDoc(CorrSalesHeader) THEN
+        CLEAR(CorrSalesHeader);
+    END;
+
+    LOCAL PROCEDURE FindInitialDoc@1210028(VAR CorrSalesHeader@1210001 : Record 36) : Boolean;
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        IF NOT GetRelatedDoc(CorrSalesHeader,"Original Doc. Type","Original Doc. No.") THEN
+          EXIT(FALSE);
+        IF "Corrective Document" THEN
+          EXIT(FindInitialDoc(CorrSalesHeader));
+        EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE GetCorrToRevDoc@1210024(VAR CorrSalesHeader@1210001 : Record 36) : Boolean;
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        IF "Corrective Doc. Type" <> "Corrective Doc. Type"::Correction THEN BEGIN
+          CLEAR(CorrSalesHeader);
+          EXIT(FALSE);
+        END;
+        IF FindFirstRevDoc(CorrSalesHeader) THEN
+          EXIT(TRUE);
+        CLEAR(CorrSalesHeader);
+      END;
+    END;
+
+    LOCAL PROCEDURE FindFirstRevDoc@1210018(VAR CorrSalesHeader@1210000 : Record 36) : Boolean;
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        IF (NOT GetRelatedDoc(CorrSalesHeader,"Corrected Doc. Type","Corrected Doc. No.")) OR
+           (NOT "Corrective Document")
+        THEN
+          EXIT(FALSE);
+        IF "Corrective Doc. Type" = "Corrective Doc. Type"::Revision THEN
+          EXIT(TRUE);
+        EXIT(FindFirstRevDoc(CorrSalesHeader));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetLastRevToInitial@1210044(VAR CorrSalesHeader@1210001 : Record 36) : Boolean;
+    BEGIN
+      GetInitialDoc(CorrSalesHeader);
+      IF FindLastRevToInitial(CorrSalesHeader) THEN
+        EXIT(TRUE);
+      CLEAR(CorrSalesHeader);
+    END;
+
+    LOCAL PROCEDURE FindLastRevToInitial@1210036(VAR CorrSalesHeader@1210000 : Record 36) : Boolean;
+    VAR
+      LastRevSalesHeader@1210001 : TEMPORARY Record 36;
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        IF "Corrective Doc. Type" = "Corrective Doc. Type"::Revision THEN
+          LastRevSalesHeader := CorrSalesHeader;
+        IF NOT FindNextRevision(CorrSalesHeader) THEN BEGIN
+          CorrSalesHeader := LastRevSalesHeader;
+          EXIT("Corrective Doc. Type" = "Corrective Doc. Type"::Revision);
+        END;
+        EXIT(FindLastRevToInitial(CorrSalesHeader));
+      END;
+    END;
+
+    LOCAL PROCEDURE FindNextRevision@1210032(VAR CorrSalesHeader@1210000 : Record 36) : Boolean;
+    VAR
+      SalesInvHeader@1210002 : Record 112;
+      SalesCrMemoHeader@1210001 : Record 114;
+    BEGIN
+      WITH CorrSalesHeader DO
+        CASE "Document Type" OF
+          "Document Type"::Invoice:
+            BEGIN
+              SalesInvHeader.SETRANGE("Corrected Doc. Type",GetCorrDocType(CorrSalesHeader));
+              SalesInvHeader.SETRANGE("Corrected Doc. No.","No.");
+              SalesInvHeader.SETRANGE("Corrective Doc. Type","Corrective Doc. Type"::Revision);
+              IF SalesInvHeader.FINDFIRST THEN BEGIN
+                FillSalesInvCorrHeader(CorrSalesHeader,SalesInvHeader);
+                EXIT(TRUE);
+              END;
+            END;
+          "Document Type"::"Credit Memo":
+            BEGIN
+              SalesCrMemoHeader.SETRANGE("Corrected Doc. Type",GetCorrDocType(CorrSalesHeader));
+              SalesCrMemoHeader.SETRANGE("Corrected Doc. No.","No.");
+              SalesCrMemoHeader.SETRANGE("Corrective Doc. Type","Corrective Doc. Type"::Revision);
+              IF SalesCrMemoHeader.FINDFIRST THEN BEGIN
+                FillSalesCrMemoCorrHeader(CorrSalesHeader,SalesCrMemoHeader);
+                EXIT(TRUE);
+              END;
+            END;
+        END;
+    END;
+
+    PROCEDURE GetRevToCorrDoc@1210017(VAR CorrSalesHeader@1210001 : Record 36) : Boolean;
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        IF "Corrective Doc. Type" <> "Corrective Doc. Type"::Revision THEN BEGIN
+          CLEAR(CorrSalesHeader);
+          EXIT(FALSE);
+        END;
+        IF FindFirstCorrDoc(CorrSalesHeader) THEN
+          EXIT(TRUE);
+        CLEAR(CorrSalesHeader);
+      END;
+    END;
+
+    LOCAL PROCEDURE FindFirstCorrDoc@1210015(VAR CorrSalesHeader@1210000 : Record 36) : Boolean;
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        IF (NOT GetRelatedDoc(CorrSalesHeader,"Corrected Doc. Type","Corrected Doc. No.")) OR
+           (NOT "Corrective Document")
+        THEN
+          EXIT(FALSE);
+        IF "Corrective Doc. Type" = "Corrective Doc. Type"::Correction THEN
+          EXIT(TRUE);
+        EXIT(FindFirstCorrDoc(CorrSalesHeader));
+      END;
+    END;
+
+    LOCAL PROCEDURE GetRelatedDoc@1210043(VAR CorrSalesHeader@1210002 : Record 36;DocType@1210000 : Option;DocNo@1210001 : Code[20]) : Boolean;
+    VAR
+      SalesInvoiceHeader@1210004 : Record 112;
+      SalesCrMemoHeader@1210003 : Record 114;
+    BEGIN
+      WITH CorrSalesHeader DO
+        CASE DocType OF
+          "Corrected Doc. Type"::Invoice:
+            IF SalesInvoiceHeader.GET(DocNo) THEN BEGIN
+              FillSalesInvCorrHeader(CorrSalesHeader,SalesInvoiceHeader);
+              EXIT(TRUE);
+            END;
+          "Corrected Doc. Type"::"Credit Memo":
+            IF SalesCrMemoHeader.GET(DocNo) THEN BEGIN
+              FillSalesCrMemoCorrHeader(CorrSalesHeader,SalesCrMemoHeader);
+              EXIT(TRUE);
+            END;
+        END;
+      CLEAR(CorrSalesHeader);
+    END;
+
+    LOCAL PROCEDURE GetCorrDocType@1210033(CorrSalesHeader@1210000 : Record 36) : Integer;
+    BEGIN
+      WITH CorrSalesHeader DO
+        CASE "Document Type" OF
+          "Document Type"::Invoice:
+            EXIT("Corrected Doc. Type"::Invoice);
+          "Document Type"::"Credit Memo":
+            EXIT("Corrected Doc. Type"::"Credit Memo");
+        END;
+    END;
+
+    PROCEDURE FillSalesInvCorrHeader@1210130(VAR CorrSalesHeader@1210001 : Record 36;SalesInvoiceHeader@1210000 : Record 112);
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        TRANSFERFIELDS(SalesInvoiceHeader);
+        "Document Type" := "Document Type"::Invoice;
+      END;
+    END;
+
+    PROCEDURE FillSalesCrMemoCorrHeader@1210055(VAR CorrSalesHeader@1210001 : Record 36;SalesCrMemoHeader@1210002 : Record 114);
+    BEGIN
+      WITH CorrSalesHeader DO BEGIN
+        TRANSFERFIELDS(SalesCrMemoHeader);
+        "Document Type" := "Document Type"::"Credit Memo";
+      END;
+    END;
+
+    PROCEDURE GetDocHeaderText@1210046(PrintedSalesHeader@1210000 : Record 36;VAR ReportNos@1210003 : ARRAY [4] OF Text;VAR ReportDates@1210002 : ARRAY [4] OF Text);
+    VAR
+      TempSalesHeader@1210001 : ARRAY [4] OF TEMPORARY Record 36;
+    BEGIN
+      GetDocHeader(TempSalesHeader,PrintedSalesHeader);
+      SetPrintedRevisionNo(TempSalesHeader[2]);
+      SetPrintedRevisionNo(TempSalesHeader[4]);
+      GetHeaderText(TempSalesHeader,ReportNos,ReportDates);
+    END;
+
+    PROCEDURE GetDocHeader@1210030(VAR RepSalesHeader@1210001 : ARRAY [4] OF Record 36;PrintedSalesHeader@1210000 : Record 36);
+    BEGIN
+      GetCorrDocHeader(RepSalesHeader[1],PrintedSalesHeader);
+      GetRevisionCorrectiveDocHeader(RepSalesHeader[2],PrintedSalesHeader);
+      GetInitialDocHeader(RepSalesHeader[3],PrintedSalesHeader);
+      GetRelatedCorrectionDocHeader(RepSalesHeader[4],PrintedSalesHeader);
+    END;
+
+    LOCAL PROCEDURE GetHeaderText@1210048(VAR RepSalesHeader@1210000 : ARRAY [4] OF Record 36;VAR ReportNos@1210003 : ARRAY [4] OF Text;VAR ReportDates@1210004 : ARRAY [4] OF Text);
+    VAR
+      LocMgt@1210001 : Codeunit 12400;
+      i@1210002 : Integer;
+    BEGIN
+      FOR i := 1 TO ARRAYLEN(RepSalesHeader) DO
+        IF RepSalesHeader[i]."No." = '' THEN BEGIN
+          ReportNos[i] := '-';
+          ReportDates[i] := '-';
+        END ELSE BEGIN
+          IF RepSalesHeader[i]."Corrective Document" AND (RepSalesHeader[i]."Posting No." <> '') THEN
+            ReportNos[i] := RepSalesHeader[i]."Posting No."
+          ELSE
+            ReportNos[i] := RepSalesHeader[i]."No.";
+          ReportDates[i] := LocMgt.Date2Text(RepSalesHeader[i]."Document Date");
+        END;
+    END;
+
+    LOCAL PROCEDURE SetPrintedRevisionNo@1210070(VAR SalesHeader@1210000 : Record 36);
+    BEGIN
+      SalesHeader."No." := SalesHeader."Revision No.";
+    END;
+
+    LOCAL PROCEDURE GetCorrDocHeader@1210047(VAR RepSalesHeader@1210003 : Record 36;PrintedSalesHeader@1210000 : Record 36) : Text[100];
+    VAR
+      OldTempSalesHeader@1210001 : TEMPORARY Record 36;
+    BEGIN
+      OldTempSalesHeader := PrintedSalesHeader;
+      IF GetRevToCorrDoc(PrintedSalesHeader) THEN
+        RepSalesHeader := PrintedSalesHeader
+      ELSE
+        RepSalesHeader := OldTempSalesHeader;
+    END;
+
+    PROCEDURE GetRevisionCorrectiveDocHeader@1210102(VAR RepSalesHeader@1210002 : Record 36;PrintedSalesHeader@1210001 : Record 36) : Text[100];
+    VAR
+      OldTempSalesHeader@1210000 : TEMPORARY Record 36;
+    BEGIN
+      OldTempSalesHeader := PrintedSalesHeader;
+      IF GetRevToCorrDoc(PrintedSalesHeader) THEN
+        RepSalesHeader := OldTempSalesHeader
+      ELSE
+        RepSalesHeader := PrintedSalesHeader;
+    END;
+
+    LOCAL PROCEDURE GetInitialDocHeader@1210104(VAR RepSalesHeader@1210002 : Record 36;PrintedSalesHeader@1210001 : Record 36) : Text[100];
+    BEGIN
+      GetInitialDoc(PrintedSalesHeader);
+      RepSalesHeader := PrintedSalesHeader;
+    END;
+
+    LOCAL PROCEDURE GetRelatedCorrectionDocHeader@1210124(VAR RepSalesHeader@1210003 : Record 36;PrintedSalesHeader@1210001 : Record 36) : Text[100];
+    BEGIN
+      IF GetLastRevToInitial(PrintedSalesHeader) THEN
+        RepSalesHeader := PrintedSalesHeader;
+    END;
+
+    PROCEDURE IsCorrVATEntry@1210045(VATEntry@1210000 : Record 254) : Boolean;
+    BEGIN
+      EXIT(VATEntry."Corrective Doc. Type" <> VATEntry."Corrective Doc. Type"::" ");
+    END;
+
+    PROCEDURE GetSalesDocData@1210034(VAR DocumentNo@1210004 : Code[30];VAR DocumentDate@1210000 : Date;IsInvoice@1210003 : Boolean;OrigDocNo@1210001 : Code[20]);
+    VAR
+      SalesInvHeader@1210002 : Record 112;
+      SalesCrMemoHdr@1210005 : Record 114;
+    BEGIN
+      IF IsInvoice THEN BEGIN
+        SalesInvHeader.GET(OrigDocNo);
+        DocumentNo := SalesInvHeader."No.";
+        DocumentDate := SalesInvHeader."Posting Date";
+      END ELSE BEGIN
+        SalesCrMemoHdr.GET(OrigDocNo);
+        DocumentNo := SalesCrMemoHdr."No.";
+        DocumentDate := SalesCrMemoHdr."Posting Date";
+      END;
+    END;
+
+    PROCEDURE GetPurchDocData@1210037(VAR DocumentNo@1210004 : Code[30];VAR DocumentDate@1210000 : Date;IsInvoice@1210003 : Boolean;OrigDocNo@1210001 : Code[20]);
+    VAR
+      PurchInvHeader@1210002 : Record 122;
+      PurchCrMemoHdr@1210005 : Record 124;
+      VendLedgEntry@1210006 : Record 25;
+    BEGIN
+      IF IsInvoice THEN BEGIN
+        PurchInvHeader.GET(OrigDocNo);
+        PurchInvHeader.CALCFIELDS("Vendor VAT Invoice No.","Vendor VAT Invoice Date");
+        IF PurchInvHeader."Vendor VAT Invoice No." <> '' THEN
+          DocumentNo := PurchInvHeader."Vendor VAT Invoice No."
+        ELSE
+          DocumentNo := PurchInvHeader."No.";
+        IF PurchInvHeader."Vendor VAT Invoice Date" <> 0D THEN
+          DocumentDate := PurchInvHeader."Vendor VAT Invoice Date"
+        ELSE
+          DocumentDate := PurchInvHeader."Posting Date";
+      END ELSE BEGIN
+        PurchCrMemoHdr.GET(OrigDocNo);
+        DocumentNo := PurchCrMemoHdr."No.";
+        DocumentDate := PurchCrMemoHdr."Posting Date";
+
+        GetVendCrMemoLedgEntry(VendLedgEntry,PurchCrMemoHdr);
+        IF VendLedgEntry."Vendor VAT Invoice No." <> '' THEN
+          DocumentNo := VendLedgEntry."Vendor VAT Invoice No.";
+        IF VendLedgEntry."Vendor VAT Invoice Date" <> 0D THEN
+          DocumentDate := VendLedgEntry."Vendor VAT Invoice Date";
+      END;
+    END;
+
+    LOCAL PROCEDURE GetVendCrMemoLedgEntry@1210108(VAR VendLedgEntry@1210000 : Record 25;PurchCrMemoHdr@1210001 : Record 124);
+    BEGIN
+      WITH VendLedgEntry DO BEGIN
+        SETRANGE("Vendor No.",PurchCrMemoHdr."Pay-to Vendor No.");
+        SETRANGE("Document Type","Document Type"::"Credit Memo");
+        SETRANGE("Document No.",PurchCrMemoHdr."No.");
+        SETRANGE("Posting Date",PurchCrMemoHdr."Posting Date");
+        FINDFIRST;
+      END;
+    END;
+
+    LOCAL PROCEDURE FindAndSetApplFromItemEntryNo@1210051(VAR SalesLine@1210000 : Record 37;SalesInvoiceLine@1210002 : Record 113);
+    VAR
+      ValueEntry@1210005 : Record 5802;
+    BEGIN
+      SalesInvoiceLine.FilterPstdDocLineValueEntries(ValueEntry);
+      ValueEntry.SETFILTER("Invoiced Quantity",'<>0');
+      IF ValueEntry.FINDFIRST THEN
+        SalesLine.VALIDATE("Appl.-from Item Entry",ValueEntry."Item Ledger Entry No.");
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

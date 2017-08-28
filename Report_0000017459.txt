@@ -1,0 +1,221 @@
+OBJECT Report 17459 Suggest Income Tax Payments
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Suggest Income Tax Payments;
+               RUS=Предлож. оплаты НДФЛ];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF BankAccountCode = '' THEN
+                    ERROR(Text001);
+
+                  BankAccount.GET(BankAccountCode);
+                  CASE BankAccount."Account Type" OF
+                    BankAccount."Account Type"::"Bank Account":
+                      BankAccount.TESTFIELD("Bank Payment Order No. Series");
+                    BankAccount."Account Type"::"Cash Account":
+                      BankAccount.TESTFIELD("Credit Cash Order No. Series");
+                  END;
+
+                  HRSetup.GET;
+                END;
+
+  }
+  DATASET
+  {
+    { 7528;    ;DataItem;                    ;
+               DataItemTable=Table5200;
+               DataItemTableView=WHERE(Person No.=FILTER(<>''));
+               OnPreDataItem=BEGIN
+                               GenJnlLine.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                               GenJnlLine.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                               IF GenJnlLine.FINDLAST THEN BEGIN
+                                 LineNo := GenJnlLine."Line No.";
+                                 GenJnlLine.INIT;
+                               END;
+                               LineNo := LineNo + 10000;
+
+                               GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+                               NextDocNo := NoSeriesMgt.GetNextNo(GenJnlBatch."No. Series",PostingDate,FALSE);
+                               CLEAR(NoSeriesMgt);
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  PostedPayrollDoc.RESET;
+                                  PostedPayrollDoc.SETCURRENTKEY("Employee No.");
+                                  PostedPayrollDoc.SETRANGE("Employee No.",Employee."No.");
+                                  PostedPayrollDoc.SETRANGE("Posting Date",StartingDate,EndingDate);
+                                  IF PostedPayrollDoc.FINDSET THEN
+                                    REPEAT
+                                      IF PostedPayrollDoc."Calc Group Code" <> '' THEN BEGIN
+                                        PostedPayrollDocLine.RESET;
+                                        PostedPayrollDocLine.SETCURRENTKEY("Document No.","Element Type");
+                                        PostedPayrollDocLine.SETRANGE("Document No.",PostedPayrollDoc."No.");
+                                        PostedPayrollDocLine.SETRANGE("Element Type",PostedPayrollDocLine."Element Type"::"Income Tax");
+                                        IF PostedPayrollDocLine.FINDSET THEN
+                                          REPEAT
+                                            IF PostedPayrollDocLine."Payroll Amount" <> 0 THEN
+                                              IF TempPayrollAEBuffer.GET(PostedPayrollDocLine."Period Code",PostedPayrollDocLine."Element Code") THEN BEGIN
+                                                TempPayrollAEBuffer.Amount += PostedPayrollDocLine."Payroll Amount";
+                                                TempPayrollAEBuffer.MODIFY;
+                                              END ELSE BEGIN
+                                                TempPayrollAEBuffer.INIT;
+                                                TempPayrollAEBuffer."Period Code" := PostedPayrollDocLine."Period Code";
+                                                TempPayrollAEBuffer."Element Code" := PostedPayrollDocLine."Element Code";
+                                                TempPayrollAEBuffer.Amount := PostedPayrollDocLine."Payroll Amount";
+                                                TempPayrollAEBuffer.INSERT;
+                                              END;
+                                          UNTIL PostedPayrollDocLine.NEXT = 0;
+                                      END;
+                                    UNTIL PostedPayrollDoc.NEXT = 0;
+                                END;
+
+               OnPostDataItem=BEGIN
+                                TempPayrollAEBuffer.RESET;
+                                IF TempPayrollAEBuffer.FINDSET THEN
+                                  REPEAT
+                                    CreateJnlLine(TempPayrollAEBuffer);
+                                  UNTIL TempPayrollAEBuffer.NEXT = 0;
+
+                                TempPayrollAEBuffer.DELETEALL;
+                              END;
+
+               ReqFilterFields=No.,Org. Unit Code,Job Title Code }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+                   GenJnlBatch.TESTFIELD("No. Series");
+                   StartingDate := CALCDATE('<-CM>',WORKDATE);
+                   EndingDate := CALCDATE('<CM>',StartingDate);
+                   PostingDate := EndingDate;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Starting Date;
+                             RUS=Дата начала];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=StartingDate }
+
+      { 1210002;2;Field     ;
+                  CaptionML=[ENU=Ending Date;
+                             RUS=Дата окончания];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=EndingDate }
+
+      { 1210008;2;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата учета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=PostingDate }
+
+      { 1210004;2;Field     ;
+                  CaptionML=[ENU=Bank Account No.;
+                             RUS=Код банк. счета];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=BankAccountCode;
+                  TableRelation="Bank Account" }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      TempPayrollAEBuffer@1210026 : TEMPORARY Record 17463;
+      BankAccount@1210015 : Record 270;
+      HRSetup@1210018 : Record 5218;
+      GenJnlBatch@1210001 : Record 232;
+      GenJnlLine@1210000 : Record 81;
+      PostedPayrollDoc@1210020 : Record 17416;
+      PostedPayrollDocLine@1210022 : Record 17417;
+      PayrollElement@1210025 : Record 17400;
+      PayrollPostingGr@1210027 : Record 17401;
+      NoSeriesMgt@1210006 : Codeunit 396;
+      StartingDate@1210003 : Date;
+      EndingDate@1210004 : Date;
+      PostingDate@1210019 : Date;
+      LineNo@1210008 : Integer;
+      BankAccountCode@1210011 : Code[20];
+      Text001@1210012 : TextConst 'ENU=Please enter Bank Account Code.;RUS=Введите номер банковского счета';
+      NextDocNo@1210024 : Code[20];
+      PaymentsBetweenPeriod@1210009 : Boolean;
+
+    PROCEDURE SetGenJnlLine@1(NewGenJnlLine@1000 : Record 81);
+    BEGIN
+      GenJnlLine := NewGenJnlLine;
+    END;
+
+    PROCEDURE SetParameters@1210002(NewGenJnlLine@1210000 : Record 81;NewStartingDate@1210005 : Date;NewEndingDate@1210004 : Date;NewPostingDate@1210003 : Date;NewBankAccountCode@1210002 : Code[20];NewPaymentsBetweenPeriod@1210001 : Boolean);
+    BEGIN
+      GenJnlLine := NewGenJnlLine;
+      StartingDate := NewStartingDate;
+      EndingDate := NewEndingDate;
+      PostingDate := NewPostingDate;
+      BankAccountCode := NewBankAccountCode;
+      PaymentsBetweenPeriod := NewPaymentsBetweenPeriod;
+    END;
+
+    PROCEDURE CreateJnlLine@1210003(PayrollAEBuffer@1210000 : Record 17463);
+    VAR
+      PayrollDocCalc@1210001 : Codeunit 17404;
+    BEGIN
+      GenJnlLine.INIT;
+
+      GenJnlLine."Line No." := LineNo;
+      GenJnlLine.VALIDATE("Posting Date",PostingDate);
+      GenJnlLine."Document Type" := GenJnlLine."Document Type"::Payment;
+      GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+      GenJnlLine."Document No." := NextDocNo;
+      NextDocNo := INCSTR(NextDocNo);
+      PayrollElement.GET(PayrollAEBuffer."Element Code");
+      PayrollPostingGr.GET(PayrollElement."Payroll Posting Group");
+      GenJnlLine.VALIDATE("Account No.",PayrollPostingGr."Account No.");
+      GenJnlLine."Bal. Account Type" := GenJnlLine."Bal. Account Type"::"Bank Account";
+      GenJnlLine.VALIDATE("Bal. Account No.",BankAccountCode);
+      PayrollAEBuffer.Amount := PayrollDocCalc.RoundAmountToPay(PayrollAEBuffer.Amount);
+      GenJnlLine.VALIDATE(Amount,-PayrollAEBuffer.Amount);
+      CASE BankAccount."Account Type" OF
+        BankAccount."Account Type"::"Bank Account":
+          GenJnlLine."Posting No. Series" := BankAccount."Bank Payment Order No. Series";
+        BankAccount."Account Type"::"Cash Account":
+          GenJnlLine."Posting No. Series" := BankAccount."Credit Cash Order No. Series";
+      END;
+      GenJnlLine."Bank Payment Type" := GenJnlLine."Bank Payment Type"::"Computer Check";
+      GenJnlLine."Applies-to ID" := '';
+      GenJnlLine."Applies-to Doc. Date" := 0D;
+      GenJnlLine.INSERT;
+      LineNo := LineNo + 10000;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

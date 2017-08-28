@@ -1,0 +1,1135 @@
+OBJECT Report 14920 Calculate Assessed Tax
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Assessed Tax;
+               RUS=Расчет налога на имущество];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  IF TaxAuthNo = '' THEN
+                    ERROR(Text008);
+                END;
+
+  }
+  DATASET
+  {
+    { 3182;    ;DataItem;                    ;
+               DataItemTable=Table23;
+               DataItemTableView=SORTING(No.)
+                                 WHERE(Vendor Type=CONST(Tax Authority));
+               OnPreDataItem=VAR
+                               ExcelTemplate@1210001 : Record 14919;
+                               FileName@1210000 : Text[250];
+                             BEGIN
+                               CompanyInfo.GET;
+                               FASetup.GET;
+                               Employee.GET(CompanyInfo."Director No.");
+                               CheckATCodeDuplicate;
+                               IF ReportingPeriod = 3 THEN BEGIN
+                                 FASetup.TESTFIELD("AT Declaration Template Code");
+                                 FileName := ExcelTemplate.OpenTemplate(FASetup."AT Declaration Template Code")
+                               END ELSE BEGIN
+                                 FASetup.TESTFIELD("AT Advance Template Code");
+                                 FileName := ExcelTemplate.OpenTemplate(FASetup."AT Advance Template Code");
+                               END;
+
+                               ExcelMgt.OpenBook(FileName);
+                               ExcelMgt.OpenSheet('Title');
+                               Window.OPEN(Text007);
+                               TaxAuthority.GET(TaxAuthNo);
+                               SETRANGE("No.",TaxAuthority."No.");
+                             END;
+
+               OnAfterGetRecord=VAR
+                                  currcellname@1210000 : Text[30];
+                                BEGIN
+                                END;
+
+               OnPostDataItem=BEGIN
+                                Window.CLOSE;
+                                IF FileNameSilent <> '' THEN BEGIN
+                                  ExcelMgt.SaveWrkBook(FileNameSilent);
+                                  ExcelMgt.QuitXlApp
+                                END ELSE BEGIN
+                                  ExcelMgt.OpenSheet('Title');
+                                  ExcelMgt.GiveUserControl;
+                                END;
+                              END;
+                               }
+
+    { 8098;1   ;DataItem;                    ;
+               DataItemTable=Table12427;
+               DataItemTableView=SORTING(Code);
+               OnPreDataItem=BEGIN
+                               CLEAR(PageCounter);
+                               CLEAR(DeleteSheet);
+                               LineNo := 1;
+                               PageCounter[1] := 1;
+                               OKATOCounter := 0;
+                               IF ReportingPeriod = 3 THEN BEGIN
+                                 Ch1BlockCounter := 6;
+                                 PeriodShift := 3;
+                                 PeriodFactor := 2;
+                               END ELSE BEGIN
+                                 Ch1BlockCounter := 7;
+                                 PeriodShift := 5;
+                                 PeriodFactor := 3;
+                               END;
+                             END;
+
+               OnAfterGetRecord=BEGIN
+                                  TempFixedAsset.RESET;
+                                  TempFixedAsset.DELETEALL;
+                                  FixedAsset.RESET;
+                                  IF FixedAsset.FIND('-') THEN BEGIN
+                                    FixedAsset.SETRANGE(Blocked,FALSE);
+                                    FixedAsset.SETRANGE("FA Type",FixedAsset."FA Type"::"Fixed Assets");
+                                    FixedAsset.SETFILTER("Property Type",'<>%1',FixedAsset."Property Type"::" ");
+                                    FixedAsset.SETFILTER("Assessed Tax Code",'<>%1','');
+                                    FixedAsset.SETFILTER("Main Asset/Component",'<>%1',FixedAsset."Main Asset/Component"::"Main Asset");
+                                    IF FixedAsset.FINDFIRST THEN BEGIN
+                                      REPEAT
+                                        InsertTempFA := FALSE;
+                                        ReportingDate := StartingDate;
+                                        FOR I := 1 TO (3 * (ReportingPeriod + 1) + 1) DO BEGIN
+                                          CalcTempDeprCost(FixedAsset."No.",ReportingDate);
+                                          IF TempDeprCost > 0 THEN
+                                            InsertTempFA := TRUE;
+                                          ReportingDate := CALCDATE('<+1M>',ReportingDate);
+                                          IF I = 13 THEN
+                                            ReportingDate := CALCDATE('<-1D>',ReportingDate);
+                                        END;
+                                        IF InsertTempFA AND (NOT TempFixedAsset.GET(FixedAsset."No.")) THEN BEGIN
+                                          TempFixedAsset.INIT;
+                                          TempFixedAsset.TRANSFERFIELDS(FixedAsset);
+                                          TempFixedAsset.INSERT;
+                                        END;
+                                      UNTIL FixedAsset.NEXT = 0;
+                                    END;
+                                  END;
+
+                                  IF TempFixedAsset.COUNT = 0 THEN
+                                    CurrReport.SKIP;
+
+                                  OKATOCounter := OKATOCounter + 1;
+
+                                  CLEAR(TotalAmount);
+                                  CLEAR(FillTitle);
+
+                                  Window.UPDATE(1,Code);
+                                END;
+
+               DataItemLink=Tax Authority No.=FIELD(No.) }
+
+    { 2513;2   ;DataItem;Chapter2            ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnAfterGetRecord=BEGIN
+                                  Window.UPDATE(2,2);
+                                  FillSpecialInfo(2);
+
+                                  AssessedTaxCode.RESET;
+                                  AssessedTaxCode.SETRANGE("Region Code",OKATO."Region Code");
+                                  AssessedTaxCode.SETRANGE("Exemption Tax Allowance Code",'');
+                                  IF AssessedTaxCode.FIND('-') THEN
+                                    REPEAT
+                                      TempFixedAsset.RESET;
+                                      SetATCodeExemptFilters;
+
+                                      // Property Type = 1
+                                      TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCode.Code);
+                                      TempFixedAsset.SETRANGE("Property Type",TempFixedAsset."Property Type"::"Immovable UGSS Property");
+                                      IF TempFixedAsset.FINDSET THEN BEGIN
+                                        FillTitle[1] := TRUE;
+                                        REPEAT
+                                          CLEAR(DeprCost);
+                                          PageCounter[2] := PageCounter[2] + 1;
+                                          DeleteSheet[2] := TRUE;
+                                          CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                          FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCode.Code);
+                                        UNTIL TempFixedAsset.NEXT = 0;
+                                      END;
+
+                                      IF ReportingPeriod = 3 THEN BEGIN
+                                        TempFixedAsset.SETFILTER("Tax Amount Paid Abroad",'<>0');
+                                        IF TempFixedAsset.FINDSET THEN BEGIN
+                                          FillTitle[1] := TRUE;
+                                          REPEAT
+                                            CLEAR(DeprCost);
+                                            PageCounter[2] := PageCounter[2] + 1;
+                                            DeleteSheet[2] := TRUE;
+                                            TaxAmountAbroad := 0;
+                                            CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                            TaxAmountAbroad := TaxAmountAbroad + TempFixedAsset."Tax Amount Paid Abroad";
+                                            FillChapter2(TempFixedAsset."Property Type",4,AssessedTaxCode.Code);
+                                          UNTIL TempFixedAsset.NEXT = 0;
+                                        END;
+                                        TempFixedAsset.SETRANGE("Tax Amount Paid Abroad");
+                                      END;
+
+                                      IF AssessedTaxCodeExempt.FINDSET THEN
+                                        REPEAT
+                                          TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCodeExempt.Code);
+                                          IF TempFixedAsset.FINDSET THEN BEGIN
+                                            FillTitle[1] := TRUE;
+                                            REPEAT
+                                              CLEAR(DeprCost);
+                                              PageCounter[2] := PageCounter[2] + 1;
+                                              DeleteSheet[2] := TRUE;
+                                              CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCodeExempt.Code);
+                                              FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCodeExempt.Code);
+                                            UNTIL TempFixedAsset.NEXT = 0;
+                                          END;
+                                        UNTIL AssessedTaxCodeExempt.NEXT = 0;
+
+                                      // Property Type = 2
+                                      TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCode.Code);
+                                      TempFixedAsset.SETRANGE("Property Type",TempFixedAsset."Property Type"::"Immovable Distributed Property");
+                                      IF TempFixedAsset.FINDSET THEN BEGIN
+                                        FillTitle[2] := TRUE;
+                                        REPEAT
+                                          CLEAR(DeprCost);
+                                          PageCounter[2] := PageCounter[2] + 1;
+                                          DeleteSheet[2] := TRUE;
+                                          CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                          FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCode.Code);
+                                        UNTIL TempFixedAsset.NEXT = 0;
+                                      END;
+
+                                      IF ReportingPeriod = 3 THEN BEGIN
+                                        TempFixedAsset.SETFILTER("Tax Amount Paid Abroad",'<>0');
+                                        IF TempFixedAsset.FINDSET THEN BEGIN
+                                          FillTitle[2] := TRUE;
+                                          REPEAT
+                                            CLEAR(DeprCost);
+                                            PageCounter[2] := PageCounter[2] + 1;
+                                            DeleteSheet[2] := TRUE;
+                                            TaxAmountAbroad := 0;
+                                            CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                            TaxAmountAbroad := TaxAmountAbroad + TempFixedAsset."Tax Amount Paid Abroad";
+                                            FillChapter2(TempFixedAsset."Property Type",4,AssessedTaxCode.Code);
+                                          UNTIL TempFixedAsset.NEXT = 0;
+                                        END;
+                                        TempFixedAsset.SETRANGE("Tax Amount Paid Abroad");
+                                      END;
+
+                                      IF AssessedTaxCodeExempt.FINDSET THEN
+                                        REPEAT
+                                          TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCodeExempt.Code);
+                                          IF TempFixedAsset.FINDSET THEN BEGIN
+                                            FillTitle[2] := TRUE;
+                                            REPEAT
+                                              CLEAR(DeprCost);
+                                              PageCounter[2] := PageCounter[2] + 1;
+                                              DeleteSheet[2] := TRUE;
+                                              CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCodeExempt.Code);
+                                              FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCodeExempt.Code);
+                                            UNTIL TempFixedAsset.NEXT = 0;
+                                          END;
+                                        UNTIL AssessedTaxCodeExempt.NEXT = 0;
+
+                                      // Property Type = 3
+                                      TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCode.Code);
+                                      TempFixedAsset.SETRANGE("Property Type",TempFixedAsset."Property Type"::"Other Property");
+                                      IF TempFixedAsset.FINDSET THEN BEGIN
+                                        CLEAR(DeprCost);
+                                        FillTitle[2] := TRUE;
+                                        PageCounter[2] := PageCounter[2] + 1;
+                                        DeleteSheet[2] := TRUE;
+                                        REPEAT
+                                          CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                        UNTIL TempFixedAsset.NEXT = 0;
+                                        FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCode.Code);
+                                        MainSheetName := ExcelMgt.GetSheetName;
+                                      END;
+
+                                      IF ReportingPeriod = 3 THEN BEGIN
+                                        TempFixedAsset.SETFILTER("Tax Amount Paid Abroad",'<>0');
+                                        IF TempFixedAsset.FINDSET THEN BEGIN
+                                          CLEAR(DeprCost);
+                                          FillTitle[2] := TRUE;
+                                          PageCounter[2] := PageCounter[2] + 1;
+                                          DeleteSheet[2] := TRUE;
+                                          TaxAmountAbroad := 0;
+                                          REPEAT
+                                            CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                            TaxAmountAbroad := TaxAmountAbroad + TempFixedAsset."Tax Amount Paid Abroad";
+                                          UNTIL TempFixedAsset.NEXT = 0;
+                                          FillChapter2(TempFixedAsset."Property Type",4,AssessedTaxCode.Code);
+                                        END;
+                                        TempFixedAsset.SETRANGE("Tax Amount Paid Abroad");
+                                      END;
+
+                                      IF AssessedTaxCodeExempt.FINDSET THEN
+                                        REPEAT
+                                          TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCodeExempt.Code);
+                                          IF TempFixedAsset.FINDSET THEN BEGIN
+                                            FillTitle[2] := TRUE;
+                                            PageCounter[2] := PageCounter[2] + 1;
+                                            DeleteSheet[2] := TRUE;
+                                            REPEAT
+                                              CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCodeExempt.Code);
+                                            UNTIL TempFixedAsset.NEXT = 0;
+                                            Exemption := TRUE;
+                                            FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCodeExempt.Code);
+                                          END;
+                                        UNTIL AssessedTaxCodeExempt.NEXT = 0;
+
+                                      // Property Type = 5
+                                      TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCode.Code);
+                                      TempFixedAsset.SETRANGE("Property Type",TempFixedAsset."Property Type"::"Special Economic Zone Property");
+                                      IF TempFixedAsset.FINDSET THEN BEGIN
+                                        CLEAR(DeprCost);
+                                        FillTitle[2] := TRUE;
+                                        PageCounter[2] := PageCounter[2] + 1;
+                                        DeleteSheet[2] := TRUE;
+                                        REPEAT
+                                          CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                        UNTIL TempFixedAsset.NEXT = 0;
+                                        FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCode.Code);
+                                      END;
+
+                                      IF ReportingPeriod = 3 THEN BEGIN
+                                        TempFixedAsset.SETFILTER("Tax Amount Paid Abroad",'<>0');
+                                        IF TempFixedAsset.FINDSET THEN BEGIN
+                                          CLEAR(DeprCost);
+                                          FillTitle[2] := TRUE;
+                                          PageCounter[2] := PageCounter[2] + 1;
+                                          DeleteSheet[2] := TRUE;
+                                          TaxAmountAbroad := 0;
+                                          REPEAT
+                                            CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCode.Code);
+                                            TaxAmountAbroad := TaxAmountAbroad + TempFixedAsset."Tax Amount Paid Abroad";
+                                          UNTIL TempFixedAsset.NEXT = 0;
+                                          FillChapter2(TempFixedAsset."Property Type",4,AssessedTaxCode.Code);
+                                        END;
+                                        TempFixedAsset.SETRANGE("Tax Amount Paid Abroad");
+                                      END;
+
+                                      IF AssessedTaxCodeExempt.FINDSET THEN
+                                        REPEAT
+                                          TempFixedAsset.SETRANGE("Assessed Tax Code",AssessedTaxCodeExempt.Code);
+                                          IF TempFixedAsset.FINDSET THEN BEGIN
+                                            CLEAR(DeprCost);
+                                            FillTitle[2] := TRUE;
+                                            PageCounter[2] := PageCounter[2] + 1;
+                                            DeleteSheet[2] := TRUE;
+                                            REPEAT
+                                              CalcPeriodDeprCost(TempFixedAsset."No.",AssessedTaxCodeExempt.Code);
+                                            UNTIL TempFixedAsset.NEXT = 0;
+                                            FillChapter2(TempFixedAsset."Property Type",TempFixedAsset."Property Type",AssessedTaxCodeExempt.Code);
+                                          END;
+                                        UNTIL AssessedTaxCodeExempt.NEXT = 0;
+
+                                    UNTIL AssessedTaxCode.NEXT = 0;
+                                  CurrReport.BREAK;
+                                END;
+                                 }
+
+    { 3465;2   ;DataItem;Chapter1            ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnAfterGetRecord=BEGIN
+                                  Window.UPDATE(2,1);
+                                  Window.UPDATE(3,'');
+                                  FillSpecialInfo(1);
+
+                                  IF (NOT FillTitle[1]) AND (NOT FillTitle[2]) THEN
+                                    OKATOCounter := OKATOCounter - 1;
+
+                                  CreateSheet := (OKATOCounter = 1) AND (FillTitle[1] OR FillTitle[2]);
+
+                                  IF OKATOCounter > Ch1BlockCounter THEN BEGIN
+                                    PageCounter[1] := PageCounter[1] + 1;
+                                    OKATOCounter := 1;
+                                    CreateSheet := TRUE;
+                                  END;
+
+                                  SheetName := '00001' + '#' + FORMAT(PageCounter[1]);
+
+                                  IF CreateSheet THEN BEGIN
+                                    ExcelMgt.CopySheet('00001','00002',SheetName);
+                                    CreateSheet := FALSE;
+                                  END;
+
+                                  IF FillTitle[1] OR FillTitle[2] THEN
+                                    ExcelMgt.OpenSheet(SheetName);
+
+                                  IF OKATOCounter = 1 THEN BEGIN
+                                    Shift := 1;
+                                    StartCell := OKATOCounter * 10 + 1;
+                                    IF ReportingPeriod <> 3 THEN
+                                      StartCell := StartCell + 1;
+                                  END ELSE BEGIN
+                                    Shift := OKATOCounter * PeriodFactor - PeriodShift;
+                                    StartCell := OKATOCounter * 10 - Shift;
+                                  END;
+
+                                  IF FillTitle[1] THEN BEGIN
+                                    ExcelMgt.FillCellsGroup2('BI' + FORMAT(StartCell),11,1,OKATO.Code,'0',1);
+                                    ExcelMgt.FillCellsGroup2('BI' + FORMAT(StartCell + 2),20,1,FASetup."KBK (UGSS)",'0',1);
+                                    IF TotalAmount[1] < 0 THEN
+                                      ExcelMgt.FillCellsGroup2('BI' + FORMAT(StartCell + 4),15,1,'','-',1)
+                                    ELSE
+                                      ExcelMgt.FillCellsGroup2(
+                                        'BI' + FORMAT(StartCell + 4),15,1,FORMAT(TotalAmount[1] - TotalAmount[3],0,1),'-',1);
+                                    IF OKATOCounter > Ch1BlockCounter THEN BEGIN
+                                      PageCounter[1] := PageCounter[1] + 1;
+                                      OKATOCounter := 0;
+                                      CreateSheet := TRUE;
+                                    END;
+                                    IF FillTitle[2] THEN BEGIN
+                                      OKATOCounter := OKATOCounter + 1;
+                                      Shift := OKATOCounter * PeriodFactor - PeriodShift;
+                                      StartCell := OKATOCounter * 10 - Shift;
+                                    END;
+                                  END;
+
+                                  SheetName := '00001' + '#' + FORMAT(PageCounter[1]);
+
+                                  IF CreateSheet THEN BEGIN
+                                    ExcelMgt.CopySheet('00001','00002',SheetName);
+                                    CreateSheet := FALSE;
+                                  END;
+
+                                  IF FillTitle[1] OR FillTitle[2] THEN
+                                    ExcelMgt.OpenSheet(SheetName);
+
+                                  IF FillTitle[2] THEN BEGIN
+                                    ExcelMgt.FillCellsGroup2('BI' + FORMAT(StartCell),11,1,OKATO.Code,'0',1);
+                                    ExcelMgt.FillCellsGroup2('BI' + FORMAT(StartCell + 2),20,1,FASetup.KBK,'0',1);
+                                    IF TotalAmount[2] < 0 THEN
+                                      ExcelMgt.FillCellsGroup2('BI' + FORMAT(StartCell + 4),15,1,'','-',1)
+                                    ELSE
+                                      ExcelMgt.FillCellsGroup2(
+                                        'BI' + FORMAT(StartCell + 4),15,1,FORMAT(TotalAmount[2] - TotalAmount[4],0,1),'-',1);
+                                  END;
+
+                                  DeleteSheet[1] := TRUE;
+
+                                  CurrReport.BREAK;
+                                END;
+                                 }
+
+    { 5290;1   ;DataItem;Title               ;
+               DataItemTable=Table2000000026;
+               DataItemTableView=SORTING(Number);
+               OnAfterGetRecord=BEGIN
+                                  FillSpecialInfo(3);
+
+                                  FOR I := 1 TO 3 DO BEGIN
+                                    IF DeleteSheet[I] = TRUE THEN
+                                      ExcelMgt.DeleteSheet('0000' + FORMAT(I));
+                                  END;
+
+                                  SheetName := 'Title';
+                                  ExcelMgt.OpenSheet(SheetName);
+                                  ExcelMgt.FillCellsGroup2('AK1',12,1,CompanyInfo."VAT Registration No.",'-',1);
+                                  ExcelMgt.FillCellsGroup2('AK4',9,1,CompanyInfo."KPP Code",'-',1);
+
+                                  CASE ReportingPeriod OF
+                                    0:
+                                      IF Reorganization THEN
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'51','-',1)
+                                      ELSE
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'21','-',1);
+                                    1:
+                                      IF Reorganization THEN
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'52','-',1)
+                                      ELSE
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'31','-',1);
+                                    2:
+                                      IF Reorganization THEN
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'53','-',1)
+                                      ELSE
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'33','-',1);
+                                    3:
+                                      IF Reorganization THEN
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'50','-',1)
+                                      ELSE
+                                        ExcelMgt.FillCellsGroup2('BV10',2,1,'34','-',1);
+                                  END;
+
+                                  ExcelMgt.FillCellsGroup2('DE10',4,1,FORMAT(Year),'-',1);
+                                  TaxAuthCode := COPYSTR(Vendor."VAT Registration No.",1,4);
+                                  ExcelMgt.FillCellsGroup2('AY12',4,1,TaxAuthCode,'-',1);
+                                  ExcelMgt.FillCellsGroup2('DH12',3,1,FORMAT(Submitted),'-',1);
+                                  ExcelMgt.FillCellsGroup2('CG23',8,1,CompanyInfo."OKVED Code",'-',1);
+                                  ExcelMgt.FillCellsGroup2('A14',40,4,CompanyInfo.Name + CompanyInfo."Name 2",'-',1);
+                                  ExcelMgt.FillCellsGroup2('AK27',20,1,CompanyInfo."Phone No.",'-',1);
+                                  IF Reorganization THEN BEGIN
+                                    IF ReportingPeriod = 3 THEN
+                                      ExcelMgt.FillCell('AB25',FORMAT(ReorganizationType))
+                                    ELSE
+                                      ExcelMgt.FillCell('X25',FORMAT(ReorganizationType));
+                                    ExcelMgt.FillCellsGroup2('BJ25',10,1,VATRegNo,'-',1);
+                                    ExcelMgt.FillCellsGroup2('CP25',9,1,KPPCode,'-',1);
+                                  END;
+
+                                  IF NOT Representative THEN BEGIN
+                                    ExcelMgt.FillCell('M35','1');
+                                    ExcelMgt.FillCellsGroup2('A37',20,1,Employee."Last Name",'-',1);
+                                    ExcelMgt.FillCellsGroup2('A40',20,1,Employee."First Name",'-',1);
+                                    ExcelMgt.FillCellsGroup2('A44',20,1,Employee."Middle Name",'-',1);
+                                  END ELSE BEGIN
+                                    ExcelMgt.FillCell('M35','2');
+                                    ExcelMgt.FillCellsGroup2('A37',20,1,CompanyInfo."Representative Last Name",'-',1);
+                                    ExcelMgt.FillCellsGroup2('A40',20,1,CompanyInfo."Representative First Name",'-',1);
+                                    ExcelMgt.FillCellsGroup2('A44',20,1,CompanyInfo."Representative Middle Name",'-',1);
+                                    ExcelMgt.FillCellsGroup2('A48',20,8,CompanyInfo."Representative Organization",'-',1);
+                                    ExcelMgt.FillCellsGroup2('A74',20,2,CompanyInfo."Representative Document",'-',1);
+                                  END;
+
+                                  IF NOT DetailedInfo THEN
+                                    ExcelMgt.DeleteSheet('Info');
+
+                                  IF DetailedInfo THEN
+                                    PageCounter[6] := ExcelMgt.GetSheetsCount - 1
+                                  ELSE
+                                    PageCounter[6] := ExcelMgt.GetSheetsCount;
+                                  ExcelMgt.OpenSheet('Title');
+                                  ExcelMgt.FillCellsGroup2('E29',3,1,FORMAT(PageCounter[6]),'-',1);
+
+                                  PageText := '001';
+                                  FOR I := 2 TO PageCounter[6] DO BEGIN
+                                    PageText := INCSTR(PageText);
+                                    ExcelMgt.OpenSheetByNumber(I);
+                                    ExcelMgt.FillCellsGroup2('BR4',3,1,PageText,'0',0);
+                                    IF COPYSTR(ExcelMgt.GetSheetName,6) = '#1' THEN
+                                      ExcelMgt.SetSheetName(COPYSTR(ExcelMgt.GetSheetName,1,5));
+                                  END;
+                                  CurrReport.BREAK;
+                                END;
+                                 }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   Year := DATE2DMY(WORKDATE,3);
+                   CalculatePeriod;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1470011;2;Field     ;
+                  CaptionML=[ENU=Tax Authority No.;
+                             RUS=Код налог. органа];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=TaxAuthNo;
+                  TableRelation=Vendor WHERE (Vendor Type=CONST(Tax Authority)) }
+
+      { 1470001;2;Field     ;
+                  CaptionML=[ENU=Year;
+                             RUS=Год];
+                  ApplicationArea=#Basic,#Suite;
+                  DecimalPlaces=0:0;
+                  SourceExpr=Year;
+                  OnValidate=BEGIN
+                               CalculatePeriod;
+                             END;
+                              }
+
+      { 1470003;2;Field     ;
+                  CaptionML=[ENU=Reporting Period;
+                             RUS=Отчетный период];
+                  OptionCaptionML=[ENU=1 quarter,1 half-year,9 months,year;
+                                   RUS=1 квартал,1 полугодие,9 месяцев,год];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReportingPeriod;
+                  OnValidate=BEGIN
+                               CalculatePeriod;
+                             END;
+                              }
+
+      { 1470006;2;Field     ;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=StartingDate;
+                  Editable=FALSE }
+
+      { 1470007;2;Field     ;
+                  CaptionML=[ENU=To;
+                             RUS=До];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=EndingDate;
+                  Editable=FALSE }
+
+      { 1210000;2;Field     ;
+                  CaptionML=[ENU=Approved by Representative;
+                             RUS=Подтверждено представителем];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Representative }
+
+      { 1210008;2;Group     ;
+                  CaptionML=[ENU=Submitted;
+                             RUS=Представляется] }
+
+      { 1210003;3;Field     ;
+                  OptionCaptionML=[ENU=213 - At the place of the largest taxpayer,214 - At the place of Russian organization,215 - At the place of location of assignee which is not the largest taxpayer,216 - At the place of accounting of assignee which is the largest taxpayer,221 - At the place of separated unit with separate balance,245 - At the place of foreign company registration,281 - At the place of real-estate object;
+                                   RUS=213 - по месту учета крупнейшего налогоплательщика,214 - по месту нахождения российской организации,215 - по месту представителя - не крупнейшего налогоплательщика,216 - по месту представителя - крупнейшего налогоплательщика,221 - по месту нахождения обособленного подразделения с отдельным балансом,245 - по месту постановки на учет в налоговом органе иностранной организации,281 - по месту нахождения объекта недвижимого имущества];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Submitted }
+
+      { 1210012;2;Group     ;
+                  CaptionML=[ENU=Reorganization;
+                             RUS=Реорганизация] }
+
+      { 1210009;3;Field     ;
+                  CaptionML=[ENU=Reorganization (Liquidation);
+                             RUS=Реорганизация (ликвидация)];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Reorganization }
+
+      { 1210002;3;Field     ;
+                  CaptionML=[ENU=Reorganization Type;
+                             RUS=Тип реорганизации];
+                  OptionCaptionML=[ENU=" ,1 - Reorganization,2 - Merging,3 - Disjoining,5 - Joining,6 - Disjoining with simultaneous joining,0 - Liquidation";
+                                   RUS=" ,1 - реорганизация,2 - слияние,3 - разделение,5 - объединение,6 - разделение с одновременным объединением,0 - ликвидация"];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ReorganizationType }
+
+      { 1210013;3;Field     ;
+                  CaptionML=[ENU=VAT Registration No.;
+                             RUS=ИНН];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=VATRegNo }
+
+      { 1210015;3;Field     ;
+                  CaptionML=[ENU=KPP Code;
+                             RUS=КПП];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=KPPCode }
+
+      { 1470009;2;Field     ;
+                  CaptionML=[ENU=Detailed Info Sheet;
+                             RUS=Подробные сведения];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=DetailedInfo }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1470033 : Record 79;
+      FASetup@1470004 : Record 5603;
+      FADeprBook@1470007 : Record 5612;
+      FixedAsset@1470008 : Record 5600;
+      TempFixedAsset@1470053 : TEMPORARY Record 5600;
+      FALocation@1470046 : Record 5609;
+      AssessedTaxCode@1470011 : Record 14921;
+      AssessedTaxCodeExempt@1470027 : Record 14921;
+      TaxAuthority@1470045 : Record 23;
+      Employee@1210001 : Record 5200;
+      ExcelMgt@1210007 : Codeunit 12416;
+      Window@1210008 : Dialog;
+      TaxAuthNo@1470042 : Code[20];
+      DeprCost@1470028 : ARRAY [13,4] OF Decimal;
+      TempDeprCost@1470038 : Decimal;
+      TotalAmount@1470040 : ARRAY [4] OF Decimal;
+      LineNo@1470036 : Integer;
+      Year@1470000 : Integer;
+      I@1470009 : Integer;
+      J@1210009 : Integer;
+      StartCell@1210010 : Integer;
+      Shift@1210011 : Integer;
+      PageCounter@1470034 : ARRAY [6] OF Integer;
+      Ch1BlockCounter@1210014 : Integer;
+      PeriodShift@1170000000 : Integer;
+      PeriodFactor@1170000001 : Integer;
+      ReportingPeriod@1470001 : Option;
+      StartingDate@1470002 : Date;
+      EndingDate@1470003 : Date;
+      ReportingDate@1470010 : Date;
+      SheetName@1470005 : Text[30];
+      MainSheetName@1210018 : Text[30];
+      TaxAuthCode@1470032 : Text[4];
+      PageText@1470048 : Text[3];
+      CreateSheet@1470029 : Boolean;
+      DeleteSheet@1470037 : ARRAY [3] OF Boolean;
+      DetailedInfo@1470035 : Boolean;
+      FillTitle@1470012 : ARRAY [2] OF Boolean;
+      InsertTempFA@1470039 : Boolean;
+      Text007@1470021 : TextConst 'ENU=OKATO Code #1####\Chapter #2####\FA No. #3####;RUS=Код ОКАТО  #1####\Раздел  #2####\ОС номер #3####';
+      Text008@1470020 : TextConst 'ENU=Select Tax Authority No.;RUS=Выберите код налог. органа';
+      Text010@1470031 : TextConst 'ENU="There are duplicate Assessed Tax Codes: Assessed Tax Code=%1 and Assessed Tax Code=%2. Remove one of them.";RUS=Дублирование кодов налога на имущество: налог на имущество с кодом %1 и налог на имущество с кодом %2. Удалите один из них.';
+      Text011@1470030 : TextConst 'ENU="Base Assessed Tax Code should exist for Assessed Tax Code=%1.";RUS=Для кода налога на имущество %1 должен существовать базовый код налога на имущество.';
+      Representative@1210002 : Boolean;
+      Exemption@1210017 : Boolean;
+      TaxAmountAbroad@1210003 : Decimal;
+      OKATOCounter@1210004 : Integer;
+      Submitted@1210005 : '213,214,215,216,221,245,281';
+      ReorganizationType@1210000 : ' ,1,2,3,5,6,0';
+      Reorganization@1210006 : Boolean;
+      VATRegNo@1210012 : Code[20];
+      KPPCode@1210013 : Code[10];
+      FileNameSilent@1210015 : Text;
+
+    PROCEDURE FillChapter2@1470132(PropertyType@1210000 : Integer;PropertyType2@1210003 : Integer;ATCode@1210002 : Code[20]);
+    BEGIN
+      IF ReportingPeriod = 3 THEN
+        FillYear(PropertyType,PropertyType2,ATCode)
+      ELSE
+        FillNotYear(PropertyType,PropertyType2,ATCode);
+    END;
+
+    PROCEDURE FillYear@1210009(PropertyType@1210000 : Integer;PropertyType2@1210003 : Integer;ATCode@1210002 : Code[20]);
+    VAR
+      AssessedTaxCode2@1210001 : Record 14921;
+      AssessedTaxAllowance@1210004 : Record 14920;
+      LineAmount@1470002 : ARRAY [8] OF Decimal;
+    BEGIN
+      RoundDeprCost;
+      CLEAR(LineAmount);
+      AssessedTaxCode2.GET(ATCode);
+
+      IF NOT Exemption THEN BEGIN
+        SheetName := '00002' + '#' + FORMAT(PageCounter[2]);
+        ExcelMgt.CopySheet('00002','00003',SheetName);
+        ExcelMgt.OpenSheet(SheetName);
+      END ELSE
+        SheetName := MainSheetName;
+      ExcelMgt.OpenSheet(SheetName);
+      ExcelMgt.FillCell('Y11',FORMAT(PropertyType2));
+      ExcelMgt.FillCellsGroup2('CH11',11,1,OKATO.Code,'0',1);
+
+      J := 17;
+
+      // Line #020 - #140
+      FOR I := 1 TO 13 DO BEGIN
+        LineAmount[1] := LineAmount[1] + DeprCost[I][1];
+        LineAmount[2] := LineAmount[2] + DeprCost[I][2];
+        ExcelMgt.FillCellsGroup2('X' + FORMAT(I + J),15,1,FORMAT(DeprCost[I][1],0,1),'-',1);
+        IF AssessedTaxCode2."Exemption Tax Allowance Code" <> '' THEN
+          ExcelMgt.FillCellsGroup2('BU' + FORMAT(I + J),15,1,FORMAT(DeprCost[I][2],0,1),'-',1);
+        J := J + 1;
+        IF DeprCost[I][3] <> 0 THEN
+          LineAmount[7] := DeprCost[I][3];
+        IF DeprCost[I][4] <> 0 THEN
+          LineAmount[8] := DeprCost[I][4];
+      END;
+      IF LineAmount[7] <> 0 THEN
+        ExcelMgt.FillCellsGroup2('X44',15,1,FORMAT(LineAmount[7],0,1),'-',1);
+      IF LineAmount[8] <> 0 THEN
+        ExcelMgt.FillCellsGroup2('BU44',15,1,FORMAT(LineAmount[8],0,1),'-',1);
+
+      // Line #150
+      LineAmount[1] := ROUND(LineAmount[1] / 13,1,'=');
+      ExcelMgt.FillCellsGroup2('BF49',15,1,FORMAT(LineAmount[1],0,1),'-',1);
+
+      // Line #160 - #170
+      LineAmount[2] := ROUND(LineAmount[2] / 13,1,'=');
+      IF AssessedTaxCode2."Exemption Tax Allowance Code" <> '' THEN BEGIN
+        ExcelMgt.FillCellsGroup2('BF51',7,1,AssessedTaxCode2."Exemption Tax Allowance Code",'-',1);
+        AssessedTaxAllowance.GET(AssessedTaxCode2."Exemption Tax Allowance Code");
+        ExcelMgt.FillCellsGroup2(
+          'CD51',12,1,
+          AssessedTaxAllowance."Article Number" + AssessedTaxAllowance."Clause Number" +
+          AssessedTaxAllowance."Subclause Number",'-',1);
+        ExcelMgt.FillCellsGroup2('BF54',15,1,FORMAT(LineAmount[2],0,1),'-',1);
+      END;
+
+      // Line #180
+      IF PropertyType = 2 THEN
+        IF TempFixedAsset."Book Value per Share" <> 0 THEN
+          IF (TempFixedAsset."Book Value per Share" * 100 - ((TempFixedAsset."Book Value per Share" * 100) DIV 10)) <> 0
+          THEN BEGIN
+            ExcelMgt.FillCellsGroup2('BF57',10,1,FORMAT(TempFixedAsset."Book Value per Share" * 100),'-',1);
+            ExcelMgt.FillCellsGroup2('CM57',10,1,FORMAT(100),'-',1);
+          END ELSE BEGIN
+            ExcelMgt.FillCellsGroup2('BF57',10,1,FORMAT(TempFixedAsset."Book Value per Share" * 10),'-',1);
+            ExcelMgt.FillCellsGroup2('CM57',10,1,FORMAT(10),'-',1);
+          END;
+
+      // Line #190
+      IF PropertyType = 2 THEN
+        LineAmount[3] := ROUND((LineAmount[1] - LineAmount[2]) * TempFixedAsset."Book Value per Share",1,'=')
+      ELSE
+        LineAmount[3] := LineAmount[1] - LineAmount[2];
+      ExcelMgt.FillCellsGroup2('BF59',15,1,FORMAT(LineAmount[3],0,1),'-',1);
+
+      // Line #200
+      IF AssessedTaxCode2."Dec. Rate Tax Allowance Code" <> '' THEN BEGIN
+        ExcelMgt.FillCellsGroup2('BF61',7,1,AssessedTaxCode2."Dec. Rate Tax Allowance Code",'-',1);
+        AssessedTaxAllowance.GET(AssessedTaxCode2."Dec. Rate Tax Allowance Code");
+        ExcelMgt.FillCellsGroup2(
+          'CD61',12,1,
+          AssessedTaxAllowance."Article Number" + AssessedTaxAllowance."Clause Number" +
+          AssessedTaxAllowance."Subclause Number",'-',1);
+      END;
+      FillYearRest(LineAmount,PropertyType,PropertyType2,ATCode)
+    END;
+
+    PROCEDURE FillYearRest@1210003(VAR LineAmount@1210006 : ARRAY [8] OF Decimal;PropertyType@1210000 : Integer;PropertyType2@1210003 : Integer;ATCode@1210002 : Code[20]);
+    VAR
+      AssessedTaxCode2@1210001 : Record 14921;
+      AssessedTaxAllowance@1210004 : Record 14920;
+      Decimals@1210005 : Decimal;
+    BEGIN
+      AssessedTaxCode2.GET(ATCode);
+      // Line #210
+      ExcelMgt.FillCellsGroup2('BF63',1,1,FORMAT(AssessedTaxCode2."Rate %" DIV 1),'-',1);
+      Decimals := (AssessedTaxCode2."Rate %" - AssessedTaxCode2."Rate %" DIV 1);
+      ExcelMgt.FillCellsGroup2('BL63',2,1,FORMAT(Decimals * 100),'-',1);
+
+      // Line #220
+      LineAmount[4] := LineAmount[3] * AssessedTaxCode2."Rate %" / 100;
+      IF PropertyType = 1 THEN
+        IF TempFixedAsset."Book Value per Share" <> 0 THEN
+          LineAmount[4] := LineAmount[4] * TempFixedAsset."Book Value per Share";
+      LineAmount[4] := ROUND(LineAmount[4],1,'=');
+      ExcelMgt.FillCellsGroup2('BF65',15,1,FORMAT(LineAmount[4],0,1),'-',1);
+
+      // Line #240 - #250
+      IF AssessedTaxCode2."Dec. Amount Tax Allowance Code" <> '' THEN BEGIN
+        ExcelMgt.FillCellsGroup2('BF71',7,1,AssessedTaxCode2."Dec. Amount Tax Allowance Code",'-',1);
+        AssessedTaxAllowance.GET(AssessedTaxCode2."Dec. Amount Tax Allowance Code");
+        ExcelMgt.FillCellsGroup2(
+          'CD71',12,1,
+          AssessedTaxAllowance."Article Number" + AssessedTaxAllowance."Clause Number" +
+          AssessedTaxAllowance."Subclause Number",'-',1);
+        IF AssessedTaxCode2."Decreasing Amount Type" = AssessedTaxCode2."Decreasing Amount Type"::Percent THEN
+          LineAmount[5] := ROUND(LineAmount[4] * AssessedTaxCode2."Decreasing Amount" / 100,1,'=')
+        ELSE
+          LineAmount[5] := ROUND(AssessedTaxCode2."Decreasing Amount",1,'=');
+        ExcelMgt.FillCellsGroup2('BF74',15,1,FORMAT(LineAmount[5],0,1),'-',1);
+      END;
+
+      // Line #260
+      IF PropertyType2 = 4 THEN BEGIN
+        TaxAmountAbroad := ROUND(TaxAmountAbroad,1,'=');
+        ExcelMgt.FillCellsGroup2('BF77',15,1,FORMAT(TaxAmountAbroad,0,1),'-',1);
+      END;
+      IF NOT Exemption THEN
+        CASE PropertyType OF
+          1:
+            IF PropertyType2 <> 4 THEN
+              TotalAmount[1] := TotalAmount[1] + LineAmount[4] - LineAmount[5]
+            ELSE
+              IF (LineAmount[4] - LineAmount[5]) <= TaxAmountAbroad THEN
+                TotalAmount[3] := TotalAmount[3] + (LineAmount[4] - LineAmount[5])
+              ELSE
+                TotalAmount[3] := TotalAmount[3] + TaxAmountAbroad;
+          2,3,5:
+            IF PropertyType2 <> 4 THEN
+              TotalAmount[2] := TotalAmount[2] + LineAmount[4] - LineAmount[5]
+            ELSE
+              IF (LineAmount[4] - LineAmount[5]) <= TaxAmountAbroad THEN
+                TotalAmount[4] := TotalAmount[4] + (LineAmount[4] - LineAmount[5])
+              ELSE
+                TotalAmount[4] := TotalAmount[4] + TaxAmountAbroad;
+        END;
+
+      Exemption := FALSE;
+    END;
+
+    PROCEDURE FillNotYear@1210010(PropertyType@1210000 : Integer;PropertyType2@1210003 : Integer;ATCode@1210002 : Code[20]);
+    VAR
+      AssessedTaxCode2@1210001 : Record 14921;
+      AssessedTaxAllowance@1210004 : Record 14920;
+      LineAmount@1470002 : ARRAY [8] OF Decimal;
+      Decimals@1210005 : Decimal;
+    BEGIN
+      RoundDeprCost;
+      CLEAR(LineAmount);
+      AssessedTaxCode2.GET(ATCode);
+
+      IF NOT Exemption THEN BEGIN
+        SheetName := '00002' + '#' + FORMAT(PageCounter[2]);
+        ExcelMgt.CopySheet('00002','00003',SheetName);
+        ExcelMgt.OpenSheet(SheetName);
+      END ELSE
+        SheetName := MainSheetName;
+
+      ExcelMgt.OpenSheet(SheetName);
+      ExcelMgt.FillCell('Y12',FORMAT(PropertyType2));
+      ExcelMgt.FillCellsGroup2('CH12',11,1,OKATO.Code,'0',1);
+
+      J := 20;
+      // Line #020 - #110
+      FOR I := 1 TO ((ReportingPeriod + 1) * 3 + 1) DO BEGIN
+        LineAmount[1] := LineAmount[1] + DeprCost[I][1];
+        LineAmount[2] := LineAmount[2] + DeprCost[I][2];
+        ExcelMgt.FillCellsGroup2('X' + FORMAT(I + J),15,1,FORMAT(DeprCost[I][1],0,1),'-',1);
+        IF AssessedTaxCode2."Exemption Tax Allowance Code" <> '' THEN
+          ExcelMgt.FillCellsGroup2('BU' + FORMAT(I + J),15,1,FORMAT(DeprCost[I][2],0,1),'-',1);
+        J := J + 1;
+      END;
+
+      // Line #120
+      LineAmount[1] := ROUND(LineAmount[1] / ((ReportingPeriod + 1) * 3 + 1),1,'=');
+      ExcelMgt.FillCellsGroup2('BF47',15,1,FORMAT(LineAmount[1],0,1),'-',1);
+
+      // Line #130 - #140
+      LineAmount[2] := ROUND(LineAmount[2] / ((ReportingPeriod + 1) * 3 + 1),1,'=');
+      IF AssessedTaxCode2."Exemption Tax Allowance Code" <> '' THEN BEGIN
+        ExcelMgt.FillCellsGroup2('BF49',7,1,AssessedTaxCode2."Exemption Tax Allowance Code",'-',1);
+        AssessedTaxAllowance.GET(AssessedTaxCode2."Exemption Tax Allowance Code");
+        ExcelMgt.FillCellsGroup2(
+          'CD49',12,1,
+          AssessedTaxAllowance."Article Number" + AssessedTaxAllowance."Clause Number" +
+          AssessedTaxAllowance."Subclause Number",'-',1);
+        ExcelMgt.FillCellsGroup2('BF52',15,1,FORMAT(LineAmount[2],0,1),'-',1);
+      END;
+
+      // Line #150
+      IF PropertyType = 2 THEN
+        IF TempFixedAsset."Book Value per Share" <> 0 THEN
+          IF (TempFixedAsset."Book Value per Share" * 100 - ((TempFixedAsset."Book Value per Share" * 100) DIV 10)) <> 0
+          THEN BEGIN
+            ExcelMgt.FillCellsGroup2('BF55',10,1,FORMAT(TempFixedAsset."Book Value per Share" * 100),'-',1);
+            ExcelMgt.FillCellsGroup2('CM55',10,1,FORMAT(100),'-',1);
+          END ELSE BEGIN
+            ExcelMgt.FillCellsGroup2('BF55',10,1,FORMAT(TempFixedAsset."Book Value per Share" * 10),'-',1);
+            ExcelMgt.FillCellsGroup2('CM55',10,1,FORMAT(10),'-',1);
+          END;
+
+      // Line #160
+      IF AssessedTaxCode2."Dec. Rate Tax Allowance Code" <> '' THEN BEGIN
+        ExcelMgt.FillCellsGroup2('BF58',7,1,AssessedTaxCode2."Dec. Rate Tax Allowance Code",'-',1);
+        AssessedTaxAllowance.GET(AssessedTaxCode2."Dec. Rate Tax Allowance Code");
+        ExcelMgt.FillCellsGroup2(
+          'CD58',12,1,
+          AssessedTaxAllowance."Article Number" + AssessedTaxAllowance."Clause Number" +
+          AssessedTaxAllowance."Subclause Number",'-',1);
+      END;
+
+      // Line #170
+      ExcelMgt.FillCellsGroup2('BF60',1,1,FORMAT(AssessedTaxCode2."Rate %" DIV 1),'-',1);
+      Decimals := (AssessedTaxCode2."Rate %" - AssessedTaxCode2."Rate %" DIV 1);
+      ExcelMgt.FillCellsGroup2('BL60',2,1,FORMAT(Decimals * 100),'-',1);
+
+      // Line #180
+      LineAmount[3] := LineAmount[1] - LineAmount[2];
+      LineAmount[4] := LineAmount[3] * AssessedTaxCode2."Rate %" / 100 / 4;
+      IF PropertyType IN [1,2] THEN
+        IF TempFixedAsset."Book Value per Share" <> 0 THEN
+          LineAmount[4] := LineAmount[4] * TempFixedAsset."Book Value per Share";
+      LineAmount[4] := ROUND(LineAmount[4],1,'=');
+      ExcelMgt.FillCellsGroup2('BF62',15,1,FORMAT(LineAmount[4],0,1),'-',1);
+
+      // Line #190 - #200
+      IF AssessedTaxCode2."Dec. Amount Tax Allowance Code" <> '' THEN BEGIN
+        ExcelMgt.FillCellsGroup2('BF65',7,1,AssessedTaxCode2."Dec. Amount Tax Allowance Code",'-',1);
+        AssessedTaxAllowance.GET(AssessedTaxCode2."Dec. Amount Tax Allowance Code");
+        ExcelMgt.FillCellsGroup2(
+          'CD65',12,1,
+          AssessedTaxAllowance."Article Number" + AssessedTaxAllowance."Clause Number" +
+          AssessedTaxAllowance."Subclause Number",'-',1);
+        IF AssessedTaxCode2."Decreasing Amount Type" = AssessedTaxCode2."Decreasing Amount Type"::Percent THEN
+          LineAmount[5] := ROUND(LineAmount[4] * AssessedTaxCode2."Decreasing Amount" / 100 / 4,1,'=')
+        ELSE
+          LineAmount[5] := ROUND(AssessedTaxCode2."Decreasing Amount" / 4,1,'=');
+        ExcelMgt.FillCellsGroup2('BF68',15,1,FORMAT(LineAmount[5],0,1),'-',1);
+      END;
+      IF NOT Exemption THEN BEGIN
+        IF PropertyType = 1 THEN
+          TotalAmount[1] := TotalAmount[1] + LineAmount[4] - LineAmount[5]
+        ELSE
+          TotalAmount[2] := TotalAmount[2] + LineAmount[4] - LineAmount[5];
+      END;
+
+      Exemption := FALSE;
+    END;
+
+    PROCEDURE FillInfoSheet@1470011(TitleString@1210000 : Boolean);
+    BEGIN
+      IF DetailedInfo THEN BEGIN
+        LineNo := LineNo + 1;
+        ExcelMgt.OpenSheet('Info');
+        IF TitleString THEN BEGIN
+          ExcelMgt.FillCell('A' + FORMAT(LineNo),TempFixedAsset."No.");
+          ExcelMgt.FillCell('B' + FORMAT(LineNo),TempFixedAsset.Description);
+          ExcelMgt.FillCell('C' + FORMAT(LineNo),FORMAT(TempFixedAsset."Property Type"));
+          ExcelMgt.FillCell('D' + FORMAT(LineNo),FORMAT(TempFixedAsset."OKATO Code"));
+          ExcelMgt.FillCell('E' + FORMAT(LineNo),FORMAT(TempFixedAsset."Assessed Tax Code"));
+          ExcelMgt.FillCell('F' + FORMAT(LineNo),FORMAT(AssessedTaxCode."Dec. Rate Tax Allowance Code"));
+          ExcelMgt.FillCell('G' + FORMAT(LineNo),FORMAT(AssessedTaxCode."Dec. Amount Tax Allowance Code"));
+          ExcelMgt.FillCell('H' + FORMAT(LineNo),FORMAT(AssessedTaxCode."Decreasing Amount Type"));
+          ExcelMgt.FillCell('I' + FORMAT(LineNo),FORMAT(AssessedTaxCode."Decreasing Amount"));
+        END ELSE BEGIN
+          ExcelMgt.FillCell('J' + FORMAT(LineNo),FORMAT(ReportingDate));
+          ExcelMgt.FillCell('K' + FORMAT(LineNo),FORMAT(TempDeprCost,0,1));
+        END;
+      END;
+    END;
+
+    PROCEDURE FillSpecialInfo@1470001(ChapterNo@1470000 : Integer);
+    BEGIN
+      SheetName := '0000' + FORMAT(ChapterNo);
+      ExcelMgt.OpenSheet(SheetName);
+      ExcelMgt.FillCellsGroup2('AK1',12,1,CompanyInfo."VAT Registration No.",'-',1);
+      ExcelMgt.FillCellsGroup2('AK4',9,1,CompanyInfo."KPP Code",'-',1);
+    END;
+
+    PROCEDURE CalculatePeriod@1470037();
+    BEGIN
+      StartingDate := DMY2DATE(1,1,Year);
+      EndingDate := CALCDATE('<' + FORMAT(3 * (ReportingPeriod + 1) - 1) + 'M>' + '<+CM>',StartingDate);
+    END;
+
+    PROCEDURE CalcTempDeprCost@1470007(FANo@1470000 : Code[20];CalculationDate@1470001 : Date);
+    VAR
+      FALocationCode@1470002 : Code[20];
+      EmployeeNo@1470003 : Code[20];
+    BEGIN
+      TempDeprCost := 0;
+      FADeprBook.RESET;
+      FADeprBook.SETRANGE("FA No.",FANo);
+      FADeprBook.SETRANGE("Depreciation Book Code",FASetup."Release Depr. Book");
+      FADeprBook.SETRANGE("FA Posting Date Filter",0D,CALCDATE('<-1D>',CalculationDate));
+      IF FADeprBook.FIND('-') THEN BEGIN
+        FADeprBook.CALCFIELDS("Book Value");
+        FADeprBook.GetLocationAtDate(FALocationCode,EmployeeNo,CalculationDate);
+        IF FALocation.GET(FALocationCode) THEN
+          IF FALocation."OKATO Code" = OKATO.Code THEN
+            TempDeprCost := TempDeprCost + FADeprBook."Book Value";
+      END;
+    END;
+
+    PROCEDURE CalcPeriodDeprCost@1470010(FANo@1210000 : Code[20];ATCode@1210001 : Code[20]);
+    VAR
+      AssessedTaxCode2@1210002 : Record 14921;
+      ImmovableFA@1210003 : Boolean;
+    BEGIN
+      AssessedTaxCode2.GET(ATCode);
+      ReportingDate := StartingDate;
+      FillInfoSheet(TRUE);
+      ImmovableFA := IsImmovableFA(FANo);
+      FOR I := 1 TO (3 * (ReportingPeriod + 1) + 1) DO BEGIN
+        CalcTempDeprCost(FANo,ReportingDate);
+        DeprCost[I][1] := DeprCost[I][1] + TempDeprCost;
+        IF ImmovableFA THEN
+          DeprCost[I][3] := DeprCost[I][3] + TempDeprCost;
+        IF AssessedTaxCode2."Exemption Tax Allowance Code" <> '' THEN BEGIN
+          DeprCost[I][2] := DeprCost[I][2] + TempDeprCost;
+          IF ImmovableFA THEN
+            DeprCost[I][4] := DeprCost[I][4] + TempDeprCost;
+        END;
+        FillInfoSheet(FALSE);
+        ReportingDate := CALCDATE('<+1M>',ReportingDate);
+        IF I = 13 THEN
+          ReportingDate := CALCDATE('<-1D>',ReportingDate);
+      END;
+    END;
+
+    LOCAL PROCEDURE RoundDeprCost@1210002();
+    VAR
+      J@1210000 : Integer;
+    BEGIN
+      FOR I := 1 TO ARRAYLEN(DeprCost,1) DO
+        FOR J := 1 TO ARRAYLEN(DeprCost,2) DO
+          DeprCost[I][J] := ROUND(DeprCost[I][J],1);
+    END;
+
+    PROCEDURE SetATCodeExemptFilters@1470047();
+    BEGIN
+      AssessedTaxCodeExempt.RESET;
+      AssessedTaxCodeExempt.SETRANGE("Region Code",OKATO."Region Code");
+      AssessedTaxCodeExempt.SETRANGE("Rate %",AssessedTaxCode."Rate %");
+      AssessedTaxCodeExempt.SETRANGE("Dec. Rate Tax Allowance Code",AssessedTaxCode."Dec. Rate Tax Allowance Code");
+      AssessedTaxCodeExempt.SETRANGE("Dec. Amount Tax Allowance Code",AssessedTaxCode."Dec. Amount Tax Allowance Code");
+      AssessedTaxCodeExempt.SETFILTER("Exemption Tax Allowance Code",'<>%1','');
+    END;
+
+    PROCEDURE CheckATCodeDuplicate@1470002();
+    VAR
+      AssessedTaxCodeDublicate@1470000 : Record 14921;
+      OKATO1@1470001 : Record 12427;
+    BEGIN
+      OKATO1.RESET;
+      OKATO1.SETRANGE("Tax Authority No.",TaxAuthNo);
+      IF OKATO1.FIND('-') THEN
+        REPEAT
+          AssessedTaxCode.RESET;
+          AssessedTaxCode.SETRANGE("Region Code",OKATO1."Region Code");
+          IF AssessedTaxCode.FIND('-') THEN
+            REPEAT
+              AssessedTaxCodeDublicate.RESET;
+              AssessedTaxCodeDublicate.SETFILTER(Code,'<>%1',AssessedTaxCode.Code);
+              AssessedTaxCodeDublicate.SETRANGE("Region Code",AssessedTaxCode."Region Code");
+              AssessedTaxCodeDublicate.SETRANGE("Rate %",AssessedTaxCode."Rate %");
+              AssessedTaxCodeDublicate.SETRANGE("Dec. Rate Tax Allowance Code",AssessedTaxCode."Dec. Rate Tax Allowance Code");
+              IF AssessedTaxCode."Exemption Tax Allowance Code" = '' THEN
+                AssessedTaxCodeDublicate.SETRANGE("Exemption Tax Allowance Code",'')
+              ELSE BEGIN
+                AssessedTaxCodeDublicate.SETRANGE("Dec. Amount Tax Allowance Code",AssessedTaxCode."Dec. Amount Tax Allowance Code");
+                AssessedTaxCodeDublicate.SETRANGE("Exemption Tax Allowance Code",AssessedTaxCode."Exemption Tax Allowance Code");
+              END;
+              IF AssessedTaxCodeDublicate.FIND('-') THEN
+                ERROR(Text010,AssessedTaxCode.Code,AssessedTaxCodeDublicate.Code);
+              IF AssessedTaxCode."Exemption Tax Allowance Code" <> '' THEN
+                CheckBaseCode;
+            UNTIL AssessedTaxCode.NEXT = 0;
+        UNTIL OKATO1.NEXT = 0;
+    END;
+
+    PROCEDURE CheckBaseCode@1470003();
+    VAR
+      AssessedTaxCodeBase@1470000 : Record 14921;
+    BEGIN
+      AssessedTaxCodeBase.RESET;
+      AssessedTaxCodeBase.SETRANGE("Region Code",AssessedTaxCode."Region Code");
+      AssessedTaxCodeBase.SETRANGE("Rate %",AssessedTaxCode."Rate %");
+      AssessedTaxCodeBase.SETRANGE("Dec. Rate Tax Allowance Code",AssessedTaxCode."Dec. Rate Tax Allowance Code");
+      AssessedTaxCodeBase.SETRANGE("Dec. Amount Tax Allowance Code",AssessedTaxCode."Dec. Amount Tax Allowance Code");
+      AssessedTaxCodeBase.SETRANGE("Exemption Tax Allowance Code",'');
+      IF NOT AssessedTaxCodeBase.FIND('-') THEN
+        ERROR(Text011,AssessedTaxCode.Code);
+    END;
+
+    PROCEDURE IsImmovableFA@1210007(FANo@1210001 : Code[20]) : Boolean;
+    VAR
+      TempFA@1210000 : Record 5600;
+    BEGIN
+      TempFA.GET(FANo);
+      EXIT(TempFA."FA Type for Taxation" = TempFA."FA Type for Taxation"::Immovable);
+    END;
+
+    PROCEDURE InitializeRequest@1210000(NewTaxAuthNo@1210000 : Code[20];NewYear@1210001 : Integer;NewReportingPeriod@1210002 : Integer;NewStartingDate@1210003 : Date;NewEndingDate@1210004 : Date;NewSubmitted@1210005 : Integer;NewReorganization@1210007 : Boolean;NewDetailedInfo@1210008 : Boolean);
+    BEGIN
+      TaxAuthNo := NewTaxAuthNo;
+      Year := NewYear;
+      ReportingPeriod := NewReportingPeriod;
+      StartingDate := NewStartingDate;
+      EndingDate := NewEndingDate;
+      Submitted := NewSubmitted;
+      Reorganization := NewReorganization;
+      DetailedInfo := NewDetailedInfo;
+    END;
+
+    PROCEDURE SetFileNameSilent@1210001(NewFileNameSilent@1210000 : Text);
+    BEGIN
+      FileNameSilent := NewFileNameSilent;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

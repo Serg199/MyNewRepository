@@ -1,0 +1,988 @@
+OBJECT Codeunit 17201 Tax Register Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09.09.14;
+    Time=12:00:00;
+    Version List=NAVRU8.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TaxRegSection@1000 : Record 17207;
+      Text1000@1001 : TextConst 'ENU=DEFAULT;RUS=СТАНДАРТ';
+      Text1007@1005 : TextConst 'ENU=Existing data after %1 for table %2 will be deleted.\\Continue?;RUS=Существующие данные после %1 для таблицы %2 будут удалены.\\Продолжить?';
+      Text1008@1006 : TextConst 'ENU=Incorrect period start date.;RUS=Неверная дата начала периода.';
+      Text1009@1007 : TextConst 'ENU=Data before %1 in table %2 not found.\\Continue?;RUS=Не удалось найти данные до %1 в таблице %2.\\Продолжить?';
+      Text1011@1009 : TextConst 'ENU=Incorrect period end date.;RUS=Неверная дата окончания периода.';
+      Text1012@1010 : TextConst 'ENU=End date must be defined.;RUS=Не задана дата окончания.';
+      Text1013@1011 : TextConst 'ENU=Start date must be define.;RUS=Не задана дата начала.';
+      Text1014@1012 : TextConst 'ENU=Section code must be defined.;RUS=Необходимо определить код раздела.';
+      Text005@1014 : TextConst 'ENU=january,february,march,april,may,june,july,august,september,october,november,december;RUS=январь,февраль,март,апрель,май,июнь,июль,август,сентябрь,октябрь,ноябрь,декабрь';
+      Text006@1015 : TextConst 'ENU=first quarter,second quarter,third quarter,fourth quarter;RUS=первый квартал,второй квартал,третий квартал,четвертый квартал';
+      Text1017@1018 : TextConst 'ENU=Value %1 is not defined.;RUS=Не задано значение %1.';
+      Calendar@1210003 : Record 2000000007;
+      Text000@1210005 : TextConst 'ENU=1,5,,Dimension 1 Value Code;RUS=1,5,,Код значения измерения 1';
+      Text001@1210004 : TextConst 'ENU=1,5,,Dimension 2 Value Code;RUS=1,5,,Код значения измерения 2';
+      Text002@1210001 : TextConst 'ENU=1,5,,Dimension 3 Value Code;RUS=1,5,,Код значения измерения 3';
+      Text003@1210000 : TextConst 'ENU=1,5,,Dimension 4 Value Code;RUS=1,5,,Код значения измерения 4';
+
+    PROCEDURE FindDate@1(SearchString@1000 : Text[10];VAR Calendar@1001 : Record 2000000007;PeriodType@1002 : ',,Month,Quarter,Year';AmountType@1003 : 'Current Period,Tax Period') Found : Boolean;
+    BEGIN
+      Calendar.SETRANGE("Period Type",PeriodType);
+      Calendar."Period Type" := PeriodType;
+      IF Calendar."Period End" = 0D THEN
+        Calendar."Period End" := WORKDATE;
+      CASE PeriodType OF
+        PeriodType::Year:
+          Calendar."Period Start" := CALCDATE('<-CY>',NORMALDATE(Calendar."Period End"));
+        PeriodType::Quarter:
+          Calendar."Period Start" := CALCDATE('<-CQ>',NORMALDATE(Calendar."Period End"));
+        ELSE
+          Calendar."Period Start" := CALCDATE('<-CM>',NORMALDATE(Calendar."Period End"));
+      END;
+      IF SearchString IN ['','=><'] THEN
+        SearchString := '=<>';
+      Found := Calendar.FIND(SearchString);
+      IF Found THEN BEGIN
+        Calendar."Period Start" := NORMALDATE(Calendar."Period Start");
+        Calendar."Period End" := NORMALDATE(Calendar."Period End");
+      END;
+      IF AmountType = AmountType::"Tax Period" THEN
+        Calendar."Period Start" := CALCDATE('<-CY>',Calendar."Period Start");
+      EXIT(Found);
+    END;
+
+    PROCEDURE SetPeriodAmountType@2(VAR Calendar@1000 : Record 2000000007;VAR DateFilterText@1001 : Text;VAR PeriodType@1002 : ',,Month,Quarter,Year';VAR AmountType@1003 : 'Current Period,Tax Period');
+    BEGIN
+      DateFilterText := Calendar.GETFILTER("Period End");
+      PeriodType := PeriodType::Month;
+      AmountType := AmountType::"Tax Period";
+      CASE TRUE OF
+        (DateFilterText = ''):
+          BEGIN
+            DateFilterText := '*';
+            AmountType := AmountType::"Current Period";
+          END;
+        (COPYSTR(DateFilterText,1,2) = '..'),
+        (STRPOS(DateFilterText,'..') = STRLEN(DateFilterText) - 1):
+          DateFilterText := '*';
+        CALCDATE('<CM>',Calendar.GETRANGEMIN("Period End")) = Calendar.GETRANGEMAX("Period End"):
+          AmountType := AmountType::"Current Period";
+      END;
+    END;
+
+    PROCEDURE GetDimCaptionClass@3(SectionCode@1000 : Code[10];DimType@1001 : Integer) : Text[250];
+    BEGIN
+      IF NOT TaxRegSection.GET(SectionCode) THEN
+        CLEAR(TaxRegSection);
+      CASE DimType OF
+        1:
+          BEGIN
+            IF TaxRegSection."Dimension 1 Code" <> '' THEN
+              EXIT('1,5,' + TaxRegSection."Dimension 1 Code");
+
+            EXIT(Text000);
+          END;
+        2:
+          BEGIN
+            IF TaxRegSection."Dimension 2 Code" <> '' THEN
+              EXIT('1,5,' + TaxRegSection."Dimension 2 Code");
+
+            EXIT(Text001);
+          END;
+        3:
+          BEGIN
+            IF TaxRegSection."Dimension 3 Code" <> '' THEN
+              EXIT('1,5,' + TaxRegSection."Dimension 3 Code");
+
+            EXIT(Text002);
+          END;
+        4:
+          BEGIN
+            IF TaxRegSection."Dimension 4 Code" <> '' THEN
+              EXIT('1,5,' + TaxRegSection."Dimension 4 Code");
+
+            EXIT(Text003);
+          END;
+      END;
+    END;
+
+    PROCEDURE CalcDebitBalancePointDate@4(SectionCode@1000 : Code[10];EndDate@1001 : Date;VAR FiterDueDate45Days@1002 : Text[30];VAR FiterDueDate45Days90Days@1003 : Text[30];VAR FilterDueDate90Days3Years@1004 : Text[30];VAR FilterDueDate3YearsDebit@1005 : Text[30]);
+    VAR
+      DueDate45Days@1006 : Date;
+      DueDate90Days@1007 : Date;
+      DueDate3YearsDebit@1008 : Date;
+    BEGIN
+      TaxRegSection.GET(SectionCode);
+
+      TaxRegSection.TESTFIELD("Debit Balance Point 1");
+      TaxRegSection.TESTFIELD("Debit Balance Point 2");
+      TaxRegSection.TESTFIELD("Debit Balance Point 3");
+
+      DueDate45Days := CALCDATE(TaxRegSection."Debit Balance Point 1",EndDate + 1);
+      DueDate90Days := CALCDATE(TaxRegSection."Debit Balance Point 2",EndDate + 1);
+      DueDate3YearsDebit := CALCDATE(TaxRegSection."Debit Balance Point 3",EndDate + 1);
+
+      // great 45
+      FiterDueDate45Days := STRSUBSTNO('%1..%2',DueDate45Days,EndDate);
+      // great 45 and less/equal 90 days
+      FiterDueDate45Days90Days := STRSUBSTNO('%1..%2',DueDate90Days,DueDate45Days - 1);
+      // great 90 and less/equal 3 years
+      FilterDueDate90Days3Years := STRSUBSTNO('%1..%2',DueDate3YearsDebit,DueDate90Days - 1);
+      // great 3 years
+      FilterDueDate3YearsDebit := STRSUBSTNO('..%1',DueDate3YearsDebit - 1);
+    END;
+
+    PROCEDURE CalcCreditBalancePointDate@5(SectionCode@1000 : Code[10];EndDate@1001 : Date;VAR FilterDueDate3YearsCredit@1002 : Text[30]);
+    VAR
+      DueDate3YearsCredit@1003 : Date;
+    BEGIN
+      TaxRegSection.GET(SectionCode);
+
+      TaxRegSection.TESTFIELD("Credit Balance Point 1");
+      DueDate3YearsCredit := CALCDATE(TaxRegSection."Credit Balance Point 1",EndDate + 1);
+
+      // great 3 years
+      FilterDueDate3YearsCredit := STRSUBSTNO('..%1',DueDate3YearsCredit - 1);
+    END;
+
+    PROCEDURE SectionSelection@7(FormTemplate@1000 : ' ';VAR SectionCode@1001 : Code[10]) SectionSelected : Boolean;
+    VAR
+      TaxRegSection@1002 : Record 17207;
+    BEGIN
+      SectionSelected := TRUE;
+
+      TaxRegSection.RESET;
+      TaxRegSection.SETRANGE(Type,FormTemplate);
+
+      CASE TaxRegSection.COUNT OF
+        0:
+          BEGIN
+            TaxRegSection.INIT;
+            TaxRegSection.Type := FormTemplate;
+            TaxRegSection.Code := Text1000;
+            TaxRegSection.VALIDATE(Type);
+            TaxRegSection.INSERT;
+            COMMIT;
+          END;
+        1:
+          TaxRegSection.FINDFIRST;
+        ELSE
+          SectionSelected := PAGE.RUNMODAL(0,TaxRegSection) = ACTION::LookupOK;
+      END;
+      IF SectionSelected THEN
+        SectionCode := TaxRegSection.Code;
+    END;
+
+    PROCEDURE OpenReg@1210000(CurrentSectionCode@1000 : Code[10];VAR TaxReg@1001 : Record 17200);
+    BEGIN
+      TaxReg.FILTERGROUP := 2;
+      TaxReg.SETRANGE("Section Code",CurrentSectionCode);
+      TaxReg.FILTERGROUP := 0;
+    END;
+
+    PROCEDURE ValidateAbsenceGLEntriesDate@8(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1004 : Record 17200;
+      TaxRegAccumulation@1005 : Record 17208;
+      TaxRegGLEntry@1003 : Record 17209;
+      DeleteConfirmed@1210000 : Boolean;
+    BEGIN
+      ValidateStartDateEndDate(StartDate,EndDate,SectionCode);
+
+      TaxRegAccumulation.RESET;
+      TaxRegAccumulation.SETCURRENTKEY(
+        "Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+      TaxRegAccumulation.SETRANGE("Section Code",SectionCode);
+      TaxRegAccumulation.SETFILTER("Starting Date",'%1..',StartDate);
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register G/L Entry");
+      IF TaxReg.FIND('-') THEN BEGIN
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          IF NOT TaxRegAccumulation.ISEMPTY THEN
+            IF NOT DeleteConfirmed THEN BEGIN
+              IF NOT CONFIRM(Text1007,FALSE,StartDate,TaxRegGLEntry.TABLECAPTION) THEN
+                ERROR('');
+
+              DeleteConfirmed := TRUE;
+            END;
+          TaxRegAccumulation.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+      END;
+
+      IF StartDate = TaxRegSection."Starting Date" THEN
+        TaxRegSection."Absence GL Entries Date" := 0D
+      ELSE
+        IF FindPrevPeriodRegisterData(StartDate,EndDate,SectionCode,DATABASE::"Tax Register G/L Entry") THEN BEGIN
+          IF EndDate <= TaxRegSection."Absence GL Entries Date" THEN
+            TaxRegSection."Absence GL Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,StartDate - 1,TaxRegGLEntry.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxRegSection."Absence GL Entries Date" = 0D) OR
+             ((StartDate - 1) < TaxRegSection."Absence GL Entries Date")
+          THEN
+            TaxRegSection."Absence GL Entries Date" := StartDate - 1;
+        END;
+
+      TaxRegSection.VALIDATE("Last GL Entries Date",EndDate);
+      TaxRegSection.MODIFY;
+    END;
+
+    PROCEDURE FindPrevPeriodRegisterData@1210001(StartDate@1210005 : Date;EndDate@1210004 : Date;SectionCode@1210003 : Code[10];TableID@1470000 : Integer) : Boolean;
+    VAR
+      TaxReg@1210001 : Record 17200;
+      TaxRegAccumulation@1210000 : Record 17208;
+    BEGIN
+      TaxRegAccumulation.RESET;
+      TaxRegAccumulation.SETCURRENTKEY(
+        "Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+      TaxRegAccumulation.SETRANGE("Section Code",SectionCode);
+      TaxRegAccumulation.SETRANGE("Ending Date",StartDate - 1);
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",TableID);
+      IF TaxReg.FINDSET THEN BEGIN
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          IF TaxRegAccumulation.ISEMPTY THEN
+            EXIT(FALSE);
+        UNTIL TaxReg.NEXT = 0;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE ValidateAbsenceCVEntriesDate@9(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1210000 : Record 17200;
+      TaxRegCVEntry@1003 : Record 17210;
+      TaxRegAccumulation@1005 : Record 17208;
+    BEGIN
+      ValidateStartDateEndDate(StartDate,EndDate,SectionCode);
+
+      TaxRegCVEntry.RESET;
+      TaxRegCVEntry.SETCURRENTKEY("Section Code","Starting Date");
+      TaxRegCVEntry.SETRANGE("Section Code",SectionCode);
+      TaxRegCVEntry.SETFILTER("Starting Date",'%1..',StartDate);
+      IF TaxRegCVEntry.FINDFIRST THEN BEGIN
+        IF NOT CONFIRM(Text1007,FALSE,StartDate,TaxRegCVEntry.TABLECAPTION) THEN
+          ERROR('');
+        TaxRegCVEntry.DELETEALL;
+      END;
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register CV Entry");
+      IF TaxReg.FINDSET THEN BEGIN
+        SetAccumulationFilter(TaxRegAccumulation,SectionCode,StartDate);
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          TaxRegAccumulation.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+      END;
+
+      TaxRegCVEntry.RESET;
+      TaxRegCVEntry.SETCURRENTKEY("Section Code","Ending Date");
+      TaxRegCVEntry.SETRANGE("Section Code",SectionCode);
+      TaxRegCVEntry.SETFILTER("Ending Date",'%1..',StartDate);
+      IF NOT TaxRegCVEntry.ISEMPTY THEN
+        ERROR(Text1008);
+
+      IF StartDate = TaxRegSection."Starting Date" THEN
+        TaxRegSection."Absence CV Entries Date" := 0D
+      ELSE BEGIN
+        TaxRegCVEntry.RESET;
+        TaxRegCVEntry.SETCURRENTKEY("Section Code","Ending Date");
+        TaxRegCVEntry.SETRANGE("Section Code",SectionCode);
+        TaxRegCVEntry.SETFILTER("Ending Date",'%1',StartDate - 1);
+        IF TaxRegCVEntry.FINDFIRST THEN BEGIN
+          IF EndDate <= TaxRegSection."Absence CV Entries Date" THEN
+            TaxRegSection."Absence CV Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,StartDate - 1,TaxRegCVEntry.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxRegSection."Absence CV Entries Date" = 0D) OR
+             ((StartDate - 1) < TaxRegSection."Absence CV Entries Date")
+          THEN
+            TaxRegSection."Absence CV Entries Date" := StartDate - 1;
+        END;
+      END;
+
+      TaxRegSection.VALIDATE("Last CV Entries Date",EndDate);
+      TaxRegSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateAbsenceItemEntriesDate@10(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1210000 : Record 17200;
+      TaxRegItemEntry@1003 : Record 17212;
+      TaxRegAccumulation@1005 : Record 17208;
+    BEGIN
+      ValidateStartDateEndDate(StartDate,EndDate,SectionCode);
+
+      TaxRegItemEntry.RESET;
+      TaxRegItemEntry.SETCURRENTKEY("Section Code","Starting Date");
+      TaxRegItemEntry.SETRANGE("Section Code",SectionCode);
+      TaxRegItemEntry.SETFILTER("Starting Date",'%1..',StartDate);
+      IF TaxRegItemEntry.FINDFIRST THEN BEGIN
+        IF NOT CONFIRM(Text1007,FALSE,StartDate,TaxRegItemEntry.TABLECAPTION) THEN
+          ERROR('');
+        TaxRegItemEntry.DELETEALL;
+      END;
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register Item Entry");
+      IF TaxReg.FIND('-') THEN BEGIN
+        SetAccumulationFilter(TaxRegAccumulation,SectionCode,StartDate);
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          TaxRegAccumulation.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+      END;
+
+      TaxRegItemEntry.RESET;
+      TaxRegItemEntry.SETCURRENTKEY("Section Code","Ending Date");
+      TaxRegItemEntry.SETRANGE("Section Code",SectionCode);
+      TaxRegItemEntry.SETFILTER("Ending Date",'%1..',StartDate);
+      IF NOT TaxRegItemEntry.ISEMPTY THEN
+        ERROR(Text1008);
+
+      IF StartDate = TaxRegSection."Starting Date" THEN
+        TaxRegSection."Absence Item Entries Date" := 0D
+      ELSE BEGIN
+        TaxRegItemEntry.RESET;
+        TaxRegItemEntry.SETCURRENTKEY("Section Code","Ending Date");
+        TaxRegItemEntry.SETRANGE("Section Code",SectionCode);
+        TaxRegItemEntry.SETFILTER("Ending Date",'%1',StartDate - 1);
+        IF TaxRegItemEntry.FINDFIRST THEN BEGIN
+          IF EndDate <= TaxRegSection."Absence Item Entries Date" THEN
+            TaxRegSection."Absence Item Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,StartDate - 1,TaxRegItemEntry.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxRegSection."Absence Item Entries Date" = 0D) OR
+             ((StartDate - 1) < TaxRegSection."Absence Item Entries Date")
+          THEN
+            TaxRegSection."Absence Item Entries Date" := StartDate - 1;
+        END;
+      END;
+
+      TaxRegSection.VALIDATE("Last Item Entries Date",EndDate);
+      TaxRegSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateAbsenceFAEntriesDate@11(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1004 : Record 17200;
+      TaxRegAccumulation@1005 : Record 17208;
+      TaxRegFAEntry@1003 : Record 17211;
+      DeleteConfirmed@1470000 : Boolean;
+    BEGIN
+      ValidateStartDateEndDate(StartDate,EndDate,SectionCode);
+
+      TaxRegAccumulation.RESET;
+      TaxRegAccumulation.SETCURRENTKEY(
+        "Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+      TaxRegAccumulation.SETRANGE("Section Code",SectionCode);
+      TaxRegAccumulation.SETFILTER("Starting Date",'%1..',StartDate);
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register FA Entry");
+      IF TaxReg.FIND('-') THEN BEGIN
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          IF NOT TaxRegAccumulation.ISEMPTY THEN
+            IF NOT DeleteConfirmed THEN BEGIN
+              IF NOT CONFIRM(Text1007,FALSE,StartDate,TaxRegFAEntry.TABLECAPTION) THEN
+                ERROR('');
+
+              DeleteConfirmed := TRUE;
+            END;
+          TaxRegAccumulation.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+      END;
+
+      IF StartDate = TaxRegSection."Starting Date" THEN
+        TaxRegSection."Absence FA Entries Date" := 0D
+      ELSE
+        IF FindPrevPeriodRegisterData(StartDate,EndDate,SectionCode,DATABASE::"Tax Register FA Entry") THEN BEGIN
+          IF EndDate <= TaxRegSection."Absence FA Entries Date" THEN
+            TaxRegSection."Absence FA Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,StartDate - 1,TaxRegFAEntry.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxRegSection."Absence FA Entries Date" = 0D) OR
+             ((StartDate - 1) < TaxRegSection."Absence FA Entries Date")
+          THEN
+            TaxRegSection."Absence FA Entries Date" := StartDate - 1;
+        END;
+
+      TaxRegSection.VALIDATE("Last FA Entries Date",EndDate);
+      TaxRegSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateAbsenceFEEntriesDate@12(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1210000 : Record 17200;
+      TaxRegFEEntry@1003 : Record 17213;
+      TaxRegAccumulation@1005 : Record 17208;
+    BEGIN
+      ValidateStartDateEndDate(StartDate,EndDate,SectionCode);
+
+      TaxRegFEEntry.RESET;
+      TaxRegFEEntry.SETCURRENTKEY("Section Code","Starting Date");
+      TaxRegFEEntry.SETRANGE("Section Code",SectionCode);
+      TaxRegFEEntry.SETFILTER("Starting Date",'%1..',StartDate);
+      IF TaxRegFEEntry.FINDFIRST THEN BEGIN
+        IF NOT CONFIRM(Text1007,FALSE,StartDate,TaxRegFEEntry.TABLECAPTION) THEN
+          ERROR('');
+        TaxRegFEEntry.DELETEALL;
+      END;
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register FE Entry");
+      IF TaxReg.FIND('-') THEN BEGIN
+        SetAccumulationFilter(TaxRegAccumulation,SectionCode,StartDate);
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          TaxRegAccumulation.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+      END;
+
+      TaxRegFEEntry.RESET;
+      TaxRegFEEntry.SETCURRENTKEY("Section Code","Ending Date");
+      TaxRegFEEntry.SETRANGE("Section Code",SectionCode);
+      TaxRegFEEntry.SETFILTER("Ending Date",'%1..',StartDate);
+      IF NOT TaxRegFEEntry.ISEMPTY THEN
+        ERROR(Text1008);
+
+      IF StartDate = TaxRegSection."Starting Date" THEN
+        TaxRegSection."Absence FE Entries Date" := 0D
+      ELSE BEGIN
+        TaxRegFEEntry.RESET;
+        TaxRegFEEntry.SETCURRENTKEY("Section Code","Ending Date");
+        TaxRegFEEntry.SETRANGE("Section Code",SectionCode);
+        TaxRegFEEntry.SETFILTER("Ending Date",'%1',StartDate - 1);
+        IF TaxRegFEEntry.FINDFIRST THEN BEGIN
+          IF EndDate <= TaxRegSection."Absence FE Entries Date" THEN
+            TaxRegSection."Absence FE Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,StartDate - 1,TaxRegFEEntry.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxRegSection."Absence FE Entries Date" = 0D) OR
+             ((StartDate - 1) < TaxRegSection."Absence FE Entries Date")
+          THEN
+            TaxRegSection."Absence FE Entries Date" := StartDate - 1;
+        END;
+      END;
+
+      TaxRegSection.VALIDATE("Last FE Entries Date",EndDate);
+      TaxRegSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateAbsencePREntriesDate@13(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    VAR
+      TaxReg@1210000 : Record 17200;
+      TaxRegPREntry@1003 : Record 17214;
+      TaxRegAccumulation@1005 : Record 17208;
+    BEGIN
+      ValidateStartDateEndDate(StartDate,EndDate,SectionCode);
+
+      TaxRegPREntry.RESET;
+      TaxRegPREntry.SETCURRENTKEY("Section Code","Starting Date");
+      TaxRegPREntry.SETRANGE("Section Code",SectionCode);
+      TaxRegPREntry.SETFILTER("Starting Date",'%1..',StartDate);
+      IF TaxRegPREntry.FINDFIRST THEN BEGIN
+        IF NOT CONFIRM(Text1007,FALSE,StartDate,TaxRegPREntry.TABLECAPTION) THEN
+          ERROR('');
+        TaxRegPREntry.DELETEALL;
+      END;
+
+      TaxReg.SETRANGE("Section Code",SectionCode);
+      TaxReg.SETRANGE("Table ID",DATABASE::"Tax Register PR Entry");
+      IF TaxReg.FIND('-') THEN BEGIN
+        SetAccumulationFilter(TaxRegAccumulation,SectionCode,StartDate);
+        REPEAT
+          TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+          TaxRegAccumulation.DELETEALL;
+        UNTIL TaxReg.NEXT = 0;
+      END;
+
+      TaxRegPREntry.RESET;
+      TaxRegPREntry.SETCURRENTKEY("Section Code","Ending Date");
+      TaxRegPREntry.SETRANGE("Section Code",SectionCode);
+      TaxRegPREntry.SETFILTER("Ending Date",'%1..',StartDate);
+      IF NOT TaxRegPREntry.ISEMPTY THEN
+        ERROR(Text1008);
+
+      IF StartDate = TaxRegSection."Starting Date" THEN
+        TaxRegSection."Absence PR Entries Date" := 0D
+      ELSE BEGIN
+        TaxRegPREntry.RESET;
+        TaxRegPREntry.SETCURRENTKEY("Section Code","Ending Date");
+        TaxRegPREntry.SETRANGE("Section Code",SectionCode);
+        TaxRegPREntry.SETFILTER("Ending Date",'%1',StartDate - 1);
+        IF TaxRegPREntry.FINDFIRST THEN BEGIN
+          IF EndDate <= TaxRegSection."Absence PR Entries Date" THEN
+            TaxRegSection."Absence PR Entries Date" := 0D;
+        END ELSE BEGIN
+          IF NOT CONFIRM(Text1009,FALSE,StartDate - 1,TaxRegPREntry.TABLECAPTION) THEN
+            ERROR('');
+          IF (TaxRegSection."Absence PR Entries Date" = 0D) OR
+             ((StartDate - 1) < TaxRegSection."Absence PR Entries Date")
+          THEN
+            TaxRegSection."Absence PR Entries Date" := StartDate - 1;
+        END;
+      END;
+
+      TaxRegSection.VALIDATE("Last PR Entries Date",EndDate);
+      TaxRegSection.MODIFY;
+    END;
+
+    PROCEDURE ValidateStartDateEndDate@14(StartDate@1000 : Date;EndDate@1001 : Date;SectionCode@1002 : Code[10]);
+    BEGIN
+      IF SectionCode = '' THEN
+        ERROR(Text1014);
+      IF StartDate = 0D THEN
+        ERROR(Text1013);
+      IF EndDate = 0D THEN
+        ERROR(Text1012);
+
+      TaxRegSection.GET(SectionCode);
+
+      IF StartDate < TaxRegSection."Starting Date" THEN
+        ERROR(Text1008);
+
+      IF (TaxRegSection."Ending Date" <> 0D) AND (TaxRegSection."Ending Date" < EndDate) THEN
+        ERROR(Text1011);
+    END;
+
+    PROCEDURE SetAccumulationFilter@1210008(VAR TaxRegAccumulation@1210000 : Record 17208;SectionCode@1210001 : Code[10];StartDate@1210002 : Date);
+    BEGIN
+      WITH TaxRegAccumulation DO BEGIN
+        RESET;
+        SETCURRENTKEY("Section Code","Tax Register No.","Template Line No.","Starting Date","Ending Date");
+        SETRANGE("Section Code",SectionCode);
+        SETFILTER("Starting Date",'%1..',StartDate);
+      END;
+    END;
+
+    PROCEDURE GetNextAvailableBeginDate@15(SectionCode@1000 : Code[10];TableID@1001 : Integer;Minimum@1002 : Boolean) StartDate : Date;
+    VAR
+      DateMax@1003 : Date;
+    BEGIN
+      TaxRegSection.GET(SectionCode);
+      DateMax := TaxRegSection.LastDateEntries;
+      StartDate := TaxRegSection."Starting Date";
+      CASE TableID OF
+        DATABASE::"Tax Register Accumulation":
+          IF DateMax <> 0D THEN
+            IF (TaxRegSection."Ending Date" = 0D) OR (DateMax < TaxRegSection."Ending Date") THEN
+              StartDate := DateMax + 1;
+        DATABASE::"Tax Register G/L Entry":
+          IF (TaxRegSection."Last GL Entries Date" = 0D) OR
+             (Minimum AND (TaxRegSection."Absence GL Entries Date" <> 0D))
+          THEN
+            StartDate := TaxRegSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              StartDate := DateMax + 1
+            ELSE
+              IF (TaxRegSection."Ending Date" = 0D) OR
+                 (TaxRegSection."Last GL Entries Date" < TaxRegSection."Ending Date")
+              THEN
+                StartDate := TaxRegSection."Last GL Entries Date" + 1;
+        DATABASE::"Tax Register CV Entry":
+          IF (TaxRegSection."Last CV Entries Date" = 0D) OR
+             (Minimum AND (TaxRegSection."Absence CV Entries Date" <> 0D))
+          THEN
+            StartDate := TaxRegSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              StartDate := DateMax + 1
+            ELSE
+              IF (TaxRegSection."Ending Date" = 0D) OR
+                 (TaxRegSection."Last CV Entries Date" < TaxRegSection."Ending Date")
+              THEN
+                StartDate := TaxRegSection."Last CV Entries Date" + 1;
+        DATABASE::"Tax Register FA Entry":
+          IF (TaxRegSection."Last FA Entries Date" = 0D) OR
+             (Minimum AND (TaxRegSection."Absence FA Entries Date" <> 0D))
+          THEN
+            StartDate := TaxRegSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              StartDate := DateMax + 1
+            ELSE
+              IF (TaxRegSection."Ending Date" = 0D) OR
+                 (TaxRegSection."Last FA Entries Date" < TaxRegSection."Ending Date")
+              THEN
+                StartDate := TaxRegSection."Last FA Entries Date" + 1;
+        DATABASE::"Tax Register Item Entry":
+          IF (TaxRegSection."Last Item Entries Date" = 0D) OR
+             (Minimum AND (TaxRegSection."Absence Item Entries Date" <> 0D))
+          THEN
+            StartDate := TaxRegSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              StartDate := DateMax + 1
+            ELSE
+              IF (TaxRegSection."Ending Date" = 0D) OR
+                 (TaxRegSection."Last Item Entries Date" < TaxRegSection."Ending Date")
+              THEN
+                StartDate := TaxRegSection."Last Item Entries Date" + 1;
+        DATABASE::"Tax Register FE Entry":
+          IF (TaxRegSection."Last FE Entries Date" = 0D) OR
+             (Minimum AND (TaxRegSection."Absence FE Entries Date" <> 0D))
+          THEN
+            StartDate := TaxRegSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              StartDate := DateMax + 1
+            ELSE
+              IF (TaxRegSection."Ending Date" = 0D) OR
+                 (TaxRegSection."Last FE Entries Date" < TaxRegSection."Ending Date")
+              THEN
+                StartDate := TaxRegSection."Last FE Entries Date" + 1;
+        DATABASE::"Tax Register PR Entry":
+          IF (TaxRegSection."Last PR Entries Date" = 0D) OR
+             (Minimum AND (TaxRegSection."Absence PR Entries Date" <> 0D))
+          THEN
+            StartDate := TaxRegSection."Starting Date"
+          ELSE
+            IF Minimum AND (DateMax <> 0D) THEN
+              StartDate := DateMax + 1
+            ELSE
+              IF (TaxRegSection."Ending Date" = 0D) OR
+                 (TaxRegSection."Last PR Entries Date" < TaxRegSection."Ending Date")
+              THEN
+                StartDate := TaxRegSection."Last PR Entries Date" + 1;
+      END;
+    END;
+
+    PROCEDURE CreatePeriodsNames@16(CalendarPeriod@1000 : Record 2000000007) PeriodsNames : Text[250];
+    BEGIN
+      CASE CalendarPeriod."Period Type" OF
+        CalendarPeriod."Period Type"::Month:
+          PeriodsNames := Text005;
+        CalendarPeriod."Period Type"::Quarter:
+          PeriodsNames := Text006;
+      END;
+    END;
+
+    PROCEDURE ParseCaptionPeriodAndName@17(VAR TextPeriodYear@1000 : Text[30];VAR CalendarPeriod@1001 : Record 2000000007) : Boolean;
+    VAR
+      LengthPeriodName@1002 : Integer;
+      PeriodSeqNo@1003 : Integer;
+      YearNo@1004 : Integer;
+      NumbPeriods@1005 : Integer;
+      PeriodsNames@1006 : Text[250];
+    BEGIN
+      PeriodsNames := CreatePeriodsNames(CalendarPeriod);
+      TextPeriodYear := DELCHR(TextPeriodYear,'<>',' ');
+      NumbPeriods := STRLEN(PeriodsNames) - STRLEN(DELCHR(PeriodsNames,'=',',')) + 1;
+      IF PeriodsNames = '' THEN
+        PeriodSeqNo := NumbPeriods
+      ELSE
+        PeriodSeqNo := 0;
+      LengthPeriodName := 0;
+      WHILE (PeriodSeqNo < NumbPeriods) AND (LengthPeriodName = 0) DO BEGIN
+        PeriodSeqNo := PeriodSeqNo + 1;
+        IF STRPOS(TextPeriodYear,SELECTSTR(PeriodSeqNo,PeriodsNames)) = 1 THEN
+          LengthPeriodName := STRLEN(SELECTSTR(PeriodSeqNo,PeriodsNames)) + 1;
+      END;
+      IF LengthPeriodName = 0 THEN BEGIN
+        LengthPeriodName := 1;
+        PeriodSeqNo := NumbPeriods;
+      END;
+      IF LengthPeriodName > STRLEN(TextPeriodYear) THEN
+        IF CalendarPeriod."Period End" = 0D THEN
+          YearNo := DATE2DMY(WORKDATE,3)
+        ELSE
+          YearNo := DATE2DMY(CalendarPeriod."Period End",3)
+      ELSE
+        IF NOT EVALUATE(YearNo,COPYSTR(TextPeriodYear,LengthPeriodName,5)) THEN
+          EXIT(FALSE);
+
+      IF YearNo < 50 THEN
+        YearNo := 2000 + YearNo
+      ELSE
+        IF YearNo < 100 THEN
+          YearNo := 1900 + YearNo;
+
+      CASE CalendarPeriod."Period Type" OF
+        CalendarPeriod."Period Type"::Month:
+          BEGIN
+            CalendarPeriod."Period Start" := DMY2DATE(1,PeriodSeqNo,YearNo);
+            CalendarPeriod."Period Start" := CALCDATE('<CM+1D-1M>',CalendarPeriod."Period Start");
+          END;
+        CalendarPeriod."Period Type"::Quarter:
+          BEGIN
+            CalendarPeriod."Period Start" := DMY2DATE(1,PeriodSeqNo * 3,YearNo);
+            CalendarPeriod."Period Start" := CALCDATE('<CQ+1D-1Q>',CalendarPeriod."Period Start");
+          END;
+        ELSE BEGIN
+          CalendarPeriod."Period Start" := DMY2DATE(1,1,YearNo);
+          CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Year;
+          PeriodsNames := '';
+        END
+      END;
+      CalendarPeriod.GET(CalendarPeriod."Period Type",CalendarPeriod."Period Start");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+      IF PeriodsNames <> ''THEN
+        TextPeriodYear := SELECTSTR(PeriodSeqNo,PeriodsNames) +
+          FORMAT(CalendarPeriod."Period End",0,' <Year4>')
+      ELSE
+        TextPeriodYear := FORMAT(CalendarPeriod."Period End",0,'<Year4>');
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetCaptionPeriodAndYear@18(VAR FiscalPeriod@1000 : Text[30];VAR CalendarPeriod@1001 : Record 2000000007) : Boolean;
+    VAR
+      PeriodSeqNo@1002 : Integer;
+      PeriodsNames@1003 : Text[250];
+    BEGIN
+      IF FiscalPeriod <> '' THEN
+        CASE CalendarPeriod."Period Type" OF
+          CalendarPeriod."Period Type"::Month,
+          CalendarPeriod."Period Type"::Quarter:
+            IF NOT ParseCaptionPeriodAndName(FiscalPeriod,CalendarPeriod) THEN
+              FiscalPeriod := '';
+          ELSE
+            FiscalPeriod := '';
+        END;
+      IF FiscalPeriod = '' THEN BEGIN
+        PeriodsNames := CreatePeriodsNames(CalendarPeriod);
+        PeriodSeqNo := CalendarPeriod."Period No.";
+        IF PeriodSeqNo > (STRLEN(PeriodsNames) - STRLEN(DELCHR(PeriodsNames,'=',',')) + 1) THEN
+          FiscalPeriod := FORMAT(CalendarPeriod."Period End",0,'<Year4>')
+        ELSE
+          FiscalPeriod := SELECTSTR(PeriodSeqNo,PeriodsNames) +
+            FORMAT(CalendarPeriod."Period End",0,' <Year4>');
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SelectPeriod@19(VAR Text@1000 : Text[250];VAR CalendarPeriod@1001 : Record 2000000007) : Boolean;
+    VAR
+      SelectDate@1002 : Page 12445;
+    BEGIN
+      CLEAR(SelectDate);
+      SelectDate.SETRECORD(CalendarPeriod);
+      IF SelectDate.RUNMODAL = ACTION::LookupOK THEN
+        SelectDate.GETRECORD(CalendarPeriod);
+      Text := '';
+      SetCaptionPeriodAndYear(Text,CalendarPeriod);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE PeriodSetup@20(VAR CalendarPeriod@1000 : Record 2000000007);
+    BEGIN
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+    END;
+
+    PROCEDURE InitTaxPeriod@21(VAR CalendarPeriod@1000 : Record 2000000007;Perodical@1001 : 'Month,Quarter,Year';BeginTaxPeriod@1002 : Date);
+    BEGIN
+      CASE Perodical OF
+        Perodical::Month:
+          BEGIN
+            CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Month;
+            CalendarPeriod."Period Start" := CALCDATE('<-CM>',BeginTaxPeriod);
+          END;
+        Perodical::Year:
+          BEGIN
+            CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Year;
+            CalendarPeriod."Period Start" := CALCDATE('<-CY>',BeginTaxPeriod);
+          END;
+        ELSE BEGIN
+          CalendarPeriod."Period Type" := CalendarPeriod."Period Type"::Quarter;
+          CalendarPeriod."Period Start" := CALCDATE('<-CQ>',BeginTaxPeriod);
+        END;
+      END;
+      CalendarPeriod.GET(CalendarPeriod."Period Type",CalendarPeriod."Period Start");
+      CalendarPeriod."Period Start" := NORMALDATE(CalendarPeriod."Period Start");
+      CalendarPeriod."Period End" := NORMALDATE(CalendarPeriod."Period End");
+    END;
+
+    PROCEDURE TaxRegisterCreate@22(SectionCode@1210011 : Code[10];Calendar@1210001 : Record 2000000007;UseGLEntry@1210004 : Boolean;UseCVEntry@1210005 : Boolean;UseItemEntry@1210008 : Boolean;UseFAEntry@1210006 : Boolean;UseFEEntry@1210007 : Boolean;UsePREntry@1210009 : Boolean;UseTemplate@1210010 : Boolean);
+    VAR
+      TaxReg@1002 : Record 17200;
+      TaxRegTemplate@1003 : Record 17202;
+      TaxRegAccumulation@1004 : Record 17208;
+      EntryNoAmountBuffer@1006 : TEMPORARY Record 386;
+      CreateTaxRegItemEntry@1010 : Codeunit 17206;
+      CreateTaxRegFEEntry@1011 : Codeunit 17207;
+      CreateTaxRegPREntry@1012 : Codeunit 17208;
+      CreateTaxRegCVEntry@1013 : Codeunit 17204;
+      CreateTaxRegGLEntry@1014 : Codeunit 17203;
+      CreateTaxRegFAEntry@1015 : Codeunit 17205;
+      TaxRegTermMgt@1016 : Codeunit 17200;
+      TemplateRecordRef@1210003 : RecordRef;
+      LinkAccumulateRecordRef@1210002 : RecordRef;
+      StartDate@1017 : Date;
+      EndDate@1018 : Date;
+      CycleLevel@1021 : Integer;
+    BEGIN
+      TaxRegSection.GET(SectionCode);
+      IF NOT (TaxRegSection.Status IN [TaxRegSection.Status::Open,TaxRegSection.Status::Reporting]) THEN
+        TaxRegSection.FIELDERROR(Status);
+
+      TaxRegTermMgt.CheckTaxRegTerm(
+        TRUE,SectionCode,DATABASE::"Tax Register Term",DATABASE::"Tax Register Term Formula");
+
+      TaxRegTermMgt.CheckTaxRegLink(
+        TRUE,SectionCode,DATABASE::"Tax Register Template");
+
+      WITH Calendar DO BEGIN
+        "Period Start" := NORMALDATE("Period Start");
+        "Period End" := NORMALDATE("Period End");
+        CreateTaxRegGLEntry.BuildTaxRegGLCorresp(
+          TaxRegSection.Code,CALCDATE('<-CM>',"Period Start"),CALCDATE('<CM>',"Period End"));
+
+        RESET;
+        SETRANGE("Period Type","Period Type"::Month);
+        SETRANGE("Period Start","Period Start","Period End");
+        IF FINDSET THEN
+          REPEAT
+            StartDate := NORMALDATE("Period Start");
+            EndDate := NORMALDATE("Period End");
+            CASE TRUE OF
+              UseGLEntry:
+                CreateTaxRegGLEntry.CreateRegister(TaxRegSection.Code,StartDate,EndDate);
+              UseCVEntry:
+                CreateTaxRegCVEntry.CreateRegister(TaxRegSection.Code,StartDate,EndDate);
+              UseItemEntry:
+                CreateTaxRegItemEntry.CreateRegister(TaxRegSection.Code,StartDate,EndDate);
+              UseFAEntry:
+                CreateTaxRegFAEntry.CreateRegister(TaxRegSection.Code,StartDate,EndDate);
+              UseFEEntry:
+                CreateTaxRegFEEntry.CreateRegister(TaxRegSection.Code,StartDate,EndDate);
+              UsePREntry:
+                CreateTaxRegPREntry.CreateRegister(TaxRegSection.Code,StartDate,EndDate);
+              UseTemplate:
+                BEGIN
+                  TaxReg.RESET;
+                  TaxReg.SETRANGE("Section Code",TaxRegSection.Code);
+                  TaxReg.SETRANGE("Storing Method",TaxReg."Storing Method"::Calculation);
+                  LinkAccumulateRecordRef.CLOSE;
+                  LinkAccumulateRecordRef.OPEN(DATABASE::"Tax Register Accumulation");
+                  TaxRegAccumulation.SETCURRENTKEY("Section Code","Tax Register No.","Template Line No.");
+                  TaxRegAccumulation.SETRANGE("Section Code",TaxRegSection.Code);
+                  TaxRegAccumulation.SETRANGE("Ending Date",EndDate);
+                  LinkAccumulateRecordRef.SETVIEW(TaxRegAccumulation.GETVIEW(FALSE));
+                  IF TaxReg.FINDSET THEN
+                    REPEAT
+                      TaxRegAccumulation.SETRANGE("Tax Register No.",TaxReg."No.");
+                      TaxRegAccumulation.DELETEALL;
+                    UNTIL TaxReg.NEXT(1) = 0;
+                  TaxReg.SETRANGE("Storing Method");
+                  TaxRegTemplate.SETRANGE("Section Code",TaxRegSection.Code);
+                  CycleLevel := 1;
+                  WHILE CycleLevel <> 0 DO BEGIN
+                    TaxReg.SETRANGE(Level,CycleLevel);
+                    IF NOT TaxReg.FINDSET THEN
+                      CycleLevel := 0
+                    ELSE BEGIN
+                      REPEAT
+                        IF TaxReg."Storing Method" = TaxReg."Storing Method"::Calculation THEN BEGIN
+                          TaxRegTemplate.SETRANGE(Code,TaxReg."No.");
+                          IF TaxRegTemplate.FINDFIRST THEN BEGIN
+                            TaxRegTemplate.SETRANGE("Date Filter",StartDate,EndDate);
+                            TemplateRecordRef.GETTABLE(TaxRegTemplate);
+                            TemplateRecordRef.SETVIEW(TaxRegTemplate.GETVIEW(FALSE));
+                            TaxRegTermMgt.AccumulateTaxRegTemplate(
+                              TemplateRecordRef,EntryNoAmountBuffer,LinkAccumulateRecordRef);
+                            CreateAccumulate(TaxRegTemplate,EntryNoAmountBuffer);
+                            EntryNoAmountBuffer.DELETEALL;
+                          END;
+                        END;
+                      UNTIL TaxReg.NEXT(1) = 0;
+                      CycleLevel += 1;
+                    END;
+                  END;
+                END;
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateAccumulate@24(VAR TaxRegTemplate@1000 : Record 17202;VAR EntryNoAmountBuffer@1001 : Record 386);
+    VAR
+      TaxRegTemplate2@1002 : Record 17202;
+      TaxRegAccumulation@1003 : Record 17208;
+      TaxRegAccumulation2@1004 : Record 17208;
+      TaxRegTermMgt@1005 : Codeunit 17200;
+    BEGIN
+      IF EntryNoAmountBuffer.FINDSET THEN BEGIN
+        TaxRegAccumulation.INIT;
+        TaxRegAccumulation."Starting Date" := TaxRegTemplate.GETRANGEMIN("Date Filter");
+        TaxRegAccumulation."Ending Date" := TaxRegTemplate.GETRANGEMAX("Date Filter");
+        TaxRegAccumulation."Section Code" := TaxRegTemplate."Section Code";
+        TaxRegAccumulation."Tax Register No." := TaxRegTemplate.Code;
+        REPEAT
+          TaxRegTemplate2.GET(
+            TaxRegAccumulation."Section Code",TaxRegAccumulation."Tax Register No.",EntryNoAmountBuffer."Entry No.");
+          TaxRegAccumulation."Report Line Code" := TaxRegTemplate2."Report Line Code";
+          TaxRegAccumulation."Template Line Code" := TaxRegTemplate2."Line Code";
+          TaxRegAccumulation.Indentation := TaxRegTemplate2.Indentation;
+          TaxRegAccumulation.Bold := TaxRegTemplate2.Bold;
+          TaxRegAccumulation.Description := TaxRegTemplate2.Description;
+          TaxRegAccumulation."Template Line No." := TaxRegTemplate2."Line No.";
+          TaxRegAccumulation."Amount Date Filter" :=
+            TaxRegTermMgt.CalcIntervalDate(
+              TaxRegAccumulation."Starting Date",
+              TaxRegAccumulation."Ending Date",
+              TaxRegTemplate2.Period);
+          TaxRegAccumulation.Amount := EntryNoAmountBuffer.Amount;
+          IF NOT TaxRegAccumulation2.FINDLAST THEN
+            TaxRegAccumulation2."Entry No." := 0;
+          TaxRegAccumulation."Entry No." := TaxRegAccumulation2."Entry No." + 1;
+          TaxRegAccumulation.INSERT;
+        UNTIL EntryNoAmountBuffer.NEXT(1) = 0;
+      END;
+    END;
+
+    PROCEDURE OpenJnl@1210006(CurrentSectionCode@1000 : Code[10];VAR TaxReg@1001 : Record 17200);
+    BEGIN
+      TaxReg.FILTERGROUP := 2;
+      TaxReg.SETRANGE("Section Code",CurrentSectionCode);
+      TaxReg.FILTERGROUP := 0;
+    END;
+
+    PROCEDURE CheckName@1210005(CurrentSectionCode@1210000 : Code[10]);
+    BEGIN
+      TaxRegSection.GET(CurrentSectionCode);
+    END;
+
+    PROCEDURE SetName@1210004(CurrentSectionCode@1000 : Code[10];VAR TaxReg@1001 : Record 17200);
+    BEGIN
+      TaxReg.FILTERGROUP := 2;
+      TaxReg.SETRANGE("Section Code",CurrentSectionCode);
+      TaxReg.FILTERGROUP := 0;
+      IF TaxReg.FIND('-') THEN;
+    END;
+
+    PROCEDURE LookupName@1210003(VAR CurrentSectionCode@1000 : Code[10];VAR TaxReg@1001 : Record 17200);
+    BEGIN
+      COMMIT;
+      TaxRegSection.Code := TaxReg.GETRANGEMAX("Section Code");
+      IF PAGE.RUNMODAL(0,TaxRegSection) = ACTION::LookupOK THEN BEGIN
+        CurrentSectionCode := TaxRegSection.Code;
+        SetName(CurrentSectionCode,TaxReg);
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

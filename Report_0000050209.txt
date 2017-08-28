@@ -1,0 +1,548 @@
+OBJECT Report 50209 Import Employee Expenses
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24.07.17;
+    Time=18:37:02;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+    OnPreReport=VAR
+                  ExcelMgt@1101495001 : Codeunit 12416;
+                  Window@1101495000 : Dialog;
+                BEGIN
+                  GLSetup.GET;
+                  GLSetup.TESTFIELD("Employee Expenses Post. Group");
+                  GLSetup.TESTFIELD("Employee Exp. EXP. OP Dim.");
+                  GLSetup.TESTFIELD("Employee Expenses Nos.");
+
+                  TestFileName;
+
+                  Window.OPEN('Stage #1############');
+                  Window.UPDATE(1,ReadingProgressTxt);
+
+                  //NC NOS-26 > SPA
+                  //ExcelMgt.OpenBook(FileName);
+                  ExcelMgt.OpenBook(FileMgt.UploadFileSilent(GetConvertedFileName));
+                  //NC NOS-26 < SPA
+                  ExcelSheet := ExcelMgt.GetFirstSheetName;
+                  ExcelMgt.CloseExcel;
+
+                  //NC NOS-26 > SPA
+                  //ExcelBuf.OpenBook(FileName,ExcelSheet);
+                  ExcelBuf.OpenBook(GetConvertedFileName,ExcelSheet);
+                  //NC NOS-26 < SPA
+                  ExcelBuf.ReadSheet;
+
+                  Window.UPDATE(1,ProcessingProgressTxt);
+                  LoadData;
+
+                  CreateJournal;
+                  Window.CLOSE;
+
+                  IF AmountBuffer.COUNT > 0 THEN
+                    MESSAGE(ResultTxt,AmountBuffer.COUNT)
+                  ELSE
+                    MESSAGE(NothingToImportTxt);
+                END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Yes;
+      OnOpenPage=BEGIN
+                   PostingDate := TODAY;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры];
+                  GroupType=Group }
+
+      { 1101495002;2;Field  ;
+                  CaptionML=[ENU=File Name;
+                             RUS=Имя файла];
+                  SourceExpr=FileName;
+                  OnAssistEdit=BEGIN
+                                 FileName := FileMgt.OpenFileDialog(ImportFileTxt,'',''); // NC NOS-26 SPA
+                               END;
+                                }
+
+      { 1101495003;2;Field  ;
+                  CaptionML=[ENU=Posting Date;
+                             RUS=Дата Учета];
+                  SourceExpr=PostingDate }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      GenJournalBatch@1101495009 : Record 232;
+      ExcelBuf@1101495003 : TEMPORARY Record 370;
+      AccountBuffer@1101495014 : TEMPORARY Record 50018;
+      AmountBuffer@1101495015 : TEMPORARY Record 50018;
+      GLSetup@1101495021 : Record 98;
+      FileMgt@1101495001 : Codeunit 419;
+      FileName@1101495000 : Text[250];
+      ImportFileTxt@1101495002 : TextConst 'ENU=Import Excel file;RUS=Импорт Excel файла';
+      ConvertedFileName@1101495027 : Text;
+      ExcelSheet@1101495004 : Text[30];
+      EmptyFileNameErr@1101495005 : TextConst 'ENU=The file name cannot be empty.;RUS=Имя файла не может быть пустым.';
+      AccountsLineRowNo@1101495007 : Integer;
+      StartRowNo@1101495010 : Integer;
+      EndRowNo@1101495011 : Integer;
+      StartColumnNo@1101495012 : Integer;
+      EndColumnNo@1101495013 : Integer;
+      DateColumnNo@1101495016 : Integer;
+      DescriptionColumnNo@1101495019 : Integer;
+      EmployeeNo@1101495008 : Code[20];
+      DateEvaluationErr@1101495017 : TextConst 'ENU=%1 to date evaluation error.;RUS=Ошибка преобразования %1 в дату.';
+      DecimalEvaluationErr@1101495018 : TextConst 'ENU=%1 to decimal evaluation error.;RUS=Ошибка преобразования %1 в десятичное число.';
+      CostCenter@1101495020 : Code[20];
+      EmptyEmployeeCodeErr@1101495022 : TextConst 'ENU=The Employee Code cannot be empty in the file %1 sheet %2.;RUS=Код Сотрудника не может быть пустым в файле %1 лист %2.';
+      EmptyCostcenterErr@1101495023 : TextConst 'ENU=The Costcenter cannot be empty in the file %1 sheet %2.;RUS=Costcenter не может быть пустым в файле %1 лист %2.';
+      ReadingProgressTxt@1101495006 : TextConst 'ENU=Reading data;RUS=Чтение данных';
+      ProcessingProgressTxt@1101495026 : TextConst 'ENU=Processing data;RUS=Обработка данных';
+      ResultTxt@1101495024 : TextConst 'ENU=%1 lines were sucessfully imported.;RUS=%1 строк было успешно импортировано.';
+      NothingToImportTxt@1101495025 : TextConst 'ENU=There is nothing to import.;RUS=Данных для импорта не найдено.';
+      PostingDate@1170000000 : Date;
+
+    PROCEDURE AddAmountBufferEntry@1101495023(RowBuffer@1101495001 : Record 50018);
+    VAR
+      EntryNo@1101495000 : Integer;
+    BEGIN
+      WITH AmountBuffer DO BEGIN
+        IF FINDLAST THEN;
+        EntryNo := "Entry No." + 1;
+
+        INIT;
+        TRANSFERFIELDS(RowBuffer);
+        "Entry No." := EntryNo;
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE AddJnlLineDimension@1101495029(VAR GenJournalLine@1101495000 : Record 81;DimensionCode@1101495001 : Code[20];DimensionValue@1101495002 : Code[20]);
+    VAR
+      TempDimSetEntry@1101495003 : TEMPORARY Record 480;
+      DimensionSetEntry@1101495005 : Record 480;
+      DimMgt@1101495004 : Codeunit 408;
+    BEGIN
+      IF DimensionValue = '' THEN
+        EXIT;
+      //NC NOS-26 > SPA
+      {
+      WITH JournalLineDimension DO BEGIN
+        IF GET(DATABASE::"Gen. Journal Line",GenJournalLine."Journal Template Name",
+             GenJournalLine."Journal Batch Name",GenJournalLine."Line No.",0,DimensionCode)
+        THEN BEGIN
+          "Dimension Value Code" := DimensionValue;
+          MODIFY(TRUE);
+        END ELSE BEGIN
+          "Table ID" := DATABASE::"Gen. Journal Line";
+          "Journal Template Name" := GenJournalLine."Journal Template Name";
+          "Journal Batch Name" := GenJournalLine."Journal Batch Name";
+          "Journal Line No." := GenJournalLine."Line No.";
+          "Dimension Code" := DimensionCode;
+          "Dimension Value Code" := DimensionValue;
+          INSERT(TRUE);
+        END;
+      END;
+      }
+      IF DimensionSetEntry.GET(GenJournalLine."Dimension Set ID",DimensionCode) AND
+        (DimensionSetEntry."Dimension Value Code" = DimensionValue)
+      THEN
+        EXIT;
+
+      DimMgt.GetDimensionSet(TempDimSetEntry,GenJournalLine."Dimension Set ID");
+      IF TempDimSetEntry.GET(GenJournalLine."Dimension Set ID",DimensionCode) THEN
+        TempDimSetEntry.DELETE;
+
+      TempDimSetEntry.INIT;
+      TempDimSetEntry."Dimension Set ID" := GenJournalLine."Dimension Set ID";
+      TempDimSetEntry."Dimension Code" := DimensionCode;
+      TempDimSetEntry.VALIDATE("Dimension Value Code",DimensionValue);
+      TempDimSetEntry.SetObject(GenJournalLine);
+      TempDimSetEntry.INSERT(TRUE);
+
+      DimMgt.UpdateGenJnlLineDim(GenJournalLine,DimMgt.GetDimensionSetID(TempDimSetEntry));
+      GenJournalLine.MODIFY;
+      //NC NOS-26 < SPA
+    END;
+
+    PROCEDURE CreateJournal@1101495000();
+    VAR
+      DocumentNo@1170000001 : Code[20];
+      LineNo@1101495000 : Integer;
+      TotalAmount@1170000000 : Decimal;
+    BEGIN
+      LineNo := GetLastGenJnlLineNo;
+      DocumentNo := GetDocumentNo;
+
+      // expenses lines
+      IF AmountBuffer.FINDSET THEN
+        REPEAT
+          CreateExpGenJournalLine(LineNo,DocumentNo);
+          TotalAmount += AmountBuffer.Amount;
+        UNTIL AmountBuffer.NEXT = 0;
+
+      // common vendor line
+      CreateVendJournalLine(LineNo,DocumentNo,TotalAmount);
+    END;
+
+    PROCEDURE CreateExpGenJournalLine@1101495004(VAR LineNo@1101495001 : Integer;DocumentNo@1170000000 : Code[20]);
+    VAR
+      GenJournalLine@1101495000 : Record 81;
+    BEGIN
+      WITH GenJournalLine DO BEGIN
+        // first line
+        LineNo += 10000;
+
+        INIT;
+        "Journal Template Name" := GenJournalBatch."Journal Template Name";
+        "Journal Batch Name" := GenJournalBatch.Name;
+        "Line No." := LineNo;
+        "Document No." := DocumentNo;
+
+        //NC NCS-2014 > DP
+        "Posting No. Series" := GenJournalBatch."Posting No. Series";
+        //NC NCS-2014 < DP
+        //TDRANCS-2080>
+        IF GLSetup."Use Bus.Unit for Separ. Trans." AND
+          (GLSetup."Default Business Unit Code" <> '')
+        THEN
+          "Business Unit Code" := GLSetup."Default Business Unit Code";
+        //TDRANCS-2080<
+
+        VALIDATE("Posting Date",PostingDate);
+        "Account Type" := "Account Type"::"G/L Account";
+        VALIDATE("Account No.",AmountBuffer."G/L Account No.");
+        VALIDATE(Description,AmountBuffer.Description);
+        VALIDATE(Amount,AmountBuffer.Amount);
+        INSERT(TRUE);
+        AddJnlLineDimension(GenJournalLine,'EXP.OP',GLSetup."Employee Exp. EXP. OP Dim.");
+        AddJnlLineDimension(GenJournalLine,'COSTCENTER',CostCenter);
+        AddJnlLineDimension(GenJournalLine,'COUNTERPARTY',GetVendorCounterpartyDimCode(EmployeeNo));
+      END;
+    END;
+
+    PROCEDURE CreateVendJournalLine@1170000005(VAR LineNo@1101495001 : Integer;DocumentNo@1170000000 : Code[20];TotalAmount@1170000001 : Decimal);
+    VAR
+      GenJournalLine@1101495000 : Record 81;
+    BEGIN
+      WITH GenJournalLine DO BEGIN
+        LineNo += 10000;
+
+        INIT;
+        "Journal Template Name" := GenJournalBatch."Journal Template Name";
+        "Journal Batch Name" := GenJournalBatch.Name;
+        "Line No." := LineNo;
+        "Document No." := DocumentNo;
+
+        //NC NCS-2014 > DP
+        "Posting No. Series" := GenJournalBatch."Posting No. Series";
+        //NC NCS-2014 < DP
+        //TDRANCS-2080>
+        IF GLSetup."Use Bus.Unit for Separ. Trans." AND
+              (GLSetup."Default Business Unit Code" <> '') THEN
+          "Business Unit Code" := GLSetup."Default Business Unit Code";
+        //TDRANCS-2080<
+
+        VALIDATE("Posting Date",PostingDate);
+        "Account Type" := "Account Type"::Vendor;
+        VALIDATE("Account No.",EmployeeNo);
+        VALIDATE("Posting Group",GLSetup."Employee Expenses Post. Group");
+        VALIDATE(Amount,-TotalAmount);
+        INSERT(TRUE);
+        AddJnlLineDimension(GenJournalLine,'EXP.OP',GLSetup."Employee Exp. EXP. OP Dim.");
+        AddJnlLineDimension(GenJournalLine,'COSTCENTER',CostCenter);
+      END;
+    END;
+
+    PROCEDURE EvaluateTextToDate@1101495035(DateAsText@1101495000 : Text[30]) : Date;
+    VAR
+      Day@1101495002 : Integer;
+      Month@1101495003 : Integer;
+      Year@1101495004 : Integer;
+      EntryDate@1101495001 : Date;
+    BEGIN
+      IF NOT (STRLEN(DateAsText) IN [8,10]) THEN
+        ERROR(DateEvaluationErr,DateAsText);
+
+      IF NOT EVALUATE(Day,COPYSTR(DateAsText,1,2)) THEN
+        ERROR(DateEvaluationErr,DateAsText);
+
+      IF NOT EVALUATE(Month,COPYSTR(DateAsText,4,2)) THEN
+        ERROR(DateEvaluationErr,DateAsText);
+
+      CASE STRLEN(DateAsText) OF
+        8:
+          BEGIN
+            IF NOT EVALUATE(Year,COPYSTR(DateAsText,7,2)) THEN
+              ERROR(DateEvaluationErr,DateAsText);
+            Year += 2000;
+          END;
+        10:
+          IF NOT EVALUATE(Year,COPYSTR(DateAsText,7,4)) THEN
+            ERROR(DateEvaluationErr,DateAsText);
+      END;
+
+      EntryDate := DMY2DATE(Day,Month,Year);
+      EXIT(EntryDate);
+    END;
+
+    PROCEDURE EvaluateTextToDecimal@1101495014(DecimalAsText@1101495000 : Text[30]) : Decimal;
+    VAR
+      Amount@1101495001 : Decimal;
+      TestStr@1101495002 : Text[30];
+      Separator@1101495003 : Text[30];
+    BEGIN
+      TestStr := FORMAT(1.23);
+      Separator := COPYSTR(TestStr,2,1);
+      DecimalAsText := CONVERTSTR(DecimalAsText,',.',Separator + Separator);
+
+      IF NOT EVALUATE(Amount,DecimalAsText) THEN
+        ERROR(DecimalEvaluationErr,DecimalAsText);
+
+      EXIT(Amount);
+    END;
+
+    PROCEDURE EvaluateTextValue@1101495001(CellValueAsText@1101495000 : Text[250]) Result : Text[250];
+    BEGIN
+      // Get rid of "space" separators which are used by Excel for "number" style values
+      Result := DELCHR(CellValueAsText,'=',' ');
+      Result := DELCHR(Result,'=',' ');
+      Result := DELCHR(Result,'=',',');
+    END;
+
+    PROCEDURE GetAccountNoByIndex@1101495012(Index@1101495000 : Integer) : Code[20];
+    BEGIN
+      AccountBuffer.GET(Index);
+      EXIT(AccountBuffer."G/L Account No.");
+    END;
+
+    PROCEDURE GetDocumentNo@1101495025() : Code[20];
+    VAR
+      NoSeriesMgt@1101495000 : Codeunit 396;
+    BEGIN
+      EXIT(NoSeriesMgt.GetNextNo(GLSetup."Employee Expenses Nos.",TODAY,TRUE));
+    END;
+
+    PROCEDURE GetEndColumnNo@1101495027() ColumnNo : Integer;
+    BEGIN
+      ColumnNo := StartColumnNo;
+      ExcelBuf.RESET;
+      ExcelBuf.SETRANGE("Row No.",AccountsLineRowNo);
+      ExcelBuf.SETFILTER("Column No.",'%1..',StartColumnNo);
+      IF ExcelBuf.FINDSET THEN
+        REPEAT
+          IF ExcelBuf."Cell Value as Text" = 'in CHF' THEN
+            EXIT;
+          ColumnNo += 1;
+        UNTIL ExcelBuf.NEXT = 0;
+    END;
+
+    PROCEDURE GetEndRowNo@1101495022() RowNo : Integer;
+    BEGIN
+      // Go through the first column cells until the empty cell in the column 2
+      RowNo := StartRowNo;
+      ExcelBuf.RESET;
+      ExcelBuf.SETRANGE("Column No.",1);
+      ExcelBuf.SETFILTER("Row No.",'%1..',StartRowNo);
+      IF ExcelBuf.FINDSET THEN
+        REPEAT
+          IF NOT ExcelBuf.GET(ExcelBuf."Row No.",DateColumnNo) THEN BEGIN
+            RowNo -= 1;
+            EXIT;
+          END;
+          RowNo += 1;
+        UNTIL ExcelBuf.NEXT = 0;
+    END;
+
+    PROCEDURE GetEntryDate@1101495033(RowNo@1101495000 : Integer;VAR EntryDate@1101495001 : Date) : Boolean;
+    BEGIN
+      IF NOT ExcelBuf.GET(RowNo,DateColumnNo) THEN
+        EXIT(FALSE);
+
+      EntryDate := EvaluateTextToDate(ExcelBuf."Cell Value as Text");
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetLastGenJnlLineNo@1101495005() : Integer;
+    VAR
+      GenJournalLine@1101495000 : Record 81;
+    BEGIN
+      WITH GenJournalLine DO BEGIN
+        SETRANGE("Journal Template Name",GenJournalBatch."Journal Template Name");
+        SETRANGE("Journal Batch Name",GenJournalBatch.Name);
+        IF FINDLAST THEN;
+        EXIT("Line No.");
+      END;
+    END;
+
+    PROCEDURE GetVendorCounterpartyDimCode@1101495002(VendorNo@1101495000 : Code[20]) : Code[20];
+    VAR
+      DefaultDimension@1101495001 : Record 352;
+    BEGIN
+      IF DefaultDimension.GET(DATABASE::Vendor,VendorNo,'COUNTERPARTY') THEN
+        EXIT(DefaultDimension."Dimension Value Code");
+    END;
+
+    PROCEDURE InitSheetParameters@1101495021();
+    BEGIN
+      // row number of line which contains G/L accounts
+      AccountsLineRowNo := 13;
+      DateColumnNo := 2;
+      DescriptionColumnNo := 3;
+
+      StartRowNo := 15;
+      EndRowNo := GetEndRowNo;
+
+      StartColumnNo := 7;
+      EndColumnNo := GetEndColumnNo;
+    END;
+
+    PROCEDURE LoadAccounts@1101495030();
+    VAR
+      Counter@1101495000 : Integer;
+    BEGIN
+      Counter := 1;
+
+      WITH ExcelBuf DO BEGIN
+        RESET;
+        SETRANGE("Row No.",AccountsLineRowNo);
+        SETRANGE("Column No.",StartColumnNo,EndColumnNo);
+        IF FINDSET THEN
+          REPEAT
+            AccountBuffer.INIT;
+            AccountBuffer."Entry No." := Counter;
+            AccountBuffer."G/L Account No." := EvaluateTextValue("Cell Value as Text");
+            AccountBuffer.INSERT;
+            Counter += 1;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE LoadAmounts@1101495032();
+    VAR
+      RowBuffer@1101495002 : TEMPORARY Record 50018;
+      Counter@1101495000 : Integer;
+    BEGIN
+      FOR Counter := StartRowNo TO EndRowNo DO BEGIN
+        LoadRow(Counter,RowBuffer);
+        AddAmountBufferEntry(RowBuffer);
+      END;
+    END;
+
+    PROCEDURE LoadData@1101495003();
+    BEGIN
+      InitSheetParameters;
+
+      LoadSheetParameters;
+      LoadAccounts;
+      LoadAmounts;
+    END;
+
+    PROCEDURE LoadRow@1101495008(RowNo@1101495001 : Integer;VAR RowBuffer@1101495000 : Record 50018);
+    VAR
+      EntryDate@1101495002 : Date;
+      i@1101495003 : Integer;
+      ColumnIndex@1101495004 : Integer;
+    BEGIN
+      IF NOT GetEntryDate(RowNo,EntryDate) THEN
+        EXIT;
+
+      FOR i := StartColumnNo TO EndColumnNo DO BEGIN
+        ColumnIndex += 1;
+        IF ExcelBuf.GET(RowNo,i) THEN BEGIN
+          IF ExcelBuf."Cell Value as Text" <> '' THEN BEGIN
+            RowBuffer."Posting Date" := EntryDate;
+            RowBuffer."G/L Account No." := GetAccountNoByIndex(ColumnIndex);
+            RowBuffer.Amount := EvaluateTextToDecimal(ExcelBuf."Cell Value as Text");
+
+            IF ExcelBuf.GET(RowNo,DescriptionColumnNo) THEN;
+              RowBuffer.Description := COPYSTR(ExcelBuf."Cell Value as Text",1,MAXSTRLEN(RowBuffer.Description));
+
+            EXIT;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE LoadSheetParameters@1101495039();
+    BEGIN
+      // Employee Code (C5)
+      IF NOT ExcelBuf.GET(5,3) THEN
+        ERROR(EmptyEmployeeCodeErr,FileName,ExcelSheet);
+      EmployeeNo := COPYSTR(EvaluateTextValue(ExcelBuf."Cell Value as Text"),1,MAXSTRLEN(EmployeeNo));
+
+      // Cost center (C9)
+      IF NOT ExcelBuf.GET(9,3) THEN
+        ERROR(EmptyCostcenterErr,FileName,ExcelSheet);
+      CostCenter := COPYSTR(EvaluateTextValue(ExcelBuf."Cell Value as Text"),1,MAXSTRLEN(CostCenter));
+    END;
+
+    PROCEDURE SetGenJnlLine@1101495019(NewGenJournalLine@1101495000 : Record 81);
+    BEGIN
+      GenJournalBatch.GET(NewGenJournalLine."Journal Template Name",NewGenJournalLine."Journal Batch Name");
+    END;
+
+    PROCEDURE TestFileName@1101495009();
+    BEGIN
+      IF FileName = '' THEN
+        ERROR(EmptyFileNameErr);
+    END;
+
+    LOCAL PROCEDURE GetConvertedFileName@1101495015() : Text;
+    VAR
+      ExcelMgt@1101495000 : Codeunit 12416;
+    BEGIN
+      //NC NOS-26 > SPA
+      // если исходный файл в новом формате, то использовать его
+      IF FileMgt.GetExtension(FileName) = 'xlsx' THEN
+        EXIT(FileName);
+
+      // если файл уже был конвертирован, то вернуть имя конвертированного файла
+      IF ConvertedFileName <> '' THEN
+        EXIT(ConvertedFileName);
+
+      // конвертировать файл в новый формат
+      ConvertedFileName := ExcelMgt.ConvertToOpenXML(FileName);
+      EXIT(ConvertedFileName);
+      //NC NOS-26 < SPA
+    END;
+
+    BEGIN
+    {
+      NCS-1924 ORM Report created
+      NCS-2014 DP Changed functions CreateExpGenJournalLine, CreateVendJournalLine
+      TDRANCS-2080>
+        Modified CreateExpGenJournalLine, CreateVendJournalLine - added BU
+      -----------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

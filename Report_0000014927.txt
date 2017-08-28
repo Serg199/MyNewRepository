@@ -1,0 +1,363 @@
+OBJECT Report 14927 VAT Invoices Journal
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25.10.16;
+    Time=12:00:00;
+    Version List=NAVRU10.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=VAT Invoices Journal;
+               RUS=Журнал счетов НДС];
+    ProcessingOnly=Yes;
+    OnPreReport=BEGIN
+                  CompanyInfo.GET;
+                  TaxRegSetup.GET;
+                  TaxRegSetup.TESTFIELD("VAT Iss./Rcvd. Jnl. Templ Code");
+                END;
+
+    OnPostReport=VAR
+                   ExcelTemplate@1210005 : Record 14919;
+                   FileName@1210001 : Text[1024];
+                 BEGIN
+                   DatePeriod."Period Start" := StartDate;
+                   DatePeriod."Period End" := EndDate;
+                   FileName := ExcelTemplate.OpenTemplate(TaxRegSetup."VAT Iss./Rcvd. Jnl. Templ Code");
+                   ExcelMgt.OpenBook(FileName);
+                   ExcelMgt.OpenSheet('01');
+                   FillDocHeader;
+                   ExportIssuedInvoices;
+                   ExportReceivedInvoices;
+
+                   IF FileNameSilent <> '' THEN BEGIN
+                     ExcelMgt.SaveWrkBook(FileNameSilent);
+                     ExcelMgt.CloseBook(FALSE);
+                   END ELSE
+                     ExcelMgt.GiveUserControl;
+                 END;
+
+  }
+  DATASET
+  {
+    { 3182;    ;DataItem;                    ;
+               DataItemTable=Table23;
+               ReqFilterFields=No. }
+
+    { 6836;    ;DataItem;                    ;
+               DataItemTable=Table18;
+               ReqFilterFields=No. }
+
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   IF (StartDate = 0D) OR (EndDate = 0D) THEN BEGIN
+                     Year := DATE2DMY(WORKDATE,3);
+                     Quarter := DATE2DMY(WORKDATE,2) DIV 4;
+                     CalcPeriod;
+                   END ELSE BEGIN
+                     Year := DATE2DMY(StartDate,3);
+                     Quarter := DATE2DMY(StartDate,2) DIV 4;
+                   END;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             RUS=Параметры] }
+
+      { 1210011;2;Field     ;
+                  Name=Year;
+                  CaptionML=[ENU=Year;
+                             RUS=Год];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Year;
+                  MinValue=1;
+                  MaxValue=9999;
+                  OnValidate=BEGIN
+                               CalcPeriod;
+                             END;
+                              }
+
+      { 1210015;2;Field     ;
+                  Name=Quarter;
+                  CaptionML=[ENU=Quarter;
+                             RUS=Квартал];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=Quarter;
+                  OnValidate=BEGIN
+                               CalcPeriod;
+                             END;
+                              }
+
+      { 1210017;2;Field     ;
+                  Name=StartDate;
+                  CaptionML=[ENU=From;
+                             RUS=От];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=StartDate;
+                  Editable=FALSE }
+
+      { 1210019;2;Field     ;
+                  Name=EndDate;
+                  CaptionML=[ENU=To;
+                             RUS=Кому];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=EndDate;
+                  Editable=FALSE }
+
+      { 1210000;2;Field     ;
+                  Name=ShowCorrection;
+                  CaptionML=[ENU=Show Correction;
+                             RUS=Показать корректировку];
+                  ApplicationArea=#Basic,#Suite;
+                  SourceExpr=ShowCorrection }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      DatePeriod@1210008 : Record 2000000007;
+      TaxRegSetup@1210005 : Record 17236;
+      CompanyInfo@1210003 : Record 79;
+      LocRepMgt@1210002 : Codeunit 12401;
+      ExcelMgt@1210006 : Codeunit 12416;
+      ReportType@1210000 : 'Received,Issued';
+      Quarter@1210004 : '1,2,3,4';
+      RowNo@1210001 : Integer;
+      Year@1210007 : Integer;
+      ShowCorrection@1210010 : Boolean;
+      StartDate@1210011 : Date;
+      EndDate@1210012 : Date;
+      Text001@1210009 : TextConst 'ENU=Issued VAT Invoices \@1@@@@@@@@@@@@@@@;RUS=Выданные счета НДС   \@1@@@@@@@@@@@@@@@';
+      Text002@1210013 : TextConst 'ENU=Received VAT Invoices \@1@@@@@@@@@@@@@@@;RUS=Полученные счета НДС \@1@@@@@@@@@@@@@@@';
+      FileNameSilent@1210014 : Text;
+
+    PROCEDURE CalcPeriod@1210042();
+    BEGIN
+      EndDate := CALCDATE(STRSUBSTNO('<+%1Q-1D>',Quarter + 1),DMY2DATE(1,1,Year));
+      StartDate := CALCDATE('<-CQ>',EndDate);
+    END;
+
+    PROCEDURE CopyRow@1210036(VAR FirstRow@1210000 : Boolean;VAR LineNo@1210001 : Integer);
+    BEGIN
+      IF NOT FirstRow THEN BEGIN
+        ExcelMgt.CopyRow(RowNo);
+        RowNo += 1;
+        ExcelMgt.ClearRow(RowNo);
+        LineNo += 1;
+      END ELSE
+        FirstRow := FALSE;
+    END;
+
+    PROCEDURE FillReceivedExcelForm@1210009(VAR VendorLedgerEntry@1210000 : Record 25;VAR LineNo@1210003 : Integer;VAR FirstRow@1210002 : Boolean);
+    VAR
+      VATLedgerLine@1210007 : TEMPORARY Record 12405;
+      VATInvJnlMgt@1210008 : Codeunit 12424;
+      Window@1210010 : Dialog;
+      AmtInclVATText@1210023 : Text[30];
+      VATAmtText@1210024 : Text[30];
+      Column@1210026 : ' ,Decrease,Increase';
+      I@1210004 : Integer;
+      VendLedgEntryCount@1210009 : Integer;
+      VATInvRcvdDate@1210011 : Date;
+      VATEntryType@1210021 : Code[15];
+      CurrDescr@1210027 : Text[40];
+      VATRegNoKPP@1210028 : Text[30];
+    BEGIN
+      VendorLedgerEntry.RESET;
+      VendorLedgerEntry.SETCURRENTKEY("Vendor VAT Invoice Rcvd Date","Entry No.");
+      WITH VendorLedgerEntry DO
+        IF FINDSET THEN BEGIN
+          I := 0;
+          VendLedgEntryCount := COUNT;
+          Window.OPEN(Text002);
+          REPEAT
+            I += 1;
+            Window.UPDATE(1,ROUND(I / VendLedgEntryCount * 10000,1));
+
+            CopyRow(FirstRow,LineNo);
+
+            VATInvJnlMgt.GetVATInvJnlLineValues(
+              VendorLedgerEntry,VATLedgerLine,LineNo,ReportType,
+              AmtInclVATText,VATAmtText,Column,VATInvRcvdDate,VATEntryType,CurrDescr,VATRegNoKPP);
+
+            FillVATInvJnlLine(
+              VATLedgerLine,AmtInclVATText,VATAmtText,Column,
+              VATInvRcvdDate,VATEntryType,CurrDescr,VATRegNoKPP);
+          UNTIL NEXT = 0;
+          Window.CLOSE;
+        END;
+    END;
+
+    PROCEDURE FillIssuedExcelForm@1210052(VAR VendorLedgerEntry@1210000 : Record 25;VAR LineNo@1210006 : Integer;VAR FirstRow@1210007 : Boolean);
+    VAR
+      VATLedgerLine@1210016 : TEMPORARY Record 12405;
+      VATInvJnlMgt@1210015 : Codeunit 12424;
+      Window@1210014 : Dialog;
+      AmtInclVATText@1210013 : Text[30];
+      VATAmtText@1210012 : Text[30];
+      Column@1210011 : ' ,Decrease,Increase';
+      I@1210010 : Integer;
+      VendLedgEntryCount@1210009 : Integer;
+      VATInvRcvdDate@1210008 : Date;
+      VATEntryType@1210004 : Code[15];
+      CurrDescr@1210003 : Text[40];
+      VATRegNoKPP@1210002 : Text[30];
+    BEGIN
+      VendorLedgerEntry.RESET;
+      VendorLedgerEntry.SETCURRENTKEY("Vendor VAT Invoice Rcvd Date","Entry No.");
+      WITH VendorLedgerEntry DO
+        IF FINDSET THEN BEGIN
+          I := 0;
+          VendLedgEntryCount := COUNT;
+          Window.OPEN(Text001);
+          REPEAT
+            I += 1;
+            Window.UPDATE(1,ROUND(I / VendLedgEntryCount * 10000,1));
+
+            CopyRow(FirstRow,LineNo);
+
+            VATInvJnlMgt.GetVATInvJnlLineValues(
+              VendorLedgerEntry,VATLedgerLine,LineNo,ReportType,
+              AmtInclVATText,VATAmtText,Column,VATInvRcvdDate,VATEntryType,CurrDescr,VATRegNoKPP);
+
+            FillVATInvJnlLine(
+              VATLedgerLine,AmtInclVATText,VATAmtText,Column,
+              VATInvRcvdDate,VATEntryType,CurrDescr,VATRegNoKPP);
+          UNTIL NEXT = 0;
+          Window.CLOSE;
+        END;
+    END;
+
+    PROCEDURE FillDocHeader@1210007();
+    BEGIN
+      ExcelMgt.FillCell('CM12',LocRepMgt.GetCompanyName);
+      ExcelMgt.FillCell('CI13',CompanyInfo."VAT Registration No." + ' / ' + CompanyInfo."KPP Code");
+      ExcelMgt.FillCell('BU14',FORMAT(Quarter));
+      ExcelMgt.FillCell('CO14',COPYSTR(FORMAT(Year),3));
+      ExcelMgt.FillCell('CO37',CompanyInfo."Accountant Name");
+    END;
+
+    PROCEDURE FillVATInvJnlLine@1210021(VATLedgerLine@1210014 : Record 12405;AmtInclVATText@1210024 : Text[30];VATAmtText@1210023 : Text[30];Column@1210022 : ' ,Decrease,Increase';VATInvRcvdDate@1210021 : Date;VATEntryType@1210020 : Code[15];CurrDescr@1210019 : Text[40];VATRegNoKPP@1210018 : Text[30]);
+    VAR
+      VATInvJnlMgt@1210015 : Codeunit 12424;
+    BEGIN
+      WITH VATLedgerLine DO BEGIN
+        ExcelMgt.FillCell('A' + FORMAT(RowNo),FORMAT("Line No."));
+        ExcelMgt.FillCell('E' + FORMAT(RowNo),FORMAT(VATInvRcvdDate));
+        ExcelMgt.FillCell('L' + FORMAT(RowNo),VATEntryType);
+        ExcelMgt.FillCell('R' + FORMAT(RowNo),LocRepMgt.FormatCompoundExpr("Document No.",FORMAT("Document Date")));
+        ExcelMgt.FillCell('AH' + FORMAT(RowNo),LocRepMgt.FormatCompoundExpr("Correction No.",FORMAT("Correction Date")));
+        IF "Print Revision" THEN BEGIN
+          IF "Revision No." <> '' THEN
+            ExcelMgt.FillCell('Z' + FORMAT(RowNo),LocRepMgt.FormatCompoundExpr("Revision No.",FORMAT("Revision Date")));
+          IF "Revision of Corr. No." <> '' THEN
+            ExcelMgt.FillCell(
+              'AP' + FORMAT(RowNo),LocRepMgt.FormatCompoundExpr("Revision of Corr. No.",FORMAT("Revision of Corr. Date")));
+        END;
+        ExcelMgt.FillCell('AX' + FORMAT(RowNo),"C/V Name");
+        ExcelMgt.FillCell('BG' + FORMAT(RowNo),VATRegNoKPP);
+        IF ReportType = ReportType::Issued THEN
+          ExcelMgt.FillCell('DC' + FORMAT(RowNo),CurrDescr)
+        ELSE
+          ExcelMgt.FillCell('DB' + FORMAT(RowNo),CurrDescr);
+        CASE Column OF
+          Column::" ":
+            BEGIN
+              IF ReportType = ReportType::Issued THEN
+                ExcelMgt.FillCell('DM' + FORMAT(RowNo),AmtInclVATText)
+              ELSE
+                ExcelMgt.FillCell('DL' + FORMAT(RowNo),AmtInclVATText);
+              ExcelMgt.FillCell('EA' + FORMAT(RowNo),VATAmtText);
+            END;
+          Column::Decrease:
+            BEGIN
+              ExcelMgt.FillCell('EJ' + FORMAT(RowNo),AmtInclVATText);
+              ExcelMgt.FillCell('EX' + FORMAT(RowNo),VATAmtText);
+            END;
+          Column::Increase:
+            BEGIN
+              ExcelMgt.FillCell('EQ' + FORMAT(RowNo),AmtInclVATText);
+              ExcelMgt.FillCell('FE' + FORMAT(RowNo),VATAmtText);
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportIssuedInvoices@1210000();
+    VAR
+      TempVendLedgEntryVend@1210004 : TEMPORARY Record 25;
+      TempVendLedgEntryCust@1210003 : TEMPORARY Record 25;
+      VATInvJnlMgt@1210002 : Codeunit 12424;
+      LineNo@1210001 : Integer;
+      FirstRow@1210000 : Boolean;
+    BEGIN
+      ReportType := ReportType::Issued;
+      VATInvJnlMgt.GetVendVATList(
+        TempVendLedgEntryVend,Vendor,ReportType,DatePeriod,ShowCorrection);
+      VATInvJnlMgt.GetCustVATList(
+        TempVendLedgEntryCust,Customer,ReportType,DatePeriod,ShowCorrection);
+
+      FirstRow := TRUE;
+      RowNo := 21;
+      LineNo := 1;
+      FillIssuedExcelForm(TempVendLedgEntryVend,LineNo,FirstRow);
+      FillIssuedExcelForm(TempVendLedgEntryCust,LineNo,FirstRow);
+    END;
+
+    PROCEDURE ExportReceivedInvoices@1210001();
+    VAR
+      TempVendLedgEntryVend@1210004 : TEMPORARY Record 25;
+      TempVendLedgEntryCust@1210003 : TEMPORARY Record 25;
+      VATInvJnlMgt@1210002 : Codeunit 12424;
+      FirstRow@1210001 : Boolean;
+      LineNo@1210000 : Integer;
+    BEGIN
+      ReportType := ReportType::Received;
+      VATInvJnlMgt.GetVendVATList(
+        TempVendLedgEntryVend,Vendor,ReportType,DatePeriod,ShowCorrection);
+      VATInvJnlMgt.GetCustVATList(
+        TempVendLedgEntryCust,Customer,ReportType,DatePeriod,ShowCorrection);
+
+      FirstRow := TRUE;
+      RowNo := RowNo + 10;
+      LineNo := 1;
+      FillReceivedExcelForm(TempVendLedgEntryVend,LineNo,FirstRow);
+      FillReceivedExcelForm(TempVendLedgEntryCust,LineNo,FirstRow);
+    END;
+
+    PROCEDURE SetFileNameSilent@1210031(NewFileNameSilent@1210000 : Text);
+    BEGIN
+      FileNameSilent := NewFileNameSilent;
+    END;
+
+    PROCEDURE InitializeRequest@1210032(NewYear@1210000 : Integer;NewQuarter@1210001 : Option;NewStartDate@1210002 : Date;NewEndDate@1210003 : Date;NewShowCorrection@1210004 : Boolean);
+    BEGIN
+      Year := NewYear;
+      Quarter := NewQuarter;
+      StartDate := NewStartDate;
+      EndDate := NewEndDate;
+      ShowCorrection := NewShowCorrection;
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,257 @@
+OBJECT Report 50179 Import Customers from OBS
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04.07.17;
+    Time=12:10:55;
+    Modified=Yes;
+    Version List=NOS-26;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Yes;
+    OnInitReport=BEGIN
+                   Tab[1] := 9;
+                 END;
+
+    OnPreReport=VAR
+                  I@1101495000 : Integer;
+                BEGIN
+                  //NC NOS-26 > SPA
+                  {
+                  IF NOT EXISTS(FileName) THEN
+                    ERROR(Text001,FileName);
+                  }
+                  ServerFileName := CommDialog.UploadFileSilentToServerPath(FileName,'');
+                  //NC NOS-26 < SPA
+
+                  //NC S1883 > PCH
+                  ConsSetup.GET;
+                  ConsSetup.TESTFIELD("Segment Code");
+                  Segment.GET(ConsSetup."Segment Code");
+                  Segment.TESTFIELD("Is General",FALSE);
+                  //NC S1883 < PCH
+
+                  //NC NOS-26 > SPA
+                  //I := ImpBuffer(FileName);
+                  I := ImpBuffer(ServerFileName);
+                  //NC NOS-26 < SPA
+                END;
+
+    OnPostReport=BEGIN
+                   IF NOT NASSilentMode THEN
+                     MESSAGE(Text003);
+                 END;
+
+  }
+  DATASET
+  {
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1101495000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1101495001;1;Field  ;
+                  CaptionML=[ENU=Path to files;
+                             RUS=Путь к файлам];
+                  SourceExpr=FileName;
+                  OnAssistEdit=BEGIN
+                                 FileName := CommDialog.OpenFileDialog(Text002,FileName,''); // NC NOS-26 SPA
+                               END;
+                                }
+
+    }
+  }
+  LABELS
+  {
+  }
+  CODE
+  {
+    VAR
+      FileName@1101495001 : Text[1024];
+      CommDialog@1101495000 : Codeunit 419;
+      Text001@1101495003 : TextConst 'ENU=File %1 does not exist;RUS=Файл %1 не существует';
+      Text002@1101495002 : TextConst 'ENU=Select Folder;RUS=Выбор Файла';
+      BufferCustomer@1101495004 : Record 50045;
+      Tab@1101495005 : Text[1];
+      NASSilentMode@1101495006 : Boolean;
+      Text003@1101495007 : TextConst 'ENU=File imported successfully;RUS=Файл успешно импортирован';
+      Text004@1101495008 : TextConst 'ENU=Customers Directory, error occurs when import field: %1. Line No.: %2;RUS=Справочник Клиенты, ошибка при загрузке поля: %1. Строка: %2';
+      LineNo@1101495009 : Integer;
+      ConsSetup@1000000000 : Record 50000;
+      Segment@1000000001 : Record 50190;
+      ServerFileName@1101495010 : Text;
+
+    PROCEDURE SetParameters@1000000040(NewFileName@1000000000 : Text[1024];NewNASSilentMode@1101495000 : Boolean);
+    BEGIN
+      FileName := NewFileName;
+      NASSilentMode := NewNASSilentMode;
+      IF NASSilentMode THEN
+        CurrReport.USEREQUESTPAGE(FALSE);
+    END;
+
+    PROCEDURE GetSubstr@1000000007(MainStr@1000000000 : Text[1024];SubstrNo@1000000001 : Integer;separator@1000000002 : Text[1];MaxLen@1101495000 : Integer) SubStr : Text[1024];
+    VAR
+      i@1000000003 : Integer;
+      Pos@1000000004 : Integer;
+      Str@1000000005 : Text[1024];
+    BEGIN
+      SubStr := '';
+      Str := MainStr;
+      IF STRLEN(Str) = 0 THEN
+       EXIT;
+
+      i := STRPOS(Str,separator);
+      IF i = 0 THEN
+        EXIT;
+
+      FOR i := 1 TO SubstrNo DO BEGIN
+        Pos := STRPOS(Str,separator);
+        IF i = SubstrNo THEN BEGIN
+          IF Pos <> 0 THEN
+            SubStr := COPYSTR(Str,1,Pos-1)
+          ELSE
+            SubStr := COPYSTR(Str,1,STRLEN(Str));
+          IF MaxLen <> 0 THEN
+            SubStr := COPYSTR(SubStr, 1, MaxLen);
+          EXIT(SubStr);
+        END ELSE
+          Str := COPYSTR(Str,Pos+1,STRLEN(Str));
+      END;
+    END;
+
+    PROCEDURE ImpBuffer@1000000011(File@1000000000 : Text[1024]) FileLineNo : Integer;
+    VAR
+      Str@1000000001 : Text[1024];
+      InStr@1000000004 : InStream;
+      SrcFile@1000000003 : File;
+      CrLf@1101495000 : Char;
+    BEGIN
+      IF EXISTS(File) THEN
+        SrcFile.OPEN(File)
+      ELSE
+        EXIT;
+
+      IF SrcFile.LEN = 0 THEN
+        EXIT;
+
+      SrcFile.TEXTMODE(TRUE);
+      SrcFile.CREATEINSTREAM(InStr);
+
+      //SKIP HEADER TEXT
+      REPEAT
+        InStr.READ(CrLf);
+      UNTIL CrLf = 10;
+
+      //BufferCustomer.LOCKTABLE;
+      LineNo := 1;
+
+      REPEAT
+        InStr.READTEXT(Str);
+        LineNo += 1;
+        InsertBuffer(Str);
+      UNTIL InStr.EOS;
+      SrcFile.CLOSE;
+
+      COMMIT;
+    END;
+
+    PROCEDURE InsertBuffer@1101495001(Str@1101495000 : Text[1024]);
+    VAR
+      DummyTxt@1101495001 : Text[1024];
+    BEGIN
+      BufferCustomer.INIT;
+
+      BufferCustomer."Entry No." := 0;
+      IF NOT EVALUATE(BufferCustomer."Id External System", GetSubstr(Str, 1, Tab, MAXSTRLEN(BufferCustomer."Id External System"))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME("Id External System"));
+      IF NOT EVALUATE(BufferCustomer."No.", GetSubstr(Str, 2, Tab, MAXSTRLEN(BufferCustomer."No."))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME("No."));
+      DummyTxt := GetSubstr(Str, 3, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."Counterparty Category", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("Counterparty Category"));
+      IF NOT EVALUATE(BufferCustomer.Name, GetSubstr(Str, 4, Tab, MAXSTRLEN(BufferCustomer.Name))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME(Name));
+      DummyTxt := GetSubstr(Str, 5, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."Counterparty Type", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("Counterparty Type"));
+      IF NOT EVALUATE(BufferCustomer."Country of Registration", GetSubstr(Str, 6, Tab,
+                      MAXSTRLEN(BufferCustomer."Country of Registration"))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME("Country of Registration"));
+      IF NOT EVALUATE(BufferCustomer.Industry, GetSubstr(Str, 7, Tab, MAXSTRLEN(BufferCustomer.Industry))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME(Industry));
+      IF NOT EVALUATE(BufferCustomer."Customer Segment", GetSubstr(Str, 8, Tab, MAXSTRLEN(BufferCustomer."Customer Segment"))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME("Customer Segment"));
+      IF NOT EVALUATE(BufferCustomer."Customer ID", GetSubstr(Str, 9, Tab, MAXSTRLEN(BufferCustomer."Customer ID"))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME("Customer ID"));
+      DummyTxt := GetSubstr(Str, 10, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer.Blocked, DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME(Blocked));
+      DummyTxt := GetSubstr(Str, 11, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."CH Counterparty Type", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("CH Counterparty Type"));
+      IF NOT EVALUATE(BufferCustomer."Group No.", GetSubstr(Str, 12, Tab, MAXSTRLEN(BufferCustomer."Group No."))) THEN
+        RiseErrorMsg(BufferCustomer.FIELDNAME("Group No."));
+      DummyTxt := GetSubstr(Str, 13, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."Number of Employees", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("Number of Employees"));
+      DummyTxt := GetSubstr(Str, 14, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."NOGA code", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("NOGA code"));
+
+      //NCS-2134 > AAP
+      DummyTxt := GetSubstr(Str, 15, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."IC Dimension Value Code", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("IC Dimension Value Code"));
+
+      BufferCustomer."Relationship to the Group" := BufferCustomer."IC Dimension Value Code" <> '';
+      //NCS-2134 < AAP
+
+      //NCS-2133 > AAP
+      DummyTxt := GetSubstr(Str, 16, Tab, 0);
+      IF DummyTxt <> '' THEN
+        IF NOT EVALUATE(BufferCustomer."Pledge Agreement", DummyTxt) THEN
+          RiseErrorMsg(BufferCustomer.FIELDNAME("Pledge Agreement"));
+      //NCS-2133 < AAP
+
+      BufferCustomer."Time Creation" := CREATEDATETIME(WORKDATE, TIME);
+      //NC S1883 > PCH
+      BufferCustomer."Segment Code" := ConsSetup."Segment Code";
+      //NC S1883 < PCH
+      BufferCustomer.INSERT;
+    END;
+
+    PROCEDURE RiseErrorMsg@1101495003(FieldName@1101495000 : Text[50]);
+    BEGIN
+      ERROR(Text004, FieldName, LineNo);
+    END;
+
+    BEGIN
+    {
+      NC NCS-1881 SPA Created report
+      NC S1883 PCH
+      NCS-2133 AAP: Обработка поля "Pledge Agreement"
+      NCS-2134 AAP: Обработка поля "IC Dimension Value Code"
+      --------------
+      NC NOS-26 SPA Миграция на NAV2017
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

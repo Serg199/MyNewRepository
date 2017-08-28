@@ -1,0 +1,145 @@
+OBJECT Codeunit 17408 Copy Payroll Document Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1034 : TextConst 'ENU=Please enter a Document No.;RUS=Введите номер документа';
+      Text002@1032 : TextConst 'ENU=The existing lines for %1 will be deleted.\\;RUS=Существующие строки для %1 будут удалены.\\';
+      Text003@1031 : TextConst 'ENU=Do you want to continue?;RUS=Продолжить?';
+      DocType@1002 : 'Payroll Document,Posted Payroll Document';
+      IncludeHeader@1001 : Boolean;
+      CreateToHeader@1011 : Boolean;
+
+    PROCEDURE SetProperties@2(NewIncludeHeader@1001 : Boolean;NewCreateToHeader@1002 : Boolean);
+    BEGIN
+      IncludeHeader := NewIncludeHeader;
+      CreateToHeader := NewCreateToHeader;
+    END;
+
+    PROCEDURE CopyPayrollDoc@16(FromDocType@1007 : Option;FromDocNo@1006 : Code[20];VAR ToPayrollDoc@1008 : Record 17414);
+    VAR
+      ToPayrollDocLine@1025 : Record 17415;
+      OldPayrollDoc@1024 : Record 17414;
+      FromPayrollDoc@1023 : Record 17414;
+      FromPayrollDocLine@1022 : Record 17415;
+      FromPostedPayrollDoc@1021 : Record 17416;
+      FromPostedPayrollDocLine@1020 : Record 17417;
+      ReleasePayrollDoc@1210001 : Codeunit 17407;
+      ReleaseDocument@1210000 : Boolean;
+      NextLineNo@1003 : Integer;
+    BEGIN
+      WITH ToPayrollDoc DO BEGIN
+        IF NOT CreateToHeader THEN BEGIN
+          IF FromDocNo = '' THEN
+            ERROR(Text000);
+          FIND;
+        END;
+        CASE FromDocType OF
+          DocType::"Payroll Document":
+            FromPayrollDoc.GET(FromDocNo);
+          DocType::"Posted Payroll Document":
+            FromPostedPayrollDoc.GET(FromDocNo);
+        END;
+
+        ToPayrollDocLine.LOCKTABLE;
+
+        IF CreateToHeader THEN BEGIN
+          INSERT(TRUE);
+          ToPayrollDocLine.SETRANGE("Document No.","No.");
+        END ELSE BEGIN
+          ToPayrollDocLine.SETRANGE("Document No.","No.");
+          IF IncludeHeader THEN
+            IF NOT ToPayrollDocLine.ISEMPTY THEN BEGIN
+              COMMIT;
+              IF NOT CONFIRM(Text002 + Text003,TRUE,"No.") THEN
+                EXIT;
+              ToPayrollDocLine.DELETEALL(TRUE);
+            END;
+        END;
+
+        IF ToPayrollDocLine.FINDLAST THEN
+          NextLineNo := ToPayrollDocLine."Line No."
+        ELSE
+          NextLineNo := 0;
+
+        IF IncludeHeader THEN BEGIN
+          OldPayrollDoc := ToPayrollDoc;
+          CASE FromDocType OF
+            DocType::"Payroll Document":
+              BEGIN
+                TRANSFERFIELDS(FromPayrollDoc,FALSE);
+                "Posting Date" := OldPayrollDoc."Posting Date";
+              END;
+            DocType::"Posted Payroll Document":
+              TRANSFERFIELDS(FromPostedPayrollDoc,FALSE);
+          END;
+          IF Status = Status::Released THEN BEGIN
+            Status := Status::Open;
+            ReleaseDocument := TRUE;
+          END;
+          "No. Series" := OldPayrollDoc."No. Series";
+          "Posting Description" := OldPayrollDoc."Posting Description";
+          "Posting No. Series" := OldPayrollDoc."Posting No. Series";
+
+          IF CreateToHeader THEN
+            MODIFY(TRUE)
+          ELSE
+            MODIFY;
+        END;
+
+        CASE FromDocType OF
+          DocType::"Payroll Document":
+            BEGIN
+              FromPayrollDocLine.RESET;
+              FromPayrollDocLine.SETRANGE("Document No.",FromPayrollDoc."No.");
+              IF FromPayrollDocLine.FINDSET THEN
+                REPEAT
+                  CopyDocLine(ToPayrollDoc,ToPayrollDocLine,FromPayrollDocLine,NextLineNo);
+                UNTIL FromPayrollDocLine.NEXT = 0;
+            END;
+          DocType::"Posted Payroll Document":
+            BEGIN
+              FromPayrollDoc.TRANSFERFIELDS(FromPostedPayrollDoc);
+              FromPostedPayrollDocLine.RESET;
+              FromPostedPayrollDocLine.SETRANGE("Document No.",FromPostedPayrollDoc."No.");
+              IF FromPostedPayrollDocLine.FINDSET THEN
+                REPEAT
+                  FromPayrollDocLine.TRANSFERFIELDS(FromPostedPayrollDocLine);
+                  CopyDocLine(ToPayrollDoc,ToPayrollDocLine,FromPayrollDocLine,NextLineNo);
+                UNTIL FromPostedPayrollDocLine.NEXT = 0;
+            END;
+        END;
+      END;
+
+      IF ReleaseDocument THEN BEGIN
+        ToPayrollDoc.Status := ToPayrollDoc.Status::Released;
+        ReleasePayrollDoc.Reopen(ToPayrollDoc);
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyDocLine@7(VAR ToPayrollDoc@1004 : Record 17414;VAR ToPayrollDocLine@1001 : Record 17415;VAR FromPayrollDocLine@1002 : Record 17415;VAR NextLineNo@1003 : Integer);
+    BEGIN
+      ToPayrollDocLine := FromPayrollDocLine;
+      NextLineNo := NextLineNo + 10000;
+      ToPayrollDocLine."Document No." := ToPayrollDoc."No.";
+      ToPayrollDocLine."Line No." := NextLineNo;
+      ToPayrollDocLine.INSERT;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

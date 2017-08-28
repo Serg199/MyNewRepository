@@ -1,0 +1,204 @@
+OBJECT Codeunit 50027 Consolidation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23.03.15;
+    Time=10:50:58;
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    TableNo=50063;
+    OnRun=VAR
+            ConsSource@1000000000 : Record 50001;
+            FromSourceEntry@1000000002 : Integer;
+            ToSourceEntry@1000000001 : Integer;
+            GLEntryRec@1000000003 : Record 17;
+            GLRegister@1000000004 : Record 45;
+            RecRef@1000000005 : RecordRef;
+            isFindNotBlock@1000000006 : Boolean;
+            Consolidation@1000000007 : Report 50019;
+            JobProcStatusTemp@1000000008 : TEMPORARY Record 50063;
+            ConsolidationManagement@1000000009 : Codeunit 50000;
+          BEGIN
+            TESTFIELD("Type Processing","Type Processing"::"Cons. Source");
+            ConsSource.GET(Processor);
+            CASE ConsSource."Import Format" OF
+              ConsSource."Import Format"::FromBuffer :
+                BEGIN
+
+                  ConsolidationManagement.ImportFromBufferTable(Rec);
+
+                END;
+              ConsSource."Import Format"::FromNavision :
+                BEGIN
+                  ConsSource.TESTFIELD("Import Format",ConsSource."Import Format"::FromNavision);
+                  ConsSource.TESTFIELD("Company Name");
+
+                  FromSourceEntry := ConsSource."Last G/L Entry No." + 1;
+
+                  GLEntryRec.CHANGECOMPANY(ConsSource."Company Name");
+
+                  IF GLEntryRec.FINDLAST THEN
+                    ToSourceEntry := GLEntryRec."Entry No.";
+                  IF ToSourceEntry < FromSourceEntry THEN
+                    ToSourceEntry := FromSourceEntry;
+
+                  GLRegister.RESET;
+                  GLRegister.CHANGECOMPANY(ConsSource."Company Name");
+                  GLRegister.SETFILTER("From Entry No.",'>=%1',FromSourceEntry);
+                  GLRegister.SETFILTER("To Entry No.",'<=%1',ToSourceEntry);
+                  IF NOT GLRegister.FIND('+') THEN
+                    EXIT;
+
+                  isFindNotBlock := FALSE;
+                  REPEAT
+                    ToSourceEntry := GLRegister."To Entry No.";
+
+                    RecRef.GETTABLE(GLRegister);
+                    JobProcStatusTemp."Company No." := ConsSource."Company Name";
+                    JobProcStatusTemp."Record ID" := RecRef.RECORDID;
+                    IF CODEUNIT.RUN(CODEUNIT::"Table Check Blocked",JobProcStatusTemp) THEN
+                      isFindNotBlock := TRUE;
+
+                  UNTIL (GLRegister.NEXT(-1) = 0) OR isFindNotBlock;
+
+                  IF NOT isFindNotBlock THEN
+                    EXIT;
+
+                  "Begin Entry No." := FromSourceEntry;
+                  "Last Entry No." := ToSourceEntry;
+
+                  Consolidation.USEREQUESTPAGE(FALSE);
+                  Consolidation.SetJobProcStatus(Rec);
+                  Consolidation.RUNMODAL;
+
+                  Consolidation.GetJobProcStatus(Rec);
+
+                END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1000000000 : TextConst 'ENU=You can not start the consolidation. The company %1 loading and transformation operations.;RUS=Нельзя запустить консолидацию. В фирме %1 идет загрузка и трансформация операций.';
+      Text002@1000000001 : TextConst 'ENU=You can not start the consolidation. At the perimeter of %1 is the consolidation of legal entities %2.;RUS=Нельзя запустить консолидацию. В периметре %1 идет консолидация по юрлицу %2.';
+      Text003@1000000002 : TextConst 'ENU=Consolidation completed. Status of implementation of %1. Uploaded %2 operations.;RUS=Консолидация выполнена. Статус выполнения %1. Загружено %2 операций.';
+      Text004@1000000003 : TextConst 'ENU=You can not start the transformation. There is the transformation of operations.;RUS=Нельзя запустить трансформацию. Идет трансформация операций.';
+      Text005@1101495000 : TextConst 'ENU=Transformation Blocked;RUS=Трансформация блокирована';
+
+    PROCEDURE RunConsolidation@1000000002(ConsSourceCode@1000000000 : Code[20]);
+    VAR
+      ConsSource@1000000002 : Record 50001;
+      JobProc@1000000003 : Record 50062;
+      JobProcStatus@1000000001 : Record 50063;
+    BEGIN
+      ConsSource.GET(ConsSourceCode);
+      ConsSource.TESTFIELD("Import Format",ConsSource."Import Format"::FromNavision);
+      ConsSource.TESTFIELD("Company Name");
+
+      // Проверка на учет операций в юрлице
+      IF JobProcStatus.IsStatusProc(ConsSource."Company Name",'','','*',
+                                    STRSUBSTNO('%1',JobProcStatus.Status::Scheduled)) THEN
+        ERROR(Text001,ConsSource."Company Name");
+
+
+      JobProc.RESET;
+      JobProc.INIT;
+      JobProc.VALIDATE("Company No.",COMPANYNAME);
+      JobProc.VALIDATE(Blocked,FALSE);
+      JobProc.VALIDATE("Type Processing",JobProc."Type Processing"::"Cons. Source");
+      JobProc.VALIDATE(Processor,ConsSourceCode);
+      JobProc."Auto Start" := FALSE;
+      JobProc."Name Service NAS" := '';
+      JobProc."Name Server NAS" := '';
+      JobProc."Status Monitor" := JobProc."Status Monitor"::Consolidation;
+      JobProc."Data Check" := TRUE;
+      JobProc."Check Uniqueness" := TRUE;
+      // консолидация
+      //NC S1677 > PCH
+      {
+      IF NOT JobProcStatus.IsCheckUniq(JobProc,STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                  JobProcStatus.Status::Working)) THEN
+        ERROR(Text002,COMPANYNAME,ConsSource."Company Name");
+      }
+      JobProcStatus.RESET;
+      JobProcStatus.SETRANGE("Type Processing",JobProc."Type Processing");
+      JobProcStatus.SETRANGE("Company No.",JobProc."Company No.");
+      JobProcStatus.SETRANGE("Import Format",JobProc."Import Format");
+      JobProcStatus.SETRANGE(Blocked,FALSE);
+      JobProcStatus.SETFILTER(Status,STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                        JobProcStatus.Status::Working));
+      IF JobProcStatus.FINDFIRST THEN
+        ERROR(Text002,COMPANYNAME,JobProcStatus."External Source");
+      JobProcStatus.RESET;
+      //NC S1677 < PCH
+
+      JobProcStatus.AddJob(JobProc);
+      JobProcStatus.Status := JobProcStatus.Status::Scheduled;
+      JobProcStatus."Transaction No." := JobProcStatus.GetNewTransactionNo;
+      JobProcStatus.MODIFY;
+      COMMIT;
+
+      CODEUNIT.RUN(CODEUNIT::"Run Job Process",JobProcStatus);
+
+      JobProcStatus.GET(JobProcStatus."Line No.");
+      MESSAGE(Text003,JobProcStatus.Status,JobProcStatus."Last Entry No." - JobProcStatus."Begin Entry No." + 1);
+    END;
+
+    PROCEDURE RunTransformation@1000000000(ConsSourceCode@1000000000 : Code[20]);
+    VAR
+      ConsSource@1000000002 : Record 50001;
+      JobProc@1000000003 : Record 50062;
+      JobProcStatus@1000000001 : Record 50063;
+      MovingDataSetup@1101495000 : Record 50064;
+    BEGIN
+      ConsSource.GET(ConsSourceCode);
+      ConsSource.TESTFIELD("Import Format",ConsSource."Import Format"::FromBuffer);
+      //NC NCS-583 > RD
+      MovingDataSetup.GET;
+      IF NOT MovingDataSetup."Block Transformation" THEN BEGIN
+      //NC NCS-583 < RD
+
+      JobProc.RESET;
+      JobProc.INIT;
+      JobProc.VALIDATE("Company No.",COMPANYNAME);
+      JobProc.VALIDATE(Blocked,FALSE);
+      JobProc.VALIDATE("Type Processing",JobProc."Type Processing"::"Cons. Source");
+      JobProc.VALIDATE(Processor,ConsSourceCode);
+      JobProc."Auto Start" := FALSE;
+      JobProc."Name Service NAS" := '';
+      JobProc."Name Server NAS" := '';
+      JobProc."Status Monitor" := JobProc."Status Monitor"::Transformation;
+      JobProc."Data Check" := TRUE;
+      JobProc."Check Uniqueness" := TRUE;
+      // консолидация
+      IF NOT JobProcStatus.IsCheckUniq(JobProc,STRSUBSTNO('%1|%2',JobProcStatus.Status::Scheduled,
+                                                                  JobProcStatus.Status::Working)) THEN
+        ERROR(Text004,COMPANYNAME,ConsSource."Company Name");
+
+      JobProcStatus.AddJob(JobProc);
+      JobProcStatus.Status := JobProcStatus.Status::Scheduled;
+      JobProcStatus."Transaction No." := JobProcStatus.GetNewTransactionNo;
+      JobProcStatus.MODIFY;
+      COMMIT;
+
+      CODEUNIT.RUN(CODEUNIT::"Run Job Process",JobProcStatus);
+
+      JobProcStatus.GET(JobProcStatus."Line No.");
+      END ELSE ERROR(Text005); //NC NCS-583 < RD
+    END;
+
+    BEGIN
+    {
+      NC MDM03 PCH Создан CU
+      NC NCS-583 RD Обработка признака Block Transformation
+      NC S1677 PCH исправлена проверка на консолидацию
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,996 @@
+OBJECT Codeunit 17405 Payroll Document - Post
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18.12.13;
+    Time=12:00:00;
+    Version List=NAVRU7.10;
+  }
+  PROPERTIES
+  {
+    TableNo=17414;
+    Permissions=TableData 17416=rim,
+                TableData 17417=rim,
+                TableData 17418=rim,
+                TableData 17419=rim,
+                TableData 17431=rim,
+                TableData 17432=rim,
+                TableData 17439=rim,
+                TableData 17460=rim,
+                TableData 17461=rim;
+    OnRun=VAR
+            PayrollDocBufRemainder@1210000 : TEMPORARY Record 17462;
+          BEGIN
+            CLEARALL;
+
+            PayrollDoc.COPY(Rec);
+            WITH PayrollDoc DO BEGIN
+              TESTFIELD("Employee No.");
+              TESTFIELD("Posting Date");
+              TESTFIELD("Period Code");
+
+              Employee.GET("Employee No.");
+              Employee.TESTFIELD("Person No.");
+              Person.GET(Employee."Person No.");
+              Person.TESTFIELD("Vendor No.");
+
+              IF Correction THEN
+                TESTFIELD("Reversing Document No.");
+
+              IF Status = Status::Open THEN BEGIN
+                CODEUNIT.RUN(CODEUNIT::"Release Payroll Document",PayrollDoc);
+                Status := Status::Open;
+                MODIFY;
+                COMMIT;
+                Status := Status::Released;
+              END;
+
+              PayrollCalcGroup.GET("Calc Group Code");
+              IF PayrollCalcGroup.Type <> PayrollCalcGroup.Type::Between THEN BEGIN
+                PayrollStatus.GET("Period Code","Employee No.");
+                IF "Posting Type" = "Posting Type"::Calculation THEN BEGIN
+                  IF Correction THEN
+                    PayrollStatus.TESTFIELD("Payroll Status",PayrollStatus."Payroll Status"::Posted)
+                  ELSE
+                    PayrollStatus.TESTFIELD("Payroll Status",PayrollStatus."Payroll Status"::Calculated);
+                END;
+              END;
+
+              CheckDim;
+
+              HRSetup.GET;
+              SourceCodeSetup.GET;
+              SourceCodeSetup.TESTFIELD("Payroll Calculation");
+
+              // Lock tables
+              GLEntry.LOCKTABLE;
+              IF GLEntry.FINDLAST THEN;
+              PayrollLedgEntry.LOCKTABLE;
+              IF PayrollLedgEntry.FINDLAST THEN;
+              DtldPayrollLedgEntry.LOCKTABLE;
+              IF DtldPayrollLedgEntry.FINDLAST THEN;
+
+              SepareteEntryBuffer.DELETEALL;
+              PayrollDocBuffer.DELETEALL;
+
+              // Insert posted document header
+              PostedPayrollDoc.INIT;
+              PostedPayrollDoc.TRANSFERFIELDS(PayrollDoc);
+              PostedPayrollDoc."No." :=
+                NoSeriesMgt.GetNextNo(
+                  HRSetup."Posted Payroll Document Nos.","Posting Date",TRUE);
+              PostedPayrollDoc.Reversed := Correction;
+              PostedPayrollDoc.INSERT;
+
+              IF Correction THEN BEGIN
+                ReversingPayrollDoc.GET("Reversing Document No.");
+                ReversingPayrollDoc.Reversed := TRUE;
+                ReversingPayrollDoc.MODIFY;
+
+                PayrollLedgEntry.SETCURRENTKEY("Document No.","Posting Date");
+                PayrollLedgEntry.SETRANGE("Document No.",ReversingPayrollDoc."No.");
+                PayrollLedgEntry.SETRANGE("Posting Date",ReversingPayrollDoc."Posting Date");
+                PayrollLedgEntry.MODIFYALL(Reversed,TRUE);
+              END;
+
+              PostToGL := "Posting Type" = "Posting Type"::Calculation;
+
+              // Insert posted document lines
+              PayrollDocLine.RESET;
+              PayrollDocLine.SETRANGE("Document No.","No.");
+              IF PayrollDocLine.FINDSET THEN
+                REPEAT
+                  IF Correction THEN
+                    ReverseAmount;
+
+                  PostedPayrollDocLine.INIT;
+                  PostedPayrollDocLine.TRANSFERFIELDS(PayrollDocLine);
+                  PostedPayrollDocLine."Document No." := PostedPayrollDoc."No.";
+                  PostedPayrollDocLine.INSERT;
+
+                  IF PayrollCalcGroup.Type <> PayrollCalcGroup.Type::Between THEN
+                    PostPayrollDocumentLine;
+
+                  PostedPayrollDocLine."Payroll Ledger Entry No." := PayrollDocLine."Payroll Ledger Entry No.";
+                  PostedPayrollDocLine.MODIFY;
+
+                  // copy calculation
+                  PayrollDocLineCalc.SETRANGE("Document No.",PayrollDocLine."Document No.");
+                  PayrollDocLineCalc.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+                  IF PayrollDocLineCalc.FINDSET THEN
+                    REPEAT
+                      PostedPayrollDocLineCalc.INIT;
+                      PostedPayrollDocLineCalc.TRANSFERFIELDS(PayrollDocLineCalc);
+                      PostedPayrollDocLineCalc."Document No." := PostedPayrollDoc."No.";
+                      PostedPayrollDocLineCalc.INSERT;
+
+                      PayrollDocLineExpr.SETRANGE("Document No.",PayrollDocLineCalc."Document No.");
+                      PayrollDocLineExpr.SETRANGE("Document Line No.",PayrollDocLineCalc."Document Line No.");
+                      PayrollDocLineExpr.SETRANGE("Calculation Line No.",PayrollDocLineCalc."Line No.");
+                      IF PayrollDocLineExpr.FINDSET THEN
+                        REPEAT
+                          PostedPayrollDocLineExpr.INIT;
+                          PostedPayrollDocLineExpr.TRANSFERFIELDS(PayrollDocLineExpr);
+                          PostedPayrollDocLineExpr."Document No." := PostedPayrollDoc."No.";
+                          PostedPayrollDocLineExpr.INSERT;
+                        UNTIL PayrollDocLineExpr.NEXT = 0;
+                    UNTIL PayrollDocLineCalc.NEXT = 0;
+
+                  // Insert AE entries
+                  PayrollDocLineAE.RESET;
+                  PayrollDocLineAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+                  PayrollDocLineAE.SETRANGE("Document Line No.",PayrollDocLine."Line No.");
+                  IF PayrollDocLineAE.FINDSET THEN
+                    REPEAT
+                      PostedPayrollDocLineAE.INIT;
+                      PostedPayrollDocLineAE.TRANSFERFIELDS(PayrollDocLineAE);
+                      PostedPayrollDocLineAE."Document No." := PostedPayrollDoc."No.";
+                      PostedPayrollDocLineAE.INSERT;
+                    UNTIL PayrollDocLineAE.NEXT = 0;
+
+                  PayrollPeriodAE.RESET;
+                  PayrollPeriodAE.SETRANGE("Document No.",PayrollDocLine."Document No.");
+                  PayrollPeriodAE.SETRANGE("Line No.",PayrollDocLine."Line No.");
+                  IF PayrollPeriodAE.FINDSET THEN
+                    REPEAT
+                      PostedPayrollPeriodAE.INIT;
+                      PostedPayrollPeriodAE.TRANSFERFIELDS(PayrollPeriodAE);
+                      PostedPayrollPeriodAE."Document No." := PostedPayrollDoc."No.";
+                      PostedPayrollPeriodAE.INSERT;
+                    UNTIL PayrollPeriodAE.NEXT = 0;
+                  IF PayrollCalcGroup.Type <> PayrollCalcGroup.Type::Between THEN
+                    PersonIncomeMgt.CreateSocialTaxLine(PostedPayrollDocLine);
+                  IF PayrollDocLine."Days To Exclude" <> 0 THEN
+                    PersonIncomeMgt.UpdateSocialTaxLine(PostedPayrollDocLine);
+
+                  // Update income tax form
+                  PersonIncomeMgt.CreateIncomeTaxLine(PostedPayrollDocLine,PayrollDoc."Posting Date",PayrollDoc.Correction);
+
+                UNTIL PayrollDocLine.NEXT = 0;
+
+              IF (PayrollCalcGroup.Type <> PayrollCalcGroup.Type::Between) AND PostToGL THEN BEGIN
+                // Post vendor's liability
+                IF DocumentBalance <> 0 THEN BEGIN
+                  GenJnlLine.INIT;
+                  GenJnlLine.VALIDATE("Posting Date","Posting Date");
+                  GenJnlLine."Document No." := PostedPayrollDoc."No.";
+                  GenJnlLine.VALIDATE("Account Type",GenJnlLine."Account Type"::Vendor);
+                  GenJnlLine.VALIDATE("Account No.",Person."Vendor No.");
+                  GenJnlLine.Description := "Posting Description";
+                  GenJnlLine.VALIDATE(Amount,-DocumentBalance);
+                  GenJnlLine."Payroll Ledger Entry No." := 0;
+                  GenJnlLine."Source Code" := SourceCodeSetup."Payroll Calculation";
+                  GenJnlLine.Correction := Correction;
+                  IF LaborContract.GET(Employee."Contract No.") THEN
+                    IF LaborContract."Vendor Agreement No." <> '' THEN BEGIN
+                      VendorAgreement.GET(LaborContract."Vendor No.",LaborContract."Vendor Agreement No.");
+                      VendorAgreement.VALIDATE("Vendor Posting Group");
+                      GenJnlLine.VALIDATE("Posting Group",VendorAgreement."Vendor Posting Group");
+                    END;
+                  GenJnlPostLine.RunWithoutCheck(GenJnlLine);
+                END;
+
+                // Post fund entries
+                AggregateTaxes(PayrollDocLine);
+                PayrollDocBuffer.RESET;
+                IF PayrollDocBuffer.FINDSET THEN
+                  REPEAT
+                    GenJnlLine.INIT;
+                    GenJnlLine."Payment Purpose" := "Employee No.";
+                    GenJnlLine.VALIDATE("Posting Date","Posting Date");
+                    PostedPayrollDocLine.RESET;
+                    PostedPayrollDocLine.SETRANGE("Document No.",PostedPayrollDoc."No.");
+                    PostedPayrollDocLine.SETRANGE("Element Code",PayrollDocBuffer."Element Code");
+                    PostedPayrollDocLine.FINDFIRST;
+                    TaxAllocationPostingSetup.GET(PayrollDocBuffer."Payroll Posting Group",PayrollDocBuffer."Element Code");
+                    TaxAllocationPostingSetup.TESTFIELD("Tax Allocated Posting Group");
+                    PayrollPostingGroup.GET(TaxAllocationPostingSetup."Tax Allocated Posting Group");
+                    CASE PayrollPostingGroup."Account Type" OF
+                      PayrollPostingGroup."Account Type"::"G/L Account":
+                        GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                      PayrollPostingGroup."Account Type"::Vendor:
+                        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+                    END;
+                    PayrollPostingGroup.TESTFIELD("Account No.");
+                    GenJnlLine.VALIDATE("Account No.",PayrollPostingGroup."Account No.");
+                    PayrollPostingGroup.TESTFIELD("Fund Vendor No.");
+                    GenJnlLine.VALIDATE("Bal. Account Type",GenJnlLine."Bal. Account Type"::Vendor);
+                    GenJnlLine.VALIDATE("Bal. Account No.",PayrollPostingGroup."Fund Vendor No.");
+                    PostedPayrDocLineToGenJnlLine(PostedPayrollDocLine,GenJnlLine);
+                    CalcRoundedTaxAmt(GenJnlLine,PayrollDocBuffer,PayrollDocBufRemainder);
+                    PayrollElement.GET(PayrollDocBuffer."Element Code");
+                    GenJnlLine.Description := COPYSTR(PayrollElement.Description,1,MAXSTRLEN(GenJnlLine.Description));
+
+                    GenJnlLine."Source Code" := SourceCodeSetup."Payroll Calculation";
+                    GenJnlLine.Correction := Correction;
+                    GenJnlLine."Dimension Set ID" := PayrollDocBuffer."Dimension Set ID";
+                    GenJnlLine."Payroll Ledger Entry No." := PayrollDocBuffer."Payroll Ledger Entry No.";
+
+                    GenJnlPostLine.RunWithoutCheck(GenJnlLine);
+                  UNTIL PayrollDocBuffer.NEXT = 0;
+
+                // post income tax and deductions entries
+                SepareteEntryBuffer.RESET;
+                IF SepareteEntryBuffer.FINDSET THEN
+                  REPEAT
+                    GenJnlLine.INIT;
+                    GenJnlLine."Payment Purpose" := "Employee No.";
+                    GenJnlLine.VALIDATE("Posting Date","Posting Date");
+                    GenJnlLine."Document No." := PostedPayrollDoc."No.";
+                    GenJnlLine.VALIDATE("Account Type",GenJnlLine."Account Type"::Vendor);
+                    GenJnlLine.VALIDATE("Account No.",Person."Vendor No.");
+                    IF LaborContract.GET(Employee."Contract No.") THEN
+                      IF LaborContract."Vendor Agreement No." <> '' THEN BEGIN
+                        VendorAgreement.GET(LaborContract."Vendor No.",LaborContract."Vendor Agreement No.");
+                        VendorAgreement.VALIDATE("Vendor Posting Group");
+                        GenJnlLine.VALIDATE("Posting Group",VendorAgreement."Vendor Posting Group");
+                      END;
+                    GenJnlLine.VALIDATE(Amount,-SepareteEntryBuffer."Payroll Amount");
+                    GenJnlLine.Correction := Correction;
+                    GenJnlLine.Description := SepareteEntryBuffer.Description;
+                    GenJnlLine."Source Code" := SourceCodeSetup."Payroll Calculation";
+                    GenJnlLine."System-Created Entry" := TRUE;
+                    GenJnlLine."Dimension Set ID" := SepareteEntryBuffer."Dimension Set ID";
+                    GenJnlLine."Payroll Ledger Entry No." := SepareteEntryBuffer."Payroll Ledger Entry No.";
+                    GenJnlPostLine.RunWithoutCheck(GenJnlLine);
+
+                    GenJnlLine.INIT;
+                    GenJnlLine."Payment Purpose" := "Employee No.";
+                    GenJnlLine.VALIDATE("Posting Date","Posting Date");
+                    GenJnlLine."Document No." := PostedPayrollDoc."No.";
+                    PayrollPostingGroup.GET(SepareteEntryBuffer."Posting Group");
+                    CASE PayrollPostingGroup."Account Type" OF
+                      PayrollPostingGroup."Account Type"::"G/L Account":
+                        GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                      PayrollPostingGroup."Account Type"::Vendor:
+                        GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+                    END;
+                    PayrollPostingGroup.TESTFIELD("Account No.");
+                    GenJnlLine.VALIDATE("Account No.",PayrollPostingGroup."Account No.");
+                    GenJnlLine.VALIDATE(Amount,SepareteEntryBuffer."Payroll Amount");
+                    GenJnlLine.Correction := Correction;
+                    GenJnlLine.Description := SepareteEntryBuffer.Description;
+                    GenJnlLine."Source Code" := SourceCodeSetup."Payroll Calculation";
+                    GenJnlLine."System-Created Entry" := TRUE;
+                    GenJnlLine."Dimension Set ID" := SepareteEntryBuffer."Dimension Set ID";
+                    GenJnlLine."Payroll Ledger Entry No." := SepareteEntryBuffer."Payroll Ledger Entry No.";
+                    GenJnlPostLine.RunWithoutCheck(GenJnlLine);
+                  UNTIL SepareteEntryBuffer.NEXT = 0;
+              END;
+
+              // Delete document and lines
+              DELETE;
+
+              PayrollDocLine.RESET;
+              PayrollDocLine.SETRANGE("Document No.","No.");
+              PayrollDocLine.DELETEALL(TRUE);
+
+              IF PayrollCalcGroup.Type <> PayrollCalcGroup.Type::Between THEN BEGIN
+                IF Correction THEN
+                  PayrollStatus."Payroll Status" := PayrollStatus."Payroll Status"::" "
+                ELSE
+                  PayrollStatus."Payroll Status" := PayrollStatus."Payroll Status"::Posted;
+                PayrollStatus.UpdateCalculated(PayrollStatus);
+                PayrollStatus.UpdatePosted(PayrollStatus);
+                PayrollStatus.MODIFY;
+              END;
+
+              COMMIT;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLEntry@1210007 : Record 17;
+      GenJnlLine@1210001 : Record 81;
+      Employee@1210030 : Record 5200;
+      VendorAgreement@1210033 : Record 14901;
+      LaborContract@1210005 : Record 17360;
+      Person@1210031 : Record 17350;
+      HRSetup@1210011 : Record 5218;
+      PayrollElement@1210021 : Record 17400;
+      PayrollCalcGroup@1210019 : Record 17402;
+      PayrollLedgEntry@1210002 : Record 17418;
+      DtldPayrollLedgEntry@1210029 : Record 17419;
+      PayrollPostingGroup@1210022 : Record 17401;
+      PayrollLedgBaseAmt@1210027 : Record 17439;
+      PayrollDocLineAE@1210028 : Record 17431;
+      PayrollDocLineExpr@1210040 : Record 17438;
+      PayrollDocLineCalc@1210041 : Record 17459;
+      PayrollDoc@1210000 : Record 17414;
+      PayrollDocLine@1210008 : Record 17415;
+      SepareteEntryBuffer@1210004 : TEMPORARY Record 17415;
+      PayrollPeriodAE@1210035 : Record 17433;
+      PostedPayrollDoc@1210009 : Record 17416;
+      ReversingPayrollDoc@1210048 : Record 17416;
+      PostedPayrollDocLine@1210010 : Record 17417;
+      PostedPayrollDocLineAE@1210023 : Record 17432;
+      PostedPayrollDocLineCalc@1210039 : Record 17460;
+      PostedPayrollDocLineExpr@1210038 : Record 17461;
+      PostedPayrollPeriodAE@1210042 : Record 17456;
+      PayrollStatus@1210036 : Record 17457;
+      SourceCodeSetup@1210043 : Record 242;
+      PayrollDocBuffer@1210046 : TEMPORARY Record 17462;
+      TaxAllocationPostingSetup@1210044 : Record 14955;
+      GenJnlPostLine@1210026 : Codeunit 12;
+      NoSeriesMgt@1210012 : Codeunit 396;
+      DimMgt@1210013 : Codeunit 408;
+      PersonIncomeMgt@1210037 : Codeunit 17409;
+      Text000@1210003 : TextConst 'ENU=Incorrect %1.;RUS=Неправильное значение %1.';
+      Text005@1210017 : TextConst 'ENU=The combination of dimensions used in payroll document %1 is blocked. %2;RUS=Комбинация измерений, используемая в зарплатном документе %1, заблокирована. %2';
+      Text006@1210016 : TextConst 'ENU=The combination of dimensions used in payroll %1, line no. %2 is blocked. %3;RUS=Комбинация измерений, используемая в зарплатном документе %1, строка номер %2, заблокирована. %3';
+      Text007@1210015 : TextConst 'ENU=The dimensions used in payroll document %1 are invalid. %2;RUS=Измерения, используемые в зарплатном документе %1, являются недопустимыми. %2';
+      Text008@1210018 : TextConst 'ENU=The dimensions used in payroll document %1, line no. %2 are invalid. %3;RUS=Измерения, используемые в зарплатном документе %1, строка номер %2, являются недопустимыми. %3';
+      NextEntryNo@1210020 : Integer;
+      NextDocBufferEntryNo@1210045 : Integer;
+      DocumentBalance@1210024 : Decimal;
+      PostToGL@1210032 : Boolean;
+
+    LOCAL PROCEDURE CheckDim@34();
+    VAR
+      PayrollDocLine2@1210000 : Record 17415;
+    BEGIN
+      PayrollDocLine2."Line No." := 0;
+      CheckDimValuePosting(PayrollDocLine2);
+      CheckDimComb(PayrollDocLine2);
+
+      PayrollDocLine2.SETRANGE("Document No.",PayrollDoc."No.");
+      IF PayrollDocLine2.FINDSET THEN
+        REPEAT
+          CheckDimComb(PayrollDocLine2);
+          CheckDimValuePosting(PayrollDocLine2);
+        UNTIL PayrollDocLine2.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CheckDimComb@30(PayrolDocLine@1000 : Record 17415);
+    BEGIN
+      IF PayrollDocLine."Line No." = 0 THEN
+        IF NOT DimMgt.CheckDimIDComb(PayrollDoc."Dimension Set ID") THEN
+          ERROR(
+            Text005,
+            PayrollDoc."No.",DimMgt.GetDimCombErr);
+
+      IF PayrollDocLine."Line No." <> 0 THEN
+        IF NOT DimMgt.CheckDimIDComb(PayrollDocLine."Dimension Set ID") THEN
+          ERROR(
+            Text006,
+            PayrollDoc."No.",PayrollDocLine."Line No.",DimMgt.GetDimCombErr);
+    END;
+
+    LOCAL PROCEDURE CheckDimValuePosting@28(VAR PayrollDocLine2@1000 : Record 17415);
+    VAR
+      TableIDArr@1002 : ARRAY [10] OF Integer;
+      NumberArr@1003 : ARRAY [10] OF Code[20];
+    BEGIN
+      IF PayrollDocLine2."Line No." = 0 THEN BEGIN
+        TableIDArr[1] := DATABASE::Employee;
+        NumberArr[1] := PayrollDoc."Employee No.";
+        IF NOT DimMgt.CheckDimValuePosting(TableIDArr,NumberArr,PayrollDoc."Dimension Set ID") THEN
+          ERROR(
+            Text007,
+            PayrollDoc."No.",DimMgt.GetDimValuePostingErr);
+      END ELSE BEGIN
+        TableIDArr[1] := DATABASE::Employee;
+        NumberArr[1] := PayrollDocLine2."Employee No.";
+        IF NOT DimMgt.CheckDimValuePosting(TableIDArr,NumberArr,PayrollDocLine2."Dimension Set ID") THEN
+          ERROR(
+            Text008,
+            PayrollDoc."No.",PayrollDocLine2."Line No.",DimMgt.GetDimValuePostingErr);
+      END;
+    END;
+
+    PROCEDURE PostPayrollDocumentLine@7();
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        IF ("Payroll Amount" = 0) AND ("Taxable Amount" = 0) AND ("Element Type" <> "Element Type"::"Netto Salary") THEN
+          EXIT;
+
+        CheckDocumentLine;
+
+        PayrollLedgEntry.RESET;
+        IF NextEntryNo = 0 THEN BEGIN
+          IF PayrollLedgEntry.FINDLAST THEN
+            NextEntryNo := PayrollLedgEntry."Entry No." + 1
+          ELSE
+            NextEntryNo := 1;
+        END;
+
+        "Payroll Ledger Entry No." := NextEntryNo;
+        MODIFY;
+
+        // G/L posting
+        PayrollElement.GET("Element Code");
+        IF NOT (PayrollElement."Posting Type" IN
+                [PayrollElement."Posting Type"::"Not Post",
+                 PayrollElement."Posting Type"::"Information Only"]) AND PostToGL
+        THEN
+          CASE PayrollElement.Type OF
+            PayrollElement.Type::Wage,
+            PayrollElement.Type::"Netto Salary",
+            PayrollElement.Type::Bonus:
+              BEGIN
+                GenJnlLine.INIT;
+                GenJnlLine."Payment Purpose" := PayrollDoc."Employee No.";
+                GenJnlLine.VALIDATE("Posting Date",PayrollDoc."Posting Date");
+                PostedPayrDocLineToGenJnlLine(PostedPayrollDocLine,GenJnlLine);
+                PayrollPostingGroup.GET("Posting Group");
+                CASE PayrollPostingGroup."Account Type" OF
+                  PayrollPostingGroup."Account Type"::"G/L Account":
+                    GenJnlLine."Account Type" := GenJnlLine."Account Type"::"G/L Account";
+                  PayrollPostingGroup."Account Type"::Vendor:
+                    GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+                END;
+                PayrollPostingGroup.TESTFIELD("Account No.");
+                GenJnlLine.VALIDATE("Account No.",PayrollPostingGroup."Account No.");
+                GenJnlLine.Description := COPYSTR(PayrollElement.Description,1,MAXSTRLEN(GenJnlLine.Description));
+                GenJnlLine.Correction := PayrollDoc.Correction OR GenJnlLine.Correction;
+                GenJnlLine."Source Code" := SourceCodeSetup."Payroll Calculation";
+                DocumentBalance := DocumentBalance + GenJnlLine."Amount (LCY)";
+
+                GenJnlPostLine.RunWithoutCheck(GenJnlLine);
+              END;
+            PayrollElement.Type::Deduction,
+            PayrollElement.Type::"Income Tax":
+              BEGIN
+                SepareteEntryBuffer := PayrollDocLine;
+                SepareteEntryBuffer.INSERT;
+              END;
+          END;
+        InsertPayrollLedgerEntry;
+
+        // Insert detailed ledger entries
+        InsertDtldLedgerEntries;
+
+        // Insert Base Amount entries
+        IF "FSI Base" THEN
+          InsertBaseAmountEntry(PayrollLedgEntry,PayrollLedgBaseAmt."Base Type"::FSI,0);
+        IF "FSI Injury Base" THEN
+          InsertBaseAmountEntry(PayrollLedgEntry,PayrollLedgBaseAmt."Base Type"::"FSI Injury",0);
+        IF "Federal FMI Base" THEN
+          InsertBaseAmountEntry(PayrollLedgEntry,PayrollLedgBaseAmt."Base Type"::"Federal FMI",0);
+        IF "Territorial FMI Base" THEN
+          InsertBaseAmountEntry(PayrollLedgEntry,PayrollLedgBaseAmt."Base Type"::"Territorial FMI",0);
+        IF "Pension Fund Base" THEN
+          InsertBaseAmountEntry(PayrollLedgEntry,PayrollLedgBaseAmt."Base Type"::"PF Insur. Part",0);
+        IF "Income Tax Base" THEN
+          InsertBaseAmountEntry(PayrollLedgEntry,PayrollLedgBaseAmt."Base Type"::"Income Tax",0);
+
+        NextEntryNo := NextEntryNo + 1;
+      END;
+    END;
+
+    PROCEDURE CheckDocumentLine@1210004();
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        IF ("Payroll Amount" = 0) AND
+           ("Taxable Amount" = 0) AND
+           ("Element Type" <> "Element Type"::"Netto Salary")
+        THEN
+          EXIT;
+
+        TESTFIELD("Element Code");
+
+        IF "Posting Type" <> "Posting Type"::"Not Post" THEN
+          TESTFIELD("Posting Group");
+        IF PayrollDoc."Employee No." <> '' THEN
+          TESTFIELD("Calc Group");
+      END;
+    END;
+
+    PROCEDURE InsertPayrollLedgerEntry@1210000();
+    BEGIN
+      WITH PayrollLedgEntry DO BEGIN
+        INIT;
+        PayrDocLineToPayrLedgEntry(PostedPayrollDocLine,PayrollLedgEntry);
+        PayrElementToPayrLedgEntry(PayrollElement,PayrollLedgEntry);
+        SetPayrollCategoryCode;
+        "User ID" := USERID;
+        "Source Code" := SourceCodeSetup."Payroll Calculation";
+        CASE "Posting Type" OF
+          "Posting Type"::"Not Post":
+            "Distrib. Costs" := TRUE;
+          "Posting Type"::Charge:
+            BEGIN
+              IF PayrollElement.Type <> PayrollElement.Type::"Netto Salary" THEN BEGIN
+                "Distrib. Costs" := FALSE;
+              END ELSE
+                "Distrib. Costs" := TRUE;
+            END;
+          "Posting Type"::Liability:
+            BEGIN
+              IF PayrollElement.Type <> PayrollElement.Type::"Netto Salary" THEN
+                ;
+              "Distrib. Costs" := TRUE;
+            END;
+          "Posting Type"::"Liability Charge":
+            BEGIN
+              IF PayrollElement.Type <> PayrollElement.Type::"Netto Salary" THEN
+                "Distrib. Costs" := FALSE
+              ELSE
+                "Distrib. Costs" := TRUE;
+            END;
+        END;
+        IF Person."Birth Date" >= 01011967D THEN
+          "Use PF Accum. System" := TRUE;
+        IF LaborContract.GET(Employee."Contract No.") THEN BEGIN
+          PayrollLedgEntry."Work Mode" := LaborContract."Work Mode";
+          PayrollLedgEntry."Contract Type" := LaborContract."Contract Type";
+        END;
+        "Disability Group" := Person.GetDisabilityGroup("Posting Date");
+        Reversed := PayrollDoc.Correction;
+        "Entry No." := NextEntryNo;
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE InsertDtldLedgerEntries@1210002();
+    VAR
+      WagePeriod@1210004 : Record 17426;
+      TempWagePeriod@1210005 : TEMPORARY Record 17426;
+      WagePeriodNumber@1210007 : Decimal;
+      TotalAmount@1210008 : Decimal;
+      TotalTaxableAmount@1210009 : Decimal;
+      NextDtldEntryNo@1210000 : Integer;
+    BEGIN
+      // analyze periods
+      TempWagePeriod.DELETEALL;
+      TempWagePeriod.RESET;
+
+      WagePeriodNumber := 0;
+      WagePeriod.RESET;
+      WagePeriod.SETRANGE(Code,PayrollDocLine."Wage Period From",PayrollDocLine."Wage Period To");
+      IF WagePeriod.FINDSET THEN
+        REPEAT
+          TempWagePeriod := WagePeriod;
+          TempWagePeriod.INSERT;
+          WagePeriodNumber := WagePeriodNumber + 1;
+        UNTIL WagePeriod.NEXT = 0
+      ELSE
+        ERROR(Text000,PayrollDocLine.FIELDCAPTION("Wage Period From"));
+
+      TotalAmount := 0;
+      TotalTaxableAmount := 0;
+
+      IF NextDtldEntryNo = 0 THEN BEGIN
+        IF DtldPayrollLedgEntry.FINDLAST THEN
+          NextDtldEntryNo := DtldPayrollLedgEntry."Entry No." + 1
+        ELSE
+          NextDtldEntryNo := 1;
+      END;
+
+      TempWagePeriod.FIND('-');
+      REPEAT
+        DtldPayrollLedgEntry.INIT;
+        DtldPayrollLedgEntry."Entry No." := NextDtldEntryNo;
+        NextDtldEntryNo := NextDtldEntryNo + 1;
+        DtldPayrollLedgEntry."Payroll Ledger Entry No." := PayrollLedgEntry."Entry No.";
+        DtldPayrollLedgEntry."Posting Date" := PayrollLedgEntry."Posting Date";
+        DtldPayrollLedgEntry."Document Type" := PayrollLedgEntry."Document Type";
+        DtldPayrollLedgEntry."Document No." := PayrollLedgEntry."Document No.";
+        DtldPayrollLedgEntry."HR Order No." := PayrollLedgEntry."HR Order No.";
+        DtldPayrollLedgEntry."HR Order Date" := PayrollLedgEntry."HR Order Date";
+        DtldPayrollLedgEntry."Employee No." := PayrollLedgEntry."Employee No.";
+        DtldPayrollLedgEntry."Posting Type" := PayrollLedgEntry."Posting Type";
+        DtldPayrollLedgEntry."Posting Group" := PayrollLedgEntry."Posting Group";
+        DtldPayrollLedgEntry."Directory Code" := PayrollLedgEntry."Directory Code";
+        DtldPayrollLedgEntry."Element Type" := PayrollLedgEntry."Element Type";
+        DtldPayrollLedgEntry."Element Group" := PayrollLedgEntry."Element Group";
+        DtldPayrollLedgEntry."Element Code" := PayrollLedgEntry."Element Code";
+        DtldPayrollLedgEntry."Bonus Type" := PayrollLedgEntry."Bonus Type";
+        DtldPayrollLedgEntry."User ID" := PayrollLedgEntry."User ID";
+        DtldPayrollLedgEntry."Source Code" := PayrollLedgEntry."Source Code";
+        DtldPayrollLedgEntry."Salary Indexation" := PostedPayrollDocLine."Salary Indexation";
+        DtldPayrollLedgEntry."Depends on Salary Element" := PostedPayrollDocLine."Depends on Salary Element";
+        DtldPayrollLedgEntry."Period Code" := PayrollLedgEntry."Period Code";
+        DtldPayrollLedgEntry."Wage Period Code" := TempWagePeriod.Code;
+
+        DtldPayrollLedgEntry."Payroll Amount" :=
+          ROUND(PayrollLedgEntry."Payroll Amount" / WagePeriodNumber);
+        TotalAmount := TotalAmount + DtldPayrollLedgEntry."Payroll Amount";
+        DtldPayrollLedgEntry."Taxable Amount" :=
+          ROUND(PayrollLedgEntry."Taxable Amount" / WagePeriodNumber);
+        TotalTaxableAmount := TotalTaxableAmount + DtldPayrollLedgEntry."Taxable Amount";
+        DtldPayrollLedgEntry.INSERT;
+      UNTIL TempWagePeriod.NEXT = 0;
+
+      IF (TotalAmount <> 0) OR (TotalTaxableAmount <> 0) OR (TotalTaxableAmount <> 0) THEN BEGIN
+        DtldPayrollLedgEntry."Payroll Amount" :=
+          DtldPayrollLedgEntry."Payroll Amount" + (PayrollLedgEntry."Payroll Amount" - TotalAmount);
+        DtldPayrollLedgEntry."Taxable Amount" :=
+          DtldPayrollLedgEntry."Taxable Amount" + (PayrollLedgEntry."Taxable Amount" - TotalTaxableAmount);
+        DtldPayrollLedgEntry.MODIFY;
+      END;
+    END;
+
+    PROCEDURE InsertBaseAmountEntry@1210005(PayrollLedgEntry@1210000 : Record 17418;BaseType@1210001 : Integer;DetailedBaseType@1210002 : Integer);
+    BEGIN
+      WITH PayrollLedgEntry DO BEGIN
+        PayrollLedgBaseAmt.INIT;
+        PayrollLedgBaseAmt."Entry No." := "Entry No.";
+        PayrollLedgBaseAmt."Base Type" := BaseType;
+        PayrollLedgBaseAmt."Detailed Base Type" := DetailedBaseType;
+        PayrollLedgBaseAmt."Element Type" := "Element Type";
+        PayrollLedgBaseAmt."Element Code" := "Element Code";
+        PayrollLedgBaseAmt."Employee No." := "Employee No.";
+        PayrollLedgBaseAmt."Period Code" := "Period Code";
+        PayrollLedgBaseAmt."Posting Date" := "Posting Date";
+        PayrollLedgBaseAmt."Payroll Directory Code" := "Directory Code";
+        PayrollLedgBaseAmt.Amount := "Payroll Amount";
+        PayrollLedgBaseAmt.INSERT;
+      END;
+    END;
+
+    PROCEDURE PayrDocLineToPayrLedgEntry@10(PostedPayrollDocLine@1210000 : Record 17417;VAR PayrollLedgerEntry@1210001 : Record 17418);
+    BEGIN
+      WITH PayrollLedgerEntry DO BEGIN
+        "Employee No." := PostedPayrollDocLine."Employee No.";
+        "Posting Date" := PostedPayrollDoc."Posting Date";
+        "Document Type" := PostedPayrollDocLine."Document Type";
+        "Document No." := PostedPayrollDocLine."Document No.";
+        "HR Order No." := PostedPayrollDocLine."HR Order No.";
+        "HR Order Date" := PostedPayrollDocLine."HR Order Date";
+        Description := PostedPayrollDocLine.Description;
+        "Period Code" := PostedPayrollDocLine."Period Code";
+        "Posting Group" := PostedPayrollDocLine."Posting Group";
+        "Time Activity Code" := PostedPayrollDocLine."Time Activity Code";
+        "Element Code" := PostedPayrollDocLine."Element Code";
+        "Element Type" := PostedPayrollDocLine."Element Type";
+        "Payroll Amount" := PostedPayrollDocLine."Payroll Amount";
+        "Taxable Amount" := PostedPayrollDocLine."Taxable Amount";
+        Quantity := PostedPayrollDocLine.Quantity;
+        "Calc Group" := PostedPayrollDocLine."Calc Group";
+        "Calendar Code" := PostedPayrollDocLine."Calendar Code";
+        "Directory Code" := PostedPayrollDocLine."Directory Code";
+        "Calc Type Code" := PostedPayrollDocLine."Calc Type Code";
+        "Calculate Priority" := PostedPayrollDocLine.Priority;
+        "AE Period From" := PostedPayrollDocLine."AE Period From";
+        "AE Period To" := PostedPayrollDocLine."AE Period To";
+        "Print Priority" := PostedPayrollDocLine."Print Priority";
+        "Org. Unit Code" := PostedPayrollDocLine."Org. Unit Code";
+        "Pay Type" := PostedPayrollDocLine."Pay Type";
+        "Employee Payroll Account No." := PostedPayrollDocLine."Employee Account No.";
+        "Org. Unit Code" := PostedPayrollDocLine."Org. Unit Code";
+        "Source Pay" := PostedPayrollDocLine."Source Pay";
+        "Working Days" := PostedPayrollDocLine."Planned Days";
+        "Working Hours" := PostedPayrollDocLine."Planned Hours";
+        "Payment Days" := PostedPayrollDocLine."Payment Days";
+        "Payment Hours" := PostedPayrollDocLine."Payment Hours";
+        "Payment Percent" := PostedPayrollDocLine."Payment Percent";
+        "Payment Source" := PostedPayrollDocLine."Payment Source";
+        "Days Not Paid" := PostedPayrollDocLine."Days Not Paid";
+        "Global Dimension 1 Code" := PostedPayrollDocLine."Shortcut Dimension 1 Code";
+        "Global Dimension 2 Code" := PostedPayrollDocLine."Shortcut Dimension 2 Code";
+        "Dimension Set ID" := PostedPayrollDocLine."Dimension Set ID";
+        "Code OKATO" := PostedPayrollDocLine."Code OKATO";
+        "Code KPP" := PostedPayrollDocLine."Code KPP";
+        "Vacation Posting Group" := PostedPayrollDocLine."Vacation Posting Group";
+        "Action Start Date" := PostedPayrollDocLine."Action Starting Date";
+        "Action End Date" := PostedPayrollDocLine."Action Ending Date";
+      END;
+    END;
+
+    PROCEDURE PostedPayrDocLineToGenJnlLine@15(PostedPayrollDocLine@1210000 : Record 17417;VAR GenJnlLine@1210001 : Record 81);
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        "Account Type" := "Account Type"::"G/L Account";
+        "Document Type" := 0;
+        "Document No." := PostedPayrollDocLine."Document No.";
+        Description := PostedPayrollDocLine.Description;
+        Amount := PostedPayrollDocLine."Payroll Amount";
+        "Amount (LCY)" := PostedPayrollDocLine."Payroll Amount";
+        "Check Printed" := PostedPayrollDocLine."Pay-Sheet Print";
+        "Document Date" := "Posting Date";
+        "System-Created Entry" := TRUE;
+        "Source Type" := "Source Type"::Employee;
+        "Source No." := PostedPayrollDocLine."Employee No.";
+        "Shortcut Dimension 1 Code" := PostedPayrollDocLine."Shortcut Dimension 1 Code";
+        "Shortcut Dimension 2 Code" := PostedPayrollDocLine."Shortcut Dimension 2 Code";
+        "Dimension Set ID" := PostedPayrollDocLine."Dimension Set ID";
+        IF ((PostedPayrollDocLine."Posting Type" = 1) AND (PostedPayrollDocLine."Payroll Amount" < 0)) OR
+           ((PostedPayrollDocLine."Posting Type" = 2) AND (PostedPayrollDocLine."Payroll Amount" > 0)) OR
+           ((PostedPayrollDocLine."Posting Type" = 3) AND (PostedPayrollDocLine."Payroll Amount" > 0))
+        THEN
+          VALIDATE(Correction,TRUE);
+      END;
+    END;
+
+    PROCEDURE PayrElementToPayrLedgEntry@20(PayrollElement@1210000 : Record 17400;VAR PayrollLedgerEntry@1210001 : Record 17418);
+    BEGIN
+      WITH PayrollLedgerEntry DO BEGIN
+        "Element Type" := PayrollElement.Type;
+        "Element Group" := PayrollElement."Element Group";
+        "Posting Type" := PayrollElement."Posting Type";
+        "Bonus Type" := PayrollElement."Bonus Type";
+        IF "Source Pay" = 0 THEN
+          "Source Pay" := PayrollElement."Source Pay";
+        "FSI Base" := PayrollElement."FSI Base";
+        "Federal FMI Base" := PayrollElement."Federal FMI Base";
+        "Territorial FMI Base" := PayrollElement."Territorial FMI Base";
+        "Pension Fund Base" := PayrollElement."PF Base";
+        "Income Tax Base" := PayrollElement."Income Tax Base";
+        "FSI Injury Base" := PayrollElement."FSI Injury Base";
+      END;
+    END;
+
+    PROCEDURE ReverseAmount@1210003();
+    BEGIN
+      WITH PayrollDocLine DO BEGIN
+        Amount := -Amount;
+        "Payroll Amount" := -"Payroll Amount";
+        "Taxable Amount" := -"Taxable Amount";
+        Quantity := -Quantity;
+        "Payment Days" := -"Payment Days";
+        "Payment Hours" := -"Payment Hours";
+        "Days Not Paid" := -"Days Not Paid";
+        "Original Amount" := -"Original Amount";
+        "Corr. Amount" := -"Corr. Amount";
+        "Corr. Amount 2" := -"Corr. Amount 2";
+        "Amount (ACY)" := -"Amount (ACY)";
+        "Days To Exclude" := -"Days To Exclude";
+      END;
+    END;
+
+    PROCEDURE AggregateTaxes@1210006(VAR TempPayrollDocLine@1210000 : Record 17415);
+    VAR
+      PayrollDocLineFund@1210001 : TEMPORARY Record 17415;
+      TempPayrollDocLine2@1210010 : TEMPORARY Record 17415;
+      PayrollDocCalculate@1210003 : Codeunit 17404;
+      YTDTaxableAmount@1210002 : Decimal;
+      CurrPeriodTaxableAmount@1210004 : Decimal;
+      YTDTaxAmount@1210007 : Decimal;
+      YTDPostedTaxAmount@1210006 : Decimal;
+      CurrPeriodTaxAmount@1210008 : Decimal;
+      ResultFlag@1210005 : Option;
+      PeriodCode@1210011 : Code[10];
+      Sign@1210013 : Integer;
+    BEGIN
+      PayrollDocBuffer.RESET;
+      PayrollDocBuffer.DELETEALL;
+      NextDocBufferEntryNo := 0;
+
+      // copy fund lines
+      TempPayrollDocLine.SETRANGE("Element Type",TempPayrollDocLine."Element Type"::Funds);
+      TempPayrollDocLine.SETFILTER("Posting Type",'>0');
+      IF TempPayrollDocLine.FINDSET THEN
+        REPEAT
+          PayrollDocLineFund := TempPayrollDocLine;
+          PayrollDocLineFund.INSERT;
+        UNTIL TempPayrollDocLine.NEXT = 0;
+
+      // filter accruals lines
+      TempPayrollDocLine.SETRANGE("Posting Type");
+      TempPayrollDocLine.SETFILTER(
+        "Element Type",
+        '%1|%2|%3',
+        TempPayrollDocLine."Element Type"::Wage,
+        TempPayrollDocLine."Element Type"::Bonus,
+        TempPayrollDocLine."Element Type"::Other);
+
+      // look through the fund lines
+      IF PayrollDocLineFund.FINDSET THEN
+        REPEAT
+          IF PeriodCode <> PayrollDocLineFund."Period Code" THEN BEGIN
+            // init period variables
+            PayrollDocCalculate.InitPayrollPeriod(
+              PayrollDocLineFund."Period Code",PayrollDocLineFund."Wage Period From");
+            PeriodCode := PayrollDocLineFund."Period Code";
+          END;
+          IF PayrollDocLineFund."Payroll Amount" <> 0 THEN BEGIN
+            // look through the accruals
+            IF TempPayrollDocLine.FINDSET THEN
+              REPEAT
+                IF TempPayrollDocLine."Payroll Amount" <> 0 THEN
+                  // is accrual a base for current tax
+                  IF CheckTaxBase(TempPayrollDocLine."Element Code",PayrollDocLineFund."Element Code") THEN
+                    // add accrual to the document buffer
+                    AddLineToDocBuffer(TempPayrollDocLine,PayrollDocLineFund);
+              UNTIL TempPayrollDocLine.NEXT = 0;
+
+            // Year to date taxable amount (posted)
+            // налоговая база с начала года по учтенным операциям
+            PayrollDocCalculate.CalculateFunction(PayrollDocLineFund,2003,YTDTaxableAmount,ResultFlag);
+
+            // current period taxable amount
+            // база налого за текущий период (можно взять из поля строки)
+            // PayrollDocCalculate.CalculateFunction(PayrollDocLineFund,220,CurrPeriodTaxableAmount,ResultFlag);
+            CurrPeriodTaxableAmount := PayrollDocLineFund."Taxable Amount";
+
+            // year to date tax posted
+            // сумма налога учтенного с начала года
+            PayrollDocCalculate.CalculateFunction(PayrollDocLineFund,2005,YTDPostedTaxAmount,ResultFlag);
+
+            // look through buffer lines for current fund
+            PayrollDocBuffer.RESET;
+            PayrollDocBuffer.SETRANGE("Element Code",PayrollDocLineFund."Element Code");
+            IF PayrollDocBuffer.FINDSET THEN
+              REPEAT
+                Sign := GetSignFactor(PayrollDocBuffer."Base Amount");
+
+                // увеличить базу налога
+                YTDTaxableAmount := YTDTaxableAmount + Sign * PayrollDocBuffer."Base Amount";
+
+                // вычислить сумму налога с учетом базы текущей строки буфера
+                TempPayrollDocLine2."Document No." := PayrollDocLineFund."Document No.";
+                TempPayrollDocLine2."Employee No." := PayrollDocLineFund."Employee No.";
+                TempPayrollDocLine2."Period Code" := PayrollDocLineFund."Period Code";
+                TempPayrollDocLine2."Element Code" := PayrollDocLineFund."Element Code";
+                YTDTaxAmount := PayrollDocCalculate.Withholding(TempPayrollDocLine2,YTDTaxableAmount);
+                CurrPeriodTaxAmount := Sign * YTDTaxAmount + Sign * YTDPostedTaxAmount; // FIX - to +
+                PayrollDocBuffer."Tax Amount" := CurrPeriodTaxAmount;
+                PayrollDocBuffer.MODIFY;
+
+                // добавить найденную сумму налога к сумме уже учтенного налога
+                YTDPostedTaxAmount := YTDPostedTaxAmount - Sign * CurrPeriodTaxAmount;  // FIX + to -
+              UNTIL PayrollDocBuffer.NEXT = 0;
+          END;
+        UNTIL PayrollDocLineFund.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE AddLineToDocBuffer@1210007(TempPayrollDocLine@1210002 : Record 17415;PayrollDocLineFund@1210004 : Record 17415);
+    BEGIN
+      // insert or update payroll document buffer line
+      PayrollDocBuffer.SETRANGE("Payroll Posting Group",TempPayrollDocLine."Posting Group");
+      PayrollDocBuffer.SETRANGE("Element Code",PayrollDocLineFund."Element Code");
+      IF PayrollDocBuffer.FINDFIRST THEN BEGIN
+        IF PayrollDocLineFund."Dimension Set ID" = TempPayrollDocLine."Dimension Set ID" THEN BEGIN
+          PayrollDocBuffer."Base Amount" :=
+            PayrollDocBuffer."Base Amount" + TempPayrollDocLine."Payroll Amount";
+          PayrollDocBuffer.MODIFY;
+        END ELSE
+          InsertNewDocBufferLine(TempPayrollDocLine,PayrollDocLineFund);
+      END ELSE
+        InsertNewDocBufferLine(TempPayrollDocLine,PayrollDocLineFund);
+    END;
+
+    LOCAL PROCEDURE InsertNewDocBufferLine@1210021(TempPayrollDocLine@1210001 : Record 17415;PayrollDocLineFund@1210003 : Record 17415);
+    VAR
+      DimensionSetIDArr@1210000 : ARRAY [10] OF Integer;
+      DummyGlobalDim@1210002 : ARRAY [2] OF Code[10];
+    BEGIN
+      NextDocBufferEntryNo := NextDocBufferEntryNo + 1;
+      PayrollDocBuffer.INIT;
+      PayrollDocBuffer."Entry No." := NextDocBufferEntryNo;
+      PayrollDocBuffer."Element Code" := PayrollDocLineFund."Element Code";
+      PayrollDocBuffer."Payroll Posting Group" := TempPayrollDocLine."Posting Group";
+      PayrollDocBuffer."Base Amount" := TempPayrollDocLine."Payroll Amount";
+      DimensionSetIDArr[1] := TempPayrollDocLine."Dimension Set ID";
+      DimensionSetIDArr[2] := PayrollDocLineFund."Dimension Set ID";
+
+      PayrollDocBuffer."Dimension Set ID" :=
+        DimMgt.GetCombinedDimensionSetID(DimensionSetIDArr,DummyGlobalDim[1],DummyGlobalDim[2]);
+      PayrollDocBuffer."Payroll Ledger Entry No." := PayrollDocLineFund."Payroll Ledger Entry No.";
+      PayrollDocBuffer.INSERT;
+    END;
+
+    PROCEDURE GetPayrollDocBuffer@1210008(VAR NewPayrollDocBuffer@1210000 : Record 17462);
+    BEGIN
+      PayrollDocBuffer.RESET;
+      IF PayrollDocBuffer.FINDSET THEN
+        REPEAT
+          NewPayrollDocBuffer := PayrollDocBuffer;
+          NewPayrollDocBuffer.INSERT;
+        UNTIL PayrollDocBuffer.NEXT = 0;
+    END;
+
+    PROCEDURE CheckTaxBase@1210015(AccrualElementCode@1210000 : Code[20];TaxElementCode@1210001 : Code[20]) : Boolean;
+    VAR
+      TempPayrollElement@1210005 : TEMPORARY Record 17400;
+      AccrualPayrollElement@1210002 : Record 17400;
+      PayrollBaseAmount@1210004 : Record 17409;
+    BEGIN
+      AccrualPayrollElement.GET(AccrualElementCode);
+      TempPayrollElement := AccrualPayrollElement;
+      TempPayrollElement.INSERT;
+      WITH PayrollBaseAmount DO BEGIN
+        SETRANGE("Element Code",TaxElementCode);
+        IF FINDSET THEN
+          REPEAT
+            IF "Element Type Filter" <> '' THEN
+              TempPayrollElement.SETFILTER(Type,"Element Type Filter");
+            IF "Element Code Filter" <> '' THEN
+              TempPayrollElement.SETFILTER(Code,"Element Code Filter");
+            IF "Element Group Filter" <> '' THEN
+              TempPayrollElement.SETFILTER("Element Group","Element Group Filter");
+            IF "Posting Type Filter" <> '' THEN
+              TempPayrollElement.SETFILTER("Posting Type","Posting Type Filter");
+            IF TempPayrollElement.ISEMPTY THEN
+              EXIT(FALSE);
+            CASE TRUE OF
+              "Income Tax Base Filter" = "Income Tax Base Filter"::Impose:
+                IF AccrualPayrollElement."Income Tax Base" THEN
+                  EXIT(TRUE);
+              "FSI Injury Base Filter" = "FSI Injury Base Filter"::Impose:
+                IF AccrualPayrollElement."FSI Injury Base" THEN
+                  EXIT(TRUE);
+              "FSI Base Filter" = "FSI Base Filter"::Impose:
+                IF AccrualPayrollElement."FSI Base" THEN
+                  EXIT(TRUE);
+              "Federal FMI Base Filter" = "Federal FMI Base Filter"::Impose:
+                IF AccrualPayrollElement."Federal FMI Base" THEN
+                  EXIT(TRUE);
+              "Territorial FMI Base Filter" = "Territorial FMI Base Filter"::Impose:
+                IF AccrualPayrollElement."Territorial FMI Base" THEN
+                  EXIT(TRUE);
+              "PF Base Filter" = "PF Base Filter"::Impose:
+                IF AccrualPayrollElement."PF Base" THEN
+                  EXIT(TRUE);
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE SetPayrollCategoryCode@1210001();
+    BEGIN
+      WITH PayrollLedgEntry DO BEGIN
+        IF Employee.IsInvalid("Posting Date") THEN
+          "Insurance Fee Category Code" := '03'
+        ELSE
+          "Insurance Fee Category Code" := '01';
+      END;
+    END;
+
+    LOCAL PROCEDURE GetSignFactor@1210010(Amount@1170000000 : Decimal) : Integer;
+    BEGIN
+      IF Amount >= 0 THEN
+        EXIT(1);
+      EXIT(-1);
+    END;
+
+    LOCAL PROCEDURE CalcRoundedTaxAmt@1210011(VAR PassedGenJnlLine@1210000 : Record 81;PayrollDocBuf@1210003 : TEMPORARY Record 17462;VAR PayrollDocBufRemainder@1210004 : Record 17462);
+    BEGIN
+      WITH PassedGenJnlLine DO BEGIN
+        GetPayrollDocBufRemainder(PayrollDocBufRemainder,PayrollDocBuf."Element Code");
+        VALIDATE(
+          Amount,PayrollDocBufRemainder."Tax Amount" + PayrollDocBuf."Tax Amount");
+        PayrollDocBufRemainder."Tax Amount" :=
+          PayrollDocBuf."Tax Amount" - Amount;
+        PayrollDocBufRemainder.MODIFY;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetPayrollDocBufRemainder@1210012(VAR PayrollDocBufRemainder@1210000 : Record 17462;ElementCode@1210001 : Code[20]);
+    VAR
+      NextEntryNo@1210002 : Integer;
+    BEGIN
+      WITH PayrollDocBufRemainder DO BEGIN
+        SETRANGE("Element Code",ElementCode);
+        IF NOT FINDFIRST THEN BEGIN
+          SETRANGE("Element Code");
+          IF FINDLAST THEN
+            NextEntryNo := "Entry No.";
+          NextEntryNo += 1;
+          INIT;
+          "Entry No." := NextEntryNo;
+          "Element Code" := ElementCode;
+          INSERT;
+        END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+
